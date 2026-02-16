@@ -10,7 +10,7 @@
 #include "macros.hpp"
 namespace tfl {
 
-template <typename Tp, std::size_t cap = NF_DEFAULT_QUEUE_SIZE>
+template <typename Tp, std::size_t cap = TFL_DEFAULT_QUEUE_SIZE>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
 class BoundedQueue : public Immovable<BoundedQueue<Tp, cap>> {
 public:

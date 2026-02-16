@@ -36,7 +36,7 @@ public:
     }
 
 private:
-    BoundedQueue<Work*, NF_DEFAULT_QUEUE_SIZE> m_wslq;
+    BoundedQueue<Work*, TFL_DEFAULT_QUEUE_SIZE> m_wslq;
     Xoshiro m_rng;
     uniform_uint64_distribution m_dist;
     std::size_t m_vtm;

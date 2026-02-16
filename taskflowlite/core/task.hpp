@@ -186,7 +186,7 @@ inline std::size_t Task::num_predecessors() const noexcept {
 }
 
 inline std::size_t Task::num_acquires() const noexcept {
-    return m_work->m_num_acquires;
+    return m_work->_num_acquires();
 }
 
 inline std::size_t Task::num_releases() const noexcept {
@@ -194,7 +194,7 @@ inline std::size_t Task::num_releases() const noexcept {
 }
 
 inline std::size_t Task::num_observers() const noexcept {
-    return m_work->m_observers.size();
+    return m_work->m_observers ? m_work->m_observers->observers.size() : 0;
 }
 
 inline Task::operator bool() const noexcept {
@@ -332,25 +332,32 @@ void Task::for_each_release(F&& visitor)
 }
 
 // ==================== Observer ====================
-
 template <std::derived_from<TaskObserver> Observer, typename... Args>
     requires std::constructible_from<Observer, Args...>
 std::shared_ptr<Observer> Task::register_observer(Args&&... args) {
     auto ptr = std::make_shared<Observer>(std::forward<Args>(args)...);
-    m_work->m_observers.emplace_back(
+    if (!m_work->m_observers) {
+        m_work->m_observers = std::make_unique<Work::ObserverData>();
+    }
+    m_work->m_observers->observers.emplace_back(
         std::static_pointer_cast<TaskObserver>(ptr));
     return ptr;
 }
 
 template <std::derived_from<TaskObserver> Observer>
 void Task::unregister_observer(std::shared_ptr<Observer> ptr) noexcept {
+    if (!m_work->m_observers) return;
+
     auto base = std::static_pointer_cast<TaskObserver>(ptr);
-    auto& observers = m_work->m_observers;
+    auto& observers = m_work->m_observers->observers;
     for (auto it = observers.begin(); it != observers.end(); ++it) {
         if (*it == base) {
             observers.erase(it);
-            return;
+            break;
         }
+    }
+    if (m_work->m_observers->empty()) {
+        m_work->m_observers.reset();
     }
 }
 
@@ -438,7 +445,7 @@ inline std::size_t TaskView::num_successors() const noexcept {
 }
 
 inline std::size_t TaskView::num_acquires() const noexcept {
-    return m_work.m_num_acquires;
+    return m_work._num_acquires();
 }
 
 inline std::size_t TaskView::num_releases() const noexcept {
@@ -446,7 +453,7 @@ inline std::size_t TaskView::num_releases() const noexcept {
 }
 
 inline std::size_t TaskView::num_observers() const noexcept {
-    return m_work.m_observers.size();
+    return m_work.m_observers ? m_work.m_observers->observers.size() : 0;
 }
 
 inline TaskType TaskView::type() const noexcept {
