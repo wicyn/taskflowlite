@@ -148,7 +148,7 @@ inline Executor::Executor(WorkerHandler& handler, std::size_t num_workers)
     , m_num_queues{num_workers + m_shared_queues.size()}
     , m_handler{handler} {
     if (num_workers == 0) {
-        NF_THROW("executor must define at least one worker");
+        TFL_THROW("executor must define at least one worker");
     }
     _spawn(num_workers);
 }
@@ -365,10 +365,8 @@ explore:
         } while (vtm == wr.m_id);
     }
 
-    // 2PC 准备等待
     m_notifier.prepare_wait(wr.m_id);
 
-    // 检查共享队列
     for (std::size_t i = 0; i < shared_size; ++i) {
         if (!m_shared_queues.empty(i)) {
             m_notifier.cancel_wait(wr.m_id);
@@ -377,7 +375,6 @@ explore:
         }
     }
 
-    // 检查其他 worker 队列
     for (std::size_t i = 0; i < wr.m_id; ++i) {
         if (!m_workers[i].m_wslq.empty()) {
             m_notifier.cancel_wait(wr.m_id);
@@ -436,6 +433,7 @@ inline void Executor::_set_up_graph(Graph& g, Topology* topo, Worker& wr, Work* 
         _schedule(wr, g.begin(), n);
     }
 }
+
 inline void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cache) {
     w->m_join_counter.fetch_add(w->_join_count(), std::memory_order_relaxed);
     auto* parent = w->m_parent;
@@ -451,7 +449,6 @@ inline void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cache) {
         }
     }
 
-    // 当前图执行完成
     _schedule_parent(parent, wr, cache);
 }
 
@@ -523,7 +520,6 @@ inline void Executor::_set_up_dep_async_task(Work* w, I first, S last, std::size
 
 
 inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cache) {
-    // 拓扑完成，标记状态为 Finished
     auto* topo = w->m_topology;
     auto target = Topology::State::Running;
     while(!topo->m_state.compare_exchange_weak(target, Topology::State::Finished,
@@ -533,18 +529,15 @@ inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cach
     }
     topo->m_state.notify_all();
 
-    // 调度后继任务
     for(auto* const suc : w->_successors()) {
         if((suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1)) {
             auto& suc_exec = suc->m_topology->m_executor;
             if (&suc_exec == this) {
-                // 同一个 Executor，使用 cache 优化
                 if (cache) {
                     _schedule(wr, cache);
                 }
                 cache = suc;
             } else {
-                // 不同 Executor，直接调度
                 suc_exec._schedule(suc);
             }
         }
@@ -655,7 +648,6 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
 
 inline void Executor::_corun_graph(Worker& wr, Graph& g, Work* parent) {
     _set_up_graph(g, parent->m_topology, wr, parent);
-    //阻塞窃取其他任务，直到条件成立
     _corun_until(wr,[parent]() noexcept { return parent->m_join_counter.load(std::memory_order_acquire) == 0;});
 }
 
@@ -717,8 +709,30 @@ inline AsyncTask& AsyncTask::start(I first, S last) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// _make_* 工厂函数
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#define TFL_SEM_SCHEDULER [&exe, &wr](Work* t) {               \
+auto& target_exec = t->m_topology->m_executor;              \
+    if (std::addressof(target_exec) == std::addressof(exe)) {   \
+        exe._schedule(wr, t);                                   \
+} else {                                                    \
+        target_exec._schedule(t);                               \
+}                                                           \
+}
+
+#define TFL_OBSERVER_BEFORE(w, wr)                              \
+if ((w)->m_observers) {                                      \
+        for (auto& aspect : (w)->m_observers->observers) {      \
+            aspect->on_before(WorkerView{wr});                  \
+    }                                                       \
+}
+
+#define TFL_OBSERVER_AFTER(w, wr)                               \
+if ((w)->m_observers) {                                      \
+        for (auto& aspect : (w)->m_observers->observers) {      \
+            aspect->on_after(WorkerView{wr});                   \
+    }                                                       \
+}
 
 template <typename T>
     requires (capturable<T> && basic_invocable<T>)
@@ -730,20 +744,11 @@ inline auto Work::_make_basic(T&& task) {
                 return;
             }
 
-            if (!w->_try_acquire_semaphores([&exe, &wr](Work* t) {
-                    auto& target_exec = t->m_topology->m_executor;
-                    if (std::addressof(target_exec) == std::addressof(exe)) {
-                        exe._schedule(wr, t);
-                    } else {
-                        target_exec._schedule(t);
-                    }
-                })) {
+            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
                 return;
             }
 
-            for(auto& aspect : w->m_observers) {
-                aspect->on_before(WorkerView{wr});
-            }
+            TFL_OBSERVER_BEFORE(w, wr);
 
             if constexpr (noexcept(std::invoke(task))) {
                 std::invoke(task);
@@ -755,18 +760,9 @@ inline auto Work::_make_basic(T&& task) {
                 }
             }
 
-            for(auto& aspect : w->m_observers) {
-                aspect->on_after(WorkerView{wr});
-            }
+            TFL_OBSERVER_AFTER(w, wr);
 
-            w->_release_semaphores([&exe, &wr](Work* t) {
-                auto& target_exec = t->m_topology->m_executor;
-                if (std::addressof(target_exec) == std::addressof(exe)) {
-                    exe._schedule(wr, t);
-                } else {
-                    target_exec._schedule(t);
-                }
-            });
+            w->_release_semaphores(TFL_SEM_SCHEDULER);
             exe._tear_down_task(w, wr, cache);
         };
 }
@@ -782,20 +778,11 @@ inline auto Work::_make_branch(T&& task) {
                 return;
             }
 
-            if (!w->_try_acquire_semaphores([&exe, &wr](Work* t) {
-                    auto& target_exec = t->m_topology->m_executor;
-                    if (std::addressof(target_exec) == std::addressof(exe)) {
-                        exe._schedule(wr, t);
-                    } else {
-                        target_exec._schedule(t);
-                    }
-                })) {
+            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
                 return;
             }
 
-            for(auto& aspect : w->m_observers) {
-                aspect->on_before(WorkerView{wr});
-            }
+            TFL_OBSERVER_BEFORE(w, wr);
 
             Branch cond(*w);
             if constexpr (noexcept(std::invoke(task, cond))) {
@@ -811,18 +798,9 @@ inline auto Work::_make_branch(T&& task) {
                 target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
             }
 
-            for(auto& aspect : w->m_observers) {
-                aspect->on_after(WorkerView{wr});
-            }
+            TFL_OBSERVER_AFTER(w, wr);
 
-            w->_release_semaphores([&exe, &wr](Work* t) {
-                auto& target_exec = t->m_topology->m_executor;
-                if (std::addressof(target_exec) == std::addressof(exe)) {
-                    exe._schedule(wr, t);
-                } else {
-                    target_exec._schedule(t);
-                }
-            });
+            w->_release_semaphores(TFL_SEM_SCHEDULER);
             exe._tear_down_task(w, wr, cache);
         };
 }
@@ -839,20 +817,11 @@ inline auto Work::_make_multi_branch(T&& task) {
                 return;
             }
 
-            if (!w->_try_acquire_semaphores([&exe, &wr](Work* t) {
-                    auto& target_exec = t->m_topology->m_executor;
-                    if (std::addressof(target_exec) == std::addressof(exe)) {
-                        exe._schedule(wr, t);
-                    } else {
-                        target_exec._schedule(t);
-                    }
-                })) {
+            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
                 return;
             }
 
-            for(auto& aspect : w->m_observers) {
-                aspect->on_before(WorkerView{wr});
-            }
+            TFL_OBSERVER_BEFORE(w, wr);
 
             MultiBranch cond(*w);
             if constexpr (noexcept(std::invoke(task, cond))) {
@@ -868,18 +837,9 @@ inline auto Work::_make_multi_branch(T&& task) {
                 target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
             }
 
-            for(auto& aspect : w->m_observers) {
-                aspect->on_after(WorkerView{wr});
-            }
+            TFL_OBSERVER_AFTER(w, wr);
 
-            w->_release_semaphores([&exe, &wr](Work* t) {
-                auto& target_exec = t->m_topology->m_executor;
-                if (std::addressof(target_exec) == std::addressof(exe)) {
-                    exe._schedule(wr, t);
-                } else {
-                    target_exec._schedule(t);
-                }
-            });
+            w->_release_semaphores(TFL_SEM_SCHEDULER);
             exe._tear_down_task(w, wr, cache);
         };
 }
@@ -894,19 +854,12 @@ inline auto Work::_make_jump(T&& task) {
                 exe._schedule_parent(w->m_parent, wr, cache);
                 return;
             }
-            if (!w->_try_acquire_semaphores([&exe, &wr](Work* t) {
-                    auto& target_exec = t->m_topology->m_executor;
-                    if (std::addressof(target_exec) == std::addressof(exe)) {
-                        exe._schedule(wr, t);
-                    } else {
-                        target_exec._schedule(t);
-                    }
-                })) {
+            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
                 return;
             }
-            for (auto& aspect : w->m_observers) {
-                aspect->on_before(WorkerView{wr});
-            }
+
+            TFL_OBSERVER_BEFORE(w, wr);
+
             Jump jmp{*w};
             if constexpr (noexcept(std::invoke(task, jmp))) {
                 std::invoke(task, jmp);
@@ -917,17 +870,10 @@ inline auto Work::_make_jump(T&& task) {
                     exe._process_exception(w);
                 }
             }
-            for (auto& aspect : w->m_observers) {
-                aspect->on_after(WorkerView{wr});
-            }
-            w->_release_semaphores([&exe, &wr](Work* t) {
-                auto& target_exec = t->m_topology->m_executor;
-                if (std::addressof(target_exec) == std::addressof(exe)) {
-                    exe._schedule(wr, t);
-                } else {
-                    target_exec._schedule(t);
-                }
-            });
+
+            TFL_OBSERVER_AFTER(w, wr);
+
+            w->_release_semaphores(TFL_SEM_SCHEDULER);
             exe._tear_down_jump_task(w, wr, cache, jmp.m_target);
         };
 }
@@ -941,19 +887,12 @@ inline auto Work::_make_multi_jump(T&& task) {
                 exe._schedule_parent(w->m_parent, wr, cache);
                 return;
             }
-            if (!w->_try_acquire_semaphores([&exe, &wr](Work* t) {
-                    auto& target_exec = t->m_topology->m_executor;
-                    if (std::addressof(target_exec) == std::addressof(exe)) {
-                        exe._schedule(wr, t);
-                    } else {
-                        target_exec._schedule(t);
-                    }
-                })) {
+            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
                 return;
             }
-            for (auto& aspect : w->m_observers) {
-                aspect->on_before(WorkerView{wr});
-            }
+
+            TFL_OBSERVER_BEFORE(w, wr);
+
             MultiJump jmp{*w};
             if constexpr (noexcept(std::invoke(task, jmp))) {
                 std::invoke(task, jmp);
@@ -964,17 +903,10 @@ inline auto Work::_make_multi_jump(T&& task) {
                     exe._process_exception(w);
                 }
             }
-            for (auto& aspect : w->m_observers) {
-                aspect->on_after(WorkerView{wr});
-            }
-            w->_release_semaphores([&exe, &wr](Work* t) {
-                auto& target_exec = t->m_topology->m_executor;
-                if (std::addressof(target_exec) == std::addressof(exe)) {
-                    exe._schedule(wr, t);
-                } else {
-                    target_exec._schedule(t);
-                }
-            });
+
+            TFL_OBSERVER_AFTER(w, wr);
+
+            w->_release_semaphores(TFL_SEM_SCHEDULER);
             exe._tear_down_multi_jump_task(w, wr, cache, jmp.m_targets);
         };
 }
@@ -990,20 +922,11 @@ inline auto Work::_make_runtime(T&& task) {
                 return;
             }
 
-            if (!w->_try_acquire_semaphores([&exe, &wr](Work* t) {
-                    auto& target_exec = t->m_topology->m_executor;
-                    if (std::addressof(target_exec) == std::addressof(exe)) {
-                        exe._schedule(wr, t);
-                    } else {
-                        target_exec._schedule(t);
-                    }
-                })) {
+            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
                 return;
             }
 
-            for (auto& aspect : w->m_observers) {
-                aspect->on_before(WorkerView{wr});
-            }
+            TFL_OBSERVER_BEFORE(w, wr);
 
             Runtime rt(*w, wr, *w->m_topology, exe);
             if constexpr (noexcept(std::invoke(task, rt))) {
@@ -1016,18 +939,9 @@ inline auto Work::_make_runtime(T&& task) {
                 }
             }
 
-            for(auto& aspect : w->m_observers) {
-                aspect->on_after(WorkerView{wr});
-            }
+            TFL_OBSERVER_AFTER(w, wr);
 
-            w->_release_semaphores([&exe, &wr](Work* t) {
-                auto& target_exec = t->m_topology->m_executor;
-                if (std::addressof(target_exec) == std::addressof(exe)) {
-                    exe._schedule(wr, t);
-                } else {
-                    target_exec._schedule(t);
-                }
-            });
+            w->_release_semaphores(TFL_SEM_SCHEDULER);
             exe._tear_down_task(w, wr, cache);
         };
 }
@@ -1040,9 +954,7 @@ inline auto Work::_make_subflow(F&& flow, P&& pred) {
             decltype(auto) flow = detail::unwrap(flow_store);
 
             if (started) {
-                for(auto& aspect : w->m_observers) {
-                    aspect->on_after(WorkerView{wr});
-                }
+                TFL_OBSERVER_AFTER(w, wr);
             }
 
             if (w->_is_stopped()) [[unlikely]] {
@@ -1052,34 +964,18 @@ inline auto Work::_make_subflow(F&& flow, P&& pred) {
             }
 
             if (!started) {
-                if (!w->_try_acquire_semaphores([&exe, &wr](Work* t) {
-                        auto& target_exec = t->m_topology->m_executor;
-                        if (std::addressof(target_exec) == std::addressof(exe)) {
-                            exe._schedule(wr, t);
-                        } else {
-                            target_exec._schedule(t);
-                        }
-                    })) {
+                if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
                     return;
                 }
             }
 
             if (!std::invoke_r<bool>(pred)) {
-                for (auto& aspect : w->m_observers) {
-                    aspect->on_before(WorkerView{wr});
-                }
+                TFL_OBSERVER_BEFORE(w, wr);
                 started = true;
                 exe._set_up_graph(flow.m_graph, w->m_topology, wr, w);
             } else {
                 started = false;
-                w->_release_semaphores([&exe, &wr](Work* t) {
-                    auto& target_exec = t->m_topology->m_executor;
-                    if (std::addressof(target_exec) == std::addressof(exe)) {
-                        exe._schedule(wr, t);
-                    } else {
-                        target_exec._schedule(t);
-                    }
-                });
+                w->_release_semaphores(TFL_SEM_SCHEDULER);
                 exe._tear_down_task(w, wr, cache);
             }
         };
@@ -1213,20 +1109,11 @@ inline auto Work::_make_dep_async_basic(T&& task) {
     return [task = std::forward<T>(task)]
         (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
 
-            if (!w->_try_acquire_semaphores([&exe, &wr](Work* t) {
-                    auto& target_exec = t->m_topology->m_executor;
-                    if (std::addressof(target_exec) == std::addressof(exe)) {
-                        exe._schedule(wr, t);
-                    } else {
-                        target_exec._schedule(t);
-                    }
-                })) {
+            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
                 return;
             }
 
-            for(auto& aspect : w->m_observers) {
-                aspect->on_before(WorkerView{wr});
-            }
+            TFL_OBSERVER_BEFORE(w, wr);
 
             if constexpr (noexcept(std::invoke(task))) {
                 std::invoke(task);
@@ -1238,18 +1125,9 @@ inline auto Work::_make_dep_async_basic(T&& task) {
                 }
             }
 
-            for(auto& aspect : w->m_observers) {
-                aspect->on_after(WorkerView{wr});
-            }
+            TFL_OBSERVER_AFTER(w, wr);
 
-            w->_release_semaphores([&exe, &wr](Work* t) {
-                auto& target_exec = t->m_topology->m_executor;
-                if (std::addressof(target_exec) == std::addressof(exe)) {
-                    exe._schedule(wr, t);
-                } else {
-                    target_exec._schedule(t);
-                }
-            });
+            w->_release_semaphores(TFL_SEM_SCHEDULER);
             exe._tear_down_dep_async_task(w, wr, cache);
         };
 }
@@ -1260,20 +1138,11 @@ inline auto Work::_make_dep_async_runtime(T&& task) {
     return [task = std::forward<T>(task)]
         (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
 
-            if (!w->_try_acquire_semaphores([&exe, &wr](Work* t) {
-                    auto& target_exec = t->m_topology->m_executor;
-                    if (std::addressof(target_exec) == std::addressof(exe)) {
-                        exe._schedule(wr, t);
-                    } else {
-                        target_exec._schedule(t);
-                    }
-                })) {
+            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
                 return;
             }
 
-            for(auto& aspect : w->m_observers) {
-                aspect->on_before(WorkerView{wr});
-            }
+            TFL_OBSERVER_BEFORE(w, wr);
 
             Runtime rt(*w, wr, *w->m_topology, exe);
             if constexpr (noexcept(std::invoke(task, rt))) {
@@ -1286,18 +1155,9 @@ inline auto Work::_make_dep_async_runtime(T&& task) {
                 }
             }
 
-            for(auto& aspect : w->m_observers) {
-                aspect->on_after(WorkerView{wr});
-            }
+            TFL_OBSERVER_AFTER(w, wr);
 
-            w->_release_semaphores([&exe, &wr](Work* t) {
-                auto& target_exec = t->m_topology->m_executor;
-                if (std::addressof(target_exec) == std::addressof(exe)) {
-                    exe._schedule(wr, t);
-                } else {
-                    target_exec._schedule(t);
-                }
-            });
+            w->_release_semaphores(TFL_SEM_SCHEDULER);
             exe._tear_down_dep_async_task(w, wr, cache);
         };
 }
@@ -1311,43 +1171,29 @@ inline auto Work::_make_dep_flow(F&& flow, P&& pred, C&& callback) {
             decltype(auto) flow = detail::unwrap(flow_store);
 
             if (started) {
-                for(auto& aspect : w->m_observers) {
-                    aspect->on_after(WorkerView{wr});
-                }
+                TFL_OBSERVER_AFTER(w, wr);
             } else {
-                if (!w->_try_acquire_semaphores([&exe, &wr](Work* t) {
-                        auto& target_exec = t->m_topology->m_executor;
-                        if (std::addressof(target_exec) == std::addressof(exe)) {
-                            exe._schedule(wr, t);
-                        } else {
-                            target_exec._schedule(t);
-                        }
-                    })) {
+                if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
                     return;
                 }
             }
 
             if (!std::invoke_r<bool>(pred) && !w->_is_stopped()) {
-                for (auto& aspect : w->m_observers) {
-                    aspect->on_before(WorkerView{wr});
-                }
+                TFL_OBSERVER_BEFORE(w, wr);
                 started = true;
                 exe._set_up_graph(flow.m_graph, w->m_topology, wr, w);
             } else {
                 started = false;
-                w->_release_semaphores([&exe, &wr](Work* t) {
-                    auto& target_exec = t->m_topology->m_executor;
-                    if (std::addressof(target_exec) == std::addressof(exe)) {
-                        exe._schedule(wr, t);
-                    } else {
-                        target_exec._schedule(t);
-                    }
-                });
+                w->_release_semaphores(TFL_SEM_SCHEDULER);
                 std::invoke(std::forward<C>(callback));
                 exe._tear_down_dep_async_task(w, wr, cache);
             }
         };
 }
+
+#undef TFL_SEM_SCHEDULER
+#undef TFL_OBSERVER_BEFORE
+#undef TFL_OBSERVER_AFTER
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1390,7 +1236,7 @@ template <typename F, typename P, typename C>
     requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
 inline AsyncTask Runtime::submit(F&& flow, P&& pred, C&& callback) {
     constexpr auto options = Work::Option::ANCHORED | Work::Option::PREEMPTED;
-    return m_executor._make_dep_async_task(nullptr, TaskType::Graph, options, Work::_make_dep_flow(std::forward<F>(flow), std::forward<P>(pred), std::forward<C>(callback)));
+    return m_executor._make_dep_async_task(TaskType::Graph, options, Work::_make_dep_flow(std::forward<F>(flow), std::forward<P>(pred), std::forward<C>(callback)));
 }
 
 // ==================== Basic 类型定义 ====================
@@ -1398,7 +1244,7 @@ template <typename T>
     requires (capturable<T> && basic_invocable<T>)
 inline AsyncTask Runtime::submit(T&& task) {
     constexpr auto options = Work::Option::ANCHORED;
-    return m_executor._make_dep_async_task(nullptr, TaskType::Basic, options, Work::_make_dep_async_basic(std::forward<T>(task)));
+    return m_executor._make_dep_async_task(TaskType::Basic, options, Work::_make_dep_async_basic(std::forward<T>(task)));
 }
 
 // ==================== Runtime 类型定义 ====================
@@ -1477,5 +1323,3 @@ inline void Runtime::wait_until(Pred&& pred) {
 
 
 }  // end of namespace tfl -----------------------------------------------------
-
-

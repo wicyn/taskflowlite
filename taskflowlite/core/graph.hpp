@@ -116,7 +116,7 @@ constexpr void Graph::_erase(Work* const target) noexcept {
     target->_clear_successors();
 
     auto it = std::ranges::find(m_works, target);
-    NF_ASSERT(it != m_works.end() && "target must exist in m_works");
+    TFL_ASSERT(it != m_works.end() && "target must exist in m_works");
 
     *it = m_works.back();
     m_works.pop_back();

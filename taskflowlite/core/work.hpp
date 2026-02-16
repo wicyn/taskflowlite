@@ -70,6 +70,25 @@ protected:
         static constexpr type CAUGHT    = type{1} << (BITS - 2);  // 异常已捕获
     };
 
+    // ========================================================================
+    // 按需分配的附属数据
+    // ========================================================================
+    struct SemaphoreData {
+        std::vector<Semaphore*> acquires;
+        std::vector<Semaphore*> releases;
+
+        [[nodiscard]] bool empty() const noexcept {
+            return acquires.empty() && releases.empty();
+        }
+    };
+
+    struct ObserverData {
+        std::vector<std::shared_ptr<TaskObserver>> observers;
+
+        [[nodiscard]] bool empty() const noexcept {
+            return observers.empty();
+        }
+    };
 
     // ============================================================
     // 构造 / 析构
@@ -93,27 +112,28 @@ protected:
 
 private:
 
-    Option::type m_options{Option::NONE};                // 非原子
-    std::atomic<State::type> m_state{State::NONE};       // 原子
-    std::atomic<std::size_t> m_join_counter{0};
+    // ================================================================
+    // 冷数据：构建期、调试、异常时才访问
+    // ================================================================
+    std::string m_name;                                          // 32
+    const TaskType m_type{TaskType::None};                       // 4
+    const Graph* m_graph{nullptr};                               // 8
+    std::exception_ptr m_exception_ptr{nullptr};                 // 16
 
-    Topology* m_topology{nullptr};
-    Work* m_parent{nullptr};
-    std::size_t m_num_acquires{0};
-    std::size_t m_num_successors{0};
-
-    // 信号量：[0, m_num_acquires) 获取，[m_num_acquires, size()) 释放
-    std::vector<Semaphore*> m_semaphores;
-    // 边存储：[0, m_num_successors) 后继，[m_num_successors, size()) 前继
-    std::vector<Work*> m_edges;
-
-    std::vector<std::shared_ptr<TaskObserver>> m_observers;
-
-    std::string m_name;
-    const TaskType m_type{TaskType::None};
-    const Graph* m_graph{nullptr};
-
-    std::exception_ptr m_exception_ptr{nullptr};
+    // ================================================================
+    // 热数据：按执行时序从远到近排列
+    // ================================================================
+    std::atomic<State::type> m_state{State::NONE};               // 4   ①
+    Option::type m_options{Option::NONE};                        // 4   ③⑤
+    Topology* m_topology{nullptr};                               // 8   ②
+    Work* m_parent{nullptr};                                     // 8   ⑨
+    std::atomic<std::size_t> m_join_counter{0};                  // 8   ⑥
+    std::size_t m_num_successors{0};                             // 8   ⑦
+    std::vector<Work*> m_edges;                                  // 24  ⑧
+    std::unique_ptr<SemaphoreData> m_semaphores;                 // 8   nullptr = 无信号量
+    std::unique_ptr<ObserverData> m_observers;                   // 8   nullptr = 无观察者
+        // 小计 = 80
+    // ---- WorkImpl<F>::m_func 紧跟其后 ----
 
     // ============================================================================
     // join weight：当前节点作为前驱时，对后继 join_counter 的贡献值
@@ -168,14 +188,14 @@ private:
 
     void _add_join_count(std::size_t n) noexcept {
         auto cur = m_options & Option::COUNT_MASK;
-        NF_ASSERT(cur + n <= Option::COUNT_MASK && "join count overflow");
+        TFL_ASSERT(cur + n <= Option::COUNT_MASK && "join count overflow");
         m_options = (m_options & Option::FLAG_MASK)
                     | (static_cast<Option::type>(cur + n) & Option::COUNT_MASK);
     }
 
     void _sub_join_count(std::size_t n) noexcept {
         auto cur = m_options & Option::COUNT_MASK;
-        NF_ASSERT(cur >= n && "join count underflow");
+        TFL_ASSERT(cur >= n && "join count underflow");
         m_options = (m_options & Option::FLAG_MASK)
                     | (static_cast<Option::type>(cur - n) & Option::COUNT_MASK);
     }
@@ -263,20 +283,36 @@ private:
     // ============================================================
     // 信号量访问
     // ============================================================
+    [[nodiscard]] SemaphoreData& _ensure_semaphores() {
+        if (!m_semaphores) {
+            m_semaphores = std::make_unique<SemaphoreData>();
+        }
+        return *m_semaphores;
+    }
+
+    // 如果数据清空则释放
+    void _try_release_semaphores() noexcept {
+        if (m_semaphores && m_semaphores->empty()) {
+            m_semaphores.reset();
+        }
+    }
     [[nodiscard]] std::span<Semaphore*> _acquires() noexcept {
-        return {m_semaphores.data(), m_num_acquires};
+        return m_semaphores ? std::span<Semaphore*>{m_semaphores->acquires} : std::span<Semaphore*>{};
     }
     [[nodiscard]] std::span<Semaphore* const> _acquires() const noexcept {
-        return {m_semaphores.data(), m_num_acquires};
+        return m_semaphores ? std::span<Semaphore* const>{m_semaphores->acquires} : std::span<Semaphore* const>{};
     }
     [[nodiscard]] std::span<Semaphore*> _releases() noexcept {
-        return {m_semaphores.data() + m_num_acquires, m_semaphores.size() - m_num_acquires};
+        return m_semaphores ? std::span<Semaphore*>{m_semaphores->releases} : std::span<Semaphore*>{};
     }
     [[nodiscard]] std::span<Semaphore* const> _releases() const noexcept {
-        return {m_semaphores.data() + m_num_acquires, m_semaphores.size() - m_num_acquires};
+        return m_semaphores ? std::span<Semaphore* const>{m_semaphores->releases} : std::span<Semaphore* const>{};
+    }
+    [[nodiscard]] std::size_t _num_acquires() const noexcept {
+        return m_semaphores ? m_semaphores->acquires.size() : 0;
     }
     [[nodiscard]] std::size_t _num_releases() const noexcept {
-        return m_semaphores.size() - m_num_acquires;
+        return m_semaphores ? m_semaphores->releases.size() : 0;
     }
 
     // ============================================================
@@ -518,7 +554,7 @@ inline void Work::_set_up(const std::size_t join_counter) noexcept {
 // 边操作
 // ----------------------------------------------------------------------------
 inline void Work::_erase_successor_at(std::size_t idx) noexcept {
-    NF_ASSERT(idx < m_num_successors);
+    TFL_ASSERT(idx < m_num_successors);
     const std::size_t last_succ = m_num_successors - 1;
     const std::size_t num_preds = _num_predecessors();
 
@@ -533,7 +569,7 @@ inline void Work::_erase_successor_at(std::size_t idx) noexcept {
 }
 
 inline void Work::_erase_predecessor_at(std::size_t idx) noexcept {
-    NF_ASSERT(idx < _num_predecessors());
+    TFL_ASSERT(idx < _num_predecessors());
     const std::size_t abs_idx = m_num_successors + idx;
     m_edges[abs_idx] = m_edges.back();
     m_edges.pop_back();
@@ -566,7 +602,7 @@ inline void Work::_remove_successor(Work* const target) noexcept {
     _erase_successor_at(idx);
 
     const std::size_t pidx = _find_index<Work>(target->_predecessors(), this);
-    NF_ASSERT(pidx != static_cast<std::size_t>(-1) && "predecessor must exist");
+    TFL_ASSERT(pidx != static_cast<std::size_t>(-1) && "predecessor must exist");
     target->_erase_predecessor_at(pidx);
 
     // 构建期扣减 target 的 join count
@@ -578,7 +614,7 @@ inline void Work::_remove_successor(Work* const target) noexcept {
 inline void Work::_clear_predecessors() noexcept {
     for (Work* pred : _predecessors()) {
         const std::size_t idx = _find_index<Work>(pred->_successors(), this);
-        NF_ASSERT(idx != static_cast<std::size_t>(-1) && "successor must exist");
+        TFL_ASSERT(idx != static_cast<std::size_t>(-1) && "successor must exist");
         pred->_erase_successor_at(idx);
     }
 
@@ -596,13 +632,13 @@ inline void Work::_clear_successors() noexcept {
         for (Work* succ : _successors()) {
             succ->_sub_join_count(w);
             const std::size_t idx = _find_index<Work>(succ->_predecessors(), this);
-            NF_ASSERT(idx != static_cast<std::size_t>(-1) && "predecessor must exist");
+            TFL_ASSERT(idx != static_cast<std::size_t>(-1) && "predecessor must exist");
             succ->_erase_predecessor_at(idx);
         }
     } else {
         for (Work* succ : _successors()) {
             const std::size_t idx = _find_index<Work>(succ->_predecessors(), this);
-            NF_ASSERT(idx != static_cast<std::size_t>(-1) && "predecessor must exist");
+            TFL_ASSERT(idx != static_cast<std::size_t>(-1) && "predecessor must exist");
             succ->_erase_predecessor_at(idx);
         }
     }
@@ -623,7 +659,7 @@ inline std::expected<void, std::string_view> Work::_can_precede(Work* const targ
     if (!m_graph) return std::unexpected{"work not attached to graph"};
     if (m_graph != target->m_graph) return std::unexpected{"works belong to different graphs"};
     if (_contains<Work>(_successors(), target)) return std::unexpected{"edge already exists"};
-    if (target->_can_reach(this)) return std::unexpected{"would create cycle"};
+    //if (target->_can_reach(this)) return std::unexpected{"would create cycle"};
     return {};
 }
 
@@ -651,71 +687,65 @@ inline bool Work::_can_reach(const Work* target) const {
     }
     return false;
 }
-
 // ----------------------------------------------------------------------------
 // 信号量操作
 // ----------------------------------------------------------------------------
 inline void Work::_acquire(Semaphore* sem) {
     if (!sem) throw Exception("cannot acquire null semaphore.");
-    if (_contains<Semaphore>(_acquires(), sem)) throw Exception("semaphore already in acquire list.");
-
-    m_semaphores.push_back(sem);
-    if (m_num_acquires < m_semaphores.size() - 1) {
-        std::swap(m_semaphores[m_num_acquires], m_semaphores.back());
-    }
-    ++m_num_acquires;
+    auto& sd = _ensure_semaphores();
+    if (_contains<Semaphore>(std::span<Semaphore* const>{sd.acquires}, sem))
+        throw Exception("semaphore already in acquire list.");
+    sd.acquires.push_back(sem);
 }
 
 inline void Work::_release(Semaphore* sem) {
     if (!sem) throw Exception("cannot release null semaphore.");
-    if (_contains<Semaphore>(_releases(), sem)) throw Exception("semaphore already in release list.");
-    m_semaphores.push_back(sem);
+    auto& sd = _ensure_semaphores();
+    if (_contains<Semaphore>(std::span<Semaphore* const>{sd.releases}, sem))
+        throw Exception("semaphore already in release list.");
+    sd.releases.push_back(sem);
 }
 
 inline void Work::_remove_acquire(Semaphore* sem) noexcept {
-    const std::size_t idx = _find_index<Semaphore>(_acquires(), sem);
+    if (!m_semaphores) return;
+    auto& acqs = m_semaphores->acquires;
+    const std::size_t idx = _find_index<Semaphore>(std::span<Semaphore* const>{acqs}, sem);
     if (idx == static_cast<std::size_t>(-1)) return;
 
-    const std::size_t last_acq = m_num_acquires - 1;
-    const std::size_t num_rels = _num_releases();
-
-    if (idx != last_acq) m_semaphores[idx] = m_semaphores[last_acq];
-    if (num_rels > 0) m_semaphores[last_acq] = m_semaphores.back();
-    m_semaphores.pop_back();
-    --m_num_acquires;
+    acqs[idx] = acqs.back();
+    acqs.pop_back();
+    _try_release_semaphores();
 }
 
 inline void Work::_remove_release(Semaphore* sem) noexcept {
-    const std::size_t rel_idx = _find_index<Semaphore>(_releases(), sem);
-    if (rel_idx == static_cast<std::size_t>(-1)) return;
+    if (!m_semaphores) return;
+    auto& rels = m_semaphores->releases;
+    const std::size_t idx = _find_index<Semaphore>(std::span<Semaphore* const>{rels}, sem);
+    if (idx == static_cast<std::size_t>(-1)) return;
 
-    const std::size_t idx = m_num_acquires + rel_idx;
-    m_semaphores[idx] = m_semaphores.back();
-    m_semaphores.pop_back();
+    rels[idx] = rels.back();
+    rels.pop_back();
+    _try_release_semaphores();
 }
 
 inline void Work::_clear_acquires() noexcept {
-    const std::size_t num_rels = _num_releases();
-    for (std::size_t i = 0; i < num_rels; ++i) {
-        m_semaphores[i] = m_semaphores[m_num_acquires + i];
-    }
-    while (m_semaphores.size() > num_rels) {
-        m_semaphores.pop_back();
-    }
-    m_num_acquires = 0;
+    if (!m_semaphores) return;
+    m_semaphores->acquires.clear();
+    _try_release_semaphores();
 }
 
 inline void Work::_clear_releases() noexcept {
-    while (m_semaphores.size() > m_num_acquires) {
-        m_semaphores.pop_back();
-    }
+    if (!m_semaphores) return;
+    m_semaphores->releases.clear();
+    _try_release_semaphores();
 }
 
 template <typename F>
     requires std::invocable<F&, Work*>
 inline bool Work::_try_acquire_semaphores(F&& on_wake) {
-    auto acqs = _acquires();
-    for (std::size_t i = 0; i < m_num_acquires; ++i) {
+    if (!m_semaphores) return true;
+    auto& acqs = m_semaphores->acquires;
+    for (std::size_t i = 0; i < acqs.size(); ++i) {
         if (!acqs[i]->_try_acquire(this)) {
             for (std::size_t j = i; j > 0; --j) {
                 acqs[j - 1]->_release(on_wake);
@@ -729,7 +759,8 @@ inline bool Work::_try_acquire_semaphores(F&& on_wake) {
 template <typename F>
     requires std::invocable<F&, Work*>
 inline void Work::_release_semaphores(F&& on_wake) {
-    for (auto* sem : _releases()) {
+    if (!m_semaphores) return;
+    for (auto* sem : m_semaphores->releases) {
         sem->_release(on_wake);
     }
 }

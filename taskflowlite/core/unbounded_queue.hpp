@@ -27,17 +27,17 @@ public:
     AtomicRingBuffer(AtomicRingBuffer&&) = delete;
     AtomicRingBuffer& operator=(AtomicRingBuffer&&) = delete;
 
-    [[nodiscard]] NF_FORCE_INLINE std::int64_t capacity() const noexcept;
+    [[nodiscard]] TFL_FORCE_INLINE std::int64_t capacity() const noexcept;
 
-    NF_FORCE_INLINE void store(std::int64_t index, Tp val) noexcept;
+    TFL_FORCE_INLINE void store(std::int64_t index, Tp val) noexcept;
 
-    [[nodiscard]] NF_FORCE_INLINE Tp load(std::int64_t index) const noexcept;
+    [[nodiscard]] TFL_FORCE_INLINE Tp load(std::int64_t index) const noexcept;
 
     // 默认扩容 2 倍
-    [[nodiscard]] NF_FORCE_INLINE AtomicRingBuffer* resize(std::int64_t bottom, std::int64_t top) const;
+    [[nodiscard]] TFL_FORCE_INLINE AtomicRingBuffer* resize(std::int64_t bottom, std::int64_t top) const;
 
     // 扩容到能容纳额外 n 个元素
-    [[nodiscard]] NF_FORCE_INLINE AtomicRingBuffer* resize(std::int64_t bottom, std::int64_t top, std::size_t n) const;
+    [[nodiscard]] TFL_FORCE_INLINE AtomicRingBuffer* resize(std::int64_t bottom, std::int64_t top, std::size_t n) const;
 private:
     std::int64_t m_cap;
     std::int64_t m_mask;
@@ -50,7 +50,7 @@ class UnboundedQueue : public Immovable<UnboundedQueue<Tp>> {
 public:
     using value_type = Tp;
 
-    explicit UnboundedQueue(std::int64_t cap = 2 * NF_DEFAULT_QUEUE_SIZE);
+    explicit UnboundedQueue(std::int64_t cap = 2 * TFL_DEFAULT_QUEUE_SIZE);
 
     ~UnboundedQueue() noexcept;
 
@@ -103,26 +103,26 @@ AtomicRingBuffer<Tp>::~AtomicRingBuffer() {
 
 template <typename Tp>
     requires std::is_pointer_v<Tp>
-NF_FORCE_INLINE std::int64_t AtomicRingBuffer<Tp>::capacity() const noexcept {
+TFL_FORCE_INLINE std::int64_t AtomicRingBuffer<Tp>::capacity() const noexcept {
     return m_cap;
 }
 
 
 template <typename Tp>
     requires std::is_pointer_v<Tp>
-NF_FORCE_INLINE void AtomicRingBuffer<Tp>::store(std::int64_t index, Tp val) noexcept {
+TFL_FORCE_INLINE void AtomicRingBuffer<Tp>::store(std::int64_t index, Tp val) noexcept {
     m_buf[static_cast<std::size_t>(index & m_mask)].store(val, std::memory_order_relaxed);
 }
 
 template <typename Tp>
     requires std::is_pointer_v<Tp>
-NF_FORCE_INLINE Tp AtomicRingBuffer<Tp>::load(std::int64_t index) const noexcept {
+TFL_FORCE_INLINE Tp AtomicRingBuffer<Tp>::load(std::int64_t index) const noexcept {
     return m_buf[static_cast<std::size_t>(index & m_mask)].load(std::memory_order_relaxed);
 }
 
 template <typename Tp>
     requires std::is_pointer_v<Tp>
-NF_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize(
+TFL_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize(
     std::int64_t bottom, std::int64_t top) const {
     auto* ptr = new (std::nothrow) AtomicRingBuffer{2 * m_cap};
     for (std::int64_t i = top; i != bottom; ++i) {
@@ -134,7 +134,7 @@ NF_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize(
 
 template <typename Tp>
     requires std::is_pointer_v<Tp>
-NF_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize(
+TFL_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize(
     std::int64_t bottom, std::int64_t top, std::size_t n) const {
     // 确保新容量是 2 的幂次，且足够容纳现有元素 + n 个新元素
     std::int64_t const new_cap = std::bit_ceil(m_cap + n);

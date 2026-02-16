@@ -11,7 +11,7 @@
 namespace tfl {
 
 
-NF_FORCE_INLINE void cpu_relax() noexcept {
+TFL_FORCE_INLINE void cpu_relax() noexcept {
 #if defined(_MSC_VER)
     _mm_pause();
 #elif defined(__x86_64__) || defined(__i386__)
