@@ -19,8 +19,6 @@
   - [MultiBranch — 多路并行分发](#multibranch--多路并行分发)
   - [Jump — 静态回跳/跳转](#jump--静态回跳跳转)
   - [MultiJump — 多路跳转散射](#multijump--多路跳转散射)
-  - [Context — 完整上下文](#context--完整上下文)
-  - [Subflow — 嵌套子图](#subflow--嵌套子图)
   - [Semaphore — 信号量并发控制](#semaphore--信号量并发控制)
   - [WorkerHandler — Worker 生命周期](#workerhandler--worker-生命周期)
 - [任务类型速查表](#任务类型速查表)
@@ -45,7 +43,6 @@
 - **图可视化**：`flow.dump(os)` 输出 JSON 格式任务图，配合 dagre-d3 HTML 渲染依赖关系
 - **异常安全**：任务抛出的异常通过 Topology 聚合，统一在 `wait()` 时重新抛出
 - **缓存友好**：Executor 成员按热路径访问频率排列，`m_num_topologies` 独占 cache line 避免 false sharing
-- **C++23**：大量使用 Concepts、`std::move_only_function`、`std::atomic::wait/notify`
 
 ---
 
@@ -385,66 +382,6 @@ scatter.precede(out_queue);  // index 3
 
 ---
 
-### Context — 完整上下文
-
-`Context` 同时暴露 `Condition`（分支控制）和 `Runtime`（动态任务）两套接口，适合需要在同一任务中同时控制分支和动态提交的场景。
-
-```cpp
-auto t = flow.emplace([](tfl::Context& ctx) {
-    ctx.condition().skip(1);               // 分支控制：跳过 index 1
-    ctx.runtime().async([] { /* ... */ }); // 动态任务
-});
-```
-
----
-
-### Subflow — 嵌套子图
-
-将一个 `Flow` 作为参数传递给 `emplace`，该 Flow 成为当前图中的一个子图节点（Subflow）。子图可以多层嵌套，且可以指定重复执行次数。
-
-```cpp
-// 构建子图
-tfl::Flow pipeline;
-auto read    = pipeline.emplace([] {});  read.name("read");
-auto process = pipeline.emplace([] {});  process.name("process");
-auto write   = pipeline.emplace([] {});  write.name("write");
-read.precede(process);
-process.precede(write);
-
-// 嵌入主图，执行 1 次
-auto sub = flow.emplace(std::move(pipeline), 1);
-sub.name("pipeline");
-
-// 嵌入主图，重复执行 3 次
-auto sub3 = flow.emplace(std::move(another_flow), 3);
-sub3.name("pipeline_x3");
-```
-
-**图中图（多层嵌套）示例：**
-
-```cpp
-// 最内层 ETL
-tfl::Flow etl;
-auto extract   = etl.emplace([] {});               extract.name("extract");
-auto transform = etl.emplace([](tfl::Runtime&){}); transform.name("transform");
-auto load      = etl.emplace([] {});               load.name("load");
-extract.precede(transform);
-transform.precede(load);
-
-// 中间层，嵌入 etl（重复 2 次）
-tfl::Flow pipeline;
-auto init  = pipeline.emplace([] {});              init.name("init");
-auto inner = pipeline.emplace(std::move(etl), 2);  inner.name("ETL_inner");
-auto done  = pipeline.emplace([] {});              done.name("done");
-init.precede(inner);
-inner.precede(done);
-
-// 最外层，嵌入 pipeline（执行 1 次）
-auto sub = flow.emplace(std::move(pipeline), 1);
-sub.name("pipeline_B");
-```
-
----
 
 ### Semaphore — 信号量并发控制
 
@@ -524,9 +461,6 @@ tfl::ResumeNever handler;  // 异常发生时终止对应 Worker，不重试
 | `[](tfl::MultiBranch mbr)` | MultiBranch | ✓ 多选 | — | 并行激活多条后继路径 |
 | `[](tfl::Jump jmp)` | Jump | ✓ 跳转 | — | 跳转到指定后继（支持回边/循环） |
 | `[](tfl::MultiJump mjmp)` | MultiJump | ✓ 多跳 | — | 并行跳转到多个后继（扇出散射） |
-| `[](tfl::Context& ctx)` | Context | ✓ | ✓ | Branch + Runtime 全部能力 |
-| `tfl::Flow` (Subflow) | Subflow | — | — | 将整个 Flow 嵌入当前节点，可重复 N 次 |
-
 > `emplace` 通过 C++23 Concepts 自动推导任务类型，无需显式指定。
 
 ---
@@ -564,98 +498,130 @@ flow.dump(f);
 ### 完整示例：复杂嵌套管线可视化
 
 ```cpp
+
+
+/**
+ * D2 Dump 综合示例 — 展示所有任务类型 + 多层嵌套子图 + 复杂并行拓扑
+ *
+ * 覆盖类型: Basic, Runtime, Branch, MultiBranch, Jump, MultiJump, Subflow(嵌套)
+ *
+ * 渲染: d2 --layout=elk demo_complex.d2 -o demo_complex.svg
+ */
+
 #include "taskflowlite/taskflowlite.hpp"
 #include <iostream>
 #include <fstream>
 
 int main() {
+
     tfl::Flow flow;
 
-    // ── Stage 1: 数据采集链 ─────────────────────────────────────
+    // ================================================================
+    // Stage 1: 数据采集链 (Basic → Basic → Basic)
+    // ================================================================
     auto source    = flow.emplace([]{});  source.name("source");
     auto fetch     = flow.emplace([]{});  fetch.name("fetch_data");
     auto normalize = flow.emplace([]{});  normalize.name("normalize");
+
     source.precede(fetch);
     fetch.precede(normalize);
 
-    // ── Stage 2: Branch 验证 + Jump 错误回跳重试 ───────────────
+    // ================================================================
+    // Stage 2: 验证 + 错误重试 (Branch + Jump)
+    // ================================================================
     auto validate = flow.emplace([](tfl::Branch br) {
-        br.allow(0);   // 成功 → pre_dispatch；失败 → log_error
+        br.allow(0);
     });
     validate.name("validate");
+
     normalize.precede(validate);
 
+    // validate →(0) pre_dispatch  →(1) log_err
     auto pre_dispatch = flow.emplace([]{});  pre_dispatch.name("pre_dispatch");
     auto log_err      = flow.emplace([]{});  log_err.name("log_error");
-    validate.precede(pre_dispatch);  // index 0 — 成功路径
-    validate.precede(log_err);       // index 1 — 失败路径
 
-    // Jump 回跳：失败后重试
+    validate.precede(pre_dispatch);  // branch index 0
+    validate.precede(log_err);       // branch index 1
+
+    // 错误回跳: log_err → retry(Jump) → normalize
     auto retry = flow.emplace([](tfl::Jump jmp) {
-        jmp.to(0);  // 跳回 normalize
+        jmp.to(0);
     });
     retry.name("retry");
-    log_err.precede(retry);
-    retry.precede(normalize);        // index 0，形成重试环
 
-    // ── Stage 3: MultiBranch 3 路并行分发 ──────────────────────
+    log_err.precede(retry);
+    retry.precede(normalize);  // jump index 0
+
+    // ================================================================
+    // Stage 3: MultiBranch 3 路分发
+    // ================================================================
     auto dispatch = flow.emplace([](tfl::MultiBranch mbr) {
-        mbr.allow(0); mbr.allow(1); mbr.allow(2);
+        mbr.allow(0);
+        mbr.allow(1);
+        mbr.allow(2);
     });
     dispatch.name("dispatch");
+
     pre_dispatch.precede(dispatch);
 
-    // ── Stage 4: 三条并行 Subflow（含图中图）──────────────────
+    // ================================================================
+    // Stage 4: 三条并行 Subflow（含图中图）
+    // ================================================================
 
-    // 管线 A：read → process → write
+    // -- 管线 A: 3 步 Basic --
     tfl::Flow pipeline_a;
-    {
-        auto r = pipeline_a.emplace([]{});  r.name("read_A");
-        auto p = pipeline_a.emplace([]{});  p.name("process_A");
-        auto w = pipeline_a.emplace([]{});  w.name("write_A");
-        r.precede(p);  p.precede(w);
-    }
+    auto a_read    = pipeline_a.emplace([]{});  a_read.name("read_A");
+    auto a_process = pipeline_a.emplace([]{});  a_process.name("process_A");
+    auto a_write   = pipeline_a.emplace([]{});  a_write.name("write_A");
+    a_read.precede(a_process);
+    a_process.precede(a_write);
+
     auto sub_a = flow.emplace(std::move(pipeline_a), 1);
     sub_a.name("pipeline_A");
 
-    // 管线 B：init → ETL内层(extract→transform→load, ×2) → done
+    // -- 管线 B: Basic → Subflow(ETL, 含 Runtime) → Basic —— 图中图 --
+    //    先构建最内层 ETL
     tfl::Flow etl_inner;
-    {
-        auto e = etl_inner.emplace([]{});              e.name("extract");
-        auto t = etl_inner.emplace([](tfl::Runtime&){}); t.name("transform");
-        auto l = etl_inner.emplace([]{});              l.name("load");
-        e.precede(t);  t.precede(l);
-    }
+    auto extract   = etl_inner.emplace([]{});              extract.name("extract");
+    auto transform = etl_inner.emplace([](tfl::Runtime&){}); transform.name("transform");
+    auto load_task = etl_inner.emplace([]{});              load_task.name("load");
+    extract.precede(transform);
+    transform.precede(load_task);
+
+    //    再构建 pipeline_b，将 etl_inner move 进去
     tfl::Flow pipeline_b;
-    {
-        auto init  = pipeline_b.emplace([]{});                    init.name("init_B");
-        auto inner = pipeline_b.emplace(std::move(etl_inner), 2); inner.name("ETL_inner");
-        auto done  = pipeline_b.emplace([]{});                    done.name("done_B");
-        init.precede(inner);  inner.precede(done);
-    }
+    auto b_init    = pipeline_b.emplace([]{});  b_init.name("init_B");
+    auto inner_etl = pipeline_b.emplace(std::move(etl_inner), 2);
+    inner_etl.name("ETL_inner");
+    auto b_done    = pipeline_b.emplace([]{});  b_done.name("done_B");
+    b_init.precede(inner_etl);
+    inner_etl.precede(b_done);
+
     auto sub_b = flow.emplace(std::move(pipeline_b), 1);
     sub_b.name("pipeline_B");
 
-    // 管线 C：Runtime → Branch(ok/fail)
+    // -- 管线 C: Runtime → Branch(ok/fail) --
     tfl::Flow pipeline_c;
-    {
-        auto rt    = pipeline_c.emplace([](tfl::Runtime&){});        rt.name("dynamic_C");
-        auto check = pipeline_c.emplace([](tfl::Branch br){ br.allow(0); }); check.name("check_C");
-        auto ok    = pipeline_c.emplace([]{});  ok.name("ok_C");
-        auto fail  = pipeline_c.emplace([]{});  fail.name("fail_C");
-        rt.precede(check);
-        check.precede(ok);    // index 0
-        check.precede(fail);  // index 1
-    }
+    auto c_rt    = pipeline_c.emplace([](tfl::Runtime&){}); c_rt.name("dynamic_C");
+    auto c_check = pipeline_c.emplace([](tfl::Branch br){ br.allow(0); });
+    c_check.name("check_C");
+    auto c_ok    = pipeline_c.emplace([]{});  c_ok.name("ok_C");
+    auto c_fail  = pipeline_c.emplace([]{});  c_fail.name("fail_C");
+    c_rt.precede(c_check);
+    c_check.precede(c_ok);    // branch 0
+    c_check.precede(c_fail);  // branch 1
+
     auto sub_c = flow.emplace(std::move(pipeline_c), 1);
     sub_c.name("pipeline_C");
 
-    // MultiBranch → 三条并行管线
+    // MultiBranch → 三条管线
     dispatch.precede(sub_a);  // index 0
     dispatch.precede(sub_b);  // index 1
     dispatch.precede(sub_c);  // index 2
 
-    // ── Stage 5: 汇聚 + Runtime 聚合 ───────────────────────────
+    // ================================================================
+    // Stage 5: 汇聚 + Runtime
+    // ================================================================
     auto merge = flow.emplace([]{});  merge.name("merge_results");
     sub_a.precede(merge);
     sub_b.precede(merge);
@@ -665,33 +631,42 @@ int main() {
     aggregate.name("aggregate");
     merge.precede(aggregate);
 
-    // ── Stage 6: MultiJump 散射输出到 4 路 ─────────────────────
+    // ================================================================
+    // Stage 6: MultiJump 散射输出
+    // ================================================================
     auto scatter = flow.emplace([](tfl::MultiJump mjmp) {
         mjmp.to(0); mjmp.to(1); mjmp.to(2); mjmp.to(3);
     });
     scatter.name("scatter_output");
+
     aggregate.precede(scatter);
 
     auto out_db    = flow.emplace([]{});  out_db.name("write_DB");
     auto out_cache = flow.emplace([]{});  out_cache.name("write_cache");
     auto out_file  = flow.emplace([]{});  out_file.name("write_file");
     auto out_queue = flow.emplace([]{});  out_queue.name("push_MQ");
+
     scatter.precede(out_db);     // index 0
     scatter.precede(out_cache);  // index 1
     scatter.precede(out_file);   // index 2
     scatter.precede(out_queue);  // index 3
 
-    // ── Stage 7: 收尾 ──────────────────────────────────────────
+    // ================================================================
+    // Stage 7: 收尾
+    // ================================================================
     auto finalize = flow.emplace([]{});  finalize.name("finalize");
-    auto cleanup  = flow.emplace([]{});  cleanup.name("cleanup");
+    auto cleanup  = flow.emplace([]{});  //cleanup.name("cleanup");
+
     out_db.precede(finalize);
     out_cache.precede(finalize);
     out_file.precede(finalize);
     out_queue.precede(finalize);
-    finalize.precede(cleanup);
 
-    // 输出可视化 JSON
+    finalize.precede(cleanup);
+//
     flow.name("NestedDemo").dump(std::cout);
+
+    return 0;
 }
 ```
 
@@ -1176,7 +1151,7 @@ p1a81a388c40 -> p1a81a388a60: {style.stroke: "#6b7280"}
 | `nodes` | array | 节点列表 |
 | `nodes[].id` | string | 节点唯一标识 |
 | `nodes[].name` | string | 节点显示名称（`.name()` 设置的值） |
-| `nodes[].type` | string | `basic` / `runtime` / `branch` / `multibranch` / `jump` / `multijump` / `subflow` |
+| `nodes[].type` | string | `basic` / `runtime` / `branch` / `multi_branch` / `jump` / `multi_jump` / `graph` |
 | `edges` | array | 有向边列表 |
 | `edges[].from` | string | 源节点 id |
 | `edges[].to` | string | 目标节点 id |
