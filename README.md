@@ -697,7 +697,6 @@ int main() {
 
 上述代码运行后，`flow.dump()` 输出的任务图渲染效果如下：
 
-![NestedDemo 任务图](flow_diagram.svg)
 
 > 💡 **交互式查看**：将下方 D2 代码粘贴到 [https://play.d2lang.com](https://play.d2lang.com) 即可在线渲染、缩放、交互浏览完整任务图。
 
@@ -705,112 +704,466 @@ int main() {
 <summary>📐 点击展开 D2 图表源码（可粘贴到 play.d2lang.com）</summary>
 
 ```d2
-vars: {
-  d2-config: {
-    layout-engine: elk
-  }
+direction: down
+
+root: |md
+  <center>NestedDemo<br/><span style="color: #6b7280;">[ graph ]</span></center>
+| {
+  shape: rectangle
+  label.near: top-center
+  style.fill: "#e8f5e9"
+  style.stroke: "#10b981"
+  style.stroke-width: 2
+  style.border-radius: 14
+
+p1a81a3a04f0: |md
+  <center>source<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
 }
-
-classes: {
-  basic:       { style: { fill: "#ffffff"; stroke: "#888888"; border-radius: 6 } }
-  runtime:     { style: { fill: "#d6eaff"; stroke: "#5599cc"; border-radius: 6 } }
-  branch:      { shape: diamond; style: { fill: "#d0e8ff"; stroke: "#3377cc"; font-color: "#003399" } }
-  multibranch: { shape: diamond; style: { fill: "#cce0ff"; stroke: "#1155bb"; font-color: "#003399" } }
-  jump:        { shape: hexagon; style: { fill: "#ffd6d6"; stroke: "#cc3333"; font-color: "#990000" } }
-  multijump:   { shape: hexagon; style: { fill: "#ffbbbb"; stroke: "#aa1111"; font-color: "#880000" } }
-  subflow:     { style: { fill: "#e8f5e9"; stroke: "#4caf50"; font-color: "#2e7d32"; border-radius: 8 } }
-  subflow_inner: { style: { fill: "#fff8e1"; stroke: "#ff9800"; font-color: "#e65100"; border-radius: 8 } }
+p1a81a394040: |md
+  <center>fetch_data<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
 }
-
-# Stage 1
-source.class: basic
-fetch_data.class: basic
-normalize.class: basic
-source -> fetch_data
-fetch_data -> normalize
-
-# Stage 2: Branch + Jump 重试
-validate: "validate\n[Branch]" {class: branch}
-pre_dispatch.class: basic
-log_error.class: basic
-retry: "retry\n[Jump]" {class: jump}
-
-normalize -> validate
-validate -> pre_dispatch: "0 (ok)"   {style.stroke: "#2e7d32"; style.font-color: "#2e7d32"}
-validate -> log_error:    "1 (fail)" {style.stroke: "#c62828"; style.font-color: "#c62828"; style.stroke-dash: 4}
-log_error -> retry
-retry -> normalize: "Jump ↑" {style.stroke: "#cc3333"; style.font-color: "#cc3333"; style.stroke-dash: 4}
-
-# Stage 3: MultiBranch 分发
-dispatch: "dispatch\n[MultiBranch]" {class: multibranch}
-pre_dispatch -> dispatch
-
-# Stage 4: 三条并行 Subflow
-pipeline_A: "pipeline_A  ×1" {
-  class: subflow
-  read_A.class: basic
-  process_A.class: basic
-  write_A.class: basic
-  read_A -> process_A -> write_A
+p1a81a3a4490: |md
+  <center>normalize<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
 }
-
-pipeline_B: "pipeline_B  ×1" {
-  class: subflow
-  init_B.class: basic
-  done_B.class: basic
-  ETL_inner: "ETL_inner  ×2" {
-    class: subflow_inner
-    extract.class: basic
-    transform: "transform\n[Runtime]" {class: runtime}
-    load.class: basic
-    extract -> transform -> load
-  }
-  init_B -> ETL_inner -> done_B
+p1a81a381af0: |md
+  <center>validate<br/><span style="color: #6b7280;">[ branch ]</span></center>
+| {
+  shape: diamond
+  style.fill: "#dbeafe"
+  style.stroke: "#3b82f6"
+  style.font-color: "#1e3a5f"
+  style.border-radius: 8
+  style.font-size: 14
 }
-
-pipeline_C: "pipeline_C  ×1" {
-  class: subflow
-  dynamic_C: "dynamic_C\n[Runtime]" {class: runtime}
-  check_C: "check_C\n[Branch]" {class: branch}
-  ok_C.class: basic
-  fail_C.class: basic
-  dynamic_C -> check_C
-  check_C -> ok_C:   "0 (ok)"
-  check_C -> fail_C: "1 (fail)" {style.stroke-dash: 4}
+p1a81a381830: |md
+  <center>pre_dispatch<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
 }
+p1a81a385160: |md
+  <center>log_error<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a39d970: |md
+  <center>retry<br/><span style="color: #6b7280;">[ jump ]</span></center>
+| {
+  shape: diamond
+  style.fill: "#fee2e2"
+  style.stroke: "#ef4444"
+  style.font-color: "#7f1d1d"
+  style.border-radius: 8
+  style.stroke-dash: 5
+  style.font-size: 14
+}
+p1a81a382360: |md
+  <center>dispatch<br/><span style="color: #6b7280;">[ multi_branch ]</span></center>
+| {
+  shape: hexagon
+  style.fill: "#bfdbfe"
+  style.stroke: "#2563eb"
+  style.font-color: "#1e3a5f"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a39a2d0: |md
+  <center>pipeline_A<br/><span style="color: #6b7280;">[ graph ]</span></center>
+| {
+  shape: rectangle
+  label.near: top-center
+  style.fill: "#e8f5e9"
+  style.stroke: "#10b981"
+  style.stroke-width: 2
+  style.border-radius: 14
 
-dispatch -> pipeline_A: "0" {style.stroke: "#3377cc"; style.font-color: "#3377cc"}
-dispatch -> pipeline_B: "1" {style.stroke: "#3377cc"; style.font-color: "#3377cc"}
-dispatch -> pipeline_C: "2" {style.stroke: "#3377cc"; style.font-color: "#3377cc"}
+p1a81a382630: |md
+  <center>read_A<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a381db0: |md
+  <center>process_A<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a39b750: |md
+  <center>write_A<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a382630 -> p1a81a381db0: {style.stroke: "#6b7280"}
+p1a81a381db0 -> p1a81a39b750: {style.stroke: "#6b7280"}
+}
+p1a81a39ab40: |md
+  <center>pipeline_B<br/><span style="color: #6b7280;">[ graph ]</span></center>
+| {
+  shape: rectangle
+  label.near: top-center
+  style.fill: "#e8f5e9"
+  style.stroke: "#10b981"
+  style.stroke-width: 2
+  style.border-radius: 14
 
-# Stage 5: 汇聚
-merge_results.class: basic
-aggregate: "aggregate\n[Runtime]" {class: runtime}
-pipeline_A -> merge_results
-pipeline_B -> merge_results
-pipeline_C -> merge_results
-merge_results -> aggregate
+p1a81a388420: |md
+  <center>init_B<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a399b50: |md
+  <center>ETL_inner<br/><span style="color: #6b7280;">[ graph ]</span></center>
+| {
+  shape: rectangle
+  label.near: top-center
+  style.fill: "#e8f5e9"
+  style.stroke: "#10b981"
+  style.stroke-width: 2
+  style.border-radius: 14
 
-# Stage 6: MultiJump 散射
-scatter_output: "scatter_output\n[MultiJump]" {class: multijump}
-write_DB.class: basic
-write_cache.class: basic
-write_file.class: basic
-push_MQ.class: basic
-aggregate -> scatter_output
-scatter_output -> write_DB:    "0" {style.stroke: "#cc3333"; style.font-color: "#cc3333"}
-scatter_output -> write_cache: "1" {style.stroke: "#cc3333"; style.font-color: "#cc3333"}
-scatter_output -> write_file:  "2" {style.stroke: "#cc3333"; style.font-color: "#cc3333"}
-scatter_output -> push_MQ:     "3" {style.stroke: "#cc3333"; style.font-color: "#cc3333"}
+p1a81a381560: |md
+  <center>extract<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a382080: |md
+  <center>transform<br/><span style="color: #6b7280;">[ runtime ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#fce4ec"
+  style.stroke: "#e57373"
+  style.font-color: "#6d1b1b"
+  style.border-radius: 30
+  style.font-size: 14
+}
+p1a81a38c810: |md
+  <center>load<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a381560 -> p1a81a382080: {style.stroke: "#6b7280"}
+p1a81a382080 -> p1a81a38c810: {style.stroke: "#6b7280"}
+}
+p1a81a3887e0: |md
+  <center>done_B<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a388420 -> p1a81a399b50: {style.stroke: "#6b7280"}
+p1a81a399b50 -> p1a81a3887e0: {style.stroke: "#6b7280"}
+}
+p1a81a399970: |md
+  <center>pipeline_C<br/><span style="color: #6b7280;">[ graph ]</span></center>
+| {
+  shape: rectangle
+  label.near: top-center
+  style.fill: "#e8f5e9"
+  style.stroke: "#10b981"
+  style.stroke-width: 2
+  style.border-radius: 14
 
-# Stage 7: 收尾
-finalize.class: basic
-cleanup.class: basic
-write_DB -> finalize
-write_cache -> finalize
-write_file -> finalize
-push_MQ -> finalize
-finalize -> cleanup
+p1a81a3884c0: |md
+  <center>dynamic_C<br/><span style="color: #6b7280;">[ runtime ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#fce4ec"
+  style.stroke: "#e57373"
+  style.font-color: "#6d1b1b"
+  style.border-radius: 30
+  style.font-size: 14
+}
+p1a81a387fc0: |md
+  <center>check_C<br/><span style="color: #6b7280;">[ branch ]</span></center>
+| {
+  shape: diamond
+  style.fill: "#dbeafe"
+  style.stroke: "#3b82f6"
+  style.font-color: "#1e3a5f"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a3889c0: |md
+  <center>ok_C<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a388560: |md
+  <center>fail_C<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a3884c0 -> p1a81a387fc0: {style.stroke: "#6b7280"}
+p1a81a387fc0 -> p1a81a3889c0: 0 {
+  style.stroke: "#3b82f6"
+  style.stroke-width: 2
+  style.font-size: 14
+  style.font-color: "#2563eb"
+  style.bold: true
+}
+p1a81a387fc0 -> p1a81a388560: 1 {
+  style.stroke: "#3b82f6"
+  style.stroke-width: 2
+  style.font-size: 14
+  style.font-color: "#2563eb"
+  style.bold: true
+}
+}
+p1a81a388920: |md
+  <center>merge_results<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a388880: |md
+  <center>aggregate<br/><span style="color: #6b7280;">[ runtime ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#fce4ec"
+  style.stroke: "#e57373"
+  style.font-color: "#6d1b1b"
+  style.border-radius: 30
+  style.font-size: 14
+}
+p1a81a388240: |md
+  <center>scatter_output<br/><span style="color: #6b7280;">[ multi_jump ]</span></center>
+| {
+  shape: hexagon
+  style.fill: "#fecaca"
+  style.stroke: "#dc2626"
+  style.font-color: "#7f1d1d"
+  style.border-radius: 8
+  style.stroke-dash: 5
+  style.font-size: 14
+}
+p1a81a3886a0: |md
+  <center>write_DB<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a388060: |md
+  <center>write_cache<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a388740: |md
+  <center>write_file<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a388600: |md
+  <center>push_MQ<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a388c40: |md
+  <center>finalize<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a388a60: |md
+  <center>p1a81a388a60<br/><span style="color: #6b7280;">[ basic ]</span></center>
+| {
+  shape: rectangle
+  style.fill: "#f5f5f5"
+  style.stroke: "#9ca3af"
+  style.font-color: "#1f2937"
+  style.border-radius: 8
+  style.font-size: 14
+}
+p1a81a3a04f0 -> p1a81a394040: {style.stroke: "#6b7280"}
+p1a81a394040 -> p1a81a3a4490: {style.stroke: "#6b7280"}
+p1a81a3a4490 -> p1a81a381af0: {style.stroke: "#6b7280"}
+p1a81a381af0 -> p1a81a381830: 0 {
+  style.stroke: "#3b82f6"
+  style.stroke-width: 2
+  style.font-size: 14
+  style.font-color: "#2563eb"
+  style.bold: true
+}
+p1a81a381af0 -> p1a81a385160: 1 {
+  style.stroke: "#3b82f6"
+  style.stroke-width: 2
+  style.font-size: 14
+  style.font-color: "#2563eb"
+  style.bold: true
+}
+p1a81a381830 -> p1a81a382360: {style.stroke: "#6b7280"}
+p1a81a385160 -> p1a81a39d970: {style.stroke: "#6b7280"}
+p1a81a39d970 -> p1a81a3a4490: 0 {
+  style.stroke: "#ef4444"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+  style.font-size: 14
+  style.font-color: "#dc2626"
+  style.bold: true
+}
+p1a81a382360 -> p1a81a39a2d0: 0 {
+  style.stroke: "#3b82f6"
+  style.stroke-width: 2
+  style.font-size: 14
+  style.font-color: "#2563eb"
+  style.bold: true
+}
+p1a81a382360 -> p1a81a39ab40: 1 {
+  style.stroke: "#3b82f6"
+  style.stroke-width: 2
+  style.font-size: 14
+  style.font-color: "#2563eb"
+  style.bold: true
+}
+p1a81a382360 -> p1a81a399970: 2 {
+  style.stroke: "#3b82f6"
+  style.stroke-width: 2
+  style.font-size: 14
+  style.font-color: "#2563eb"
+  style.bold: true
+}
+p1a81a39a2d0 -> p1a81a388920: {style.stroke: "#6b7280"}
+p1a81a39ab40 -> p1a81a388920: {style.stroke: "#6b7280"}
+p1a81a399970 -> p1a81a388920: {style.stroke: "#6b7280"}
+p1a81a388920 -> p1a81a388880: {style.stroke: "#6b7280"}
+p1a81a388880 -> p1a81a388240: {style.stroke: "#6b7280"}
+p1a81a388240 -> p1a81a3886a0: 0 {
+  style.stroke: "#ef4444"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+  style.font-size: 14
+  style.font-color: "#dc2626"
+  style.bold: true
+}
+p1a81a388240 -> p1a81a388060: 1 {
+  style.stroke: "#ef4444"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+  style.font-size: 14
+  style.font-color: "#dc2626"
+  style.bold: true
+}
+p1a81a388240 -> p1a81a388740: 2 {
+  style.stroke: "#ef4444"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+  style.font-size: 14
+  style.font-color: "#dc2626"
+  style.bold: true
+}
+p1a81a388240 -> p1a81a388600: 3 {
+  style.stroke: "#ef4444"
+  style.stroke-width: 2
+  style.stroke-dash: 5
+  style.font-size: 14
+  style.font-color: "#dc2626"
+  style.bold: true
+}
+p1a81a3886a0 -> p1a81a388c40: {style.stroke: "#6b7280"}
+p1a81a388060 -> p1a81a388c40: {style.stroke: "#6b7280"}
+p1a81a388740 -> p1a81a388c40: {style.stroke: "#6b7280"}
+p1a81a388600 -> p1a81a388c40: {style.stroke: "#6b7280"}
+p1a81a388c40 -> p1a81a388a60: {style.stroke: "#6b7280"}
+}
 ```
 
 </details>
