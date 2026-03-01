@@ -38,6 +38,8 @@ public:
     [[nodiscard]] explicit operator bool() const noexcept;
     [[nodiscard]] bool has_exception_ptr() const noexcept;
     [[nodiscard]] TaskType type() const noexcept;
+    [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
+    void dump(std::ostream& ostream, Direction dir = Direction::Default) const;
 
     std::exception_ptr exception_ptr() const noexcept;
 
@@ -209,7 +211,24 @@ std::exception_ptr Task::exception_ptr() const noexcept {
 }
 
 inline TaskType Task::type() const noexcept {
-    return m_work->m_type;
+    return m_work->type();
+}
+
+inline std::string Task::dump(Direction dir) const {
+    std::string out;
+    out += "direction: ";
+    out += to_string(dir);
+    out += "\n\n";
+
+    out += m_work->dump();
+    out += "\n";
+    return out;
+}
+
+inline void Task::dump(std::ostream& os, Direction dir) const {
+    os << "direction: " << to_string(dir) << "\n\n";
+    m_work->dump(os);
+    os << "\n";
 }
 
 // ==================== 链式方法 ====================
@@ -390,6 +409,7 @@ public:
     [[nodiscard]] std::size_t num_observers() const noexcept;
 
     [[nodiscard]] TaskType type() const noexcept;
+    [[nodiscard]] std::string dump() const;
     [[nodiscard]] bool has_exception_ptr() const noexcept;
     [[nodiscard]] std::exception_ptr exception_ptr() const noexcept;
 
@@ -457,7 +477,11 @@ inline std::size_t TaskView::num_observers() const noexcept {
 }
 
 inline TaskType TaskView::type() const noexcept {
-    return m_work.m_type;
+    return m_work.type();
+}
+
+inline std::string TaskView::dump() const {
+    return m_work.dump();
 }
 
 inline bool TaskView::has_exception_ptr() const noexcept {

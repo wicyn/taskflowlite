@@ -21,6 +21,9 @@ class Flow {
     friend class Task;
     friend class Runtime;
 
+    // ---- 子类友元 ----
+    TFL_WORK_SUBCLASS_FRIENDS;
+
 public:
     /**
      * @brief 默认构造函数。初始化一个空图。
@@ -87,53 +90,58 @@ public:
         requires (std::invocable<F, Task>)
     void for_each(F&& visitor) noexcept(std::is_nothrow_invocable_v<F, Task>);
 
+    std::string dump(Direction dir = Direction::Default) const;
+
+    void dump(std::ostream& ostream, Direction dir = Direction::Default) const;
+
+    Flow& name(const std::string& n);
+    [[nodiscard]] std::string_view name() const noexcept;
 private:
     Graph m_graph;  ///< 存储任务和连接的内部图。
+    std::string m_name;
 };
 
 // /////////////////////////////////////////////////////////////////////////////////////
-
 template <typename T>
     requires (capturable<T> && basic_invocable<T>)
 inline Task Flow::emplace(T&& task) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(TaskType::Basic, options, Work::_make_basic(std::forward<T>(task)))};
+    return Task{m_graph._emplace(Work::make_basic(&m_graph, options, std::forward<T>(task)))};
 }
 
 template <typename T>
     requires (capturable<T> && branch_invocable<T>)
 inline Task Flow::emplace(T&& task) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(TaskType::Branch, options, Work::_make_branch(std::forward<T>(task)))};
+    return Task{m_graph._emplace(Work::make_branch(&m_graph, options, std::forward<T>(task)))};
 }
 
 template <typename T>
     requires (capturable<T> && multi_branch_invocable<T>)
 inline Task Flow::emplace(T&& task) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(TaskType::Branch, options, Work::_make_multi_branch(std::forward<T>(task)))};
+    return Task{m_graph._emplace(Work::make_multi_branch(&m_graph, options, std::forward<T>(task)))};
 }
 
 template <typename T>
     requires (capturable<T> && jump_invocable<T>)
 inline Task Flow::emplace(T&& task) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(TaskType::Jump, options, Work::_make_jump(std::forward<T>(task)))};
+    return Task{m_graph._emplace(Work::make_jump(&m_graph, options, std::forward<T>(task)))};
 }
 
 template <typename T>
     requires (capturable<T> && multi_jump_invocable<T>)
 inline Task Flow::emplace(T&& task) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(TaskType::Jump, options, Work::_make_multi_jump(std::forward<T>(task)))};
+    return Task{m_graph._emplace(Work::make_multi_jump(&m_graph, options, std::forward<T>(task)))};
 }
-
 
 template <typename T>
     requires (capturable<T> && runtime_invocable<T>)
 inline Task Flow::emplace(T&& task) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(TaskType::Runtime, options, Work::_make_runtime(std::forward<T>(task)))};
+    return Task{m_graph._emplace(Work::make_runtime(&m_graph, options, std::forward<T>(task)))};
 }
 
 template <typename F>
@@ -159,7 +167,7 @@ template <typename F, typename P>
     requires (flow_type<F> && capturable<P> && predicate<P>)
 inline Task Flow::emplace(F&& subflow, P&& pred) {
     constexpr auto options = Work::Option::PREEMPTED;
-    return Task{m_graph._emplace(TaskType::Graph, options, Work::_make_subflow(std::forward<F>(subflow), std::forward<P>(pred)))};
+    return Task{m_graph._emplace(Work::make_subflow(&m_graph, options, std::forward<F>(subflow), std::forward<P>(pred)))};
 }
 
 // 单个删除
@@ -199,6 +207,66 @@ inline void Flow::for_each(F&& visitor) noexcept(std::is_nothrow_invocable_v<F, 
     }
 }
 
+inline std::string Flow::dump(Direction dir) const {
+    std::string out;
+    out.reserve(m_graph.size() * 120 + 256);
+
+    out += "direction: ";
+    out += to_string(dir);
+    out += "\n\n";
+
+    if (!m_name.empty()) {
+        out += "root: |md\n  <center>";
+        out += m_name;
+        out += "<br/><span style=\"color: #6b7280;\">[ ";
+        out += to_string(TaskType::Graph);
+        out += " ]</span></center>\n| {\n";
+        out += "  shape: rectangle\n";
+        out += "  label.near: top-center\n";
+        out += "  style.fill: \"#e8f5e9\"\n";
+        out += "  style.stroke: \"#10b981\"\n";
+        out += "  style.stroke-width: 2\n";
+        out += "  style.border-radius: 14\n\n";
+        out += m_graph._dump();
+        out += "}\n";
+    } else {
+        out += m_graph._dump();
+    }
+
+    return out;
+}
+
+inline void Flow::dump(std::ostream& os, Direction dir) const {
+    os << "direction: " << to_string(dir) << "\n\n";
+
+    if (!m_name.empty()) {
+        os << "root: |md\n  <center>"
+           << m_name
+           << "<br/><span style=\"color: #6b7280;\">[ "
+           << to_string(TaskType::Graph)
+           << " ]</span></center>\n| {\n";
+        os << "  shape: rectangle\n";
+        os << "  label.near: top-center\n";
+        os << "  style.fill: \"#e8f5e9\"\n";
+        os << "  style.stroke: \"#10b981\"\n";
+        os << "  style.stroke-width: 2\n";
+        os << "  style.border-radius: 14\n\n";
+        m_graph._dump(os);
+        os << "}\n";
+    } else {
+        m_graph._dump(os);
+    }
+}
+
+Flow& Flow::name(const std::string& n) {
+    m_name = n;
+    return *this;
+}
+
+[[nodiscard]] std::string_view Flow::name() const noexcept {
+    return m_name;
+}
+
 } // end of namespace tfl. ---------------------------------------------------
 
 
@@ -212,4 +280,3 @@ struct hash<tfl::Flow> {
 };
 
 }  // end of namespace std ----------------------------------------------------
-

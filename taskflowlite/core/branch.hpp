@@ -23,6 +23,9 @@ class Branch {
     friend class Worker;
     friend class Runtime;
 
+    // ---- 子类友元 ----
+    TFL_WORK_SUBCLASS_FRIENDS;
+
 public:
 
     // ==================== 分支操作 ====================
@@ -117,6 +120,9 @@ class MultiBranch {
     friend class Executor;
     friend class Worker;
     friend class Runtime;
+
+    // ---- 子类友元 ----
+    TFL_WORK_SUBCLASS_FRIENDS;
 
 public:
 

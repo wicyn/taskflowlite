@@ -1,6 +1,6 @@
 ﻿#pragma once
 #include <atomic>
-
+#include "forward.hpp"
 namespace tfl {
 
 class Topology {
@@ -9,6 +9,9 @@ class Topology {
     friend class AsyncTask;
     friend class Graph;
     friend class Executor;
+
+    // ---- 子类友元 ----
+    TFL_WORK_SUBCLASS_FRIENDS;
 
 protected:
     explicit Topology(Executor&) noexcept;
@@ -22,11 +25,10 @@ private:
         Finished = 3    // 已完成
     };
 
-    Executor& m_executor;
-    Work* m_work{nullptr};
-
     std::atomic<State> m_state{State::Idle};
     std::atomic_flag m_stopped = ATOMIC_FLAG_INIT;
+    Work* m_work{nullptr};
+    Executor& m_executor;
     std::atomic<std::size_t> m_use_count{0};
 
     void _wait() const noexcept;

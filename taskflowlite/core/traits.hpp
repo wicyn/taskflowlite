@@ -139,6 +139,9 @@ constexpr auto wrap_if_lvalue(T&& t) noexcept {
     }
 }
 
+template <typename T>
+using wrap_if_lvalue_t = decltype(wrap_if_lvalue(std::declval<T>()));
+
 // 解包 reference_wrapper
 template <typename T>
 constexpr decltype(auto) unwrap(T&& t) noexcept {

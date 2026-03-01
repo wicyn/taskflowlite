@@ -45,6 +45,8 @@ public:
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool done() const noexcept;
     [[nodiscard]] TaskType type() const noexcept;
+    [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
+    void dump(std::ostream& ostream, Direction dir = Direction::Default) const;
 
     [[nodiscard]] std::string_view name() const noexcept;
     AsyncTask& name(const std::string& name);
@@ -220,7 +222,24 @@ inline bool AsyncTask::done() const noexcept {
 }
 
 inline TaskType AsyncTask::type() const noexcept {
-    return m_work->m_type;
+    return m_work->type();
+}
+
+inline std::string AsyncTask::dump(Direction dir) const {
+    std::string out;
+    out += "direction: ";
+    out += to_string(dir);
+    out += "\n\n";
+
+    out += m_work->dump();
+    out += "\n";
+    return out;
+}
+
+inline void AsyncTask::dump(std::ostream& os, Direction dir) const {
+    os << "direction: " << to_string(dir) << "\n\n";
+    m_work->dump(os);
+    os << "\n";
 }
 
 inline void AsyncTask::reset() noexcept {

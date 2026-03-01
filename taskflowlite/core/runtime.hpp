@@ -10,6 +10,10 @@ class Runtime  {
     friend class Flow;
     friend class Executor;
     friend class Worker;
+
+    // ---- 子类友元 ----
+    TFL_WORK_SUBCLASS_FRIENDS;
+
 public:
 
     template <typename F>

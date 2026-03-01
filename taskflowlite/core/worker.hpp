@@ -2,6 +2,7 @@
 
 #include <thread>
 
+#include "forward.hpp"
 #include "bounded_queue.hpp"
 #include "random.hpp"
 #include "notifier.hpp"
@@ -36,18 +37,19 @@ public:
     }
 
 private:
+
+    // ---- 多线程竞争：work-stealing queue ----
     BoundedQueue<Work*, TFL_DEFAULT_QUEUE_SIZE> m_wslq;
-    Xoshiro m_rng;
-    uniform_uint64_distribution m_dist;
-    std::size_t m_vtm;
-    std::uint32_t m_adaptive_factor;
-    std::uint32_t m_max_steals;
 
-    std::size_t m_id;
-    std::thread m_thread;
-
+    // ---- owner-only 热数据：steal 循环每次迭代都碰 ----
+    Xoshiro m_rng;                      // 随机选 victim
+    uniform_uint64_distribution m_dist; // 配合 m_rng
+    std::size_t m_vtm;                  // 当前 victim
+    std::uint32_t m_adaptive_factor;    // 自适应退避
+    std::uint32_t m_max_steals;         // steal 上限
+    std::size_t m_id;                   // 比较用，只读
     std::atomic_flag m_terminate = ATOMIC_FLAG_INIT;
-
+    std::thread m_thread;
 };
 
 
@@ -56,6 +58,10 @@ class WorkerView {
     friend class Flow;
     friend class Executor;
     friend class Runtime;
+
+    // ---- 子类友元 ----
+    TFL_WORK_SUBCLASS_FRIENDS;
+
 public:
     [[nodiscard]] std::size_t id() const noexcept {
         return m_worker.m_id;

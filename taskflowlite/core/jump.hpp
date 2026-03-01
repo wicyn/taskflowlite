@@ -23,6 +23,9 @@ class Jump {
     friend class Worker;
     friend class Runtime;
 
+    // ---- 子类友元 ----
+    TFL_WORK_SUBCLASS_FRIENDS;
+
 public:
 
     // ==================== 跳转操作 ====================
@@ -111,6 +114,9 @@ class MultiJump {
     friend class Executor;
     friend class Worker;
     friend class Runtime;
+
+    // ---- 子类友元 ----
+    TFL_WORK_SUBCLASS_FRIENDS;
 
 public:
 
