@@ -42,7 +42,6 @@ private:
 
     std::vector<AlignedMutex> m_mutexes;
     std::vector<UnboundedQueue<Tp>> m_queues;
-    const std::size_t m_size;
 };
 
 // ============================================================================
@@ -54,18 +53,18 @@ template <typename Tp>
     requires std::is_pointer_v<Tp>
 UnboundedQueueBucket<Tp>::UnboundedQueueBucket(std::size_t n)
     : m_mutexes{static_cast<std::size_t>(std::bit_width(n))}
-    , m_queues{static_cast<std::size_t>(std::bit_width(n))}
-    , m_size{static_cast<std::size_t>(std::bit_width(n))} {}
+    , m_queues{static_cast<std::size_t>(std::bit_width(n))} {}
 
 
 template <typename Tp>
     requires std::is_pointer_v<Tp>
 void UnboundedQueueBucket<Tp>::push(Tp val) {
     std::uintptr_t const ptr = reinterpret_cast<std::uintptr_t>(val);
-    std::size_t const b = ((ptr >> 16) ^ (ptr >> 8)) % m_size;
+    std::size_t const size = m_queues.size();
+    std::size_t const b = ((ptr >> 16) ^ (ptr >> 8)) % size;
 
     for (;;) {
-        for (std::size_t curr_b = b; curr_b < m_size; ++curr_b) {
+        for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
             auto& flag = m_mutexes[curr_b].flag;
             if (!flag.test_and_set(std::memory_order_acquire)) {
                 m_queues[curr_b].push(val);
@@ -93,10 +92,11 @@ template <std::random_access_iterator Iterator>
     requires std::convertible_to<std::iter_reference_t<Iterator>, Tp>
 void UnboundedQueueBucket<Tp>::push(Iterator first, std::size_t n) {
     std::uintptr_t const ptr = reinterpret_cast<std::uintptr_t>(*first);
-    std::size_t const b = ((ptr >> 16) ^ (ptr >> 8)) % m_size;
+    std::size_t const size = m_queues.size();
+    std::size_t const b = ((ptr >> 16) ^ (ptr >> 8)) % size;
 
     for (;;) {
-        for (std::size_t curr_b = b; curr_b < m_size; ++curr_b) {
+        for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
             auto& flag = m_mutexes[curr_b].flag;
             if (!flag.test_and_set(std::memory_order_acquire)) {
                 m_queues[curr_b].push(first, n);
@@ -139,7 +139,7 @@ bool UnboundedQueueBucket<Tp>::empty(std::size_t w) const noexcept {
 template <typename Tp>
     requires std::is_pointer_v<Tp>
 std::size_t UnboundedQueueBucket<Tp>::size() const noexcept {
-    return m_size;
+    return m_queues.size();
 }
 
 } // namespace tfl

@@ -37,6 +37,10 @@ class Work : public Immovable<Work> {
     friend class MultiBranch;
     friend class Jump;
     friend class MultiJump;
+
+    // ---- 子类友元 ----
+    TFL_WORK_SUBCLASS_FRIENDS;
+
 public:
     // ========================================================================
     // 静态选项（构建时确定，执行时只读）
@@ -96,19 +100,23 @@ protected:
 
     explicit Work() = default;
 
-    explicit Work(Graph* graph, TaskType type, Option::type options) noexcept
+    explicit Work(Graph* graph, Option::type options) noexcept
         : m_graph{graph}
-        , m_type{type}
         , m_options{options & Option::FLAG_MASK} {}
 
-    explicit Work(Topology* topo, TaskType type, Option::type options) noexcept
+    explicit Work(Topology* topo, Option::type options) noexcept
         : m_topology{topo}
-        , m_type{type}
         , m_options{options & Option::FLAG_MASK} {}
 
     virtual ~Work() noexcept = default;
 
     virtual void invoke(Executor& exec, Worker& wr, Work*& cache) = 0;
+
+    virtual TaskType type() const noexcept = 0;
+
+    virtual std::string dump() const = 0;
+
+    virtual void dump(std::ostream& ostream) const = 0;
 
 private:
 
@@ -116,7 +124,6 @@ private:
     // 冷数据：构建期、调试、异常时才访问
     // ================================================================
     std::string m_name;                                          // 32
-    const TaskType m_type{TaskType::None};                       // 4
     const Graph* m_graph{nullptr};                               // 8
     std::exception_ptr m_exception_ptr{nullptr};                 // 16
 
@@ -133,7 +140,7 @@ private:
     std::unique_ptr<SemaphoreData> m_semaphores;                 // 8   nullptr = 无信号量
     std::unique_ptr<ObserverData> m_observers;                   // 8   nullptr = 无观察者
         // 小计 = 80
-    // ---- WorkImpl<F>::m_func 紧跟其后 ----
+    // ---- 子类的 m_func 紧跟其后 ----
 
     // ============================================================================
     // join weight：当前节点作为前驱时，对后继 join_counter 的贡献值
@@ -144,7 +151,7 @@ private:
     //   None:           0  (占位符，无实际执行)
     // ============================================================================
     [[nodiscard]] std::size_t _join_weight() const noexcept {
-        switch (m_type) {
+        switch (type()) {
         case TaskType::Jump:
         case TaskType::None:
             return 0;
@@ -290,7 +297,6 @@ private:
         return *m_semaphores;
     }
 
-    // 如果数据清空则释放
     void _try_release_semaphores() noexcept {
         if (m_semaphores && m_semaphores->empty()) {
             m_semaphores.reset();
@@ -371,144 +377,610 @@ private:
     [[nodiscard]] bool _can_reach(const Work* target) const;
     [[nodiscard]] std::expected<void, std::string_view> _can_precede(Work* target) const;
 
+    [[nodiscard]] static std::string _d2_work(const Work* w,
+                                const char* shape, const char* fill, const char* stroke,
+                                const char* font_color, const char* border_radius,
+                                const char* stroke_dash = "");
+    [[nodiscard]] static std::string _d2_escape(const std::string& s);
+
+    static void _d2_work(std::ostream& os, const Work* w,
+                         const char* shape, const char* fill, const char* stroke,
+                         const char* font_color, const char* border_radius,
+                         const char* stroke_dash = "");
+    static void _d2_escape(std::ostream& os, const std::string& s);
+
+
     // ============================================================
-    // Handler 工厂（同步任务）
+    // 内部工厂辅助
+    // ============================================================
+    template <typename WorkType, typename... Args>
+    [[nodiscard]] static Work* _make_topo_work(Executor& exe, Option::type options, Args&&... args);
+
+public:
+    // ============================================================
+    // 工厂函数 — Graph 内同步节点
     // ============================================================
     template <typename T>
         requires (capturable<T> && basic_invocable<T>)
-    [[nodiscard]] static auto _make_basic(T&&);
+    [[nodiscard]] static Work* make_basic(Graph* graph, Option::type options, T&& f);
 
     template <typename T>
         requires (capturable<T> && branch_invocable<T>)
-    [[nodiscard]] static auto _make_branch(T&&);
+    [[nodiscard]] static Work* make_branch(Graph* graph, Option::type options, T&& f);
 
     template <typename T>
         requires (capturable<T> && multi_branch_invocable<T>)
-    [[nodiscard]] static auto _make_multi_branch(T&&);
+    [[nodiscard]] static Work* make_multi_branch(Graph* graph, Option::type options, T&& f);
 
     template <typename T>
         requires (capturable<T> && jump_invocable<T>)
-    [[nodiscard]] static auto _make_jump(T&&);
+    [[nodiscard]] static Work* make_jump(Graph* graph, Option::type options, T&& f);
 
     template <typename T>
         requires (capturable<T> && multi_jump_invocable<T>)
-    [[nodiscard]] static auto _make_multi_jump(T&&);
+    [[nodiscard]] static Work* make_multi_jump(Graph* graph, Option::type options, T&& f);
 
     template <typename T>
         requires (capturable<T> && runtime_invocable<T>)
-    [[nodiscard]] static auto _make_runtime(T&&);
+    [[nodiscard]] static Work* make_runtime(Graph* graph, Option::type options, T&& f);
 
     template <typename F, typename P>
         requires (capturable<P> && flow_type<F> && predicate<P>)
-    [[nodiscard]] static auto _make_subflow(F&&, P&&);
+    [[nodiscard]] static Work* make_subflow(Graph* graph, Option::type options, F&& flow, P&& pred);
 
     // ============================================================
-    // Handler 工厂（异步任务）
+    // 工厂函数 — 独立异步任务（创建 Topology）
     // ============================================================
-
     template <typename T>
         requires (capturable<T> && basic_invocable<T>)
-    [[nodiscard]] static auto _make_async_basic(T&&);
+    [[nodiscard]] static Work* make_async_basic(Executor& exe, Option::type options, T&& f);
 
     template <typename T>
         requires (capturable<T> && runtime_invocable<T>)
-    [[nodiscard]] static auto _make_async_runtime(T&&);
-
+    [[nodiscard]] static Work* make_async_runtime(Executor& exe, Option::type options, T&& f);
 
     template <typename T, typename R>
         requires (capturable<T> && basic_invocable<T>)
-    [[nodiscard]] static auto _make_async_basic(T&&, std::promise<R>&&);
+    [[nodiscard]] static Work* make_async_basic(Executor& exe, Option::type options, T&& f, std::promise<R>&& p);
 
     template <typename T, typename R>
         requires (capturable<T> && runtime_invocable<T>)
-    [[nodiscard]] static auto _make_async_runtime(T&&, std::promise<R>&&);
+    [[nodiscard]] static Work* make_async_runtime(Executor& exe, Option::type options, T&& f, std::promise<R>&& p);
 
-
+    // ============================================================
+    // 工厂函数 — 有依赖的异步任务
+    // ============================================================
     template <typename T>
         requires (capturable<T> && basic_invocable<T>)
-    [[nodiscard]] static auto _make_dep_async_basic(T&&);
+    [[nodiscard]] static Work* make_dep_async_basic(Executor& exe, Option::type options, T&& f);
 
     template <typename T>
         requires (capturable<T> && runtime_invocable<T>)
-    [[nodiscard]] static auto _make_dep_async_runtime(T&&);
+    [[nodiscard]] static Work* make_dep_async_runtime(Executor& exe, Option::type options, T&& f);
 
     template <typename F, typename P, typename C>
         requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
-    [[nodiscard]] static auto _make_dep_flow(F&&, P&&, C&&);
-
-
-
-
-    // ============================================================
-    // 核心工厂函数声明
-    // ============================================================
-    template <typename F>
-        requires std::invocable<F, Executor&, Worker&, Work*, Work*&>
-    [[nodiscard]] static Work* make(Graph* graph, TaskType type, Option::type options, F&& f);
-
-    template <typename F>
-        requires std::invocable<F, Executor&, Worker&, Work*, Work*&>
-    [[nodiscard]] static Work* make(Executor& exe, TaskType type, Option::type options, F&& f);
+    [[nodiscard]] static Work* make_dep_flow(Executor& exe, Option::type options, F&& flow, P&& pred, C&& cb);
 
     // ============================================================
     // 静态资源释放
     // ============================================================
-    // 对应 Work::make 的销毁函数。
-    // 如果 work 是 Topology 的根节点，释放 Topology；否则仅释放 work 自身。
     static void destroy(Work* work) noexcept;
 };
 
-
 // ============================================================================
-// WorkImpl - 唯一的模板子类
+// 子类声明
 // ============================================================================
+// ---------- BasicWork ----------
 template <typename F>
-    requires std::invocable<F, Executor&, Worker&, Work*, Work*&>
-class WorkImpl final : public Work {
-    F m_func;
-
+class BasicWork final : public Work {
+    [[no_unique_address]] F m_func;
 public:
     template <typename U>
         requires std::constructible_from<F, U>
-    explicit WorkImpl(Graph* graph, TaskType type, Option::type options, U&& f)
-        : Work{graph, type, options}
-        , m_func{std::forward<U>(f)} {}
+    explicit BasicWork(Graph* g, Option::type opts, U&& f)
+        : Work(g, opts), m_func(std::forward<U>(f)) {}
 
-    template <typename U>
-        requires std::constructible_from<F, U>
-    explicit WorkImpl(Topology* topo, TaskType type, Option::type options, U&& f)
-        : Work{topo, type, options}
-        , m_func{std::forward<U>(f)} {}
+    void invoke(Executor&, Worker&, Work*&) override;
 
-    void invoke(Executor& exec, Worker& wr, Work*& cache) override final {
-        m_func(exec, wr, this, cache);
+    TaskType type() const noexcept override { return TaskType::Basic; }
+    std::string dump() const override { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
     }
 };
-// ============================================================================
-// 推导指引！
-// ============================================================================
-template <typename U>
-WorkImpl(Graph*, TaskType, Work::Option::type, U) -> WorkImpl<std::decay_t<U>>;
 
-template <typename U>
-WorkImpl(Topology*, TaskType, Work::Option::type, U) -> WorkImpl<std::decay_t<U>>;
-
-// ============================================================================
-// 工厂函数
-// ============================================================================
+// ---------- BranchWork ----------
 template <typename F>
-    requires std::invocable<F, Executor&, Worker&, Work*, Work*&>
-Work* Work::make(Graph* graph, TaskType type, Work::Option::type options, F&& f) {
-    return new WorkImpl<std::decay_t<F>>(graph, type, options, std::forward<F>(f));
+class BranchWork final : public Work {
+    [[no_unique_address]] F m_func;
+public:
+    template <typename U>
+        requires std::constructible_from<F, U>
+    explicit BranchWork(Graph* g, Option::type opts, U&& f)
+        : Work(g, opts), m_func(std::forward<U>(f)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::Branch; }
+    std::string dump() const override { return _d2_work(this, "diamond", "#dbeafe", "#3b82f6", "#1e3a5f", "8"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "diamond", "#dbeafe", "#3b82f6", "#1e3a5f", "8");
+    }
+};
+
+// ---------- MultiBranchWork ----------
+template <typename F>
+class MultiBranchWork final : public Work {
+    [[no_unique_address]] F m_func;
+public:
+    template <typename U>
+        requires std::constructible_from<F, U>
+    explicit MultiBranchWork(Graph* g, Option::type opts, U&& f)
+        : Work(g, opts), m_func(std::forward<U>(f)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::MultiBranch; }
+    std::string dump() const override { return _d2_work(this, "hexagon", "#bfdbfe", "#2563eb", "#1e3a5f", "8"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "hexagon", "#bfdbfe", "#2563eb", "#1e3a5f", "8");
+    }
+};
+
+// ---------- JumpWork ----------
+template <typename F>
+class JumpWork final : public Work {
+    [[no_unique_address]] F m_func;
+public:
+    template <typename U>
+        requires std::constructible_from<F, U>
+    explicit JumpWork(Graph* g, Option::type opts, U&& f)
+        : Work(g, opts), m_func(std::forward<U>(f)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::Jump; }
+    std::string dump() const override { return _d2_work(this, "diamond", "#fee2e2", "#ef4444", "#7f1d1d", "8", "5"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "diamond", "#fee2e2", "#ef4444", "#7f1d1d", "8", "5");
+    }
+};
+
+// ---------- MultiJumpWork ----------
+template <typename F>
+class MultiJumpWork final : public Work {
+    [[no_unique_address]] F m_func;
+public:
+    template <typename U>
+        requires std::constructible_from<F, U>
+    explicit MultiJumpWork(Graph* g, Option::type opts, U&& f)
+        : Work(g, opts), m_func(std::forward<U>(f)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::MultiJump; }
+    std::string dump() const override { return _d2_work(this, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5");
+    }
+};
+
+// ---------- RuntimeWork ----------
+template <typename F>
+class RuntimeWork final : public Work {
+    [[no_unique_address]] F m_func;
+public:
+    template <typename U>
+        requires std::constructible_from<F, U>
+    explicit RuntimeWork(Graph* g, Option::type opts, U&& f)
+        : Work(g, opts), m_func(std::forward<U>(f)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::Runtime; }
+    std::string dump() const override { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
+    }
+};
+
+// ---------- SubflowWork ----------
+template <typename FlowStore, typename P>
+class SubflowWork final : public Work {
+    FlowStore m_flow_store;
+    [[no_unique_address]] P m_pred;
+    bool m_started{false};
+public:
+    template <typename U, typename V>
+    explicit SubflowWork(Graph* g, Option::type opts, U&& flow_store, V&& pred)
+        : Work(g, opts)
+        , m_flow_store(std::forward<U>(flow_store))
+        , m_pred(std::forward<V>(pred)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::Graph; }
+    std::string dump() const override {
+        decltype(auto) flow = detail::unwrap(m_flow_store);
+
+        if (flow.m_graph.empty()) {
+            return _d2_work(this, "rectangle", "#e8f5e9", "#10b981", "#065f46", "8");
+        }
+
+        char id[24];
+        const char* type_name = to_string(type());
+        std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(this));
+        const auto& name = this->m_name.empty() ? std::string(id) : this->m_name;
+
+        std::string out;
+        out += id;
+        out += ": |md\n  <center>";
+        out += _d2_escape(name);
+
+        out += "<br/><span style=\"color: #6b7280;\">[ ";
+        out += type_name;
+        out += " ]</span></center>\n| {\n";
+
+        out += "  shape: rectangle\n";
+        out += "  label.near: top-center\n";
+        out += "  style.fill: \"#e8f5e9\"\n";
+        out += "  style.stroke: \"#10b981\"\n";
+        out += "  style.stroke-width: 2\n";
+        out += "  style.border-radius: 14\n\n";
+        out += flow.m_graph._dump();
+        out += "}";
+        return out;
+    }
+
+    void dump(std::ostream& os) const override {
+        decltype(auto) flow = detail::unwrap(m_flow_store);
+
+        if (flow.m_graph.empty()) {
+            _d2_work(os, this, "rectangle", "#e8f5e9", "#10b981", "#065f46", "8");
+            return;
+        }
+
+        char id[24];
+        const char* type_name = to_string(type());
+        std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(this));
+        const auto& name = this->m_name.empty() ? std::string(id) : this->m_name;
+
+        os << id << ": |md\n  <center>";
+        _d2_escape(os, name);
+        os << "<br/><span style=\"color: #6b7280;\">[ "
+           << type_name
+           << " ]</span></center>\n| {\n";
+        os << "  shape: rectangle\n";
+        os << "  label.near: top-center\n";
+        os << "  style.fill: \"#e8f5e9\"\n";
+        os << "  style.stroke: \"#10b981\"\n";
+        os << "  style.stroke-width: 2\n";
+        os << "  style.border-radius: 14\n\n";
+        flow.m_graph._dump(os);
+        os << "}";
+    }
+};
+
+// ---------- AsyncBasicWork ----------
+template <typename F>
+class AsyncBasicWork final : public Work {
+    [[no_unique_address]] F m_func;
+public:
+    template <typename U>
+        requires std::constructible_from<F, U>
+    explicit AsyncBasicWork(Topology* t, Option::type opts, U&& f)
+        : Work(t, opts), m_func(std::forward<U>(f)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::Basic; }
+    std::string dump() const override { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
+    }
+};
+
+// ---------- AsyncRuntimeWork ----------
+template <typename F>
+class AsyncRuntimeWork final : public Work {
+    [[no_unique_address]] F m_func;
+public:
+    template <typename U>
+        requires std::constructible_from<F, U>
+    explicit AsyncRuntimeWork(Topology* t, Option::type opts, U&& f)
+        : Work(t, opts), m_func(std::forward<U>(f)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::Runtime; }
+    std::string dump() const override { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
+    }
+};
+
+// ---------- AsyncBasicPromiseWork ----------
+template <typename F, typename R>
+class AsyncBasicPromiseWork final : public Work {
+    [[no_unique_address]] F m_func;
+    std::promise<R> m_promise;
+public:
+    template <typename U>
+        requires std::constructible_from<F, U>
+    explicit AsyncBasicPromiseWork(Topology* t, Option::type opts, U&& f, std::promise<R>&& p)
+        : Work(t, opts)
+        , m_func(std::forward<U>(f))
+        , m_promise(std::move(p)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::Basic; }
+    std::string dump() const override { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
+    }
+};
+
+// ---------- AsyncRuntimePromiseWork ----------
+template <typename F, typename R>
+class AsyncRuntimePromiseWork final : public Work {
+    [[no_unique_address]] F m_func;
+    std::promise<R> m_promise;
+public:
+    template <typename U>
+        requires std::constructible_from<F, U>
+    explicit AsyncRuntimePromiseWork(Topology* t, Option::type opts, U&& f, std::promise<R>&& p)
+        : Work(t, opts)
+        , m_func(std::forward<U>(f))
+        , m_promise(std::move(p)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::Runtime; }
+    std::string dump() const override { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
+    }
+};
+
+// ---------- DepAsyncBasicWork ----------
+template <typename F>
+class DepAsyncBasicWork final : public Work {
+    [[no_unique_address]] F m_func;
+public:
+    template <typename U>
+        requires std::constructible_from<F, U>
+    explicit DepAsyncBasicWork(Topology* t, Option::type opts, U&& f)
+        : Work(t, opts), m_func(std::forward<U>(f)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::Basic; }
+    std::string dump() const override { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
+    }
+};
+
+// ---------- DepAsyncRuntimeWork ----------
+template <typename F>
+class DepAsyncRuntimeWork final : public Work {
+    [[no_unique_address]] F m_func;
+public:
+    template <typename U>
+        requires std::constructible_from<F, U>
+    explicit DepAsyncRuntimeWork(Topology* t, Option::type opts, U&& f)
+        : Work(t, opts), m_func(std::forward<U>(f)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::Runtime; }
+    std::string dump() const override { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
+    }
+};
+
+// ---------- DepFlowWork ----------
+template <typename FlowStore, typename P, typename C>
+class DepFlowWork final : public Work {
+    FlowStore m_flow_store;
+    [[no_unique_address]] P m_pred;
+    [[no_unique_address]] C m_callback;
+    bool m_started{false};
+public:
+    template <typename U, typename V, typename W>
+    explicit DepFlowWork(Topology* t, Option::type opts, U&& flow_store, V&& pred, W&& cb)
+        : Work(t, opts)
+        , m_flow_store(std::forward<U>(flow_store))
+        , m_pred(std::forward<V>(pred))
+        , m_callback(std::forward<W>(cb)) {}
+
+    void invoke(Executor&, Worker&, Work*&) override;
+
+    TaskType type() const noexcept override { return TaskType::Graph; }
+    std::string dump() const override {
+        char id[24];
+        std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(this));
+
+        decltype(auto) flow = detail::unwrap(m_flow_store);
+
+        if (flow.m_graph.empty()) {
+            return _d2_work(this, "rectangle", "#e8f5e9", "#10b981", "#065f46", "8");
+        }
+
+        const char* type_name = to_string(type());
+        const auto& name = this->m_name.empty() ? std::string(id) : this->m_name;
+
+        std::string out;
+        out += id;
+        out += ": |md\n  <center>";
+        out += _d2_escape(name);
+
+        out += "<br/><span style=\"color: #6b7280;\">[ ";
+        out += type_name;
+        out += " ]</span></center>\n| {\n";
+
+        out += "  shape: rectangle\n";
+        out += "  label.near: top-center\n";
+        out += "  style.fill: \"#e8f5e9\"\n";
+        out += "  style.stroke: \"#10b981\"\n";
+        out += "  style.stroke-width: 2\n";
+        out += "  style.border-radius: 14\n\n";
+        out += flow.m_graph._dump();
+        out += "}";
+        return out;
+    }
+
+    void dump(std::ostream& os) const override {
+        decltype(auto) flow = detail::unwrap(m_flow_store);
+
+        if (flow.m_graph.empty()) {
+            _d2_work(os, this, "rectangle", "#e8f5e9", "#10b981", "#065f46", "8");
+            return;
+        }
+
+        char id[24];
+        const char* type_name = to_string(type());
+        std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(this));
+        const auto& name = this->m_name.empty() ? std::string(id) : this->m_name;
+
+        os << id << ": |md\n  <center>";
+        _d2_escape(os, name);
+        os << "<br/><span style=\"color: #6b7280;\">[ "
+           << type_name
+           << " ]</span></center>\n| {\n";
+        os << "  shape: rectangle\n";
+        os << "  label.near: top-center\n";
+        os << "  style.fill: \"#e8f5e9\"\n";
+        os << "  style.stroke: \"#10b981\"\n";
+        os << "  style.stroke-width: 2\n";
+        os << "  style.border-radius: 14\n\n";
+        flow.m_graph._dump(os);
+        os << "}";
+    }
+};
+
+// ---------- NullWork ----------
+class NullWork final : public Work {
+public:
+    explicit NullWork(Topology* t, Option::type opts)
+        : Work(t, opts) {}
+
+    void invoke(Executor&, Worker&, Work*&) override {}
+
+    TaskType type() const noexcept override { return TaskType::None; }
+    std::string dump() const override { return _d2_work(this, "circle", "#f5f5f5", "#bdbdbd", "#9e9e9e", "8"); }
+    void dump(std::ostream& os) const override {
+        _d2_work(os, this, "circle", "#f5f5f5", "#bdbdbd", "#9e9e9e", "8");
+    }
+};
+
+// ============================================================================
+// 工厂函数实现 — Graph 内同步节点
+// ============================================================================
+template <typename T>
+    requires (capturable<T> && basic_invocable<T>)
+Work* Work::make_basic(Graph* graph, Option::type options, T&& f) {
+    return new BasicWork<std::decay_t<T>>(graph, options, std::forward<T>(f));
 }
 
-template <typename F>
-    requires std::invocable<F, Executor&, Worker&, Work*, Work*&>
-Work* Work::make(Executor& exe, TaskType type, Work::Option::type options, F&& f) {
-    Topology* topo = new Topology(exe);
-    topo->m_work = new WorkImpl<std::decay_t<F>>(topo, type, options, std::forward<F>(f));
-    return topo->m_work;
+template <typename T>
+    requires (capturable<T> && branch_invocable<T>)
+Work* Work::make_branch(Graph* graph, Option::type options, T&& f) {
+    return new BranchWork<std::decay_t<T>>(graph, options, std::forward<T>(f));
 }
+
+template <typename T>
+    requires (capturable<T> && multi_branch_invocable<T>)
+Work* Work::make_multi_branch(Graph* graph, Option::type options, T&& f) {
+    return new MultiBranchWork<std::decay_t<T>>(graph, options, std::forward<T>(f));
+}
+
+template <typename T>
+    requires (capturable<T> && jump_invocable<T>)
+Work* Work::make_jump(Graph* graph, Option::type options, T&& f) {
+    return new JumpWork<std::decay_t<T>>(graph, options, std::forward<T>(f));
+}
+
+template <typename T>
+    requires (capturable<T> && multi_jump_invocable<T>)
+Work* Work::make_multi_jump(Graph* graph, Option::type options, T&& f) {
+    return new MultiJumpWork<std::decay_t<T>>(graph, options, std::forward<T>(f));
+}
+
+template <typename T>
+    requires (capturable<T> && runtime_invocable<T>)
+Work* Work::make_runtime(Graph* graph, Option::type options, T&& f) {
+    return new RuntimeWork<std::decay_t<T>>(graph, options, std::forward<T>(f));
+}
+
+template <typename F, typename P>
+    requires (capturable<P> && flow_type<F> && predicate<P>)
+Work* Work::make_subflow(Graph* graph, Option::type options, F&& flow, P&& pred) {
+    using StoredFlow = decltype(detail::wrap_if_lvalue(std::forward<F>(flow)));
+    return new SubflowWork<StoredFlow, std::decay_t<P>>(
+        graph, options,
+        detail::wrap_if_lvalue(std::forward<F>(flow)),
+        std::forward<P>(pred));
+}
+
+// ============================================================================
+// 工厂函数实现 — 独立异步任务
+// ============================================================================
+template <typename T>
+    requires (capturable<T> && basic_invocable<T>)
+Work* Work::make_async_basic(Executor& exe, Option::type options, T&& f) {
+    return _make_topo_work<AsyncBasicWork<std::decay_t<T>>>(exe, options, std::forward<T>(f));
+}
+
+template <typename T>
+    requires (capturable<T> && runtime_invocable<T>)
+Work* Work::make_async_runtime(Executor& exe, Option::type options, T&& f) {
+    return _make_topo_work<AsyncRuntimeWork<std::decay_t<T>>>(exe, options, std::forward<T>(f));
+}
+
+template <typename T, typename R>
+    requires (capturable<T> && basic_invocable<T>)
+Work* Work::make_async_basic(Executor& exe, Option::type options, T&& f, std::promise<R>&& p) {
+    return _make_topo_work<AsyncBasicPromiseWork<std::decay_t<T>, R>>(
+        exe, options, std::forward<T>(f), std::move(p));
+}
+
+template <typename T, typename R>
+    requires (capturable<T> && runtime_invocable<T>)
+Work* Work::make_async_runtime(Executor& exe, Option::type options, T&& f, std::promise<R>&& p) {
+    return _make_topo_work<AsyncRuntimePromiseWork<std::decay_t<T>, R>>(
+        exe, options, std::forward<T>(f), std::move(p));
+}
+
+// ============================================================================
+// 工厂函数实现 — 有依赖的异步任务
+// ============================================================================
+template <typename T>
+    requires (capturable<T> && basic_invocable<T>)
+Work* Work::make_dep_async_basic(Executor& exe, Option::type options, T&& f) {
+    return _make_topo_work<DepAsyncBasicWork<std::decay_t<T>>>(exe, options, std::forward<T>(f));
+}
+
+template <typename T>
+    requires (capturable<T> && runtime_invocable<T>)
+Work* Work::make_dep_async_runtime(Executor& exe, Option::type options, T&& f) {
+    return _make_topo_work<DepAsyncRuntimeWork<std::decay_t<T>>>(exe, options, std::forward<T>(f));
+}
+
+template <typename F, typename P, typename C>
+    requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
+Work* Work::make_dep_flow(Executor& exe, Option::type options, F&& flow, P&& pred, C&& cb) {
+    using StoredFlow = decltype(detail::wrap_if_lvalue(std::forward<F>(flow)));
+    return _make_topo_work<DepFlowWork<StoredFlow, std::decay_t<P>, std::decay_t<C>>>(
+        exe, options,
+        detail::wrap_if_lvalue(std::forward<F>(flow)),
+        std::forward<P>(pred),
+        std::forward<C>(cb));
+}
+
 // ============================================================================
 // Work 静态销毁函数实现
 // ============================================================================
@@ -763,6 +1235,131 @@ inline void Work::_release_semaphores(F&& on_wake) {
     for (auto* sem : m_semaphores->releases) {
         sem->_release(on_wake);
     }
+}
+
+
+
+// ============================================================================
+// D2 节点声明生成 — Markdown label
+// ============================================================================
+std::string Work::_d2_work(const Work* w,
+                           const char* shape, const char* fill, const char* stroke,
+                           const char* font_color, const char* border_radius,
+                           const char* stroke_dash)
+{
+    char id[24];
+    std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(w));
+
+    const char* type_name = to_string(w->type());
+    const auto& name = w->m_name.empty() ? std::string(id) : w->m_name;
+
+    std::string out;
+    out += id;
+    out += ": |md\n  <center>";
+    out += _d2_escape(name);
+    out += "<br/><span style=\"color: #6b7280;\">[ ";
+    out += type_name;
+    out += " ]</span></center>\n| {\n";
+    out += "  shape: ";
+    out += shape;
+    out += "\n";
+    out += "  style.fill: \"";
+    out += fill;
+    out += "\"\n";
+    out += "  style.stroke: \"";
+    out += stroke;
+    out += "\"\n";
+    out += "  style.font-color: \"";
+    out += font_color;
+    out += "\"\n";
+    out += "  style.border-radius: ";
+    out += border_radius;
+    out += "\n";
+
+    // ===== 新增虚线判断逻辑 =====
+    if (stroke_dash && stroke_dash[0] != '\0') {
+        out += "  style.stroke-dash: ";
+        out += stroke_dash;
+        out += "\n";
+    }
+    // ==========================
+
+    out += "  style.font-size: 14\n";
+    out += "}";
+    return out;
+}
+
+std::string Work::_d2_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+        case '"':  out += "&quot;"; break;
+        case '&':  out += "&amp;";  break;
+        case '<':  out += "&lt;";   break;
+        case '>':  out += "&gt;";   break;
+        case '\\': out += "\\\\";   break;
+        default:   out += c;
+        }
+    }
+    return out;
+}
+
+// ============================================================================
+// D2 ostream 版本
+// ============================================================================
+void Work::_d2_work(std::ostream& os, const Work* w,
+                    const char* shape, const char* fill, const char* stroke,
+                    const char* font_color, const char* border_radius,
+                    const char* stroke_dash)
+{
+    char id[24];
+    std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(w));
+
+    const char* type_name = to_string(w->type());
+    const auto& name = w->m_name.empty() ? std::string(id) : w->m_name;
+
+    os << id << ": |md\n  <center>";
+    _d2_escape(os, name);
+    os << "<br/><span style=\"color: #6b7280;\">[ "
+       << type_name
+       << " ]</span></center>\n| {\n";
+    os << "  shape: " << shape << "\n";
+    os << "  style.fill: \"" << fill << "\"\n";
+    os << "  style.stroke: \"" << stroke << "\"\n";
+    os << "  style.font-color: \"" << font_color << "\"\n";
+    os << "  style.border-radius: " << border_radius << "\n";
+    // ===== 新增虚线判断逻辑 =====
+    if (stroke_dash && stroke_dash[0] != '\0') {
+        os << "  style.stroke-dash: " << stroke_dash << "\n";
+    }
+    // ==========================
+    os << "  style.font-size: 14\n";
+    os << "}";
+}
+
+void Work::_d2_escape(std::ostream& os, const std::string& s) {
+    for (char c : s) {
+        switch (c) {
+        case '"':  os << "&quot;"; break;
+        case '&':  os << "&amp;";  break;
+        case '<':  os << "&lt;";   break;
+        case '>':  os << "&gt;";   break;
+        case '\\': os << "\\\\";   break;
+        default:   os << c;
+        }
+    }
+}
+
+// ============================================================
+// 内部工厂辅助
+// ============================================================
+template <typename WorkType, typename... Args>
+[[nodiscard]] Work* Work::_make_topo_work(Executor& exe, Option::type options, Args&&... args) {
+    auto* topo = new Topology(exe);
+    auto* w = new WorkType(topo, options, std::forward<Args>(args)...);
+    topo->m_work = w;
+    return w;
 }
 
 }  // namespace tfl

@@ -19,6 +19,9 @@ class Executor : public Immovable<Executor> {
     friend class AsyncTask;
     friend class Runtime;
 
+    // ---- 子类友元 ----
+    TFL_WORK_SUBCLASS_FRIENDS;
+
 public:
     explicit Executor(WorkerHandler& handler, std::size_t num_workers = std::thread::hardware_concurrency());
 
@@ -80,30 +83,19 @@ public:
     [[nodiscard]] std::size_t num_topologies() const noexcept;
 
 private:
-
-    WorkerHandler& m_handler;
-    Notifier m_notifier;
+    alignas(2 * std::hardware_destructive_interference_size)
+        std::atomic<std::size_t> m_num_topologies{0};
     std::vector<Worker> m_workers;
     UnboundedQueueBucket<Work*> m_shared_queues;
-    const std::size_t m_num_workers;
-    const std::size_t m_num_queues;
+    Notifier m_notifier;
+    WorkerHandler& m_handler;
 
-    std::atomic<std::size_t> m_num_topologies{0};
     unordered_dense::map<std::thread::id, Worker*> m_thread_worker_map;
 
     void _spawn(std::size_t);
     void _shutdown() noexcept;
     void _invoke(Worker&, Work*);
     [[nodiscard]] Work* _wait_for_work(Worker&) noexcept;
-
-    template <typename F>
-        requires std::invocable<F, Executor&, Worker&, Work*, Work*&>
-    void _make_async_task(Worker*, TaskType, Work::Option::type, F&&);
-
-    template <typename F>
-        requires std::invocable<F, Executor&, Worker&, Work*, Work*&>
-    AsyncTask _make_dep_async_task(TaskType, Work::Option::type, F&&);
-
 
     void _set_up_graph(Graph&, Topology*, Work*);
     void _set_up_graph(Graph&, Topology*, Worker&, Work*);
@@ -135,7 +127,7 @@ private:
 
     [[nodiscard]] Worker* _this_worker();
 
-    [[nodiscard]] int _this_worker_id() const;
+    //[[nodiscard]] int _this_worker_id() const;
 
 };
 
@@ -144,8 +136,6 @@ inline Executor::Executor(WorkerHandler& handler, std::size_t num_workers)
     : m_workers{num_workers}
     , m_notifier{num_workers}
     , m_shared_queues{num_workers}
-    , m_num_workers{num_workers}
-    , m_num_queues{num_workers + m_shared_queues.size()}
     , m_handler{handler} {
     if (num_workers == 0) {
         TFL_THROW("executor must define at least one worker");
@@ -167,7 +157,7 @@ inline void Executor::wait_for_all() const noexcept {
 }
 
 inline std::size_t Executor::num_workers() const noexcept {
-    return m_num_workers;
+    return m_workers.size();
 }
 
 inline std::size_t Executor::num_waiters() const noexcept {
@@ -175,7 +165,7 @@ inline std::size_t Executor::num_waiters() const noexcept {
 }
 
 inline std::size_t Executor::num_queues() const noexcept {
-    return m_num_queues;
+    return m_workers.size() + m_shared_queues.size();
 }
 
 inline std::size_t Executor::num_topologies() const noexcept {
@@ -197,6 +187,7 @@ inline void Executor::_shutdown() noexcept {
         }
     }
 }
+
 ///////////////////////////////////////////////////////////////////////////////////////
 
 // ==================== Flow 类型定义 ====================
@@ -238,7 +229,9 @@ template <typename F, typename P, typename C>
     requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
 inline AsyncTask Executor::submit(F&& flow, P&& pred, C&& callback) {
     constexpr auto options = Work::Option::ANCHORED | Work::Option::PREEMPTED;
-    return _make_dep_async_task(TaskType::Graph, options, Work::_make_dep_flow(std::forward<F>(flow), std::forward<P>(pred), std::forward<C>(callback)));
+    Work* work = Work::make_dep_flow(*this, options,
+                                     std::forward<F>(flow), std::forward<P>(pred), std::forward<C>(callback));
+    return AsyncTask{work};
 }
 
 // ==================== Basic 类型定义 ====================
@@ -246,7 +239,8 @@ template <typename T>
     requires (capturable<T> && basic_invocable<T>)
 inline AsyncTask Executor::submit(T&& task) {
     constexpr auto options = Work::Option::ANCHORED;
-    return _make_dep_async_task(TaskType::Basic, options, Work::_make_dep_async_basic(std::forward<T>(task)));
+    Work* work = Work::make_dep_async_basic(*this, options, std::forward<T>(task));
+    return AsyncTask{work};
 }
 
 // ==================== Runtime 类型定义 ====================
@@ -254,7 +248,8 @@ template <typename T>
     requires (capturable<T> && runtime_invocable<T>)
 inline AsyncTask Executor::submit(T&& task) {
     constexpr auto options = Work::Option::ANCHORED;
-    return _make_dep_async_task(TaskType::Runtime, options, Work::_make_dep_async_runtime(std::forward<T>(task)));
+    Work* work = Work::make_dep_async_runtime(*this, options, std::forward<T>(task));
+    return AsyncTask{work};
 }
 
 
@@ -262,14 +257,26 @@ template <typename T>
     requires (capturable<T> && basic_invocable<T>)
 inline void Executor::silent_async(T&& task) {
     constexpr auto options = Work::Option::ANCHORED;
-    _make_async_task(_this_worker(), TaskType::Basic, options, Work::_make_async_basic(std::forward<T>(task)));
+    Work* work = Work::make_async_basic(*this, options, std::forward<T>(task));
+    _increment_topology();
+    if(Worker* wr = _this_worker()) {
+        _schedule(*wr, work);
+    } else {
+        _schedule(work);
+    }
 }
 
 template <typename T>
     requires (capturable<T> && runtime_invocable<T>)
 inline void Executor::silent_async(T&& task) {
     constexpr auto options = Work::Option::ANCHORED;
-    _make_async_task(_this_worker(), TaskType::Runtime, options, Work::_make_async_runtime(std::forward<T>(task)));
+    Work* work = Work::make_async_runtime(*this, options, std::forward<T>(task));
+    _increment_topology();
+    if(Worker* wr = _this_worker()) {
+        _schedule(*wr, work);
+    } else {
+        _schedule(work);
+    }
 }
 
 template <typename T>
@@ -279,7 +286,13 @@ inline auto Executor::async(T&& task) -> std::future<basic_return_t<T>> {
     std::promise<R> promise;
     auto future = promise.get_future();
     constexpr auto options = Work::Option::ANCHORED;
-    _make_async_task(_this_worker(), TaskType::Basic, options, Work::_make_async_basic(std::forward<T>(task), std::move(promise)));
+    Work* work = Work::make_async_basic(*this, options, std::forward<T>(task), std::move(promise));
+    _increment_topology();
+    if(Worker* wr = _this_worker()) {
+        _schedule(*wr, work);
+    } else {
+        _schedule(work);
+    }
     return future;
 }
 
@@ -290,7 +303,13 @@ inline auto Executor::async(T&& task) -> std::future<runtime_return_t<T>> {
     std::promise<R> promise;
     auto future = promise.get_future();
     constexpr auto options = Work::Option::ANCHORED;
-    _make_async_task(_this_worker(), TaskType::Runtime, options, Work::_make_async_runtime(std::forward<T>(task), std::move(promise)));
+    Work* work = Work::make_async_runtime(*this, options, std::forward<T>(task), std::move(promise));
+    _increment_topology();
+    if(Worker* wr = _this_worker()) {
+        _schedule(*wr, work);
+    } else {
+        _schedule(work);
+    }
     return future;
 }
 
@@ -300,9 +319,9 @@ inline void Executor::_spawn(std::size_t num_workers) {
         wr.m_id = id;
         wr.m_vtm = id;
         wr.m_adaptive_factor = 4;
-        wr.m_max_steals = static_cast<std::uint32_t>(m_num_queues * 2);
+        wr.m_max_steals = static_cast<std::uint32_t>(num_queues() * 2);
         wr.m_rng = Xoshiro{seed, std::random_device{}};
-        wr.m_dist.reset(0, m_num_queues - 1);
+        wr.m_dist.reset(0, num_queues() - 1);
 
         wr.m_thread = std::thread([this, id, &wr]() noexcept {
             wr.m_rng.long_jump();
@@ -336,11 +355,11 @@ inline Work* Executor::_wait_for_work(Worker& wr) noexcept {
 explore:
     std::size_t vtm = wr.m_vtm;
     std::uint32_t num_steals = 0;
-    std::uint32_t const yield_limit = m_num_workers * wr.m_adaptive_factor + wr.m_max_steals;
+    std::uint32_t const yield_limit = m_workers.size() * wr.m_adaptive_factor + wr.m_max_steals;
     std::size_t const shared_size = m_shared_queues.size();
 
     for (;;) {
-        Work* w = (vtm < m_num_workers) ? m_workers[vtm].m_wslq.steal() : m_shared_queues.steal(vtm - m_num_workers);
+        Work* w = (vtm < m_workers.size()) ? m_workers[vtm].m_wslq.steal() : m_shared_queues.steal(vtm - m_workers.size());
 
         if (w) {
             wr.m_vtm = vtm;
@@ -370,7 +389,7 @@ explore:
     for (std::size_t i = 0; i < shared_size; ++i) {
         if (!m_shared_queues.empty(i)) {
             m_notifier.cancel_wait(wr.m_id);
-            wr.m_vtm = i + m_num_workers;
+            wr.m_vtm = i + m_workers.size();
             goto explore;
         }
     }
@@ -383,7 +402,7 @@ explore:
         }
     }
 
-    for (std::size_t i = wr.m_id + 1; i < m_num_workers; ++i) {
+    for (std::size_t i = wr.m_id + 1; i < m_workers.size(); ++i) {
         if (!m_workers[i].m_wslq.empty()) {
             m_notifier.cancel_wait(wr.m_id);
             wr.m_vtm = i;
@@ -400,27 +419,6 @@ explore:
     goto explore;
 }
 
-
-template <typename F>
-    requires std::invocable<F, Executor&, Worker&, Work*, Work*&>
-inline void Executor::_make_async_task(Worker* wr, TaskType type, Work::Option::type options, F&& f) {
-    Work* work = Work::make(*this, type, options, std::forward<F>(f));
-    _increment_topology();
-
-    if(wr) {
-        _schedule(*wr, work);
-    } else {
-        _schedule(work);
-    }
-
-}
-
-template <typename F>
-    requires std::invocable<F, Executor&, Worker&, Work*, Work*&>
-inline AsyncTask Executor::_make_dep_async_task(TaskType type, Work::Option::type options, F&& f) {
-    Work* work = Work::make(*this, type, options, std::forward<F>(f));
-    return AsyncTask{work};
-}
 
 inline void Executor::_set_up_graph(Graph& g, Topology* const topo, Work* parent) {
     if (std::size_t const n = g._set_up(parent, topo); n > 0) {
@@ -616,13 +614,13 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
         }
 
         std::uint32_t num_steals = 0;
-        std::uint32_t const yield_limit = m_num_workers * wr.m_adaptive_factor + wr.m_max_steals;
+        std::uint32_t const yield_limit = m_workers.size() * wr.m_adaptive_factor + wr.m_max_steals;
         std::size_t vtm = wr.m_vtm;
 
         while (!std::invoke_r<bool>(pred)) {
-            Work* w = (vtm < m_num_workers)
+            Work* w = (vtm < m_workers.size())
             ? m_workers[vtm].m_wslq.steal()
-            : m_shared_queues.steal(vtm - m_num_workers);
+            : m_shared_queues.steal(vtm - m_workers.size());
 
             if (w) [[likely]] {
                 wr.m_vtm = vtm;
@@ -665,10 +663,10 @@ inline Worker* Executor::_this_worker() {
     return itr == m_thread_worker_map.end() ? nullptr : itr->second;
 }
 
-inline int Executor::_this_worker_id() const {
-    auto i = m_thread_worker_map.find(std::this_thread::get_id());
-    return i == m_thread_worker_map.end() ? -1 : static_cast<int>(i->second->m_id);
-}
+// inline int Executor::_this_worker_id() const {
+//     auto i = m_thread_worker_map.find(std::this_thread::get_id());
+//     return i == m_thread_worker_map.end() ? -1 : static_cast<int>(i->second->m_id);
+// }
 
 inline void Executor::_invoke(Worker& wr, Work* w) {
     do {
@@ -684,14 +682,14 @@ inline AsyncTask& AsyncTask::start(I first, S last) {
     auto* topo = m_work->m_topology;
     auto& exec = topo->m_executor;
     if (topo->_is_finished()) {
-        throw std::runtime_error("AsyncTask Error: Cannot start a finished task.");
+        throw Exception("AsyncTask Error: Cannot start a finished task.");
     }
 
     auto expected = Topology::State::Idle;
     if (!topo->m_state.compare_exchange_strong(expected, Topology::State::Running,
                                                std::memory_order_acq_rel,
                                                std::memory_order_acquire)) {
-        throw std::logic_error("AsyncTask Error: Task is already running.");
+        throw Exception("AsyncTask Error: Task is already running.");
     }
     topo->_incref();
     std::size_t num_predecessors = static_cast<std::size_t>(std::ranges::distance(first, last));
@@ -709,7 +707,7 @@ inline AsyncTask& AsyncTask::start(I first, S last) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// _make_* 工厂函数
+// 子类 invoke 实现
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #define TFL_SEM_SCHEDULER [&exe, &wr](Work* t) {               \
 auto& target_exec = t->m_topology->m_executor;              \
@@ -721,474 +719,424 @@ auto& target_exec = t->m_topology->m_executor;              \
 }
 
 #define TFL_OBSERVER_BEFORE(w, wr)                              \
-if ((w)->m_observers) {                                      \
-        for (auto& aspect : (w)->m_observers->observers) {      \
-            aspect->on_before(WorkerView{wr});                  \
-    }                                                       \
+if ((w)->m_observers) {                                         \
+        for (auto& aspect : (w)->m_observers->observers) {          \
+            aspect->on_before(WorkerView{wr});                      \
+    }                                                           \
 }
 
 #define TFL_OBSERVER_AFTER(w, wr)                               \
-if ((w)->m_observers) {                                      \
-        for (auto& aspect : (w)->m_observers->observers) {      \
-            aspect->on_after(WorkerView{wr});                   \
-    }                                                       \
+if ((w)->m_observers) {                                         \
+        for (auto& aspect : (w)->m_observers->observers) {          \
+            aspect->on_after(WorkerView{wr});                       \
+    }                                                           \
 }
 
-template <typename T>
-    requires (capturable<T> && basic_invocable<T>)
-inline auto Work::_make_basic(T&& task) {
-    return [task = std::forward<T>(task)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
-            if (w->_is_stopped()) [[unlikely]] {
-                exe._schedule_parent(w->m_parent, wr, cache);
-                return;
-            }
+// ---------- BasicWork ----------
+template <typename F>
+void BasicWork<F>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    if (this->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(this->m_parent, wr, cache);
+        return;
+    }
 
-            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
-                return;
-            }
+    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+        return;
+    }
 
-            TFL_OBSERVER_BEFORE(w, wr);
+    TFL_OBSERVER_BEFORE(this, wr);
 
-            if constexpr (noexcept(std::invoke(task))) {
-                std::invoke(task);
-            } else {
-                try {
-                    std::invoke(task);
-                } catch (...) {
-                    exe._process_exception(w);
-                }
-            }
+    if constexpr (noexcept(std::invoke(m_func))) {
+        std::invoke(m_func);
+    } else {
+        try {
+            std::invoke(m_func);
+        } catch (...) {
+            exe._process_exception(this);
+        }
+    }
 
-            TFL_OBSERVER_AFTER(w, wr);
+    TFL_OBSERVER_AFTER(this, wr);
 
-            w->_release_semaphores(TFL_SEM_SCHEDULER);
-            exe._tear_down_task(w, wr, cache);
-        };
+    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_task(this, wr, cache);
 }
 
-template <typename T>
-    requires (capturable<T> && branch_invocable<T>)
-inline auto Work::_make_branch(T&& task) {
-    return [task = std::forward<T>(task)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
+// ---------- BranchWork ----------
+template <typename F>
+void BranchWork<F>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    if (this->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(this->m_parent, wr, cache);
+        return;
+    }
 
-            if (w->_is_stopped()) [[unlikely]] {
-                exe._schedule_parent(w->m_parent, wr, cache);
-                return;
-            }
+    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+        return;
+    }
 
-            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
-                return;
-            }
+    TFL_OBSERVER_BEFORE(this, wr);
 
-            TFL_OBSERVER_BEFORE(w, wr);
+    Branch branch(*this);
+    if constexpr (noexcept(std::invoke(m_func, branch))) {
+        std::invoke(m_func, branch);
+    } else {
+        try {
+            std::invoke(m_func, branch);
+        } catch (...) {
+            exe._process_exception(this);
+        }
+    }
+    if(auto target = branch.m_target) {
+        target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
+    }
 
-            Branch cond(*w);
-            if constexpr (noexcept(std::invoke(task, cond))) {
-                std::invoke(task, cond);
-            } else {
-                try {
-                    std::invoke(task, cond);
-                } catch (...) {
-                    exe._process_exception(w);
-                }
-            }
-            if(auto target = cond.m_target) {
-                target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
-            }
+    TFL_OBSERVER_AFTER(this, wr);
 
-            TFL_OBSERVER_AFTER(w, wr);
-
-            w->_release_semaphores(TFL_SEM_SCHEDULER);
-            exe._tear_down_task(w, wr, cache);
-        };
+    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_task(this, wr, cache);
 }
 
+// ---------- MultiBranchWork ----------
+template <typename F>
+void MultiBranchWork<F>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    if (this->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(this->m_parent, wr, cache);
+        return;
+    }
 
-template <typename T>
-    requires (capturable<T> && multi_branch_invocable<T>)
-inline auto Work::_make_multi_branch(T&& task) {
-    return [task = std::forward<T>(task)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
+    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+        return;
+    }
 
-            if (w->_is_stopped()) [[unlikely]] {
-                exe._schedule_parent(w->m_parent, wr, cache);
-                return;
-            }
+    TFL_OBSERVER_BEFORE(this, wr);
 
-            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
-                return;
-            }
+    MultiBranch branch(*this);
+    if constexpr (noexcept(std::invoke(m_func, branch))) {
+        std::invoke(m_func, branch);
+    } else {
+        try {
+            std::invoke(m_func, branch);
+        } catch (...) {
+            exe._process_exception(this);
+        }
+    }
+    for(auto* target : branch.m_targets) {
+        target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
+    }
 
-            TFL_OBSERVER_BEFORE(w, wr);
+    TFL_OBSERVER_AFTER(this, wr);
 
-            MultiBranch cond(*w);
-            if constexpr (noexcept(std::invoke(task, cond))) {
-                std::invoke(task, cond);
-            } else {
-                try {
-                    std::invoke(task, cond);
-                } catch (...) {
-                    exe._process_exception(w);
-                }
-            }
-            for(auto* target : cond.m_targets) {
-                target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
-            }
-
-            TFL_OBSERVER_AFTER(w, wr);
-
-            w->_release_semaphores(TFL_SEM_SCHEDULER);
-            exe._tear_down_task(w, wr, cache);
-        };
+    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_task(this, wr, cache);
 }
 
+// ---------- JumpWork ----------
+template <typename F>
+void JumpWork<F>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    if (this->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(this->m_parent, wr, cache);
+        return;
+    }
+    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+        return;
+    }
 
-template <typename T>
-    requires (capturable<T> && jump_invocable<T>)
-inline auto Work::_make_jump(T&& task) {
-    return [task = std::forward<T>(task)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
-            if (w->_is_stopped()) [[unlikely]] {
-                exe._schedule_parent(w->m_parent, wr, cache);
-                return;
-            }
-            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
-                return;
-            }
+    TFL_OBSERVER_BEFORE(this, wr);
 
-            TFL_OBSERVER_BEFORE(w, wr);
+    Jump jmp{*this};
+    if constexpr (noexcept(std::invoke(m_func, jmp))) {
+        std::invoke(m_func, jmp);
+    } else {
+        try {
+            std::invoke(m_func, jmp);
+        } catch (...) {
+            exe._process_exception(this);
+        }
+    }
 
-            Jump jmp{*w};
-            if constexpr (noexcept(std::invoke(task, jmp))) {
-                std::invoke(task, jmp);
-            } else {
-                try {
-                    std::invoke(task, jmp);
-                } catch (...) {
-                    exe._process_exception(w);
-                }
-            }
+    TFL_OBSERVER_AFTER(this, wr);
 
-            TFL_OBSERVER_AFTER(w, wr);
-
-            w->_release_semaphores(TFL_SEM_SCHEDULER);
-            exe._tear_down_jump_task(w, wr, cache, jmp.m_target);
-        };
+    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_jump_task(this, wr, cache, jmp.m_target);
 }
 
-template <typename T>
-    requires (capturable<T> && multi_jump_invocable<T>)
-inline auto Work::_make_multi_jump(T&& task) {
-    return [task = std::forward<T>(task)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
-            if (w->_is_stopped()) [[unlikely]] {
-                exe._schedule_parent(w->m_parent, wr, cache);
-                return;
-            }
-            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
-                return;
-            }
+// ---------- MultiJumpWork ----------
+template <typename F>
+void MultiJumpWork<F>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    if (this->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(this->m_parent, wr, cache);
+        return;
+    }
+    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+        return;
+    }
 
-            TFL_OBSERVER_BEFORE(w, wr);
+    TFL_OBSERVER_BEFORE(this, wr);
 
-            MultiJump jmp{*w};
-            if constexpr (noexcept(std::invoke(task, jmp))) {
-                std::invoke(task, jmp);
-            } else {
-                try {
-                    std::invoke(task, jmp);
-                } catch (...) {
-                    exe._process_exception(w);
-                }
-            }
+    MultiJump jmp{*this};
+    if constexpr (noexcept(std::invoke(m_func, jmp))) {
+        std::invoke(m_func, jmp);
+    } else {
+        try {
+            std::invoke(m_func, jmp);
+        } catch (...) {
+            exe._process_exception(this);
+        }
+    }
 
-            TFL_OBSERVER_AFTER(w, wr);
+    TFL_OBSERVER_AFTER(this, wr);
 
-            w->_release_semaphores(TFL_SEM_SCHEDULER);
-            exe._tear_down_multi_jump_task(w, wr, cache, jmp.m_targets);
-        };
+    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_multi_jump_task(this, wr, cache, jmp.m_targets);
 }
 
-template <typename T>
-    requires (capturable<T> && runtime_invocable<T>)
-inline auto Work::_make_runtime(T&& task) {
-    return [task = std::forward<T>(task)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
+// ---------- RuntimeWork ----------
+template <typename F>
+void RuntimeWork<F>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    if (this->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(this->m_parent, wr, cache);
+        return;
+    }
 
-            if (w->_is_stopped()) [[unlikely]] {
-                exe._schedule_parent(w->m_parent, wr, cache);
-                return;
-            }
+    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+        return;
+    }
 
-            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
-                return;
-            }
+    TFL_OBSERVER_BEFORE(this, wr);
 
-            TFL_OBSERVER_BEFORE(w, wr);
+    Runtime rt(*this, wr, *this->m_topology, exe);
+    if constexpr (noexcept(std::invoke(m_func, rt))) {
+        std::invoke(m_func, rt);
+    } else {
+        try {
+            std::invoke(m_func, rt);
+        } catch (...) {
+            exe._process_exception(this);
+        }
+    }
 
-            Runtime rt(*w, wr, *w->m_topology, exe);
-            if constexpr (noexcept(std::invoke(task, rt))) {
-                std::invoke(task, rt);
-            } else {
-                try {
-                    std::invoke(task, rt);
-                } catch (...) {
-                    exe._process_exception(w);
-                }
-            }
+    TFL_OBSERVER_AFTER(this, wr);
 
-            TFL_OBSERVER_AFTER(w, wr);
-
-            w->_release_semaphores(TFL_SEM_SCHEDULER);
-            exe._tear_down_task(w, wr, cache);
-        };
+    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_task(this, wr, cache);
 }
 
-template <typename F, typename P>
-    requires (capturable<P> && flow_type<F> && predicate<P>)
-inline auto Work::_make_subflow(F&& flow, P&& pred) {
-    return [flow_store = detail::wrap_if_lvalue(std::forward<F>(flow)), pred = std::forward<P>(pred), started = false]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
-            decltype(auto) flow = detail::unwrap(flow_store);
+// ---------- SubflowWork ----------
+template <typename FlowStore, typename P>
+void SubflowWork<FlowStore, P>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    decltype(auto) flow = detail::unwrap(m_flow_store);
 
-            if (started) {
-                TFL_OBSERVER_AFTER(w, wr);
-            }
+    if (m_started) {
+        TFL_OBSERVER_AFTER(this, wr);
+    }
 
-            if (w->_is_stopped()) [[unlikely]] {
-                exe._schedule_parent(w->m_parent, wr, cache);
-                started = false;
-                return;
-            }
+    if (this->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(this->m_parent, wr, cache);
+        m_started = false;
+        return;
+    }
 
-            if (!started) {
-                if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
-                    return;
-                }
-            }
+    if (!m_started) {
+        if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+            return;
+        }
+    }
 
-            if (!std::invoke_r<bool>(pred)) {
-                TFL_OBSERVER_BEFORE(w, wr);
-                started = true;
-                exe._set_up_graph(flow.m_graph, w->m_topology, wr, w);
-            } else {
-                started = false;
-                w->_release_semaphores(TFL_SEM_SCHEDULER);
-                exe._tear_down_task(w, wr, cache);
-            }
-        };
+    if (!std::invoke_r<bool>(m_pred)) {
+        TFL_OBSERVER_BEFORE(this, wr);
+        m_started = true;
+        exe._set_up_graph(flow.m_graph, this->m_topology, wr, this);
+    } else {
+        m_started = false;
+        this->_release_semaphores(TFL_SEM_SCHEDULER);
+        exe._tear_down_task(this, wr, cache);
+    }
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <typename T>
-    requires (capturable<T> && basic_invocable<T>)
-inline auto Work::_make_async_basic(T&& task) {
-    return [task = std::forward<T>(task)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
-            if constexpr (noexcept(std::invoke(task))) {
-                std::invoke(task);
-            } else {
-                try {
-                    std::invoke(task);
-                } catch (...) {
-                }
-            }
-            exe._decrement_topology();
-            Work::destroy(w);
-        };
+// ---------- AsyncBasicWork ----------
+template <typename F>
+void AsyncBasicWork<F>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    if constexpr (noexcept(std::invoke(m_func))) {
+        std::invoke(m_func);
+    } else {
+        try {
+            std::invoke(m_func);
+        } catch (...) {
+        }
+    }
+    exe._decrement_topology();
+    Work::destroy(this);
 }
 
-template <typename T>
-    requires (capturable<T> && runtime_invocable<T>)
-inline auto Work::_make_async_runtime(T&& task) {
-    return [task = std::forward<T>(task)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
-            Runtime rt(*w, wr, *w->m_topology, exe);
-            if constexpr (noexcept(std::invoke(task, rt))) {
-                std::invoke(task, rt);
-            } else {
-                try {
-                    std::invoke(task, rt);
-                } catch (...) {
-                }
-            }
-            exe._decrement_topology();
-            Work::destroy(w);
-        };
+// ---------- AsyncRuntimeWork ----------
+template <typename F>
+void AsyncRuntimeWork<F>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    Runtime rt(*this, wr, *this->m_topology, exe);
+    if constexpr (noexcept(std::invoke(m_func, rt))) {
+        std::invoke(m_func, rt);
+    } else {
+        try {
+            std::invoke(m_func, rt);
+        } catch (...) {
+        }
+    }
+    exe._decrement_topology();
+    Work::destroy(this);
 }
 
-template <typename T, typename R>
-    requires (capturable<T> && basic_invocable<T>)
-inline auto Work::_make_async_basic(T&& task, std::promise<R>&& promise) {
-    return [task = std::forward<T>(task), promise = std::move(promise)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
-            if constexpr (noexcept(std::invoke(task))) {
-                if constexpr (std::is_void_v<R>) {
-                    std::invoke(task);
-                    promise.set_value();
-                } else {
-                    promise.set_value(std::invoke(task));
-                }
-            } else {
-                if constexpr (std::is_void_v<R>) {
-                    try {
-                        std::invoke(task);
-                    } catch (...) {
-                        promise.set_exception(std::current_exception());
-                        exe._decrement_topology();
-                        Work::destroy(w);
-                        return;
-                    }
-                    promise.set_value();
-                } else {
-                    std::optional<R> result;
-                    try {
-                        result.emplace(std::invoke(task));
-                    } catch (...) {
-                        promise.set_exception(std::current_exception());
-                        exe._decrement_topology();
-                        Work::destroy(w);
-                        return;
-                    }
-                    promise.set_value(std::move(*result));
-                }
-            }
-            exe._decrement_topology();
-            Work::destroy(w);
-        };
-}
-
-template <typename T, typename R>
-    requires (capturable<T> && runtime_invocable<T>)
-inline auto Work::_make_async_runtime(T&& task, std::promise<R>&& promise) {
-    return [task = std::forward<T>(task), promise = std::move(promise)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
-            Runtime rt(*w, wr, *w->m_topology, exe);
-            if constexpr (noexcept(std::invoke(task, rt))) {
-                if constexpr (std::is_void_v<R>) {
-                    std::invoke(task, rt);
-                    promise.set_value();
-                } else {
-                    promise.set_value(std::invoke(task, rt));
-                }
-            } else {
-                if constexpr (std::is_void_v<R>) {
-                    try {
-                        std::invoke(task, rt);
-                    } catch (...) {
-                        promise.set_exception(std::current_exception());
-                        exe._decrement_topology();
-                        Work::destroy(w);
-                        return;
-                    }
-                    promise.set_value();
-                } else {
-                    std::optional<R> result;
-                    try {
-                        result.emplace(std::invoke(task, rt));
-                    } catch (...) {
-                        promise.set_exception(std::current_exception());
-                        exe._decrement_topology();
-                        Work::destroy(w);
-                        return;
-                    }
-                    promise.set_value(std::move(*result));
-                }
-            }
-            exe._decrement_topology();
-            Work::destroy(w);
-        };
-}
-
-template <typename T>
-    requires (capturable<T> && basic_invocable<T>)
-inline auto Work::_make_dep_async_basic(T&& task) {
-    return [task = std::forward<T>(task)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
-
-            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+// ---------- AsyncBasicPromiseWork ----------
+template <typename F, typename R>
+void AsyncBasicPromiseWork<F, R>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    if constexpr (noexcept(std::invoke(m_func))) {
+        if constexpr (std::is_void_v<R>) {
+            std::invoke(m_func);
+            m_promise.set_value();
+        } else {
+            m_promise.set_value(std::invoke(m_func));
+        }
+    } else {
+        if constexpr (std::is_void_v<R>) {
+            try {
+                std::invoke(m_func);
+            } catch (...) {
+                m_promise.set_exception(std::current_exception());
+                exe._decrement_topology();
+                Work::destroy(this);
                 return;
             }
-
-            TFL_OBSERVER_BEFORE(w, wr);
-
-            if constexpr (noexcept(std::invoke(task))) {
-                std::invoke(task);
-            } else {
-                try {
-                    std::invoke(task);
-                } catch (...) {
-                    exe._process_exception(w);
-                }
-            }
-
-            TFL_OBSERVER_AFTER(w, wr);
-
-            w->_release_semaphores(TFL_SEM_SCHEDULER);
-            exe._tear_down_dep_async_task(w, wr, cache);
-        };
-}
-
-template <typename T>
-    requires (capturable<T> && runtime_invocable<T>)
-inline auto Work::_make_dep_async_runtime(T&& task) {
-    return [task = std::forward<T>(task)]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
-
-            if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+            m_promise.set_value();
+        } else {
+            std::optional<R> result;
+            try {
+                result.emplace(std::invoke(m_func));
+            } catch (...) {
+                m_promise.set_exception(std::current_exception());
+                exe._decrement_topology();
+                Work::destroy(this);
                 return;
             }
-
-            TFL_OBSERVER_BEFORE(w, wr);
-
-            Runtime rt(*w, wr, *w->m_topology, exe);
-            if constexpr (noexcept(std::invoke(task, rt))) {
-                std::invoke(task, rt);
-            } else {
-                try {
-                    std::invoke(task, rt);
-                } catch (...) {
-                    exe._process_exception(w);
-                }
-            }
-
-            TFL_OBSERVER_AFTER(w, wr);
-
-            w->_release_semaphores(TFL_SEM_SCHEDULER);
-            exe._tear_down_dep_async_task(w, wr, cache);
-        };
+            m_promise.set_value(std::move(*result));
+        }
+    }
+    exe._decrement_topology();
+    Work::destroy(this);
 }
 
-
-template <typename F, typename P, typename C>
-    requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
-inline auto Work::_make_dep_flow(F&& flow, P&& pred, C&& callback) {
-    return [flow_store = detail::wrap_if_lvalue(std::forward<F>(flow)), pred = std::forward<P>(pred), callback = std::forward<C>(callback), started = false]
-        (Executor& exe, Worker& wr, Work* w, Work*& cache) mutable {
-            decltype(auto) flow = detail::unwrap(flow_store);
-
-            if (started) {
-                TFL_OBSERVER_AFTER(w, wr);
-            } else {
-                if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
-                    return;
-                }
+// ---------- AsyncRuntimePromiseWork ----------
+template <typename F, typename R>
+void AsyncRuntimePromiseWork<F, R>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    Runtime rt(*this, wr, *this->m_topology, exe);
+    if constexpr (noexcept(std::invoke(m_func, rt))) {
+        if constexpr (std::is_void_v<R>) {
+            std::invoke(m_func, rt);
+            m_promise.set_value();
+        } else {
+            m_promise.set_value(std::invoke(m_func, rt));
+        }
+    } else {
+        if constexpr (std::is_void_v<R>) {
+            try {
+                std::invoke(m_func, rt);
+            } catch (...) {
+                m_promise.set_exception(std::current_exception());
+                exe._decrement_topology();
+                Work::destroy(this);
+                return;
             }
-
-            if (!std::invoke_r<bool>(pred) && !w->_is_stopped()) {
-                TFL_OBSERVER_BEFORE(w, wr);
-                started = true;
-                exe._set_up_graph(flow.m_graph, w->m_topology, wr, w);
-            } else {
-                started = false;
-                w->_release_semaphores(TFL_SEM_SCHEDULER);
-                std::invoke(std::forward<C>(callback));
-                exe._tear_down_dep_async_task(w, wr, cache);
+            m_promise.set_value();
+        } else {
+            std::optional<R> result;
+            try {
+                result.emplace(std::invoke(m_func, rt));
+            } catch (...) {
+                m_promise.set_exception(std::current_exception());
+                exe._decrement_topology();
+                Work::destroy(this);
+                return;
             }
-        };
+            m_promise.set_value(std::move(*result));
+        }
+    }
+    exe._decrement_topology();
+    Work::destroy(this);
+}
+
+// ---------- DepAsyncBasicWork ----------
+template <typename F>
+void DepAsyncBasicWork<F>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+        return;
+    }
+
+    TFL_OBSERVER_BEFORE(this, wr);
+
+    if constexpr (noexcept(std::invoke(m_func))) {
+        std::invoke(m_func);
+    } else {
+        try {
+            std::invoke(m_func);
+        } catch (...) {
+            exe._process_exception(this);
+        }
+    }
+
+    TFL_OBSERVER_AFTER(this, wr);
+
+    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_dep_async_task(this, wr, cache);
+}
+
+// ---------- DepAsyncRuntimeWork ----------
+template <typename F>
+void DepAsyncRuntimeWork<F>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+        return;
+    }
+
+    TFL_OBSERVER_BEFORE(this, wr);
+
+    Runtime rt(*this, wr, *this->m_topology, exe);
+    if constexpr (noexcept(std::invoke(m_func, rt))) {
+        std::invoke(m_func, rt);
+    } else {
+        try {
+            std::invoke(m_func, rt);
+        } catch (...) {
+            exe._process_exception(this);
+        }
+    }
+
+    TFL_OBSERVER_AFTER(this, wr);
+
+    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_dep_async_task(this, wr, cache);
+}
+
+// ---------- DepFlowWork ----------
+template <typename FlowStore, typename P, typename C>
+void DepFlowWork<FlowStore, P, C>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+    decltype(auto) flow = detail::unwrap(m_flow_store);
+
+    if (m_started) {
+        TFL_OBSERVER_AFTER(this, wr);
+    } else {
+        if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+            return;
+        }
+    }
+
+    if (!std::invoke_r<bool>(m_pred) && !this->_is_stopped()) {
+        TFL_OBSERVER_BEFORE(this, wr);
+        m_started = true;
+        exe._set_up_graph(flow.m_graph, this->m_topology, wr, this);
+    } else {
+        m_started = false;
+        this->_release_semaphores(TFL_SEM_SCHEDULER);
+        std::invoke(m_callback);
+        exe._tear_down_dep_async_task(this, wr, cache);
+    }
 }
 
 #undef TFL_SEM_SCHEDULER
@@ -1236,7 +1184,9 @@ template <typename F, typename P, typename C>
     requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
 inline AsyncTask Runtime::submit(F&& flow, P&& pred, C&& callback) {
     constexpr auto options = Work::Option::ANCHORED | Work::Option::PREEMPTED;
-    return m_executor._make_dep_async_task(TaskType::Graph, options, Work::_make_dep_flow(std::forward<F>(flow), std::forward<P>(pred), std::forward<C>(callback)));
+    Work* work = Work::make_dep_flow(m_executor, options,
+                                     std::forward<F>(flow), std::forward<P>(pred), std::forward<C>(callback));
+    return AsyncTask{work};
 }
 
 // ==================== Basic 类型定义 ====================
@@ -1244,7 +1194,8 @@ template <typename T>
     requires (capturable<T> && basic_invocable<T>)
 inline AsyncTask Runtime::submit(T&& task) {
     constexpr auto options = Work::Option::ANCHORED;
-    return m_executor._make_dep_async_task(TaskType::Basic, options, Work::_make_dep_async_basic(std::forward<T>(task)));
+    Work* work = Work::make_dep_async_basic(m_executor, options, std::forward<T>(task));
+    return AsyncTask{work};
 }
 
 // ==================== Runtime 类型定义 ====================
@@ -1252,21 +1203,26 @@ template <typename T>
     requires (capturable<T> && runtime_invocable<T>)
 inline AsyncTask Runtime::submit(T&& task) {
     constexpr auto options = Work::Option::ANCHORED;
-    return m_executor._make_dep_async_task(TaskType::Runtime, options, Work::_make_dep_async_runtime(std::forward<T>(task)));
+    Work* work = Work::make_dep_async_runtime(m_executor, options, std::forward<T>(task));
+    return AsyncTask{work};
 }
 
 template <typename T>
     requires (capturable<T> && basic_invocable<T>)
 inline void Runtime::silent_async(T&& task) {
     constexpr auto options = Work::Option::ANCHORED;
-    m_executor._make_async_task(std::addressof(m_worker), TaskType::Basic, options, Work::_make_async_basic(std::forward<T>(task)));
+    Work* work = Work::make_async_basic(m_executor, options, std::forward<T>(task));
+    m_executor._increment_topology();
+    m_executor._schedule(m_worker, work);
 }
 
 template <typename T>
     requires (capturable<T> && runtime_invocable<T>)
 inline void Runtime::silent_async(T&& task) {
     constexpr auto options = Work::Option::ANCHORED;
-    m_executor._make_async_task(std::addressof(m_worker), TaskType::Runtime, options, Work::_make_async_runtime(std::forward<T>(task)));
+    Work* work = Work::make_async_runtime(m_executor, options, std::forward<T>(task));
+    m_executor._increment_topology();
+    m_executor._schedule(m_worker, work);
 }
 
 
@@ -1277,7 +1233,9 @@ inline auto Runtime::async(T&& task) -> std::future<basic_return_t<T>> {
     std::promise<R> promise;
     auto future = promise.get_future();
     constexpr auto options = Work::Option::ANCHORED;
-    m_executor._make_async_task(std::addressof(m_worker), TaskType::Basic, options, Work::_make_async_basic(std::forward<T>(task), std::move(promise)));
+    Work* work = Work::make_async_basic(m_executor, options, std::forward<T>(task), std::move(promise));
+    m_executor._increment_topology();
+    m_executor._schedule(m_worker, work);
     return future;
 }
 
@@ -1288,7 +1246,9 @@ inline auto Runtime::async(T&& task) -> std::future<runtime_return_t<T>> {
     std::promise<R> promise;
     auto future = promise.get_future();
     constexpr auto options = Work::Option::ANCHORED;
-    m_executor._make_async_task(std::addressof(m_worker), TaskType::Runtime, options, Work::_make_async_runtime(std::forward<T>(task), std::move(promise)));
+    Work* work = Work::make_async_runtime(m_executor, options, std::forward<T>(task), std::move(promise));
+    m_executor._increment_topology();
+    m_executor._schedule(m_worker, work);
     return future;
 }
 
@@ -1310,7 +1270,7 @@ inline void Runtime::run(Task task) {
 }
 inline void Runtime::run(Flow& flow) {
     constexpr auto options = Work::Option::ANCHORED;
-    WorkImpl parent{m_work.m_topology, TaskType::None, options, [](Executor&, Worker&, Work*, Work*&){}};
+    NullWork parent{m_work.m_topology, options};
     m_executor._corun_graph(m_worker, flow.m_graph, &parent);
 
     parent._rethrow_exception();
