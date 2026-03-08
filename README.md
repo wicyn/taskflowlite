@@ -1,1319 +1,274 @@
-# taskflowlite
+# 🚀 TaskflowLite (tfl)
+**TaskflowLite** 是一个专为现代 C++23 打造的**高性能、无锁、支持有向无环图 (DAG) 与工作窃取 (Work-Stealing) 的任务调度引擎**。
 
-> 一个高性能、现代 C++23 任务并行编程库，灵感来源于 [Taskflow](https://github.com/taskflow/taskflow)，专注于极致性能与零开销抽象。
-
----
-
-## 目录
-
-- [特性](#特性)
-- [架构概览](#架构概览)
-- [快速开始](#快速开始)
-- [核心概念](#核心概念)
-  - [Flow — 任务图](#flow--任务图)
-  - [Task — 任务句柄](#task--任务句柄)
-  - [Executor — 执行器](#executor--执行器)
-  - [AsyncTask — 异步任务](#asynctask--异步任务)
-  - [Runtime — 运行时动态任务](#runtime--运行时动态任务)
-  - [Branch — 静态分支控制](#branch--静态分支控制)
-  - [MultiBranch — 多路并行分发](#multibranch--多路并行分发)
-  - [Jump — 静态回跳/跳转](#jump--静态回跳跳转)
-  - [MultiJump — 多路跳转散射](#multijump--多路跳转散射)
-  - [Semaphore — 信号量并发控制](#semaphore--信号量并发控制)
-  - [WorkerHandler — Worker 生命周期](#workerhandler--worker-生命周期)
-- [任务类型速查表](#任务类型速查表)
-- [图可视化 dump](#图可视化-dump)
-- [Executor API 参考](#executor-api-参考)
-- [性能设计](#性能设计)
-- [编译要求](#编译要求)
-- [使用方式](#使用方式)
+灵感来源于优秀的 [Taskflow](https://github.com/taskflow/taskflow) 库，TaskflowLite 专注于**极致性能与零开销抽象**。通过深度运用 C++23 的 `Concepts`、无锁环形队列以及内存序屏障，它能帮助开发者以极低的开销轻松应对复杂的并发编排、动态路由控制以及异步任务调度。
 
 ---
 
-## 特性
+## 📑 目录
 
-- **单头文件**：仅需 `#include "taskflowlite/taskflowlite.hpp"`
-- **DAG 任务图**：通过 `precede` / `succeed` 声明任务依赖，支持任意有向无环图
-- **Work-Stealing 调度器**：每个 Worker 维护本地有界队列，空闲时从邻居窃取，最大化 CPU 利用率
-- **丰富的任务类型**：Basic、Runtime、Branch、MultiBranch、Jump、MultiJump、Context、Subflow
-- **Subflow 图中图**：子图可嵌套子图，支持指定重复执行次数
-- **异步提交**：`submit` 返回 `AsyncTask`，支持延迟启动、固定次数重复、谓词控制循环、完成回调
-- **信号量**：`Semaphore` 精确控制同时执行任务数，阻塞任务停车等待，唤醒时精准重调度
-- **观察者**：`TaskObserver` 监听单个任务生命周期，`WorkerHandler` 监听 Worker 线程事件
-- **图可视化**：`flow.dump(os)` 输出 JSON 格式任务图，配合 dagre-d3 HTML 渲染依赖关系
-- **异常安全**：任务抛出的异常通过 Topology 聚合，统一在 `wait()` 时重新抛出
-- **缓存友好**：Executor 成员按热路径访问频率排列，`m_num_topologies` 独占 cache line 避免 false sharing
+* [✨ 核心特性](https://www.google.com/search?q=%23-%E6%A0%B8%E5%BF%83%E7%89%B9%E6%80%A7)
+* [🏗️ 架构概览](https://www.google.com/search?q=%23-%E6%9E%B6%E6%9E%84%E6%A6%82%E8%A7%88)
+* [📦 快速开始](https://www.google.com/search?q=%23-%E5%BF%AB%E9%80%9F%E5%BC%80%E5%A7%8B)
+* [🧠 核心概念与 API](https://www.google.com/search?q=%23-%E6%A0%B8%E5%BF%83%E6%A6%82%E5%BF%B5%E4%B8%8E-api)
+* [Flow & Task (任务图与句柄)](https://www.google.com/search?q=%231-flow--task-%E4%BB%BB%E5%8A%A1%E5%9B%BE%E4%B8%8E%E5%8F%A5%E6%9F%84)
+* [Executor & AsyncTask (执行器与异步任务)](https://www.google.com/search?q=%232-executor--asynctask-%E6%89%A7%E8%A1%8C%E5%99%A8%E4%B8%8E%E5%BC%82%E6%AD%A5%E4%BB%BB%E5%8A%A1)
+* [Runtime (运行时动态派发)](https://www.google.com/search?q=%233-runtime-%E8%BF%90%E8%A1%8C%E6%97%B6%E5%8A%A8%E6%80%81%E6%B4%BE%E5%8F%91)
+* [Branch & Jump (静态路由控制)](https://www.google.com/search?q=%234-branch--jump-%E9%9D%99%E6%80%81%E8%B7%AF%E7%94%B1%E6%8E%A7%E5%88%B6)
+* [Semaphore (任务级信号量)](https://www.google.com/search?q=%235-semaphore-%E4%BB%BB%E5%8A%A1%E7%BA%A7%E4%BF%A1%E5%8F%B7%E9%87%8F)
+
+
+* [🗂️ 任务类型速查表](https://www.google.com/search?q=%23-%E4%BB%BB%E5%8A%A1%E7%B1%BB%E5%9E%8B%E9%80%9F%E6%9F%A5%E8%A1%A8)
+* [🎨 D2 图可视化导出](https://www.google.com/search?q=%23-d2-%E5%9B%BE%E5%8F%AF%E8%A7%86%E5%8C%96%E5%AF%BC%E5%87%BA)
+* [⚙️ 底层性能设计](https://www.google.com/search?q=%23%EF%B8%8F-%E5%BA%95%E5%B1%82%E6%80%A7%E8%83%BD%E8%AE%BE%E8%AE%A1)
+* [🛠️ 编译要求与集成](https://www.google.com/search?q=%23-%E7%BC%96%E8%AF%91%E8%A6%81%E6%B1%82%E4%B8%8E%E9%9B%86%E6%88%90)
+* [🚀 性能基准测试](https://www.google.com/search?q=%23-%E6%80%A7%E8%83%BD%E5%9F%BA%E5%87%86%E6%B5%8B%E8%AF%95)
 
 ---
 
-## 架构概览
+## ✨ 核心特性
 
-```
+* **⚡ 极致的 Work-Stealing 调度**：每个 Worker 维护本地有界无锁队列，空闲时通过 `Xoshiro256**` 极速随机数从共享无界队列或邻居窃取任务，最大化 CPU 利用率。
+* **🕸️ 强大的 DAG 拓扑编排**：直观的 `precede` / `succeed` 链式 API，支持任意复杂的依赖关系与图中图（Subflow）嵌套。
+* **🔀 运行期动态流控**：内置 `Branch` (条件分支) 与 `Jump` (强制跳转/循环) 机制，完美复用底层依赖计数器，零额外开销。
+* **⏳ 协作式等待 (Cooperative Wait)**：在 `Runtime` 中等待 Future 或子图时，线程绝不阻塞休眠，而是主动窃取其他任务执行，彻底告别系统级死锁。
+* **🚦 任务级信号量**：`Semaphore` 精确限制任务并发数，获取失败时将任务“停车”挂起，不占用底层 Worker 线程。
+* **🛡️ 现代 C++23 契约驱动**：深度使用 C++23 `Concepts` 进行编译期严格类型安检；利用 `noexcept` 智能擦除冗余的 `try-catch` 汇编块。
+* **📊 D2 可视化一键导出**：原生支持将运行期的复杂任务图直接 `dump()` 为 D2 声明式图形代码，轻松生成架构图。
+
+---
+
+## 🏗️ 架构概览
+
+```text
 ┌─────────────────────────────────────────────────────────┐
-│                        用户代码                          │
+│                        用户代码                         │
 │  Flow  →  emplace(task)  →  Task  →  precede/succeed    │
-│  Executor::submit(flow, N)  →  AsyncTask::start().wait() │
+│  Executor::submit(flow, N)  →  AsyncTask::start().wait()│
 └────────────────────┬────────────────────────────────────┘
                      │ submit
 ┌────────────────────▼────────────────────────────────────┐
-│                     Executor                             │
+│                    Executor                             │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
 │  │ Worker 0 │  │ Worker 1 │  │ Worker N │               │
 │  │ BoundedQ │  │ BoundedQ │  │ BoundedQ │  ← 本地队列   │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘               │
-│       │   work-steal │             │                     │
+│       │   work-steal│             │                     │
 │  ┌────▼─────────────▼─────────────▼──────┐              │
-│  │         UnboundedQueueBucket           │ ← 共享队列   │
-│  └────────────────────────────────────────┘              │
-│  Notifier (高效 park / unpark)                           │
+│  │          UnboundedQueueBucket         │ ← 共享队列   │
+│  └───────────────────────────────────────┘              │
+│  Notifier (基于原子 wait 的防丢失唤醒中枢)              │
 └─────────────────────────────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────────┐
-│                    Work (内部节点)                        │
-│  m_edges: [successors... | predecessors...]              │
-│  m_join_counter, m_topology, m_observers?, m_semaphores? │
+│                    Work (内部物理节点)                  │
+│  m_edges: [successors... | predecessors...]             │
+│  m_join_counter, m_topology, m_observers?, m_semaphores?│
 └─────────────────────────────────────────────────────────┘
+
 ```
 
 ---
 
-## 快速开始
+## 📦 快速开始
 
-### Hello World
+### Hello World & DAG 基础
 
 ```cpp
 #include "taskflowlite/taskflowlite.hpp"
 #include <iostream>
 
 int main() {
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);  // 4 个工作线程
+    tfl::ResumeNever handler;            // 遇到未捕获异常时直接终止
+    tfl::Executor executor(handler, 4);  // 启动 4 个工作线程
     tfl::Flow flow;
 
-    auto A = flow.emplace([] { std::cout << "Task A\n"; });
-    auto B = flow.emplace([] { std::cout << "Task B\n"; });
-    auto C = flow.emplace([] { std::cout << "Task C\n"; });
+    auto [A, B, C, D] = flow.emplace(
+        [] { std::cout << "Task A (Init)\n"; },
+        [] { std::cout << "Task B (Process 1)\n"; },
+        [] { std::cout << "Task C (Process 2)\n"; },
+        [] { std::cout << "Task D (Merge)\n"; }
+    );
 
-    A.precede(B, C);  // A 完成后，B 和 C 并行执行
+    // 编排 DAG: A 执行完后 B 和 C 并行，B 和 C 都执行完后执行 D
+    A.precede(B, C);
+    D.succeed(B, C);
 
+    // 提交任务图，启动并阻塞等待完成
     executor.submit(flow).start().wait();
+    
+    return 0;
 }
+
 ```
 
-### DAG 任务图
+---
+
+## 🧠 核心概念与 API
+
+### 1. Flow & Task (任务图与句柄)
+
+`Flow` 是装载任务的容器。使用 `emplace` 压入任务，返回一个轻量级的 `Task` 句柄用于连线。
 
 ```cpp
 tfl::Flow flow;
+auto t1 = flow.emplace([] { /* ... */ }).name("Task1");
+auto t2 = flow.emplace([] { /* ... */ }).name("Task2");
 
-auto [A, B, C, D] = flow.emplace(
-    [] { /* 初始化 */ },
-    [] { /* 处理分支 1 */ },
-    [] { /* 处理分支 2 */ },
-    [] { /* 汇聚结果 */ }
-);
+t1.precede(t2); // t1 先跑，t2 后跑
 
-// A → B → D
-// A → C → D
-A.precede(B, C);
-D.succeed(B, C);
-
-executor.submit(flow).start().wait();
 ```
 
-### 重复执行
+### 2. Executor & AsyncTask (执行器与异步任务)
+
+`submit` 遵循“创建与执行分离”原则，返回 `AsyncTask`。
 
 ```cpp
-// 执行 100 次
-executor.submit(flow, 100).start().wait();
+// 提交一个 Flow 循环执行 100 次
+tfl::AsyncTask task = executor.submit(flow, 100);
 
-// 执行直到谓词为 true
-int count = 0;
-executor.submit(flow, [&]() noexcept {
-    return ++count >= 50;
-}).start().wait();
+// 你可以自由传递句柄，并在需要的时候点火启动
+task.start();   
+task.wait();    // 同步等待。如果图内发生异常，会在这里重新抛出！
+
 ```
 
----
+### 3. Runtime (运行时动态派发)
 
-## 核心概念
-
-### Flow — 任务图
-
-`Flow` 是一个有向无环图（DAG），用于描述任务及其依赖关系。任务通过 `emplace` 加入图，返回 `Task` 句柄。
+当任务签名包含 `tfl::Runtime&` 时，赋予该节点运行时特权：**动态派发**与**协作等待**。
 
 ```cpp
-tfl::Flow flow;
+flow.emplace([](tfl::Runtime& rt) {
+    // 动态派发一个带返回值的任务
+    auto fut = rt.async([] { return 42; });
 
-// 命名（用于 dump 可视化，节点标签显示此名称）
-flow.name("MyFlow");
-
-// 普通任务
-auto t1 = flow.emplace([] { /* ... */ });
-t1.name("task_name");
-
-// 批量创建，结构化绑定
-auto [init, process, cleanup] = flow.emplace(
-    [] { /* 初始化 */ },
-    [] { /* 处理 */ },
-    [] { /* 清理 */ }
-);
-init.precede(process);
-process.precede(cleanup);
-
-// 输出任务图（JSON 格式）
-flow.dump(std::cout);         // 输出到终端
-std::ofstream f("g.json");
-flow.dump(f);                 // 输出到文件
-```
-
-**Flow 的重要特性：**
-- Flow 可重复提交，每次执行都从干净状态开始
-- 同一个 Flow 实例不可并发提交（提交期间修改 Flow 是未定义行为）
-- Flow 支持嵌套（Subflow），嵌套深度不限
-
----
-
-### Task — 任务句柄
-
-`Task` 是指向图内部节点的轻量句柄（类似指针语义），可以复制。`TaskView` 是只读视图，用于观察者回调。
-
-```cpp
-tfl::Task t = flow.emplace([] {});
-
-// 命名（影响 dump 输出的节点标签）
-t.name("my_task");
-
-// 依赖关系
-t.precede(other);      // t 完成后执行 other
-t.succeed(other);      // other 完成后执行 t
-t.precede(b, c, d);    // t 完成后执行 b、c、d（下标 0、1、2，Branch/Jump 引用此顺序）
-
-// 查询
-std::string  name     = t.name();
-std::size_t  num_succ = t.num_successors();
-std::size_t  num_pred = t.num_predecessors();
-bool         valid    = t.valid();
-
-// 信号量绑定
-tfl::Semaphore sem(2);
-t.acquire(sem);   // 执行前获取信号量
-t.release(sem);   // 执行后释放信号量
-
-// 观察者
-auto obs = t.register_observer<MyObserver>(/* 构造参数 */);
-t.unregister_observer(obs);
-```
-
----
-
-### Executor — 执行器
-
-`Executor` 管理一组工作线程，每个线程持有本地 work-stealing 队列（`BoundedQueue`）。线程空闲时先从共享队列（`UnboundedQueueBucket`）获取任务，再尝试从邻居窃取。
-
-```cpp
-tfl::ResumeNever handler;
-tfl::Executor executor(handler);      // 线程数 = hardware_concurrency
-tfl::Executor executor(handler, 8);   // 指定 8 个工作线程
-```
-
-提交 Flow：
-
-```cpp
-AsyncTask t = executor.submit(flow);                     // 执行 1 次
-AsyncTask t = executor.submit(flow, 100);                // 执行 100 次
-AsyncTask t = executor.submit(flow, pred);               // 执行直到 pred() == true
-AsyncTask t = executor.submit(flow, 10, callback);       // 执行 10 次 + 完成回调
-AsyncTask t = executor.submit(flow, pred, callback);     // 谓词 + 回调
-```
-
-提交独立异步任务：
-
-```cpp
-auto fut = executor.async([] { return 42; });                   // 带返回值
-auto fut = executor.async([](tfl::Runtime& rt) { return 0; }); // Runtime 版
-executor.silent_async([] { /* 后台 fire-and-forget */ });
-```
-
----
-
-### AsyncTask — 异步任务
-
-`submit` 返回 `AsyncTask`，任务在 `start()` 调用后才真正开始调度，实现"创建与执行分离"。
-
-```cpp
-auto task = executor.submit(flow, 100);
-task.start();   // 启动
-task.wait();    // 等待完成（内部异常在此重新抛出）
-
-// 链式写法
-executor.submit(flow, 50).start().wait();
-```
-
-`AsyncTask` 不可复制，仅可移动。`wait()` 是幂等的。
-
----
-
-### Runtime — 运行时动态任务
-
-任务函数签名包含 `tfl::Runtime&` 时，可在执行期间动态提交新任务或子图。
-
-```cpp
-auto t = flow.emplace([](tfl::Runtime& rt) {
-    // 动态 fire-and-forget
-    rt.silent_async([] { puts("dynamic"); });
-
-    // 动态提交带返回值
-    auto fut = rt.async([] { return 99; });
-
-    // 动态提交子图（异步）
-    tfl::Flow subflow;
-    subflow.emplace([] { /* ... */ });
-    rt.submit(subflow);
-
-    // 协作式等待（不阻塞底层 worker 线程）
+    // 协作式等待：等待结果期间，当前线程会去窃取别的任务干，绝不阻塞！
     rt.wait_until([&]() noexcept {
         return fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
     });
 
-    // 同步运行子图（内部协作调度，不阻塞 worker）
-    tfl::Flow sync_flow;
-    sync_flow.emplace([] { /* ... */ });
-    rt.run(sync_flow);
+    std::cout << "Dynamic Result: " << fut.get() << "\n";
 });
-t.name("runtime_task");
+
 ```
 
----
+### 4. Branch & Jump (静态路由控制)
 
-### Branch — 静态分支控制
-
-`Branch` 在任务执行时决定哪条后继分支被激活，未被激活的后继**不参与调度**。后继下标按 `precede` 调用顺序从 0 开始。
+控制流不仅可以按顺序跑，还能动态选择分支或循环重试。
 
 ```cpp
+// Branch: 走哪条路？
 auto validate = flow.emplace([](tfl::Branch br) {
     bool ok = do_validate();
-    br.allow(ok ? 0 : 1);  // 激活成功路径(0) 或失败路径(1)
+    br.allow(ok ? 0 : 1); // 激活下标为 0 (success) 或 1 (failure) 的后继
 });
-validate.name("validate");
 
-auto success = flow.emplace([] { puts("ok"); });   // index 0
-auto failure = flow.emplace([] { puts("fail"); }); // index 1
-validate.precede(success);
-validate.precede(failure);
-```
+auto success = flow.emplace([] { puts("OK"); });
+auto failure = flow.emplace([] { puts("Fail"); });
 
-`Branch` 方法：
+validate.precede(success, failure); // 按照 0, 1 顺序绑定
 
-| 方法 | 说明 |
-|------|------|
-| `br.allow(i)` | 激活第 i 个后继，其余后继跳过 |
-| `br.allow(i, j, ...)` | 激活多个指定后继 |
-| `br.deny(i)` | 拒绝第 i 个后继（其余照常） |
-| `br.deny_all()` | 拒绝所有后继 |
-
-> dump 输出中，Branch 节点以菱形显示，激活边以实线标注，跳过边以虚线标注。
-
----
-
-### MultiBranch — 多路并行分发
-
-`MultiBranch` 可以在一个节点同时激活多条后继路径，所有被激活的后继**并行执行**。
-
-```cpp
-auto dispatch = flow.emplace([](tfl::MultiBranch mbr) {
-    mbr.allow(0);  // pipeline_A
-    mbr.allow(1);  // pipeline_B
-    mbr.allow(2);  // pipeline_C
-});
-dispatch.name("dispatch");
-
-dispatch.precede(pipeline_A);  // index 0
-dispatch.precede(pipeline_B);  // index 1
-dispatch.precede(pipeline_C);  // index 2
-```
-
-适用场景：扇出（fan-out）、多路并行数据处理、条件性多路分发。
-
----
-
-### Jump — 静态回跳/跳转
-
-`Jump` 允许任务在执行后"跳转"到某个后继节点，实现**循环/重试**逻辑（DAG 中的有限回边）。
-
-```cpp
-// 错误重试：log_err → retry(Jump) → normalize（回跳）
+// Jump: 失败重试循环
 auto retry = flow.emplace([](tfl::Jump jmp) {
-    jmp.to(0);   // 跳转到后继 index 0
+    jmp.to(0); // 强行拉回 normalize 节点，重置其依赖计数
 });
-retry.name("retry");
+retry.precede(normalize); 
 
-log_err.precede(retry);
-retry.precede(normalize);  // index 0，形成重试环
 ```
 
-`Jump` 方法：
+### 5. Semaphore (任务级信号量)
 
-| 方法 | 说明 |
-|------|------|
-| `jmp.to(i)` | 跳转到第 i 个后继，其余后继跳过 |
-
-> **注意**：`Jump` 构成图中的有向环，需确保业务逻辑最终会终止，否则将无限循环。dump 输出中，Jump 回边以红色虚线标注。
-
----
-
-### MultiJump — 多路跳转散射
-
-`MultiJump` 同时触发多个跳转目标，实现**扇出**到多条路径，所有目标并行执行。
+限制某类任务（如 GPU 计算、I/O）的最大并发数。
 
 ```cpp
-auto scatter = flow.emplace([](tfl::MultiJump mjmp) {
-    mjmp.to(0);  // write_DB
-    mjmp.to(1);  // write_cache
-    mjmp.to(2);  // write_file
-    mjmp.to(3);  // push_MQ
-});
-scatter.name("scatter_output");
-
-scatter.precede(out_db);     // index 0
-scatter.precede(out_cache);  // index 1
-scatter.precede(out_file);   // index 2
-scatter.precede(out_queue);  // index 3
-```
-
----
-
-
-### Semaphore — 信号量并发控制
-
-`Semaphore` 限制同时运行某类任务的数量。获取失败时，任务被"停车"到信号量内部等待队列，不占用 CPU，直到信号量被释放后精准唤醒。
-
-```cpp
-tfl::Semaphore gpu_sem(2);  // 最多 2 个任务同时使用 GPU
+tfl::Semaphore db_connection_limit(2); // 最多 2 个并发
 
 for (int i = 0; i < 10; ++i) {
-    auto t = flow.emplace([i] { /* GPU 计算 */ });
-    t.acquire(gpu_sem);  // 执行前获取
-    t.release(gpu_sem);  // 执行后释放
+    auto t = flow.emplace([i] { /* 操作数据库 */ });
+    t.acquire(db_connection_limit).release(db_connection_limit);
 }
+// 若名额耗尽，任务会在队列外“停车”，不阻塞任何 Worker 线程。
 
-executor.submit(flow).start().wait();
-// 任何时刻最多 2 个 GPU 任务同时运行
-```
-
-```cpp
-tfl::Semaphore sem(max_value);                  // 初始值 = max_value
-tfl::Semaphore sem(max_value, current_value);   // 指定初始值
-
-sem.value();              // 当前可用数
-sem.max_value();          // 最大值
-sem.reset();              // 重置为 max_value，清空等待队列
-sem.reset(new_value);     // 重置为 new_value（饱和截断）
 ```
 
 ---
 
-### WorkerHandler — Worker 生命周期
+## 🗂️ 任务类型速查表
 
-`WorkerHandler` 是抽象基类，用于监听和干预 Worker 线程的生命周期事件。
+`emplace` 会利用 C++23 Concepts 自动推导你的闭包签名，无需显式指定类型：
 
-```cpp
-class MyHandler : public tfl::WorkerHandler {
-public:
-    void on_start(tfl::WorkerView worker) override {
-        printf("Worker %zu started\n", worker.id());
-        // 可在此绑定线程亲和性、设置线程名称等
-    }
-
-    void on_stop(tfl::WorkerView worker) noexcept override {
-        printf("Worker %zu stopped\n", worker.id());
-    }
-
-    // 返回 true = 继续运行，false = 终止该 Worker
-    bool on_exception(tfl::WorkerView worker,
-                      std::exception_ptr eptr) noexcept override {
-        try { std::rethrow_exception(eptr); }
-        catch (std::exception& e) {
-            fprintf(stderr, "Worker %zu: %s\n", worker.id(), e.what());
-        }
-        return true;
-    }
-};
-
-MyHandler handler;
-tfl::Executor executor(handler, 4);
-```
-
-内置 Handler：
-
-```cpp
-tfl::ResumeNever handler;  // 异常发生时终止对应 Worker，不重试
-```
+| 函数签名 | 类型推导 | 功能说明 | 图形化标识 |
+| --- | --- | --- | --- |
+| `[]()` | **Basic** | 普通顺序任务，零抽象开销 | 灰色矩形 |
+| `[](tfl::Runtime&)` | **Runtime** | 动态派发新任务、协作式阻塞等待 | 粉色矩形 |
+| `[](tfl::Branch)` | **Branch** | 单路条件选择（激活 1 条路径） | 蓝色菱形 |
+| `[](tfl::MultiBranch)` | **MultiBranch** | 多路并行分发（激活 N 条路径） | 蓝色六边形 |
+| `[](tfl::Jump)` | **Jump** | 强制状态机回跳（支持循环重试） | 红色菱形(虚线) |
+| `[](tfl::MultiJump)` | **MultiJump** | 并行散射强制跳转（扇出） | 红色六边形(虚线) |
+| 传入 `Flow` 对象 | **Subflow** | 将一整张图作为一个节点嵌套执行 | 绿色分组框 |
 
 ---
 
-## 任务类型速查表
+## 🎨 D2 图可视化导出
 
-| 函数签名 | 类型 | 分支控制 | 动态任务 | 说明 |
-|---------|------|:--------:|:--------:|------|
-| `[]()` | Basic | — | — | 普通任务，零开销 |
-| `[](tfl::Runtime& rt)` | Runtime | — | ✓ | 运行时动态提交子任务/子图 |
-| `[](tfl::Branch br)` | Branch | ✓ 单选 | — | 激活一条后继路径 |
-| `[](tfl::MultiBranch mbr)` | MultiBranch | ✓ 多选 | — | 并行激活多条后继路径 |
-| `[](tfl::Jump jmp)` | Jump | ✓ 跳转 | — | 跳转到指定后继（支持回边/循环） |
-| `[](tfl::MultiJump mjmp)` | MultiJump | ✓ 多跳 | — | 并行跳转到多个后继（扇出散射） |
-> `emplace` 通过 C++23 Concepts 自动推导任务类型，无需显式指定。
+极其复杂的嵌套拓扑如何调试？一行代码将其导出为 D2 描述语言，利用前端工具或 [D2 官网](https://play.d2lang.com) 极速渲染。
+
+```cpp
+std::ofstream file("pipeline.d2");
+flow.name("MyPipeline").dump(file); 
+
+```
+
+![D2 Visualization](documentation/img/d2.svg)
+
+导出的逻辑极度清晰：**灰色实线**表示普通推演，**蓝色连线**表示条件分支抉择，**红色虚线**表示破坏拓扑的跳转回边。
 
 ---
 
-## 图可视化 dump
+## ⚙️ 底层性能设计
 
-`Flow::dump(ostream)` 将任务图以 **JSON** 格式输出，节点按类型着色，可配合 dagre-d3 等前端库渲染为交互式 HTML 可视化图。
+TaskflowLite 之所以快，是因为在底层死抠了每一个时钟周期：
 
-### 基本用法
-
-```cpp
-tfl::Flow flow;
-flow.name("MyGraph");  // 命名后 dump 输出更清晰
-
-// ... 构建任务图 ...
-
-// 输出到终端
-flow.dump(std::cout);
-
-// 输出到文件
-std::ofstream f("graph.json");
-flow.dump(f);
-```
-
-### 节点颜色约定（dagre-d3 渲染）
-
-| 颜色 | 节点类型 |
-|------|---------|
-| 白色/浅灰 | Basic 普通任务 |
-| 浅蓝色 | Runtime 动态任务 |
-| 蓝色菱形 | Branch / MultiBranch 分支节点 |
-| 粉红色 | Jump / MultiJump 跳转节点（含回边） |
-| 绿色边框 | Subflow 子图容器 |
-
-### 完整示例：复杂嵌套管线可视化
-
-```cpp
-
-
-/**
- * D2 Dump 综合示例 — 展示所有任务类型 + 多层嵌套子图 + 复杂并行拓扑
- *
- * 覆盖类型: Basic, Runtime, Branch, MultiBranch, Jump, MultiJump, Subflow(嵌套)
- *
- * 渲染: d2 --layout=elk demo_complex.d2 -o demo_complex.svg
- */
-
-#include "taskflowlite/taskflowlite.hpp"
-#include <iostream>
-#include <fstream>
-
-int main() {
-
-    tfl::Flow flow;
-
-    // ================================================================
-    // Stage 1: 数据采集链 (Basic → Basic → Basic)
-    // ================================================================
-    auto source    = flow.emplace([]{});  source.name("source");
-    auto fetch     = flow.emplace([]{});  fetch.name("fetch_data");
-    auto normalize = flow.emplace([]{});  normalize.name("normalize");
-
-    source.precede(fetch);
-    fetch.precede(normalize);
-
-    // ================================================================
-    // Stage 2: 验证 + 错误重试 (Branch + Jump)
-    // ================================================================
-    auto validate = flow.emplace([](tfl::Branch br) {
-        br.allow(0);
-    });
-    validate.name("validate");
-
-    normalize.precede(validate);
-
-    // validate →(0) pre_dispatch  →(1) log_err
-    auto pre_dispatch = flow.emplace([]{});  pre_dispatch.name("pre_dispatch");
-    auto log_err      = flow.emplace([]{});  log_err.name("log_error");
-
-    validate.precede(pre_dispatch);  // branch index 0
-    validate.precede(log_err);       // branch index 1
-
-    // 错误回跳: log_err → retry(Jump) → normalize
-    auto retry = flow.emplace([](tfl::Jump jmp) {
-        jmp.to(0);
-    });
-    retry.name("retry");
-
-    log_err.precede(retry);
-    retry.precede(normalize);  // jump index 0
-
-    // ================================================================
-    // Stage 3: MultiBranch 3 路分发
-    // ================================================================
-    auto dispatch = flow.emplace([](tfl::MultiBranch mbr) {
-        mbr.allow(0);
-        mbr.allow(1);
-        mbr.allow(2);
-    });
-    dispatch.name("dispatch");
-
-    pre_dispatch.precede(dispatch);
-
-    // ================================================================
-    // Stage 4: 三条并行 Subflow（含图中图）
-    // ================================================================
-
-    // -- 管线 A: 3 步 Basic --
-    tfl::Flow pipeline_a;
-    auto a_read    = pipeline_a.emplace([]{});  a_read.name("read_A");
-    auto a_process = pipeline_a.emplace([]{});  a_process.name("process_A");
-    auto a_write   = pipeline_a.emplace([]{});  a_write.name("write_A");
-    a_read.precede(a_process);
-    a_process.precede(a_write);
-
-    auto sub_a = flow.emplace(std::move(pipeline_a), 1);
-    sub_a.name("pipeline_A");
-
-    // -- 管线 B: Basic → Subflow(ETL, 含 Runtime) → Basic —— 图中图 --
-    //    先构建最内层 ETL
-    tfl::Flow etl_inner;
-    auto extract   = etl_inner.emplace([]{});              extract.name("extract");
-    auto transform = etl_inner.emplace([](tfl::Runtime&){}); transform.name("transform");
-    auto load_task = etl_inner.emplace([]{});              load_task.name("load");
-    extract.precede(transform);
-    transform.precede(load_task);
-
-    //    再构建 pipeline_b，将 etl_inner move 进去
-    tfl::Flow pipeline_b;
-    auto b_init    = pipeline_b.emplace([]{});  b_init.name("init_B");
-    auto inner_etl = pipeline_b.emplace(std::move(etl_inner), 2);
-    inner_etl.name("ETL_inner");
-    auto b_done    = pipeline_b.emplace([]{});  b_done.name("done_B");
-    b_init.precede(inner_etl);
-    inner_etl.precede(b_done);
-
-    auto sub_b = flow.emplace(std::move(pipeline_b), 1);
-    sub_b.name("pipeline_B");
-
-    // -- 管线 C: Runtime → Branch(ok/fail) --
-    tfl::Flow pipeline_c;
-    auto c_rt    = pipeline_c.emplace([](tfl::Runtime&){}); c_rt.name("dynamic_C");
-    auto c_check = pipeline_c.emplace([](tfl::Branch br){ br.allow(0); });
-    c_check.name("check_C");
-    auto c_ok    = pipeline_c.emplace([]{});  c_ok.name("ok_C");
-    auto c_fail  = pipeline_c.emplace([]{});  c_fail.name("fail_C");
-    c_rt.precede(c_check);
-    c_check.precede(c_ok);    // branch 0
-    c_check.precede(c_fail);  // branch 1
-
-    auto sub_c = flow.emplace(std::move(pipeline_c), 1);
-    sub_c.name("pipeline_C");
-
-    // MultiBranch → 三条管线
-    dispatch.precede(sub_a);  // index 0
-    dispatch.precede(sub_b);  // index 1
-    dispatch.precede(sub_c);  // index 2
-
-    // ================================================================
-    // Stage 5: 汇聚 + Runtime
-    // ================================================================
-    auto merge = flow.emplace([]{});  merge.name("merge_results");
-    sub_a.precede(merge);
-    sub_b.precede(merge);
-    sub_c.precede(merge);
-
-    auto aggregate = flow.emplace([](tfl::Runtime&){});
-    aggregate.name("aggregate");
-    merge.precede(aggregate);
-
-    // ================================================================
-    // Stage 6: MultiJump 散射输出
-    // ================================================================
-    auto scatter = flow.emplace([](tfl::MultiJump mjmp) {
-        mjmp.to(0); mjmp.to(1); mjmp.to(2); mjmp.to(3);
-    });
-    scatter.name("scatter_output");
-
-    aggregate.precede(scatter);
-
-    auto out_db    = flow.emplace([]{});  out_db.name("write_DB");
-    auto out_cache = flow.emplace([]{});  out_cache.name("write_cache");
-    auto out_file  = flow.emplace([]{});  out_file.name("write_file");
-    auto out_queue = flow.emplace([]{});  out_queue.name("push_MQ");
-
-    scatter.precede(out_db);     // index 0
-    scatter.precede(out_cache);  // index 1
-    scatter.precede(out_file);   // index 2
-    scatter.precede(out_queue);  // index 3
-
-    // ================================================================
-    // Stage 7: 收尾
-    // ================================================================
-    auto finalize = flow.emplace([]{});  finalize.name("finalize");
-    auto cleanup  = flow.emplace([]{});  //cleanup.name("cleanup");
-
-    out_db.precede(finalize);
-    out_cache.precede(finalize);
-    out_file.precede(finalize);
-    out_queue.precede(finalize);
-
-    finalize.precede(cleanup);
-//
-    flow.name("NestedDemo").dump(std::cout);
-
-    return 0;
-}
-```
-
-上述代码运行后，`flow.dump()` 输出的任务图渲染效果如下：
-
-
-> 💡 **交互式查看**：将下方 D2 代码粘贴到 [https://play.d2lang.com](https://play.d2lang.com) 即可在线渲染、缩放、交互浏览完整任务图。
-
-<details>
-<summary>📐 点击展开 D2 图表源码（可粘贴到 play.d2lang.com）</summary>
-
-```d2
-direction: down
-
-root: |md
-  <center>NestedDemo<br/><span style="color: #6b7280;">[ graph ]</span></center>
-| {
-  shape: rectangle
-  label.near: top-center
-  style.fill: "#e8f5e9"
-  style.stroke: "#10b981"
-  style.stroke-width: 2
-  style.border-radius: 14
-
-p1a81a3a04f0: |md
-  <center>source<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a394040: |md
-  <center>fetch_data<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a3a4490: |md
-  <center>normalize<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a381af0: |md
-  <center>validate<br/><span style="color: #6b7280;">[ branch ]</span></center>
-| {
-  shape: diamond
-  style.fill: "#dbeafe"
-  style.stroke: "#3b82f6"
-  style.font-color: "#1e3a5f"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a381830: |md
-  <center>pre_dispatch<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a385160: |md
-  <center>log_error<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a39d970: |md
-  <center>retry<br/><span style="color: #6b7280;">[ jump ]</span></center>
-| {
-  shape: diamond
-  style.fill: "#fee2e2"
-  style.stroke: "#ef4444"
-  style.font-color: "#7f1d1d"
-  style.border-radius: 8
-  style.stroke-dash: 5
-  style.font-size: 14
-}
-p1a81a382360: |md
-  <center>dispatch<br/><span style="color: #6b7280;">[ multi_branch ]</span></center>
-| {
-  shape: hexagon
-  style.fill: "#bfdbfe"
-  style.stroke: "#2563eb"
-  style.font-color: "#1e3a5f"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a39a2d0: |md
-  <center>pipeline_A<br/><span style="color: #6b7280;">[ graph ]</span></center>
-| {
-  shape: rectangle
-  label.near: top-center
-  style.fill: "#e8f5e9"
-  style.stroke: "#10b981"
-  style.stroke-width: 2
-  style.border-radius: 14
-
-p1a81a382630: |md
-  <center>read_A<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a381db0: |md
-  <center>process_A<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a39b750: |md
-  <center>write_A<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a382630 -> p1a81a381db0: {style.stroke: "#6b7280"}
-p1a81a381db0 -> p1a81a39b750: {style.stroke: "#6b7280"}
-}
-p1a81a39ab40: |md
-  <center>pipeline_B<br/><span style="color: #6b7280;">[ graph ]</span></center>
-| {
-  shape: rectangle
-  label.near: top-center
-  style.fill: "#e8f5e9"
-  style.stroke: "#10b981"
-  style.stroke-width: 2
-  style.border-radius: 14
-
-p1a81a388420: |md
-  <center>init_B<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a399b50: |md
-  <center>ETL_inner<br/><span style="color: #6b7280;">[ graph ]</span></center>
-| {
-  shape: rectangle
-  label.near: top-center
-  style.fill: "#e8f5e9"
-  style.stroke: "#10b981"
-  style.stroke-width: 2
-  style.border-radius: 14
-
-p1a81a381560: |md
-  <center>extract<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a382080: |md
-  <center>transform<br/><span style="color: #6b7280;">[ runtime ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#fce4ec"
-  style.stroke: "#e57373"
-  style.font-color: "#6d1b1b"
-  style.border-radius: 30
-  style.font-size: 14
-}
-p1a81a38c810: |md
-  <center>load<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a381560 -> p1a81a382080: {style.stroke: "#6b7280"}
-p1a81a382080 -> p1a81a38c810: {style.stroke: "#6b7280"}
-}
-p1a81a3887e0: |md
-  <center>done_B<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a388420 -> p1a81a399b50: {style.stroke: "#6b7280"}
-p1a81a399b50 -> p1a81a3887e0: {style.stroke: "#6b7280"}
-}
-p1a81a399970: |md
-  <center>pipeline_C<br/><span style="color: #6b7280;">[ graph ]</span></center>
-| {
-  shape: rectangle
-  label.near: top-center
-  style.fill: "#e8f5e9"
-  style.stroke: "#10b981"
-  style.stroke-width: 2
-  style.border-radius: 14
-
-p1a81a3884c0: |md
-  <center>dynamic_C<br/><span style="color: #6b7280;">[ runtime ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#fce4ec"
-  style.stroke: "#e57373"
-  style.font-color: "#6d1b1b"
-  style.border-radius: 30
-  style.font-size: 14
-}
-p1a81a387fc0: |md
-  <center>check_C<br/><span style="color: #6b7280;">[ branch ]</span></center>
-| {
-  shape: diamond
-  style.fill: "#dbeafe"
-  style.stroke: "#3b82f6"
-  style.font-color: "#1e3a5f"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a3889c0: |md
-  <center>ok_C<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a388560: |md
-  <center>fail_C<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a3884c0 -> p1a81a387fc0: {style.stroke: "#6b7280"}
-p1a81a387fc0 -> p1a81a3889c0: 0 {
-  style.stroke: "#3b82f6"
-  style.stroke-width: 2
-  style.font-size: 14
-  style.font-color: "#2563eb"
-  style.bold: true
-}
-p1a81a387fc0 -> p1a81a388560: 1 {
-  style.stroke: "#3b82f6"
-  style.stroke-width: 2
-  style.font-size: 14
-  style.font-color: "#2563eb"
-  style.bold: true
-}
-}
-p1a81a388920: |md
-  <center>merge_results<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a388880: |md
-  <center>aggregate<br/><span style="color: #6b7280;">[ runtime ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#fce4ec"
-  style.stroke: "#e57373"
-  style.font-color: "#6d1b1b"
-  style.border-radius: 30
-  style.font-size: 14
-}
-p1a81a388240: |md
-  <center>scatter_output<br/><span style="color: #6b7280;">[ multi_jump ]</span></center>
-| {
-  shape: hexagon
-  style.fill: "#fecaca"
-  style.stroke: "#dc2626"
-  style.font-color: "#7f1d1d"
-  style.border-radius: 8
-  style.stroke-dash: 5
-  style.font-size: 14
-}
-p1a81a3886a0: |md
-  <center>write_DB<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a388060: |md
-  <center>write_cache<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a388740: |md
-  <center>write_file<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a388600: |md
-  <center>push_MQ<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a388c40: |md
-  <center>finalize<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a388a60: |md
-  <center>p1a81a388a60<br/><span style="color: #6b7280;">[ basic ]</span></center>
-| {
-  shape: rectangle
-  style.fill: "#f5f5f5"
-  style.stroke: "#9ca3af"
-  style.font-color: "#1f2937"
-  style.border-radius: 8
-  style.font-size: 14
-}
-p1a81a3a04f0 -> p1a81a394040: {style.stroke: "#6b7280"}
-p1a81a394040 -> p1a81a3a4490: {style.stroke: "#6b7280"}
-p1a81a3a4490 -> p1a81a381af0: {style.stroke: "#6b7280"}
-p1a81a381af0 -> p1a81a381830: 0 {
-  style.stroke: "#3b82f6"
-  style.stroke-width: 2
-  style.font-size: 14
-  style.font-color: "#2563eb"
-  style.bold: true
-}
-p1a81a381af0 -> p1a81a385160: 1 {
-  style.stroke: "#3b82f6"
-  style.stroke-width: 2
-  style.font-size: 14
-  style.font-color: "#2563eb"
-  style.bold: true
-}
-p1a81a381830 -> p1a81a382360: {style.stroke: "#6b7280"}
-p1a81a385160 -> p1a81a39d970: {style.stroke: "#6b7280"}
-p1a81a39d970 -> p1a81a3a4490: 0 {
-  style.stroke: "#ef4444"
-  style.stroke-width: 2
-  style.stroke-dash: 5
-  style.font-size: 14
-  style.font-color: "#dc2626"
-  style.bold: true
-}
-p1a81a382360 -> p1a81a39a2d0: 0 {
-  style.stroke: "#3b82f6"
-  style.stroke-width: 2
-  style.font-size: 14
-  style.font-color: "#2563eb"
-  style.bold: true
-}
-p1a81a382360 -> p1a81a39ab40: 1 {
-  style.stroke: "#3b82f6"
-  style.stroke-width: 2
-  style.font-size: 14
-  style.font-color: "#2563eb"
-  style.bold: true
-}
-p1a81a382360 -> p1a81a399970: 2 {
-  style.stroke: "#3b82f6"
-  style.stroke-width: 2
-  style.font-size: 14
-  style.font-color: "#2563eb"
-  style.bold: true
-}
-p1a81a39a2d0 -> p1a81a388920: {style.stroke: "#6b7280"}
-p1a81a39ab40 -> p1a81a388920: {style.stroke: "#6b7280"}
-p1a81a399970 -> p1a81a388920: {style.stroke: "#6b7280"}
-p1a81a388920 -> p1a81a388880: {style.stroke: "#6b7280"}
-p1a81a388880 -> p1a81a388240: {style.stroke: "#6b7280"}
-p1a81a388240 -> p1a81a3886a0: 0 {
-  style.stroke: "#ef4444"
-  style.stroke-width: 2
-  style.stroke-dash: 5
-  style.font-size: 14
-  style.font-color: "#dc2626"
-  style.bold: true
-}
-p1a81a388240 -> p1a81a388060: 1 {
-  style.stroke: "#ef4444"
-  style.stroke-width: 2
-  style.stroke-dash: 5
-  style.font-size: 14
-  style.font-color: "#dc2626"
-  style.bold: true
-}
-p1a81a388240 -> p1a81a388740: 2 {
-  style.stroke: "#ef4444"
-  style.stroke-width: 2
-  style.stroke-dash: 5
-  style.font-size: 14
-  style.font-color: "#dc2626"
-  style.bold: true
-}
-p1a81a388240 -> p1a81a388600: 3 {
-  style.stroke: "#ef4444"
-  style.stroke-width: 2
-  style.stroke-dash: 5
-  style.font-size: 14
-  style.font-color: "#dc2626"
-  style.bold: true
-}
-p1a81a3886a0 -> p1a81a388c40: {style.stroke: "#6b7280"}
-p1a81a388060 -> p1a81a388c40: {style.stroke: "#6b7280"}
-p1a81a388740 -> p1a81a388c40: {style.stroke: "#6b7280"}
-p1a81a388600 -> p1a81a388c40: {style.stroke: "#6b7280"}
-p1a81a388c40 -> p1a81a388a60: {style.stroke: "#6b7280"}
-}
-```
-
-</details>
-
-### dump JSON 字段说明
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | string | Flow / 节点名称 |
-| `nodes` | array | 节点列表 |
-| `nodes[].id` | string | 节点唯一标识 |
-| `nodes[].name` | string | 节点显示名称（`.name()` 设置的值） |
-| `nodes[].type` | string | `basic` / `runtime` / `branch` / `multi_branch` / `jump` / `multi_jump` / `graph` |
-| `edges` | array | 有向边列表 |
-| `edges[].from` | string | 源节点 id |
-| `edges[].to` | string | 目标节点 id |
-| `edges[].index` | int | Branch/Jump 的后继下标 |
-| `edges[].active` | bool | 是否为激活路径（渲染时区分实线/虚线） |
-| `subflows` | array | 嵌套子图，递归相同结构 |
+1. **缓存行隔离 (Cache-Line Isolation)**：
+在 `Executor` 和 `BoundedQueue` 中，严格使用 `alignas(std::hardware_destructive_interference_size)` 将多线程竞争的热点原子变量（如 `top` 和 `bottom`，`m_num_topologies`）物理隔开，彻底消灭**伪共享 (False Sharing)**。
+2. **极速内存分配 (Edge Storage Optimization)**：
+图节点 `Work` 内部将后继指针(Successors)和前驱指针(Predecessors)打包在一块连续的 `std::vector<Work*>` 中，通过游标偏移访问，省去了一次堆分配。
+3. **零开销的异常处理 (Noexcept Elision)**：
+如果你的任务闭包标记为 `noexcept`，编译器在实例化 `invoke()` 时将直接抹除包裹它的 `try-catch` 块，消除展开表开销。
+4. **无除法哈希桶 (Divisionless Distribution)**：
+随机窃取模块和 `UnboundedQueueBucket` 路由模块采用 Lemire 的无除法界限映射算法与位运算，比标准库的分配器快 20% 以上。
 
 ---
 
-## Executor API 参考
+## 🛠️ 编译要求与集成
 
-### submit — 提交 Flow
+**系统要求：**
 
-```cpp
-AsyncTask submit(Flow& flow);
-AsyncTask submit(Flow&&);
-AsyncTask submit(Flow&, std::uint64_t N);
-AsyncTask submit(Flow&, Pred&&);                     // pred: () noexcept -> bool
-AsyncTask submit(Flow&, std::uint64_t N, Callback&&);
-AsyncTask submit(Flow&, Pred&&, Callback&&);
-```
+* **C++ Standard**: C++23 或更高。
+* **Compiler**: GCC 12+, Clang 15+, MSVC 2022+ (需完全支持 Concepts, source_location)。
+* **Dependencies**: 无。（内置轻量级的 `ankerl::unordered_dense` 头文件）。
 
-### submit — 提交独立异步任务
-
-```cpp
-AsyncTask submit(BasicCallable&&);
-AsyncTask submit(RuntimeCallable&&);
-```
-
-### async — 带返回值的异步任务
-
-```cpp
-std::future<R> async(BasicCallable&&);
-std::future<R> async(RuntimeCallable&&);
-```
-
-### silent_async — 无返回值后台任务
-
-```cpp
-void silent_async(BasicCallable&&);
-void silent_async(RuntimeCallable&&);
-```
-
-### 查询
-
-```cpp
-std::size_t num_workers()    const noexcept;
-bool        is_worker()      const noexcept;   // 当前线程是否是 worker
-int         this_worker_id() const noexcept;   // -1 表示非 worker
-WorkerView  worker_view(std::size_t id) const noexcept;
-```
-
----
-
-## 性能设计
-
-### Work-Stealing 调度器
-
-每个 Worker 持有固定容量的本地有界队列（`BoundedQueue<Work*, NF_DEFAULT_QUEUE_SIZE>`，默认 4096）。执行时：
-
-1. 先从本地队列头部弹出（cache 友好的 LIFO）
-2. 本地队列空 → 尝试从共享无界队列（`UnboundedQueueBucket`）获取
-3. 仍为空 → 随机选择邻居 Worker 进行窃取（Xoshiro256** 随机数，避免偏向）
-4. 仍为空 → 通过 `Notifier` 停车等待（`atomic::wait`，无忙轮询）
-
-### 缓存友好的内存布局
-
-Executor 成员按热路径访问频率排列：
-
-```cpp
-// cache line 1：steal 循环每次迭代都访问
-const std::size_t m_num_workers;
-const std::size_t m_num_queues;
-std::vector<Worker> m_workers;
-
-// 热路径调度数据
-UnboundedQueueBucket<Work*> m_shared_queues;
-Notifier m_notifier;
-
-// 独占 cache line：高竞争原子变量，避免 false sharing
-alignas(64) std::atomic<std::size_t> m_num_topologies{0};
-
-// 冷数据（仅启动/关闭时访问）
-WorkerHandler& m_handler;
-unordered_dense::map<std::thread::id, Worker*> m_thread_worker_map;
-```
-
-### 边存储优化
-
-`Work` 节点将前继和后继合并在单个 `std::vector<Work*>` 中，节省一次堆分配：
-
-```
-m_edges: [successor_0, successor_1, ..., | predecessor_0, predecessor_1, ...]
-          <------- m_num_successors -----> <-------------- predecessors ------->
-```
-
-Branch / Jump / MultiBranch / MultiJump 的下标直接对应 `m_edges` 中后继的位置偏移，零额外查找开销。
-
-### Semaphore 零开销停车
-
-信号量阻塞时，任务通过侵入式链表停车（Work 节点内嵌 next 指针，零堆分配）。Release 时精准 handoff 给恰好能获取的等待者数量，不产生无效唤醒和重试。
-
-### 条件编译异常处理
-
-`emplace` 根据任务函数是否 `noexcept` 自动决定是否包裹 `try-catch`：
-
-```cpp
-if constexpr (std::is_nothrow_invocable_v<F, Args...>) {
-    std::invoke(task, args...);   // 零开销，无 try-catch
-} else {
-    try {
-        std::invoke(task, args...);
-    } catch (...) {
-        exe._process_exception(w);
-    }
-}
-```
-
----
-
-## 编译要求
-
-| 项目 | 要求 |
-|------|------|
-| C++ 标准 | C++23 或更高 |
-| 编译器 | GCC 12+、Clang 15+、MSVC 2022+ |
-| 依赖 | 仅标准库 + `ankerl::unordered_dense`（已内嵌） |
-| 平台 | Linux、macOS、Windows（x86-64、ARM64） |
-
-推荐编译选项：
-
-```bash
--std=c++20 -O2 -march=native
-```
-
----
-
-## 使用方式
-
-### 单头文件集成
-
-将 `taskflowlite/` 目录复制到项目中：
+**集成方式（Header-Only）：**
+由于是纯头文件库，直接将 `taskflowlite/` 目录拖入你的项目中即可：
 
 ```cpp
 #include "taskflowlite/taskflowlite.hpp"
+
 ```
 
-### CMake
+**CMake 推荐选项：**
 
 ```cmake
-add_subdirectory(taskflowlite)
-target_link_libraries(your_target PRIVATE taskflowlite::taskflowlite)
+set(CMAKE_CXX_STANDARD 23)
+target_compile_options(your_target PRIVATE -O3 -march=native)
+
 ```
 
-或通过 `find_package`（安装后）：
+---
 
-```cmake
-find_package(taskflowlite REQUIRED)
-target_link_libraries(your_target PRIVATE taskflowlite::taskflowlite)
-```
+## 🚀 性能基准测试
 
-### 性能基准示例
+测试极高密度的任务连线（100 层，每层 100 个并行任务，互相全连接，循环执行 100 次）：
 
 ```cpp
 #include "taskflowlite/taskflowlite.hpp"
@@ -1332,6 +287,7 @@ int main() {
     tfl::Flow flow;
     std::atomic<int> counter{0};
 
+    // 构建一个巨大的网状 DAG
     std::vector<std::vector<tfl::Task>> layers(LAYERS);
     for (std::size_t layer = 0; layer < LAYERS; ++layer) {
         layers[layer].reserve(PER_LAYER);
@@ -1343,15 +299,15 @@ int main() {
         if (layer > 0) {
             for (auto& prev : layers[layer - 1])
                 for (auto& curr : layers[layer])
-                    prev.precede(curr);
+                    prev.precede(curr); // 全连接
         }
     }
 
-    executor.submit(flow, 1).start().wait();   // 预热
+    executor.submit(flow, 1).start().wait();   // 预热 (Warm-up)
 
     counter.store(0);
     auto t0 = std::chrono::high_resolution_clock::now();
-    executor.submit(flow, ITERS).start().wait();
+    executor.submit(flow, ITERS).start().wait(); // 计时执行
     auto t1 = std::chrono::high_resolution_clock::now();
 
     auto ns    = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
@@ -1359,14 +315,79 @@ int main() {
     printf("tasks: %d / %zu | total: %.2f ms | per-task: %ld ns\n",
            counter.load(), total, ns / 1e6, ns / (long)total);
 }
+
 ```
 
 ---
 
-## 许可证
+## 🧪 单元测试
 
-MIT License
+TaskflowLite 使用 CMake 进行构建和测试。
+
+### 构建测试
+
+```bash
+# 配置项目（开启测试）
+cmake -S . -B build -DTASKFLOWLITE_BUILD_TESTS=ON
+
+# 编译
+cmake --build build -j4
+
+# 运行测试
+cd build && ctest --build-config Release --output-on-failure
+```
+
+### 测试覆盖
+
+测试文件位于 `test/test_taskflowlite.cpp`，包含以下测试用例：
+
+- DAG 构建与依赖关系
+- 并行任务执行
+- 条件分支 (Branch)
+- 强制跳转 (Jump)
+- 信号量 (Semaphore)
+- 子图嵌套 (Subflow)
+- 运行时动态派发
+- 异常处理
 
 ---
 
-*taskflowlite — 为追求极致性能的 C++ 并行程序而生。*
+## 📚 示例代码
+
+项目提供了 10+ 个完整示例，覆盖所有核心功能。
+
+### 运行示例
+
+```bash
+# 配置项目（开启示例）
+cmake -S . -B build -DTASKFLOWLITE_BUILD_EXAMPLES=ON
+
+# 编译所有示例
+cmake --build build -j4
+
+# 运行单个示例
+./build/examples/01_basic_dag
+```
+
+### 示例列表
+
+| 示例 | 文件 | 说明 |
+|------|------|------|
+| 基础 DAG | `01_basic_dag.cpp` | 最简单的有向无环图 |
+| 并行执行 | `02_parallel.cpp` | 并行任务调度 |
+| 循环执行 | `03_loop.cpp` | 使用 Jump 实现循环 |
+| 运行时 | `04_runtime.cpp` | 动态任务派发 |
+| 条件分支 | `05_branch.cpp` | 条件选择执行路径 |
+| 强制跳转 | `06_jump.cpp` | 状态机回跳与重试 |
+| 信号量 | `07_semaphore.cpp` | 限制任务并发数 |
+| 子图 | `08_subflow.cpp` | 图中图嵌套 |
+| 管道 | `09_pipeline.cpp` | 流水线任务编排 |
+| 导出 | `10_dump.cpp` | D2 图形导出 |
+
+---
+
+## 📄 许可证
+
+本项目采用 [MIT License](https://www.google.com/search?q=LICENSE) 开源。
+
+*TaskflowLite — 为追求极致性能的 C++ 并行程序而生。*

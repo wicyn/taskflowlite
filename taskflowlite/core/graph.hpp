@@ -1,16 +1,36 @@
-﻿#pragma once
+/// @file graph.hpp
+/// @brief 任务图容器 - DAG 节点的物理存储与生命周期管理
+/// @author WiCyn
+/// @contact https://github.com/WiCyn
+/// @date 2026-03-02
+/// @license MIT
+/// @copyright Copyright (c) 2026 WiCyn
+
+#pragma once
+
 #include <vector>
 #include "work.hpp"
 #include "topology.hpp"
+
 namespace tfl {
 
+/// @brief 任务图容器 - DAG 节点的物理存储与生命周期管理
+///
+/// @details
+/// 物理上持有一组 Work* 指针，管理其动态分配、O(1) 删除、运行前起点整理及 D2 可视化导出。
+///
+/// @par 核心职责
+/// - RAII 语义：析构时自动清理所有节点内存
+/// - O(1) 节点删除：Swap-with-last 算法
+/// - 原地分区：将入度为 0 的起点节点整理到数组前端
+///
+/// @note 线程安全：非线程安全。构建图时必须单线程，调度时 Executor 只读访问。
 class Graph {
     friend class Executor;
     friend class Flow;
     friend class Runtime;
     friend class Work;
 
-    // ---- 子类友元 ----
     TFL_WORK_SUBCLASS_FRIENDS;
 
 public:
@@ -58,24 +78,37 @@ public:
 private:
     std::vector<Work*> m_works;
 
+    // 禁用拷贝：防止双重释放
     constexpr Graph(const Graph&) = delete;
     constexpr Graph& operator=(const Graph&) = delete;
+
     constexpr Graph(Graph&& other) noexcept;
     constexpr Graph& operator=(Graph&& other) noexcept;
 
+    /// @brief 节点注册：添加到图中
     [[nodiscard]] Work* _emplace(Work* work);
+
+    /// @brief O(1) 节点删除：Swap-with-last
     constexpr void _erase(Work* const work) noexcept;
+
+    /// @brief 原地分区：提取所有起点节点到数组前端
+    /// @return 起点任务数量
     [[nodiscard]] std::size_t _set_up(Work* const parent, Topology* const t) noexcept;
+
+    /// @brief 清空所有节点
     constexpr void _clear() noexcept;
 
-    std::string _dump() const;
+    /// @brief D2 可视化导出
+    [[nodiscard]] std::string _dump() const;
     void _dump(std::ostream& ostream) const;
 };
 
+// ============================================================================
+// Implementation
+// ============================================================================
 
 constexpr Graph::Graph(Graph&& other) noexcept
-    : m_works{std::exchange(other.m_works, {})}
-{}
+    : m_works{std::exchange(other.m_works, {})} {}
 
 constexpr Graph& Graph::operator=(Graph&& other) noexcept {
     if (this != &other) {
@@ -101,8 +134,17 @@ Work* Graph::_emplace(Work* work) {
     return work;
 }
 
+/// @brief O(1) 节点删除：Swap-with-last
+///
+/// @par 算法
+/// 1. 断开该节点的所有前驱后继边
+/// 2. 用最后一个节点覆盖当前节点
+/// 3. pop_back
+///
+/// @note 节点顺序无关性：DAG 中节点遍历顺序不影响语义
 constexpr void Graph::_erase(Work* const work) noexcept {
     if (!work || work->m_graph != this) return;
+
     work->_clear_predecessors();
     work->_clear_successors();
 
@@ -114,6 +156,13 @@ constexpr void Graph::_erase(Work* const work) noexcept {
     Work::destroy(work);
 }
 
+/// @brief 原地分区：提取起点节点
+///
+/// @par 算法（类似 std::partition）
+/// 遍历数组，当发现入度为 0 的节点时，将其与前端交换。
+/// 遍历完成后，前 n 个节点即为起点任务。
+///
+/// @post 前 n 个节点为起点任务，可直接提交给调度器
 inline std::size_t Graph::_set_up(Work* const parent, Topology* const t) noexcept {
     Work** const data = m_works.data();
     std::size_t const size = m_works.size();
@@ -121,6 +170,7 @@ inline std::size_t Graph::_set_up(Work* const parent, Topology* const t) noexcep
 
     for (std::size_t i = 0; i < size; ++i) {
         data[i]->_set_up(parent, t);
+
         if (data[i]->_num_predecessors() == 0) {
             std::swap(data[i], data[n++]);
         }
@@ -130,20 +180,15 @@ inline std::size_t Graph::_set_up(Work* const parent, Topology* const t) noexcep
     return n;
 }
 
-// ============================================================================
-// D2 dump
-// ============================================================================
 inline std::string Graph::_dump() const {
     std::string out;
     out.reserve(m_works.size() * 120);
 
-    // 节点
     for (const auto* w : m_works) {
         out += w->dump();
         out += "\n";
     }
 
-    // 边
     for (const auto* w : m_works) {
         char src[24];
         std::snprintf(src, sizeof(src), "p%zx", reinterpret_cast<std::uintptr_t>(w));
@@ -169,7 +214,8 @@ inline std::string Graph::_dump() const {
                 out += "  style.font-color: \"#dc2626\"\n";
                 out += "  style.bold: true\n";
                 out += "}\n";
-            } else if (tt == TaskType::Branch || tt == TaskType::MultiBranch) {
+            }
+            else if (tt == TaskType::Branch || tt == TaskType::MultiBranch) {
                 out += ": ";
                 out += std::to_string(idx++);
                 out += " {\n";
@@ -179,7 +225,8 @@ inline std::string Graph::_dump() const {
                 out += "  style.font-color: \"#2563eb\"\n";
                 out += "  style.bold: true\n";
                 out += "}\n";
-            } else {
+            }
+            else {
                 out += ": {style.stroke: \"#6b7280\"}\n";
             }
         }
@@ -230,4 +277,4 @@ inline void Graph::_dump(std::ostream& os) const {
     }
 }
 
-}
+}  // namespace tfl
