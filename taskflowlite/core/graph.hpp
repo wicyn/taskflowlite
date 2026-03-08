@@ -1,10 +1,10 @@
 /// @file graph.hpp
 /// @brief 任务图容器 - DAG 节点的物理存储与生命周期管理
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 

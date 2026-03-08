@@ -17,4 +17,6 @@ target_link_libraries(TaskflowLiteTest
 
 # 4. 开启 CTest 测试支持
 enable_testing()
-add_test(NAME TaskflowLiteTest COMMAND TaskflowLiteTest)
+
+# 【核心修改】：在 COMMAND 后面加上 -s 和 -d yes 参数  ---- 使用VS 需要右键项目 -> 属性 -> 调试 -> 命令参数 -> 填入 -s -d yes。显示测试结果
+add_test(NAME TaskflowLiteTest COMMAND TaskflowLiteTest -s -d yes)

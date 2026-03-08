@@ -1,10 +1,10 @@
 /// @file topology.hpp
 /// @brief 执行拓扑 - 任务图的生命周期管理与状态机
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 

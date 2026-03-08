@@ -1,10 +1,10 @@
 ﻿/// @file flow.hpp
 /// @brief DAG 构建器 - 用户层任务图定义入口
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 
@@ -81,10 +81,22 @@ public:
         requires (flow_type<F> && capturable<P> && predicate<P>)
     Task emplace(F&& subflow, P&& pred);
 
-    // 批量插入多个节点，返回 tuple 以支持 auto [...] 结构化绑定
+    // ========================================================================
+    //  批量插入接口
+    // ========================================================================
+
+    // 1. 批量插入多个节点 (无参数或已通过 lambda 捕获的闭包)
+    // 返回 tuple 以支持 auto [...] 结构化绑定
+    // 批量插入（无参闭包 / Flow）
     template <typename... Ts>
-        requires (sizeof...(Ts) > 1) && (valid_task_arg<Ts> && ...)
+        requires (sizeof...(Ts) > 1) && ((callback<Ts> || flow_type<Ts>) && ...)
     auto emplace(Ts&&... tasks);
+
+    // 2. 批量插入多个带参数的节点 (通过 std::tuple / std::pair 打包)
+    // 返回 tuple 以支持 auto [...] 结构化绑定
+    template <typename... Tuples>
+        requires (sizeof...(Tuples) > 1) && (tuple_like<Tuples> && ...)
+    auto emplace(Tuples&&... task_tuples);
 
     // ========================================================================
     //  图操作接口
@@ -208,12 +220,25 @@ inline Task Flow::emplace(F&& subflow, P&& pred) {
 //  批量插入实现
 // ============================================================================
 
+// 1. 批量插入多个无参数节点
 template <typename... Ts>
-    requires (sizeof...(Ts) > 1) && (valid_task_arg<Ts> && ...)
+    requires (sizeof...(Ts) > 1) && ((callback<Ts> || flow_type<Ts>) && ...)
 inline auto Flow::emplace(Ts&&... tasks) {
+    // 直接对每个 task 调用单任务的 emplace，并打包返回
     return std::make_tuple(this->emplace(std::forward<Ts>(tasks))...);
 }
 
+// 2. 批量插入多个带参数的节点 (Tuple 重载)
+template <typename... Tuples>
+    requires (sizeof...(Tuples) > 1) && (tuple_like<Tuples> && ...)
+inline auto Flow::emplace(Tuples&&... task_tuples) {
+    return std::make_tuple(
+        std::apply(
+            [this]<typename... Args>(Args&&... args) {
+                return this->emplace(std::forward<Args>(args)...);
+            }, std::forward<Tuples>(task_tuples))...
+        );
+}
 // ============================================================================
 //  图操作实现
 // ============================================================================

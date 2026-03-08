@@ -1,10 +1,10 @@
 ﻿/// @file enums.hpp
 /// @brief 定义框架核心枚举类型，包括任务类型与可视化布局方向。
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 
@@ -14,6 +14,19 @@
 #include "traits.hpp"
 
 namespace tfl {
+// ============================================================================
+//  枚举工具
+// ============================================================================
+
+namespace impl {
+template <typename T>
+struct EnumMaxImpl;
+} // namespace impl
+
+template <typename T>
+constexpr std::int32_t EnumMax() noexcept {
+    return impl::EnumMaxImpl<T>::Value;
+}
 
 // ============================================================================
 // TaskType - 任务原子类型

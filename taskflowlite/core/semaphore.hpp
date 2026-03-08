@@ -1,10 +1,10 @@
 ﻿/// @file semaphore.hpp
 /// @brief 提供任务级别的信号量同步原语，用于限制特定任务组的并发执行数量。
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 

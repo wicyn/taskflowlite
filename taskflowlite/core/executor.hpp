@@ -1,10 +1,10 @@
 ﻿/// @file executor.hpp
 /// @brief 任务调度器核心 - Work-Stealing 并行执行引擎
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 
@@ -419,7 +419,7 @@ inline void Executor::_spawn(std::size_t num_workers) {
         wr.m_vtm = id;
         wr.m_adaptive_factor = 4;
         wr.m_max_steals = static_cast<std::uint32_t>(num_queues() * 2);
-        wr.m_rng = Xoshiro{seed, std::random_device{}};
+        wr.m_rng = Xoshiro{detail::seed, std::random_device{}};
         wr.m_dist.reset(0, num_queues() - 1);
 
         wr.m_thread = std::thread([this, id, &wr]() noexcept {
@@ -468,8 +468,8 @@ inline void Executor::_spawn(std::size_t num_workers) {
 inline Work* Executor::_wait_for_work(Worker& wr) noexcept {
 explore:
     std::size_t vtm = wr.m_vtm;
-    std::uint32_t num_steals = 0;
-    std::uint32_t const yield_limit = m_workers.size() * wr.m_adaptive_factor + wr.m_max_steals;
+    std::size_t num_steals = 0;
+    std::size_t const yield_limit = m_workers.size() * wr.m_adaptive_factor + wr.m_max_steals;
     std::size_t const shared_size = m_shared_queues.size();
 
     // Phase 1: 窃取
@@ -804,8 +804,8 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
             continue;
         }
 
-        std::uint32_t num_steals = 0;
-        std::uint32_t const yield_limit = m_workers.size() * wr.m_adaptive_factor + wr.m_max_steals;
+        std::size_t num_steals = 0;
+        std::size_t const yield_limit = m_workers.size() * wr.m_adaptive_factor + wr.m_max_steals;
         std::size_t vtm = wr.m_vtm;
 
         while (!std::invoke_r<bool>(pred)) {
@@ -1224,7 +1224,7 @@ void SubflowWork<FlowStore, P>::invoke(Executor& exe, Worker& wr, Work*& cache) 
 // ============================================================================
 
 template <typename F, typename... Args>
-void AsyncBasicWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+void AsyncBasicWork<F, Args...>::invoke(Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func)))
             std::invoke(m_func);
@@ -1242,7 +1242,7 @@ void AsyncBasicWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache)
 }
 
 template <typename F, typename... Args>
-void AsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+void AsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
     Runtime rt(*this, wr, *this->m_topology, exe);
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func, rt)))
@@ -1265,7 +1265,7 @@ void AsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cach
 // ============================================================================
 
 template <typename F, typename R, typename... Args>
-void AsyncBasicPromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+void AsyncBasicPromiseWork<F, R, Args...>::invoke(Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
     auto _do_invoke = [&]() {
         if constexpr (sizeof...(Args) == 0) {
             return std::invoke(m_func);
@@ -1312,7 +1312,7 @@ void AsyncBasicPromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, Wor
 }
 
 template <typename F, typename R, typename... Args>
-void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
+void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
     Runtime rt(*this, wr, *this->m_topology, exe);
 
     auto _do_invoke = [&]() {

@@ -1,13 +1,21 @@
 ﻿/// @file traits.hpp
 /// @brief 提供框架核心类型约束概念（Concepts）与类型萃取工具，用于编译期类型检查与推导。
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+///
+/// @details
+/// **unwrap_ref_decay_t 行为概要**
+///
+/// 框架中存储的 callable 类型均经过 `std::unwrap_ref_decay_t<T>` 处理
+/// （先 decay 再解包 reference_wrapper）。详细推导见 docs/reference_wrapper_notes.md。
+///
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 
+#include <array>
 #include <concepts>
 #include <functional>
 #include <type_traits>
@@ -108,19 +116,31 @@ void invoke_like(F&& f, Args&&... args) {
    结果 / Result: int& & 折叠为 int&。
 
 */
-
 namespace detail {
 
-/// @brief 检查类型是否为 std::reference_wrapper 包装
+// ============================================================================
+//  reference_wrapper 探测
+// ============================================================================
+
+/// @brief 检查类型是否为 std::reference_wrapper 特化
 template <typename T>
 struct is_reference_wrapper : std::false_type {};
 
 template <typename T>
 struct is_reference_wrapper<std::reference_wrapper<T>> : std::true_type {};
 
-/// @brief 检查类型是否被 reference_wrapper 包装
+/// @brief 检查 **原始类型** 是否为 reference_wrapper（不做隐式 decay）
 template <typename T>
-inline constexpr bool is_reference_wrapper_v = is_reference_wrapper<std::decay_t<T>>::value;
+inline constexpr bool is_reference_wrapper_v = is_reference_wrapper<T>::value;
+
+/// @brief 检查 decay 后是否为 reference_wrapper
+/// @note 与 is_reference_wrapper_v 的区别：显式对 T 做 decay，语义更透明。
+template <typename T>
+inline constexpr bool is_reference_wrapper_after_decay_v = is_reference_wrapper<std::decay_t<T>>::value;
+
+// ============================================================================
+//  wrap / unwrap 运行时工具
+// ============================================================================
 
 /// @brief 左值引用包装函数。
 /// @return 左值返回 std::ref 包装，右值直接转发。
@@ -133,7 +153,7 @@ template <typename T>
     }
 }
 
-/// @brief 获取包装函数的返回类型。
+/// @brief 获取 wrap 函数的返回类型
 template <typename T>
 using wrap_t = decltype(wrap(std::declval<T>()));
 
@@ -141,37 +161,47 @@ using wrap_t = decltype(wrap(std::declval<T>()));
 /// @return 如果有 reference_wrapper 包装则返回解包后的左值引用，否则原样转发。
 template <typename T>
 [[nodiscard]] constexpr decltype(auto) unwrap(T&& t) noexcept {
-    if constexpr (is_reference_wrapper_v<T>) {
+    if constexpr (is_reference_wrapper_after_decay_v<T>) {
         return t.get();
     } else {
         return std::forward<T>(t);
     }
 }
 
-/// @brief 获取解包函数的返回类型。
+// ============================================================================
+//  tuple_like 探测
+// ============================================================================
+
 template <typename T>
-using unwrap_t = decltype(unwrap(std::declval<T>()));
+struct is_tuple_like_impl : std::false_type {};
+
+template <typename... Args>
+struct is_tuple_like_impl<std::tuple<Args...>> : std::true_type {};
 
 } // namespace detail
 
 // ============================================================================
-//  Concepts - 类型约束
+//  Concepts — 基础类型约束
 // ============================================================================
+
+/// @brief C++20 tuple-like 概念，匹配 std::tuple / std::pair / std::array
+template <typename T>
+concept tuple_like = detail::is_tuple_like_impl<std::remove_cvref_t<T>>::value;
 
 /// @brief 核心捕获约束：确保给定的所有类型均能被框架安全地持久化存储。
 ///
-/// 满足以下任一条件即视为可捕获：
+/// @details
+/// **满足以下任一条件即视为可捕获：**
+///
 /// 1. 已被 std::ref 或 std::cref 显式包装。
 /// 2. 是右值且具备移动构造能力（接管临时对象的所有权）。
 /// 3. 是左值引用且具备拷贝构造能力。
 template <typename... Ts>
 concept capturable = ((
-                            detail::is_reference_wrapper_v<Ts> ||                                     // std::ref -> OK
-                            (!std::is_lvalue_reference_v<Ts> &&
-                             std::is_move_constructible_v<std::decay_t<Ts>>) ||                // 右值且可移动 -> OK
-                            (std::is_lvalue_reference_v<Ts> &&
-                             std::is_copy_constructible_v<std::decay_t<Ts>>)                   // 左值且可拷贝 -> OK
-                            ) && ...);
+                          detail::is_reference_wrapper_after_decay_v<Ts> ||
+                          (!std::is_lvalue_reference_v<Ts> && std::is_move_constructible_v<std::decay_t<Ts>>) ||
+                          ( std::is_lvalue_reference_v<Ts> && std::is_copy_constructible_v<std::decay_t<Ts>>)
+                          ) && ...);
 
 /// @brief 检查是否为有效的谓词类型
 template <typename P, typename... Args>
@@ -194,81 +224,63 @@ template <typename F>
 concept flow_type = std::same_as<std::remove_cvref_t<F>, Flow>;
 
 // ============================================================================
-//  任务节点类型约束
+//  Concepts — 任务节点类型约束
+//
+//  类型参数中的 Args 经过 std::unwrap_ref_decay_t 处理，
+//  与框架实际存储和传递 callable 参数的类型一致。
 // ============================================================================
 
 template <typename T, typename... Args>
 concept basic_invocable =
-    std::invocable<std::decay_t<T>&, detail::unwrap_t<Args>&...>;
+    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>;
 
 template <typename T, typename... Args>
 concept branch_invocable =
-    std::invocable<std::decay_t<T>&, detail::unwrap_t<Args>&..., Branch&>;
+    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>;
 
 template <typename T, typename... Args>
 concept multi_branch_invocable =
-    std::invocable<std::decay_t<T>&, detail::unwrap_t<Args>&..., MultiBranch&>;
+    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>;
 
 template <typename T, typename... Args>
 concept jump_invocable =
-    std::invocable<std::decay_t<T>&, detail::unwrap_t<Args>&..., Jump&>;
+    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>;
 
 template <typename T, typename... Args>
 concept multi_jump_invocable =
-    std::invocable<std::decay_t<T>&, detail::unwrap_t<Args>&..., MultiJump&>;
+    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>;
 
 template <typename T, typename... Args>
 concept runtime_invocable =
-    std::invocable<std::decay_t<T>&, detail::unwrap_t<Args>&..., Runtime&>;
+    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>;
 
 // ============================================================================
 //  返回类型推导
 // ============================================================================
 
 template <typename T, typename... Args>
-using basic_return_t = std::invoke_result_t<std::decay_t<T>&, detail::unwrap_t<Args>&...>;
+using basic_return_t =
+    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>;
 
 template <typename T, typename... Args>
-using branch_return_t = std::invoke_result_t<std::decay_t<T>&, detail::unwrap_t<Args>&..., Branch&>;
+using branch_return_t =
+    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>;
 
 template <typename T, typename... Args>
-using multi_branch_return_t = std::invoke_result_t<std::decay_t<T>&, detail::unwrap_t<Args>&..., MultiBranch&>;
+using multi_branch_return_t =
+    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>;
 
 template <typename T, typename... Args>
-using jump_return_t = std::invoke_result_t<std::decay_t<T>&, detail::unwrap_t<Args>&..., Jump&>;
+using jump_return_t =
+    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>;
 
 template <typename T, typename... Args>
-using multi_jump_return_t = std::invoke_result_t<std::decay_t<T>&, detail::unwrap_t<Args>&..., MultiJump&>;
+using multi_jump_return_t =
+    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>;
 
 template <typename T, typename... Args>
-using runtime_return_t = std::invoke_result_t<std::decay_t<T>&, detail::unwrap_t<Args>&..., Runtime&>;
-
-// ============================================================================
-//  任务节点综合类型约束
-// ============================================================================
-
-template <typename T, typename... Args>
-concept valid_task_arg =
-    (capturable<T, Args...> && basic_invocable<T, Args...>) ||
-    (capturable<T, Args...> && branch_invocable<T, Args...>) ||
-    (capturable<T, Args...> && multi_branch_invocable<T, Args...>) ||
-    (capturable<T, Args...> && jump_invocable<T, Args...>) ||
-    (capturable<T, Args...> && multi_jump_invocable<T, Args...>) ||
-    (capturable<T, Args...> && runtime_invocable<T, Args...>) ||
-    flow_type<T>;
-
-// ============================================================================
-//  枚举工具
-// ============================================================================
-
-namespace impl {
-template <typename T>
-struct EnumMaxImpl;
-} // namespace impl
-
-template <typename T>
-constexpr std::int32_t EnumMax() noexcept {
-    return impl::EnumMaxImpl<T>::Value;
-}
+using runtime_return_t =
+    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>;
 
 } // namespace tfl
+

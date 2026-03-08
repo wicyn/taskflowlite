@@ -1,4 +1,4 @@
-# TaskflowLite Examples
+﻿# TaskflowLite Examples
 # ======================
 
 # Add all example executables
@@ -13,6 +13,7 @@ set(EXAMPLES
     08_subflow
     09_pipeline
     10_dump
+    11_flow_emplace
     main
 )
 

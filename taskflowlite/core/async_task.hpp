@@ -1,10 +1,10 @@
 ﻿/// @file async_task.hpp
 /// @brief 提供异步任务的轻量级句柄 AsyncTask 及其 RAII 管理工具 AsyncGuard。
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 

@@ -1,10 +1,10 @@
 ﻿/// @file branch.hpp
 /// @brief 提供条件分支控制器，通过 join_counter 差额机制实现 DAG 内的动态路由。
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 

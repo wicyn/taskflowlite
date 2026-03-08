@@ -1,10 +1,10 @@
 /// @file exception.hpp
 /// @brief 提供框架专用异常类，支持源码位置记录与格式化错误消息。
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 

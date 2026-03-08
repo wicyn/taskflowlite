@@ -1,10 +1,10 @@
 /// @file unbounded_queue.hpp
 /// @brief 提供可动态增长的无界环形队列，用于任务分发。
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 

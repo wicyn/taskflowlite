@@ -1,10 +1,10 @@
 /// @file unbounded_queue_bucket.hpp
 /// @brief 提供无界队列桶，用于多线程任务分发时的负载均衡。
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 

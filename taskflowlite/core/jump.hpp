@@ -1,10 +1,10 @@
 ﻿/// @file jump.hpp
 /// @brief 提供无条件跳转控制器，绕过 DAG 计数器直接将目标置为就绪并调度。
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 

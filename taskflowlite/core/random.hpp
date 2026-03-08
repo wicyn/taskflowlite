@@ -1,10 +1,10 @@
 ﻿/// @file random.hpp
 /// @brief 提供高性能随机数生成器，用于 Work-Stealing 调度中的任务窃取策略。
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 
@@ -36,8 +36,11 @@ concept uniform_random_bit_generator =
                  typename std::remove_cvref_t<G>::result_type>;
 }  // namespace impl
 
+namespace detail {
 /// @brief 公开的种子标记
 inline constexpr impl::seed_t seed = {};
+
+}
 
 /// @brief 随机数引擎约束
 template <typename G>
@@ -224,7 +227,7 @@ private:
         auto lo = static_cast<result_type>(m);
 
         if (lo < s) [[unlikely]] {
-            result_type threshold = -s % s;
+            result_type threshold = (0ull - s) % s;
             while (lo < threshold) {
                 x = rng();
                 m = Wide(x) * s;
@@ -240,7 +243,7 @@ private:
         lo = _umul128(x, s, &hi);
 
         if (lo < s) [[unlikely]] {
-            result_type threshold = -s % s;
+            result_type threshold = (0ull - s) % s;
             while (lo < threshold) {
                 x = rng();
                 lo = _umul128(x, s, &hi);
@@ -251,7 +254,7 @@ private:
 #else  \
         // Why: 要是不幸跑在了 32 位老爷机或者稀奇古怪的平台上， \
         // 那只能老老实实退回去用经典的求模取余法（慢是慢了点，但安全）。
-        result_type threshold = -s % s;
+        result_type threshold = (0ull - s) % s;
         while (x < threshold) {
             x = rng();
         }

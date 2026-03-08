@@ -1,10 +1,10 @@
 ﻿/// @file utility.hpp
 /// @brief taskflowlite 框架通用工具集，提供类型安全转换、CRTP 基类与反射包装器等基础支持。
-/// @author WiCyn
-/// @contact https://github.com/WiCyn
+/// @author wicyn
+/// @contact https://github.com/wicyn
 /// @date 2026-03-02
 /// @license MIT
-/// @copyright Copyright (c) 2026 WiCyn
+/// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
 
