@@ -1,55 +1,61 @@
-
-# taskflowlite
 # 🚀 TaskflowLite (tfl)
-**TaskflowLite (tfl)** 是一个受 [Taskflow](https://github.com/taskflow/taskflow) 启发，但在底层全面拥抱 **C++23 现代化范式** 的轻量级并发调度库。它专注于**极致性能与类型安全**，通过无锁环形队列 (Lock-free Ring Buffer)、工作窃取 (Work-Stealing) 算法以及强悍的编译期 `Concepts` 约束，帮助开发者以极低的抽象开销，轻松应对复杂的并发拓扑、动态路由与异步调度。
 
-## 📑 目录
+**An ultra-fast, lock-free, zero-overhead task scheduling and DAG orchestration engine for modern C++23**
 
-* [✨ 为什么选择 TaskflowLite？](https://www.google.com/search?q=%23-%E4%B8%BA%E4%BB%80%E4%B9%88%E9%80%89%E6%8B%A9-taskflowlite)
-* [📦 快速开始](https://www.google.com/search?q=%23-%E5%BF%AB%E9%80%9F%E5%BC%80%E5%A7%8B)
-* [🧠 核心特性与 API](https://www.google.com/search?q=%23-%E6%A0%B8%E5%BF%83%E7%89%B9%E6%80%A7%E4%B8%8E-api)
-* [1. 批量插入与 DAG 编排](https://www.google.com/search?q=%231-%E6%89%B9%E9%87%8F%E6%8F%92%E5%85%A5%E4%B8%8E-dag-%E7%BC%96%E6%8E%92)
-* [2. 运行时动态挂载 (Runtime)](https://www.google.com/search?q=%232-%E8%BF%90%E8%A1%8C%E6%97%B6%E5%8A%A8%E6%80%81%E6%8C%82%E8%BD%BD-runtime)
-* [3. 静态路由与状态机 (Branch & Jump)](https://www.google.com/search?q=%233-%E9%9D%99%E6%80%81%E8%B7%AF%E7%94%B1%E4%B8%8E%E7%8A%B6%E6%80%81%E6%9C%BA-branch--jump)
-* [4. 任务级并发限流 (Semaphore)](https://www.google.com/search?q=%234-%E4%BB%BB%E5%8A%A1%E7%BA%A7%E5%B9%B6%E5%8F%91%E9%99%90%E6%B5%81-semaphore)
-* [5. 图中图嵌套 (Subflow)](https://www.google.com/search?q=%235-%E5%9B%BE%E4%B8%AD%E5%9B%BE%E5%B5%8C%E5%A5%97-subflow)
+[![Standard](https://img.shields.io/badge/C%2B%2B-23-blue.svg?logo=c%2B%2B)](https://en.cppreference.com/w/cpp/23)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Header Only](https://img.shields.io/badge/Header--Only-Yes-success)](#)
 
-
-* [🛡️ 现代 C++23 黑魔法设计](https://www.google.com/search?q=%23-%E7%8E%B0%E4%BB%A3-c23-%E9%BB%91%E9%AD%94%E6%B3%95%E8%AE%BE%E8%AE%A1)
-* [🎨 D2 可视化拓扑导出](https://www.google.com/search?q=%23-d2-%E5%8F%AF%E8%A7%86%E5%8C%96%E6%8B%93%E6%89%91%E5%AF%BC%E5%87%BA)
-* [⚙️ 极致的性能优化](https://www.google.com/search?q=%23-%E6%9E%81%E8%87%B4%E7%9A%84%E6%80%A7%E8%83%BD%E4%BC%98%E5%8C%96)
-* [🛠️ 编译要求与集成](https://www.google.com/search?q=%23-%E7%BC%96%E8%AF%91%E8%A6%81%E6%B1%82%E4%B8%8E%E9%9B%86%E6%88%90)
-* [🚀 性能基准测试](https://www.google.com/search?q=%23-%E6%80%A7%E8%83%BD%E5%9F%BA%E5%87%86%E6%B5%8B%E8%AF%95)
+**[中文文档](README.zh.md) · [English](README.md)**
 
 ---
 
-## ✨ 为什么选择 TaskflowLite？
+**TaskflowLite (tfl)** is a lightweight concurrent scheduling library inspired by [Taskflow](https://github.com/taskflow/taskflow), rebuilt from the ground up with **C++23 modern paradigms**. It focuses on **peak performance and type safety** — featuring a lock-free ring buffer, work-stealing scheduler, and powerful compile-time `Concepts` constraints — enabling developers to handle complex concurrent topologies, dynamic routing, and async dispatch with near-zero abstraction overhead.
 
-* 🪶 **Header-Only & 零依赖**：只需将代码拖入项目即可使用（内部仅集成极速的 `ankerl::unordered_dense`）。
-* ⚡ **极致的工作窃取 (Work-Stealing)**：基于 `Xoshiro256**` 伪随机数发生器与无锁有界队列，实现千万级任务的亚毫秒级调度。
-* 🛡️ **安全的泛型编程**：首创 **Arity-Guard (参数数量守卫)**，完美支持 `[](auto x)` 泛型 Lambda，彻底消灭模板推导引发的 Hard Error。
-* 🔀 **强大的控制流**：原生支持条件分支 (`Branch`)、强制跳转/重试 (`Jump`)，复用底层依赖计数器，真正做到**零额外分配开销**。
-* 🛑 **防死锁协作等待**：等待 Future 或子图时，线程绝不系统级阻塞，而是主动窃取旁路任务，榨干 CPU 最后一丝算力。
+## 📑 Table of Contents
 
----
-
-## ✨ 核心特性
-
-* **⚡ 极致的 Work-Stealing 调度**：每个 Worker 维护本地有界无锁队列，空闲时通过 `Xoshiro256**` 极速随机数从共享无界队列或邻居窃取任务，最大化 CPU 利用率。
-* **🕸️ 强大的 DAG 拓扑编排**：直观的 `precede` / `succeed` 链式 API，支持任意复杂的依赖关系与图中图（Subflow）嵌套。
-* **🔀 运行期动态流控**：内置 `Branch` (条件分支) 与 `Jump` (强制跳转/循环) 机制，完美复用底层依赖计数器，零额外开销。
-* **⏳ 协作式等待 (Cooperative Wait)**：在 `Runtime` 中等待 Future 或子图时，线程绝不阻塞休眠，而是主动窃取其他任务执行，彻底告别系统级死锁。
-* **🚦 任务级信号量**：`Semaphore` 精确限制任务并发数，获取失败时将任务“停车”挂起，不占用底层 Worker 线程。
-* **🛡️ 现代 C++23 契约驱动**：深度使用 C++23 `Concepts` 进行编译期严格类型安检；利用 `noexcept` 智能擦除冗余的 `try-catch` 汇编块。
-* **📊 D2 可视化一键导出**：原生支持将运行期的复杂任务图直接 `dump()` 为 D2 声明式图形代码，轻松生成架构图。
+* [✨ Why TaskflowLite?](#-why-taskflowlite)
+* [✨ Core Features](#-core-features)
+* [🏗️ Architecture Overview](#-architecture-overview)
+* [📦 Quick Start](#-quick-start)
+* [🧠 Core Features & API](#-core-features--api)
+* [🛡️ Modern C++23 Design Techniques](#-modern-c23-design-techniques)
+* [🗂️ Task Type Cheat Sheet](#-task-type-cheat-sheet)
+* [🎨 D2 Graph Visualization Export](#-d2-graph-visualization-export)
+* [⚙️ Performance Optimizations](#-performance-optimizations)
+* [🛠️ Build Requirements & Integration](#-build-requirements--integration)
+* [🚀 Benchmarks](#-benchmarks)
+* [📄 License](#-license)
 
 ---
 
-## 🏗️ 架构概览
+## ✨ Why TaskflowLite?
+
+* 🪶 **Header-Only & Zero Dependencies**: Drop the headers into your project and go. (Internally bundles only the blazing-fast `ankerl::unordered_dense`.)
+* ⚡ **Extreme Work-Stealing**: Built on a `Xoshiro256**` PRNG and a lock-free bounded queue, delivering sub-millisecond scheduling for tens of millions of tasks.
+* 🛡️ **Safe Generic Programming**: A first-of-its-kind **Arity-Guard** provides perfect support for `[](auto x)` generic lambdas, eliminating Hard Errors from template deduction failures.
+* 🔀 **Powerful Control Flow**: Native conditional branching (`Branch`) and forced jumps/retries (`Jump`) reuse the underlying dependency counter — truly **zero extra allocation overhead**.
+* 🛑 **Deadlock-Safe Cooperative Waiting**: Waiting on a future or subgraph never system-blocks the thread; it actively steals side-channel tasks and squeezes every last cycle out of the CPU.
+
+---
+
+## ✨ Core Features
+
+* **⚡ Extreme Work-Stealing Scheduling**: Each worker maintains a local bounded lock-free queue. When idle, it uses `Xoshiro256**` random numbers to steal from a shared unbounded queue or from neighbors — maximizing CPU utilization.
+* **🕸️ Powerful DAG Topology Orchestration**: Intuitive `precede` / `succeed` chaining API supporting arbitrary complex dependency graphs and nested subflows (graph-in-graph).
+* **🔀 Runtime Dynamic Flow Control**: Built-in `Branch` (conditional routing) and `Jump` (forced jumps/loops) mechanisms that fully reuse the underlying dependency counter with zero additional overhead.
+* **⏳ Cooperative Waiting**: When waiting on a future or subgraph inside a `Runtime`, the thread never sleeps — it actively steals other tasks, eliminating system-level deadlocks.
+* **🚦 Task-Level Semaphore**: `Semaphore` precisely limits task concurrency. Tasks that fail to acquire are "parked" without occupying a worker thread.
+* **🛡️ Modern C++23 Contract-Driven Design**: Deep use of C++23 `Concepts` for strict compile-time type checking; `noexcept` elides redundant `try-catch` assembly blocks.
+* **📊 One-Click D2 Visualization Export**: Natively dump complex runtime task graphs as D2 declarative diagram code for instant architecture visualization.
+
+---
+
+## 🏗️ Architecture Overview
 
 ```text
 ┌─────────────────────────────────────────────────────────┐
-│                        用户代码                         │
+│                       User Code                         │
 │  Flow  →  emplace(task)  →  Task  →  precede/succeed    │
 │  Executor::submit(flow, N)  →  AsyncTask::start().wait()│
 └────────────────────┬────────────────────────────────────┘
@@ -58,37 +64,38 @@
 │                    Executor                             │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
 │  │ Worker 0 │  │ Worker 1 │  │ Worker N │               │
-│  │ BoundedQ │  │ BoundedQ │  │ BoundedQ │  ← 本地队列   │
+│  │ BoundedQ │  │ BoundedQ │  │ BoundedQ │  ← Local Queue│
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘               │
 │       │   work-steal│             │                     │
 │  ┌────▼─────────────▼─────────────▼──────┐              │
-│  │          UnboundedQueueBucket         │ ← 共享队列   │
+│  │          UnboundedQueueBucket         │ ← Shared Q   │
 │  └───────────────────────────────────────┘              │
-│  Notifier (基于原子 wait 的防丢失唤醒中枢)              │
+│  Notifier (atomic wait-based, loss-free wakeup hub)     │
 └─────────────────────────────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────────┐
-│                    Work (内部物理节点)                  │
+│               Work (Internal Physical Node)             │
 │  m_edges: [successors... | predecessors...]             │
 │  m_join_counter, m_topology, m_observers?, m_semaphores?│
 └─────────────────────────────────────────────────────────┘
-
 ```
 
-## 📦 快速开始
+---
 
-一个简单却强大的有向无环图 (DAG) 示例 ：
+## 📦 Quick Start
+
+A simple yet powerful DAG example:
 
 ```cpp
 #include "taskflowlite/taskflowlite.hpp"
 #include <iostream>
 
 int main() {
-    tfl::ResumeNever handler;            // 异常策略：遇到未捕获异常立刻终止
-    tfl::Executor executor(handler, 4);  // 启动 4 个物理工作线程
+    tfl::ResumeNever handler;            // Exception policy: terminate on uncaught exception
+    tfl::Executor executor(handler, 4);  // Launch 4 worker threads
     tfl::Flow flow;
 
-    // 1. 创建任务 (完美支持 C++17 结构化绑定)
+    // 1. Create tasks (C++17 structured bindings natively supported)
     auto [A, B, C, D] = flow.emplace(
         [] { std::cout << "Task A (Init)\n"; },
         [] { std::cout << "Task B (Process 1)\n"; },
@@ -96,225 +103,215 @@ int main() {
         [] { std::cout << "Task D (Merge)\n"; }
     );
 
-    // 2. 编排拓扑: A 执行完后 B 和 C 并行，最后执行 D
+    // 2. Wire the topology: A runs first, then B and C in parallel, then D
     A.precede(B, C);
     D.succeed(B, C);
 
-    // 3. 提交并同步等待
+    // 3. Submit and wait for completion
     executor.submit(flow).start().wait();
-    
+
     return 0;
 }
-
 ```
 
 ---
 
-## 🧠 核心特性与 API
+## 🧠 Core Features & API
 
-### 1. 批量插入与 DAG 编排
+### 1. Bulk Insertion & DAG Orchestration
 
-TaskflowLite 支持无缝解包 `std::tuple` 和完美转发，让你可以极度优雅地传递参数和 `std::ref`，告别冗长的 Lambda 捕获。
+TaskflowLite supports seamless `std::tuple` unpacking and perfect forwarding, making it trivial to pass arguments and `std::ref` without verbose lambda captures.
 
 ```cpp
 tfl::Flow flow;
 int counter = 0;
 
-// 使用 Tuple 批量插入带参数的任务
+// Bulk-insert tasks with arguments via tuple
 auto [t1, t2] = flow.emplace(
     std::tuple{[](int a) { std::cout << "Val: " << a << "\n"; }, 42},
-    std::tuple{[](int& c) { c = 100; }, std::ref(counter)} // 零拷贝引用传递
+    std::tuple{[](int& c) { c = 100; }, std::ref(counter)} // Zero-copy reference passing
 );
 t1.precede(t2);
-
 ```
 
-### 2. 运行时动态挂载 (Runtime)
+### 2. Runtime Dynamic Dispatch
 
-当任务签名包含 `tfl::Runtime&` 时，任务将在执行期获得操控调度器的特权。
+When a task signature includes `tfl::Runtime&`, the task gains the ability to control the scheduler during execution.
 
 ```cpp
 flow.emplace([](tfl::Runtime& rt) {
-    // 动态派发子任务并获取 Future
+    // Dynamically dispatch a subtask and get a future
     auto fut = rt.async([](int x) { return x * 2; }, 21);
 
-    // 协作式等待：线程不会挂起，而是去窃取执行其他队列的任务！
+    // Cooperative wait: the thread does NOT block — it steals and runs other tasks!
     rt.wait_until([&] {
         return fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
     });
 
     std::cout << "Result: " << fut.get() << "\n";
 });
-
 ```
 
-### 3. 静态路由与状态机 (Branch & Jump)
+### 3. Static Routing & State Machines (Branch & Jump)
 
-复用 DAG 引擎实现 `if-else` 与 `while` 循环逻辑。
+Reuse the DAG engine to express `if-else` and `while` loop logic natively.
 
 ```cpp
 // ==========================================
-// Branch: 动态决定走哪条分支
+// Branch: dynamically choose a path
 // ==========================================
-auto start = flow.emplace([] { puts("Start"); }); // 明确的无依赖起点
+auto start = flow.emplace([] { puts("Start"); }); // Explicit entry point
 
 auto check = flow.emplace([](tfl::Branch& br) {
-    br.allow(1); // 激活下标为 1 (failure) 的后继节点，跳过 0
+    br.allow(1); // Activate successor at index 1 (failure), skip 0
 });
 auto success = flow.emplace([] { puts("OK"); });
 auto failure = flow.emplace([] { puts("Fail"); });
 
-start.precede(check);            // 连线起点
-check.precede(success, failure); // 按照 0, 1 顺序绑定后继
+start.precede(check);            // Wire the entry point
+check.precede(success, failure); // Bind successors in order: 0, 1
 
 // ==========================================
-// Jump: 失败重试循环
+// Jump: retry loop on failure
 // ==========================================
-auto init = flow.emplace([] { puts("Init"); });   // 明确的无依赖起点
+auto init = flow.emplace([] { puts("Init"); }); // Explicit entry point
 
-auto process = flow.emplace([]{ /* 业务逻辑 */ });
+auto process = flow.emplace([]{ /* business logic */ });
 auto retry = flow.emplace([](tfl::Jump& jmp) {
-    if (need_retry()) jmp.to(0); // 触发跳转，拉回 target 0 并重置其依赖
+    if (need_retry()) jmp.to(0); // Jump: pull back target 0 and reset its dependency count
 });
 
-init.precede(process);   // 连线起点：系统从这里进入
+init.precede(process);   // Entry point: execution begins here
 process.precede(retry);
-retry.precede(process);  // 闭环连线：将 process 设为 Jump 的 0 号 target
-                         // (注：底层设计中 Jump 连线的初始权重为 0，不会引发静态图死锁)
-
+retry.precede(process);  // Close the loop: process becomes Jump's target 0
+                         // (Note: Jump edges have initial weight 0, preventing static graph deadlock)
 ```
 
-### 4. 任务级并发限流 (Semaphore)
+### 4. Task-Level Concurrency Throttling (Semaphore)
 
-限制特定资源（如 GPU、数据库连接）的并发度，超额任务将被挂起，且**不阻塞 Worker 线程**。
+Precisely limit concurrency for specific resources (e.g., GPU, database connections). Tasks exceeding the limit are suspended without blocking worker threads.
 
 ```cpp
-tfl::Semaphore db_limit(2); // 全局最多 2 个并发
+tfl::Semaphore db_limit(2); // At most 2 concurrent DB operations globally
 
 for (int i = 0; i < 10; ++i) {
-    auto t = flow.emplace([i] { /* 操作数据库 */ });
-    t.acquire(db_limit).release(db_limit); // 声明配额消耗
+    auto t = flow.emplace([i] { /* access database */ });
+    t.acquire(db_limit).release(db_limit); // Declare resource consumption
 }
-
 ```
 
-### 5. 图中图嵌套 (Subflow)
+### 5. Graph-in-Graph Nesting (Subflow)
 
-支持将一整张 Flow 作为节点嵌套进主图中，甚至支持**基于谓词的动态循环执行**。
+Embed an entire `Flow` as a single node inside a parent graph, with optional **predicate-driven loop execution**.
 
 ```cpp
 tfl::Flow subflow;
 subflow.emplace([]{ puts("Subflow tick"); });
 
 int loops = 0;
-// 将 subflow 挂载到主图，并基于 Lambda 谓词循环执行
+// Mount subflow into the main graph with a loop predicate
 flow.emplace(std::move(subflow), [&loops]() mutable noexcept {
-    return ++loops >= 5; 
+    return ++loops >= 5; // Stop after 5 iterations
 });
-
 ```
 
 ---
 
-## 🛡️ 现代 C++23 黑魔法设计
+## 🛡️ Modern C++23 Design Techniques
 
-TaskflowLite 内部包含大量针对现代 C++ 的尖端防御性编程设计：
+TaskflowLite employs numerous cutting-edge defensive programming patterns:
 
-* **泛型 Lambda 保护 (Arity-Guard)**：传统 TMP 在遇到 `[](auto x)` 配合 `std::invocable` 探测时，极易引发函数体非法实例化的 Hard Error。TFL 底层基于 `requires` 表达式实现了参数数量嗅探，完美支持无约束泛型闭包。
-* **引用折叠透明化 (`std::ref` Unwrap)**：框架底层存储闭包时使用 `unwrap_ref_decay_t`，允许用户像使用 `std::thread` 一样，通过 `std::ref` 零拷贝地传递状态，且 Concept 验证能精准识别其真实引用类型。
-* **Tag Dispatching 优先级路由**：消灭了因 `std::bind` 类型擦除导致的重载决议二义性，使编译报错精准、清晰。
+* **Generic Lambda Guard (Arity-Guard)**: Traditional TMP easily triggers Hard Errors when probing `[](auto x)` with `std::invocable`. TFL uses `requires` expressions for arity sniffing, perfectly supporting unconstrained generic closures.
+* **Reference Unwrapping Transparency (`std::ref` Unwrap)**: The framework stores closures using `unwrap_ref_decay_t`, allowing users to pass state via `std::ref` with zero copies — just like `std::thread` — while Concept validation sees the true underlying reference type.
+* **Tag Dispatching Priority Routing**: Eliminates overload resolution ambiguity caused by `std::bind` type erasure, producing precise and readable compile errors.
 
 ---
 
+## 🗂️ Task Type Cheat Sheet
 
-## 🗂️ 任务类型速查表
+`emplace` uses C++23 Concepts to automatically deduce your closure signature — no explicit type tagging required:
 
-`emplace` 会利用 C++23 Concepts 自动推导你的闭包签名，无需显式指定类型：
-
-| 函数签名 | 类型推导 | 功能说明 | 图形化标识 |
+| Signature | Deduced Type | Description | Visual Style |
 | --- | --- | --- | --- |
-| `[]()` | **Basic** | 普通顺序任务，零抽象开销 | 灰色矩形 |
-| `[](tfl::Runtime&)` | **Runtime** | 动态派发新任务、协作式阻塞等待 | 粉色矩形 |
-| `[](tfl::Branch)` | **Branch** | 单路条件选择（激活 1 条路径） | 蓝色菱形 |
-| `[](tfl::MultiBranch)` | **MultiBranch** | 多路并行分发（激活 N 条路径） | 蓝色六边形 |
-| `[](tfl::Jump)` | **Jump** | 强制状态机回跳（支持循环重试） | 红色菱形(虚线) |
-| `[](tfl::MultiJump)` | **MultiJump** | 并行散射强制跳转（扇出） | 红色六边形(虚线) |
-| 传入 `Flow` 对象 | **Subflow** | 将一整张图作为一个节点嵌套执行 | 绿色分组框 |
+| `[]()` | **Basic** | Plain sequential task, zero abstraction overhead | Grey rectangle |
+| `[](tfl::Runtime&)` | **Runtime** | Dynamically dispatch tasks, cooperative blocking wait | Pink rectangle |
+| `[](tfl::Branch)` | **Branch** | Single-path conditional select (activates 1 path) | Blue diamond |
+| `[](tfl::MultiBranch)` | **MultiBranch** | Multi-path parallel dispatch (activates N paths) | Blue hexagon |
+| `[](tfl::Jump)` | **Jump** | Forced state-machine back-jump (supports retry loops) | Red dashed diamond |
+| `[](tfl::MultiJump)` | **MultiJump** | Parallel fan-out forced jumps | Red dashed hexagon |
+| Pass a `Flow` object | **Subflow** | Embed an entire graph as a single node | Green group box |
 
 ---
 
-## 🎨 D2 图可视化导出
+## 🎨 D2 Graph Visualization Export
 
-极其复杂的嵌套拓扑如何调试？一行代码将其导出为 D2 描述语言，利用前端工具或 [D2 官网](https://play.d2lang.com) 极速渲染。
+How do you debug an extremely complex nested topology? Export it in one line as D2 declaration language and render it instantly via [D2 Playground](https://play.d2lang.com) or local tooling.
 
 ```cpp
 std::ofstream file("pipeline.d2");
-flow.name("MyPipeline").dump(file); 
-
+flow.name("MyPipeline").dump(file);
 ```
 
 ![D2 Visualization](documentation/img/d2.svg)
 
-导出的逻辑极度清晰：**灰色实线**表示普通推演，**蓝色连线**表示条件分支抉择，**红色虚线**表示破坏拓扑的跳转回边。
+The exported graph is immediately readable: **grey solid lines** represent normal transitions, **blue lines** represent conditional branch choices, and **red dashed lines** represent topology-breaking back-edges from jumps.
 
 ---
 
-## ⚙️ 极致的性能优化
+## ⚙️ Performance Optimizations
 
-TaskflowLite 在底层死抠了每一个时钟周期：
+TaskflowLite squeezes every clock cycle at the lowest level:
 
-1. **缓存行隔离 (Cache-Line Isolation)**：严格使用 `alignas(std::hardware_destructive_interference_size)` 隔离热点原子变量（如队列的 `top/bottom`），彻底消灭多核**伪共享 (False Sharing)**。
-2. **极速边存储 (Edge Storage Optimization)**：节点 `Work` 的后继指针与前驱指针打包在同一块连续的 `std::vector<Work*>` 中，通过游标偏移访问，省去一次堆分配并提高 L1 缓存命中率。
-3. **零开销异常擦除 (Noexcept Elision)**：如果你的闭包标记为 `noexcept`，编译器在实例化 `invoke()` 时将直接抹除包裹它的 `try-catch` 汇编块。
-4. **无除法映射 (Divisionless Distribution)**：随机窃取模块采用 Lemire 的无除法界限映射算法与位运算，大幅降低 CPU 周期消耗。
+1. **Cache-Line Isolation**: Strict `alignas(std::hardware_destructive_interference_size)` on hot atomics (e.g., queue `top/bottom`) completely eliminates multicore **false sharing**.
+2. **Edge Storage Optimization**: Successor and predecessor pointers for each `Work` node are packed into a single contiguous `std::vector<Work*>`, accessed via cursor offsets — eliminating one heap allocation and improving L1 cache hit rates.
+3. **Zero-Overhead Exception Elision**: If your closure is marked `noexcept`, the compiler strips the surrounding `try-catch` assembly when instantiating `invoke()`.
+4. **Divisionless Distribution**: The random steal module uses Lemire's divisionless bounded mapping algorithm with bitwise operations, significantly reducing CPU cycle cost.
 
 ---
 
-## 🛠️ 编译要求与集成
+## 🛠️ Build Requirements & Integration
 
-**系统要求：**
+**System Requirements:**
 
-* **C++ Standard**: C++23 或更高。
-* **Compiler**: GCC 12+, Clang 15+, MSVC 2022+ (需完全支持 Concepts 与结构化绑定)。
+* **C++ Standard**: C++23 or later.
+* **Compiler**: GCC 12+, Clang 15+, MSVC 2022+ (full Concepts and structured binding support required).
 
-**集成方式（Header-Only）：**
-无需编译动态库，直接将 `taskflowlite/` 目录放入项目的 `include` 路径即可：
+**Integration (Header-Only):**
+
+No library compilation needed. Simply place the `taskflowlite/` directory on your include path:
 
 ```cpp
 #include "taskflowlite/taskflowlite.hpp"
-
 ```
 
-**CMake 推荐选项：**
+**Recommended CMake Options:**
 
 ```cmake
 set(CMAKE_CXX_STANDARD 23)
 target_compile_options(your_target PRIVATE -O3 -march=native)
-
 ```
 
 ---
 
-## 🚀 性能基准测试
+## 🚀 Benchmarks
 
-测试极高密度的全连接网状 DAG（100 层，每层 100 个任务，互相全连接，执行 100 次）：
+Testing an extremely dense fully-connected mesh DAG (100 layers × 100 tasks per layer, fully interconnected, executed 100 times):
 
 ```cpp
-// 详见 benchmark/benchmark.cpp
-// 构建 100x100 的全连接矩阵网络
+// See benchmark/benchmark.cpp for full code
+// Build a 100×100 fully-connected matrix network
 for (std::size_t layer = 1; layer < 100; ++layer) {
     for (auto& prev : layers[layer - 1])
         for (auto& curr : layers[layer])
-            prev.precede(curr); // 密集的依赖连线
+            prev.precede(curr); // Dense dependency wiring
 }
-executor.submit(flow, 100).start().wait(); 
-
+executor.submit(flow, 100).start().wait();
 ```
+
 ---
 
+## 📄 License
 
-## 📄 许可证
+This project is open-sourced under the [MIT License](LICENSE).
 
-本项目采用 [MIT License](https://www.google.com/search?q=LICENSE) 开源。
-
-*TaskflowLite — 为追求极致性能与现代 C++ 审美的开发者而生。*
+*TaskflowLite — Built for developers who demand peak performance and modern C++ aesthetics.*
