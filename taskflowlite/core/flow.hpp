@@ -1,33 +1,38 @@
-﻿#pragma once
+﻿/// @file flow.hpp
+/// @brief DAG 构建器 - 用户层任务图定义入口
+/// @author WiCyn
+/// @contact https://github.com/WiCyn
+/// @date 2026-03-02
+/// @license MIT
+/// @copyright Copyright (c) 2026 WiCyn
+
+#pragma once
+
 #include "traits.hpp"
 #include "graph.hpp"
 #include "task.hpp"
 
 namespace tfl {
 
-
-/**
- * @class Flow
- * @brief 用于构建有向无环图 (DAG) 的任务构建器类。
- *        允许放置任务（静态或运行时，可选参数和循环次数）、
- *        组合子流程，并管理占位符。从 MoveOnly 继承，确保仅支持移动语义，防止拷贝。
- *        主要用于定义可由 Executor 类执行的执行流程。
- *
- * @note 该类设计用于编译时和运行时任务集成，支持变参放置以进行批量操作。
- */
+/// @brief DAG 构建器 - 用户层任务图定义入口
+///
+/// @details
+/// 负责管理任务节点的物理存储与生命周期。支持多种节点类型：
+/// - 静态任务（Basic）
+/// - 条件分支（Branch）
+/// - 运行时动态任务（Runtime）
+/// - 嵌套子流程（Subflow）
+///
+/// @note 所有权：Move-only，禁止拷贝，确保节点所有权的唯一性
 class Flow {
     friend class Work;
     friend class Executor;
     friend class Task;
     friend class Runtime;
 
-    // ---- 子类友元 ----
     TFL_WORK_SUBCLASS_FRIENDS;
 
 public:
-    /**
-     * @brief 默认构造函数。初始化一个空图。
-     */
     constexpr explicit Flow() = default;
 
     Flow(const Flow&) = delete;
@@ -35,30 +40,35 @@ public:
     Flow(Flow&& other) noexcept = default;
     Flow& operator=(Flow&& other) noexcept = default;
 
-    template <typename T>
-        requires (capturable<T> && basic_invocable<T>)
-    Task emplace(T&& task);
+    // ========================================================================
+    //  节点插入接口
+    // ========================================================================
 
-    template <typename T>
-        requires (capturable<T> && branch_invocable<T>)
-    Task emplace(T&& task);
+    template <typename T, typename... Args>
+        requires (capturable<T, Args...> && basic_invocable<T, Args...>)
+    Task emplace(T&& task, Args&&... args);
 
-    template <typename T>
-        requires (capturable<T> && multi_branch_invocable<T>)
-    Task emplace(T&& task);
+    template <typename T, typename... Args>
+        requires (capturable<T, Args...> && branch_invocable<T, Args...>)
+    Task emplace(T&& task, Args&&... args);
 
-    template <typename T>
-        requires (capturable<T> && jump_invocable<T>)
-    Task emplace(T&& task);
+    template <typename T, typename... Args>
+        requires (capturable<T, Args...> && multi_branch_invocable<T, Args...>)
+    Task emplace(T&& task, Args&&... args);
 
-    template <typename T>
-        requires (capturable<T> && multi_jump_invocable<T>)
-    Task emplace(T&& task);
+    template <typename T, typename... Args>
+        requires (capturable<T, Args...> && jump_invocable<T, Args...>)
+    Task emplace(T&& task, Args&&... args);
 
-    template <typename T>
-        requires (capturable<T> && runtime_invocable<T>)
-    Task emplace(T&& task);
+    template <typename T, typename... Args>
+        requires (capturable<T, Args...> && multi_jump_invocable<T, Args...>)
+    Task emplace(T&& task, Args&&... args);
 
+    template <typename T, typename... Args>
+        requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
+    Task emplace(T&& task, Args&&... args);
+
+    // 子流程
     template <typename F>
         requires flow_type<F>
     Task emplace(F&& subflow);
@@ -71,78 +81,100 @@ public:
         requires (flow_type<F> && capturable<P> && predicate<P>)
     Task emplace(F&& subflow, P&& pred);
 
-    void erase(Task t) noexcept;
+    // 批量插入多个节点，返回 tuple 以支持 auto [...] 结构化绑定
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 1) && (valid_task_arg<Ts> && ...)
+    auto emplace(Ts&&... tasks);
 
+    // ========================================================================
+    //  图操作接口
+    // ========================================================================
+    void erase(Task t) noexcept;
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     void erase(Ts&&... tasks) noexcept;
 
-
     [[nodiscard]] std::size_t hash_value() const noexcept;
-
     void clear() noexcept;
-
     [[nodiscard]] bool empty() const noexcept;
-
     [[nodiscard]] std::size_t size() const noexcept;
 
     template <typename F>
         requires (std::invocable<F, Task>)
     void for_each(F&& visitor) noexcept(std::is_nothrow_invocable_v<F, Task>);
 
-    std::string dump(Direction dir = Direction::Default) const;
-
-    void dump(std::ostream& ostream, Direction dir = Direction::Default) const;
+    [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
+    void dump(std::ostream& os, Direction dir = Direction::Default) const;
 
     Flow& name(const std::string& n);
     [[nodiscard]] std::string_view name() const noexcept;
+
 private:
-    Graph m_graph;  ///< 存储任务和连接的内部图。
+    Graph m_graph;
     std::string m_name;
 };
 
-// /////////////////////////////////////////////////////////////////////////////////////
-template <typename T>
-    requires (capturable<T> && basic_invocable<T>)
-inline Task Flow::emplace(T&& task) {
+// ============================================================================
+//  节点插入实现
+// ============================================================================
+
+template <typename T, typename... Args>
+    requires (capturable<T, Args...> && basic_invocable<T, Args...>)
+inline Task Flow::emplace(T&& task, Args&&... args) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(Work::make_basic(&m_graph, options, std::forward<T>(task)))};
+    return Task{m_graph._emplace(
+        Work::make_basic(&m_graph, options,
+                         std::forward<T>(task), std::forward<Args>(args)...))};
 }
 
-template <typename T>
-    requires (capturable<T> && branch_invocable<T>)
-inline Task Flow::emplace(T&& task) {
+template <typename T, typename... Args>
+    requires (capturable<T, Args...> && branch_invocable<T, Args...>)
+inline Task Flow::emplace(T&& task, Args&&... args) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(Work::make_branch(&m_graph, options, std::forward<T>(task)))};
+    return Task{m_graph._emplace(
+        Work::make_branch(&m_graph, options,
+                          std::forward<T>(task), std::forward<Args>(args)...))};
 }
 
-template <typename T>
-    requires (capturable<T> && multi_branch_invocable<T>)
-inline Task Flow::emplace(T&& task) {
+template <typename T, typename... Args>
+    requires (capturable<T, Args...> && multi_branch_invocable<T, Args...>)
+inline Task Flow::emplace(T&& task, Args&&... args) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(Work::make_multi_branch(&m_graph, options, std::forward<T>(task)))};
+    return Task{m_graph._emplace(
+        Work::make_multi_branch(&m_graph, options,
+                                std::forward<T>(task), std::forward<Args>(args)...))};
 }
 
-template <typename T>
-    requires (capturable<T> && jump_invocable<T>)
-inline Task Flow::emplace(T&& task) {
+template <typename T, typename... Args>
+    requires (capturable<T, Args...> && jump_invocable<T, Args...>)
+inline Task Flow::emplace(T&& task, Args&&... args) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(Work::make_jump(&m_graph, options, std::forward<T>(task)))};
+    return Task{m_graph._emplace(
+        Work::make_jump(&m_graph, options,
+                        std::forward<T>(task), std::forward<Args>(args)...))};
 }
 
-template <typename T>
-    requires (capturable<T> && multi_jump_invocable<T>)
-inline Task Flow::emplace(T&& task) {
+template <typename T, typename... Args>
+    requires (capturable<T, Args...> && multi_jump_invocable<T, Args...>)
+inline Task Flow::emplace(T&& task, Args&&... args) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(Work::make_multi_jump(&m_graph, options, std::forward<T>(task)))};
+    return Task{m_graph._emplace(
+        Work::make_multi_jump(&m_graph, options,
+                              std::forward<T>(task), std::forward<Args>(args)...))};
 }
 
-template <typename T>
-    requires (capturable<T> && runtime_invocable<T>)
-inline Task Flow::emplace(T&& task) {
+template <typename T, typename... Args>
+    requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
+inline Task Flow::emplace(T&& task, Args&&... args) {
     constexpr auto options = Work::Option::NONE;
-    return Task{m_graph._emplace(Work::make_runtime(&m_graph, options, std::forward<T>(task)))};
+    return Task{m_graph._emplace(
+        Work::make_runtime(&m_graph, options,
+                           std::forward<T>(task), std::forward<Args>(args)...))};
 }
+
+// ============================================================================
+//  子流程插入实现
+// ============================================================================
 
 template <typename F>
     requires flow_type<F>
@@ -167,19 +199,32 @@ template <typename F, typename P>
     requires (flow_type<F> && capturable<P> && predicate<P>)
 inline Task Flow::emplace(F&& subflow, P&& pred) {
     constexpr auto options = Work::Option::PREEMPTED;
-    return Task{m_graph._emplace(Work::make_subflow(&m_graph, options, std::forward<F>(subflow), std::forward<P>(pred)))};
+    return Task{m_graph._emplace(
+        Work::make_subflow(&m_graph, options,
+                           std::forward<F>(subflow), std::forward<P>(pred)))};
 }
 
-// 单个删除
+// ============================================================================
+//  批量插入实现
+// ============================================================================
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 1) && (valid_task_arg<Ts> && ...)
+inline auto Flow::emplace(Ts&&... tasks) {
+    return std::make_tuple(this->emplace(std::forward<Ts>(tasks))...);
+}
+
+// ============================================================================
+//  图操作实现
+// ============================================================================
+
 inline void Flow::erase(Task t) noexcept {
     m_graph._erase(t.m_work);
 }
 
-// 多个删除 (变长参数模板)
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
 inline void Flow::erase(Ts&&... tasks) noexcept {
-    // 展开调用：针对每一个 task 及其内部的 m_work 执行删除
     (m_graph._erase(tasks.m_work), ...);
 }
 
@@ -206,6 +251,10 @@ inline void Flow::for_each(F&& visitor) noexcept(std::is_nothrow_invocable_v<F, 
         std::invoke(visitor, Task{w});
     }
 }
+
+// ============================================================================
+//  dump 实现
+// ============================================================================
 
 inline std::string Flow::dump(Direction dir) const {
     std::string out;
@@ -258,25 +307,26 @@ inline void Flow::dump(std::ostream& os, Direction dir) const {
     }
 }
 
-Flow& Flow::name(const std::string& n) {
+// ============================================================================
+//  name 实现
+// ============================================================================
+
+inline Flow& Flow::name(const std::string& n) {
     m_name = n;
     return *this;
 }
 
-[[nodiscard]] std::string_view Flow::name() const noexcept {
+inline std::string_view Flow::name() const noexcept {
     return m_name;
 }
 
-} // end of namespace tfl. ---------------------------------------------------
-
+} // namespace tfl
 
 namespace std {
-
 template <>
 struct hash<tfl::Flow> {
     inline auto operator() (const tfl::Flow& f) const noexcept {
         return f.hash_value();
     }
 };
-
-}  // end of namespace std ----------------------------------------------------
+} // namespace std
