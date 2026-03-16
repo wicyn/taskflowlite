@@ -21,13 +21,7 @@
 #define TASKFLOWLITE_VERSION_MAJOR 0
 #define TASKFLOWLITE_VERSION_MINOR 1
 #define TASKFLOWLITE_VERSION_PATCH 0
-  
-/**
- * @brief A struct used to store a version number.
- */
-=======
 
-<<<<<<< HEAD
 /// @brief 语义化版本号存储结构。
 ///
 /// 该结构体支持编译期常量构造，并提供完整的比较运算符支持。
