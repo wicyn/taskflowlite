@@ -1,0 +1,61 @@
+﻿name: TaskflowLite CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} | ${{ matrix.build_type }} | San=${{ matrix.sanitizer }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false # 即使某个平台跑挂了，也让其他平台继续跑完
+      matrix:
+        # 使用 include 精确控制我们要跑的 6 种测试组合
+        include:
+          # === Ubuntu (Linux) 测试组 ===
+          - os: ubuntu-latest
+            build_type: Release
+            sanitizer: OFF
+          - os: ubuntu-latest
+            build_type: Debug
+            sanitizer: ON   # 触发 CMake 里的 TSan + UBSan
+
+          # === macOS (苹果) 测试组 ===
+          - os: macos-latest
+            build_type: Release
+            sanitizer: OFF
+          - os: macos-latest
+            build_type: Debug
+            sanitizer: ON   # 触发 CMake 里的 TSan + UBSan
+
+          # === Windows 测试组 ===
+          - os: windows-latest
+            build_type: Release
+            sanitizer: OFF
+          - os: windows-latest
+            build_type: Debug
+            sanitizer: ON   # 触发 CMake 里的 MSVC ASan
+
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: ⚙️ Configure CMake
+      run: >
+        cmake -S . -B build
+        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        -DTASKFLOWLITE_BUILD_TESTS=ON
+        -DTASKFLOWLITE_ENABLE_SANITIZER=${{ matrix.sanitizer }}
+
+    - name: 🔨 Build
+      # --config 用于兼容 Windows/MSVC 的多配置生成器
+      run: cmake --build build --config ${{ matrix.build_type }} --parallel 4
+
+    - name: 🧪 Run Tests
+      working-directory: ${{github.workspace}}/build
+      # 使用 ctest 运行，如果出错则打印详细日志
+      run: ctest -C ${{ matrix.build_type }} --output-on-failure

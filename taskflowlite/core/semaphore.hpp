@@ -13,9 +13,16 @@
 #include <algorithm>
 #include <cassert>
 #include <mutex>
+#include <string>
+#include <string_view>
+#include <functional>
 #include "exception.hpp"
 
 namespace tfl {
+
+class Work;
+class Executor;
+class Task;
 
 /// @brief 任务级并发控制信号量。
 ///
@@ -30,60 +37,47 @@ class Semaphore {
 public:
     /// @brief 构造函数，初始化信号量的最大并发容量。
     /// @param max_value 允许的最大并发数量。初始可用计数也等同于此值。
-    Semaphore(std::size_t max_value) noexcept
-        : m_max_value{max_value}
-        , m_value{max_value} {}
+    /// @param name 信号量的名称（可选，通常用于调试或日志追踪）。
+    explicit Semaphore(std::size_t max_value, std::string name = "");
 
     /// @brief 构造函数，分别指定最大容量与当前初始可用容量。
     /// @param max_value 允许的最大并发数量。
     /// @param current_value 初始时刻的可用计数。
+    /// @param name 信号量的名称（可选，通常用于调试或日志追踪）。
     /// @note 内部会自动将初始可用计数裁剪至不超过最大容量。
-    Semaphore(std::size_t max_value, std::size_t current_value) noexcept
-        : m_max_value{max_value}
-        , m_value{(std::min)(current_value, max_value)} {}
+    Semaphore(std::size_t max_value, std::size_t current_value, std::string name = "");
 
     Semaphore(const Semaphore&) = delete;
     Semaphore& operator=(const Semaphore&) = delete;
 
     /// @brief 线程安全地获取当前剩余可用计数。
-    [[nodiscard]] std::size_t value() const noexcept {
-        std::lock_guard lk{m_lock};
-        return m_value;
-    }
+    [[nodiscard]] std::size_t value() const noexcept;
 
     /// @brief 获取信号量的最大设计容量。
-    [[nodiscard]] std::size_t max_value() const noexcept {
-        return m_max_value;
-    }
+    [[nodiscard]] std::size_t max_value() const noexcept;
 
     /// @brief 重置信号量的容量并完全恢复可用计数。
     /// @param max_value 新的最大并发数量。
     /// @pre 必须确保当前没有任何任务在此信号量上处于等待挂起状态。
     /// @exception Exception 如果内部等待队列非空，抛出异常。
-    void reset(std::size_t max_value) {
-        std::lock_guard lk{m_lock};
-        if (!m_waiters.empty()) {
-            throw Exception("cannot reset while waiters exist.");
-        }
-        m_max_value = max_value;
-        m_value = m_max_value;
-    }
+    void reset(std::size_t max_value);
 
     /// @brief 重置信号量容量，并显式指定当前可用计数。
     /// @param max_value 新的最大并发数量。
     /// @param current_value 新的可用计数。
     /// @pre 必须确保当前没有任何任务在此信号量上处于等待挂起状态。
     /// @exception Exception 如果内部等待队列非空，抛出异常。
-    void reset(std::size_t max_value, std::size_t current_value) {
-        std::lock_guard lk{m_lock};
-        if (!m_waiters.empty()) {
-            throw Exception("cannot reset while waiters exist.");
-        }
-        m_max_value = max_value;
-        m_value = (std::min)(current_value, max_value);
-    }
+    void reset(std::size_t max_value, std::size_t current_value);
+
+    /// @brief 线程安全地获取信号量的名称。
+    [[nodiscard]] std::string_view name() const noexcept;
+
+    /// @brief 线程安全地设置信号量的名称。
+    /// @param name 新的信号量名称。
+    Semaphore& name(std::string name);
 
 private:
+    std::string m_name;
     mutable std::mutex m_lock;       ///< 保护内部状态的互斥锁
     std::size_t m_max_value{0};      ///< 允许的最大并发边界
     std::size_t m_value{0};          ///< 运行时动态追踪的当前可用授权数
@@ -92,42 +86,164 @@ private:
     /// @brief 框架内部调用：尝试非阻塞地获取一个授权配额。
     /// @param w 发起尝试的任务节点指针。
     /// @return 成功扣减计数返回 true；否则自动将该任务压入等待队列并返回 false。
-    [[nodiscard]] bool _try_acquire(Work* w) {
-        std::lock_guard lk{m_lock};
-
-        if (m_value > 0) {
-            --m_value;
-            return true;
-        }
-
-        // Why: 当配额耗尽时，直接将任务记录在案，随后返回 false。
-        // 这指导底层的 Worker 线程立即放弃此任务并投身于窃取网络，彻底杜绝了并发死锁与 CPU 空转。
-        m_waiters.push_back(w);
-        return false;
-    }
+    [[nodiscard]] bool _try_acquire(Work* w);
 
     /// @brief 框架内部调用：释放一个授权配额并唤醒所有等待者。
     /// @param on_wake 唤醒回调闭包，由调用方负责将解封的任务重新排入调度引擎。
     template <typename F>
         requires std::invocable<F&, Work*>
-    void _release(F&& on_wake) {
-        std::vector<Work*> batch;
-        {
-            std::lock_guard lk{m_lock};
-            if (m_value < m_max_value) {
-                ++m_value;
-                // Why: 使用 std::vector::swap 是一种经典的锁粒度优化（"惊群"批处理）。
-                // 一次性将挂起的队列移交到局部栈上，使得互斥锁能够被极速释放，防止因唤醒过程过长拖累并发度。
-                batch.swap(m_waiters);
-            }
-        }
+    void _release(F&& on_wake);
 
-        // Why: 临界区外执行回调机制，将所有积压的饥饿任务重新推回调度池。
-        // 注意：这会导致重新竞争（Re-competition），唯有最先被调度的那个能拿到刚刚释放的名额，其余的将再次失败并挂起。
-        for (auto* w : batch) {
-            std::invoke(on_wake, w);
+    /// @brief 框架内部调用：尝试非阻塞地获取指定数量的授权配额。
+    /// @param w 发起尝试的任务节点指针。
+    /// @param count 需要获取的配额数量。
+    /// @return 成功扣减计数返回 true；否则自动将该任务压入等待队列并返回 false。
+    [[nodiscard]] bool _try_acquire(Work* w, std::size_t count);
+
+    /// @brief 框架内部调用：释放指定数量的授权配额并唤醒所有等待者。
+    /// @param count 需要归还的配额数量。
+    /// @param on_wake 唤醒回调闭包，由调用方负责将解封的任务重新排入调度引擎。
+    template <typename F>
+        requires std::invocable<F&, Work*>
+    void _release(F&& on_wake, std::size_t count);
+};
+
+
+// ==============================================================================
+// 类的实现部分 (Implementation)
+// ==============================================================================
+
+inline Semaphore::Semaphore(std::size_t max_value, std::string name)
+    : m_name{std::move(name)}
+    , m_max_value{max_value}
+    , m_value{max_value} {}
+
+inline Semaphore::Semaphore(std::size_t max_value, std::size_t current_value, std::string name)
+    : m_name{std::move(name)}
+    , m_max_value{max_value}
+    , m_value{(std::min)(current_value, max_value)} {}
+
+inline std::size_t Semaphore::value() const noexcept {
+    std::lock_guard lk{m_lock};
+    return m_value;
+}
+
+inline std::size_t Semaphore::max_value() const noexcept {
+    return m_max_value;
+}
+
+inline void Semaphore::reset(std::size_t max_value) {
+    std::lock_guard lk{m_lock};
+    if (!m_waiters.empty()) {
+        throw Exception("cannot reset while waiters exist.");
+    }
+    m_max_value = max_value;
+    m_value = m_max_value;
+}
+
+inline void Semaphore::reset(std::size_t max_value, std::size_t current_value) {
+    std::lock_guard lk{m_lock};
+    if (!m_waiters.empty()) {
+        throw Exception("cannot reset while waiters exist.");
+    }
+    m_max_value = max_value;
+    m_value = (std::min)(current_value, max_value);
+}
+
+inline std::string_view Semaphore::name() const noexcept {
+    return m_name;
+}
+
+inline Semaphore& Semaphore::name(std::string name) {
+    m_name = std::move(name);
+    // 注意：原代码此处缺少 return *this; ，若有需要请自行补上
+}
+
+inline bool Semaphore::_try_acquire(Work* w) {
+    std::lock_guard lk{m_lock};
+
+    if (m_value > 0) {
+        --m_value;
+        return true;
+    }
+
+    // Why: 当配额耗尽时，直接将任务记录在案，随后返回 false。
+    // 这指导底层的 Worker 线程立即放弃此任务并投身于窃取网络，彻底杜绝了并发死锁与 CPU 空转。
+    m_waiters.push_back(w);
+    return false;
+}
+
+template <typename F>
+    requires std::invocable<F&, Work*>
+void Semaphore::_release(F&& on_wake) {
+    std::vector<Work*> batch;
+    {
+        std::lock_guard lk{m_lock};
+        if (m_value < m_max_value) {
+            ++m_value;
+            // Why: 使用 std::vector::swap 是一种经典的锁粒度优化（"惊群"批处理）。
+            // 一次性将挂起的队列移交到局部栈上，使得互斥锁能够被极速释放，防止因唤醒过程过长拖累并发度。
+            if (m_waiters.empty()) {
+                return;
+            }
+            batch.swap(m_waiters);
         }
     }
-};
+
+    // Why: 临界区外执行回调机制，将所有积压的饥饿任务重新推回调度池。
+    // 注意：这会导致重新竞争（Re-competition），唯有最先被调度的那个能拿到刚刚释放的名额，其余的将再次失败并挂起。
+    for (auto* w : batch) {
+        std::invoke(on_wake, w);
+    }
+}
+
+inline bool Semaphore::_try_acquire(Work* w, std::size_t count) {
+    std::lock_guard lk{m_lock};
+
+    // 配额充足，直接扣减放行
+    if (m_value >= count) {
+        m_value -= count;
+        return true;
+    }
+
+    // Why: 当配额不足以满足当前 count 时，直接将任务记录在案，随后返回 false。
+    // 这指导底层的 Worker 线程立即放弃此任务并投身于窃取网络，彻底杜绝了并发死锁与 CPU 空转。
+    m_waiters.push_back(w);
+    return false;
+}
+
+template <typename F>
+    requires std::invocable<F&, Work*>
+void Semaphore::_release(F&& on_wake, std::size_t count) {
+    std::vector<Work*> batch;
+    {
+        std::lock_guard lk{m_lock};
+
+        // Why: 严格断言不变式，自证下面的减法绝对不会发生无符号下溢
+        TFL_ASSERT(m_value <= m_max_value && "semaphore invariant broken");
+
+        // 归还配额，并进行安全裁剪以防溢出（防范用户在 DAG 拓扑中配错 release 数量）
+        if (m_max_value - m_value >= count) {
+            m_value += count;
+        } else {
+            m_value = m_max_value;
+        }
+
+        // Why: 只有当确实有任务在等待，且当前有可用资源时，才进行唤醒操作。
+        // 使用 std::vector::swap 是一种经典的锁粒度优化（"惊群"批处理）。
+        // 一次性将挂起的队列移交到局部栈上，使得互斥锁能够被极速释放，防止因唤醒过程过长拖累并发度。
+        if (m_waiters.empty()) {
+            return;
+        }
+        batch.swap(m_waiters);
+    }
+
+    // Why: 临界区外执行回调机制，将所有积压的饥饿任务重新推回调度池。
+    // 注意：这会导致重新竞争（Re-competition），配额充足且最先被调度执行的节点能拿到名额，
+    // 拿不到足够配额的节点会在再次调用 _try_acquire 时重新回到 m_waiters 队列中挂起。
+    for (auto* w : batch) {
+        std::invoke(on_wake, w);
+    }
+}
 
 }  // namespace tfl

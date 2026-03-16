@@ -7,13 +7,12 @@
 /// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
-
-#include <utility>
 #include <expected>
-#include <unordered_set>
+#include <utility>
 #include <span>
 #include <algorithm>
 #include <memory>
+#include <stack>
 #include <future>
 
 #include "enums.hpp"
@@ -23,6 +22,7 @@
 #include "observer.hpp"
 #include "topology.hpp"
 #include "semaphore.hpp"
+#include "unordered_dense.hpp"
 
 namespace tfl {
 
@@ -75,7 +75,7 @@ class Work : public Immovable<Work> {
     friend class Jump;
     friend class MultiJump;
 
-    TFL_WORK_SUBCLASS_FRIENDS;
+    TFL_WORK_SUBCLASS_FRIENDS
 
 public:
     /// @brief 静态选项配置位域（构建时确定，执行期只读）。
@@ -113,15 +113,22 @@ protected:
         static constexpr type CAUGHT    = type{1} << (BITS - 2);
     };
 
-    /// @brief 节点绑定的信号量集合（按需延迟分配以省内存）。
+    /// @brief 信号量请求描述符
+    struct SemaphoreReq {
+        Semaphore* sem;
+        std::size_t count;
+    };
+
+    /// @brief 节点绑定的信号量集合
     struct SemaphoreData {
-        std::vector<Semaphore*> acquires; ///< 执行前必须获取的约束
-        std::vector<Semaphore*> releases; ///< 执行后应当释放的约束
+        std::vector<SemaphoreReq> acquires; ///< 执行前必须获取的约束及配额
+        std::vector<SemaphoreReq> releases; ///< 执行后应当释放的约束及配额
 
         [[nodiscard]] bool empty() const noexcept {
             return acquires.empty() && releases.empty();
         }
     };
+
 
     /// @brief 节点挂载的生命周期观察者集合（按需延迟分配）。
     struct ObserverData {
@@ -158,10 +165,10 @@ protected:
     virtual void invoke(Executor& exec, Worker& wr, Work*& cache) = 0;
 
     /// @brief 获取该节点的底层逻辑类型枚举。
-    virtual TaskType type() const noexcept = 0;
+    [[nodiscard]] virtual TaskType type() const noexcept = 0;
 
     /// @brief 生成该节点的可视化 D2 声明代码。
-    virtual std::string dump() const = 0;
+    [[nodiscard]] virtual std::string dump() const = 0;
 
     /// @brief 流式导出该节点的可视化 D2 声明代码。
     virtual void dump(std::ostream& ostream) const = 0;
@@ -174,8 +181,8 @@ private:
 
     // 热数据区：调度核心状态（访问频率高，缓存行友好）
     std::atomic<State::type> m_state{State::NONE};
-    Option::type m_options{Option::NONE};
     Topology* m_topology{nullptr};
+    Option::type m_options{Option::NONE};
     Work* m_parent{nullptr};
     std::atomic<std::size_t> m_join_counter{0};  // 依赖计数器，并发递减
     std::size_t m_num_successors{0};            // edges 数组分割点
@@ -273,10 +280,10 @@ private:
         }
     }
 
-    [[nodiscard]] std::span<Semaphore*> _acquires() noexcept { return m_semaphores ? std::span<Semaphore*>{m_semaphores->acquires} : std::span<Semaphore*>{}; }
-    [[nodiscard]] std::span<Semaphore* const> _acquires() const noexcept { return m_semaphores ? std::span<Semaphore* const>{m_semaphores->acquires} : std::span<Semaphore* const>{}; }
-    [[nodiscard]] std::span<Semaphore*> _releases() noexcept { return m_semaphores ? std::span<Semaphore*>{m_semaphores->releases} : std::span<Semaphore*>{}; }
-    [[nodiscard]] std::span<Semaphore* const> _releases() const noexcept { return m_semaphores ? std::span<Semaphore* const>{m_semaphores->releases} : std::span<Semaphore* const>{}; }
+    [[nodiscard]] std::span<SemaphoreReq> _acquires() noexcept { return m_semaphores ? std::span<SemaphoreReq>{m_semaphores->acquires} : std::span<SemaphoreReq>{}; }
+    [[nodiscard]] std::span<SemaphoreReq const> _acquires() const noexcept { return m_semaphores ? std::span<SemaphoreReq const>{m_semaphores->acquires} : std::span<SemaphoreReq const>{}; }
+    [[nodiscard]] std::span<SemaphoreReq> _releases() noexcept { return m_semaphores ? std::span<SemaphoreReq>{m_semaphores->releases} : std::span<SemaphoreReq>{}; }
+    [[nodiscard]] std::span<SemaphoreReq const> _releases() const noexcept { return m_semaphores ? std::span<SemaphoreReq const>{m_semaphores->releases} : std::span<SemaphoreReq const>{}; }
     [[nodiscard]] std::size_t _num_acquires() const noexcept { return m_semaphores ? m_semaphores->acquires.size() : 0; }
     [[nodiscard]] std::size_t _num_releases() const noexcept { return m_semaphores ? m_semaphores->releases.size() : 0; }
 
@@ -288,16 +295,8 @@ private:
         return static_cast<std::size_t>(-1);
     }
 
-    template <typename T>
-    [[nodiscard]] static bool _contains(std::span<T* const> s, T* target) noexcept {
-        for (auto* p : s) {
-            if (p == target) return true;
-        }
-        return false;
-    }
-
-    void _acquire(Semaphore* sem);
-    void _release(Semaphore* sem);
+    void _acquire(Semaphore* sem, std::size_t count);
+    void _release(Semaphore* sem, std::size_t count);
     void _remove_acquire(Semaphore* sem) noexcept;
     void _remove_release(Semaphore* sem) noexcept;
     void _clear_acquires() noexcept;
@@ -320,8 +319,11 @@ private:
 
     void _set_up(Work* parent, Topology* t) noexcept;
     void _set_up(std::size_t join_counter) noexcept;
-    [[nodiscard]] bool _can_reach(const Work* target) const;
+    [[nodiscard]] bool _has_path_without_jump(const Work* from, const Work* to) const;
     [[nodiscard]] std::expected<void, std::string_view> _can_precede(Work* target) const;
+
+    template <typename WorkType, typename... Args>
+    [[nodiscard]] static Work* _make_topo_work(Executor& exe, Option::type options, Args&&... args);
 
     [[nodiscard]] static std::string _d2_work(const Work* w,
                                               const char* shape, const char* fill, const char* stroke,
@@ -335,8 +337,68 @@ private:
                          const char* stroke_dash = "");
     static void _d2_escape(std::ostream& os, const std::string& s);
 
-    template <typename WorkType, typename... Args>
-    [[nodiscard]] static Work* _make_topo_work(Executor& exe, Option::type options, Args&&... args);
+    /// @brief 在 |md 块 <center> 内渲染信号量 HTML 行。
+    /// @param tag "acq" 或 "rel"，标识获取或释放。
+
+    // ============================================================================
+    //  [2] 辅助函数实现（替换旧的颜色函数，新增 HTML 生成 + 引号转义）
+    // ============================================================================
+
+    // ---- D2 引号字符串转义（grid pill 标签专用） ----
+
+    /// @brief D2 双引号字符串转义：仅处理 `"` `\`，UTF-8 原样透传。
+    /// @details
+    /// **与 _d2_escape 的区别**：_d2_escape 面向 |md ... | 块内的 HTML 上下文，
+    /// 将 `<>&"` 转为 HTML 实体。而 pill 标签是 D2 引号字符串，
+    /// HTML 实体会被原样显示，因此必须使用 D2 自身的转义规则。
+    [[nodiscard]] static std::string _d2_str_escape(const std::string& s);
+
+    static void _d2_str_escape(std::ostream& os, const std::string& s);
+
+    // ---- 地址 → 唯一颜色 ----
+
+    [[nodiscard]] static std::uint8_t _hsl_channel(float p, float q, float t) noexcept;
+
+    static void _hsl_to_hex(float h, float s, float l, char* buf) noexcept;
+
+    /// @brief 信号量 pill 配色三元组
+    struct _D2SemPillColor {
+        char bg[8];   ///< 暗底色（grid pill 背景）
+        char fg[8];   ///< 亮字色（grid pill 前景，暗底上）
+        char md[8];   ///< 中彩色（|md 块内文字，浅底上高对比度）
+    };
+
+    /// @brief 信号量地址 → 唯一配色三元组
+    ///
+    /// @details
+    /// 地址经 Murmur-finish 散列 + 黄金比例旋转，在 360° 色轮上拉开最大间距。
+    /// - bg: S=0.45, L=0.17 — grid pill 暗底
+    /// - fg: S=0.80, L=0.72 — grid pill 亮字
+    /// - md: S=0.65, L=0.40 — |md 块内文字（浅色节点背景上高可读性）
+    static _D2SemPillColor _sem_addr_color(const Semaphore* sem) noexcept;
+
+    static void _d2_sem_html(std::string& out, std::span<SemaphoreReq const> reqs, const char* tag);
+    static void _d2_sem_html(std::ostream& os, std::span<SemaphoreReq const> reqs, const char* tag);
+
+
+    // ---- 地址 → 唯一颜色 ----
+
+    [[nodiscard]] static std::uint8_t _hsl_ch(float p, float q, float t) noexcept;
+    static void _hsl_hex(float h, float s, float l, char* buf) noexcept;
+
+    static void _d2_pill_bar(std::string& out,
+                             std::span<SemaphoreReq const> reqs, const char* tag);
+    static void _d2_pill_bar(std::ostream& os,
+                             std::span<SemaphoreReq const> reqs, const char* tag);
+
+    /// @brief |md 块内渲染信号量 HTML 行（非 rectangle 节点专用）。
+    static void _d2_sem_lines(std::string& out,
+                              std::span<SemaphoreReq const> reqs, const char* tag);
+    static void _d2_sem_lines(std::ostream& os,
+                              std::span<SemaphoreReq const> reqs, const char* tag);
+
+    struct _D2SemColor { char bg[8]; char fg[8]; char md[8]; };
+    [[nodiscard]] static _D2SemColor _sem_color(const Semaphore* sem) noexcept;
 
 public:
     // ============================================================================
@@ -422,8 +484,14 @@ public:
     [[nodiscard]] static Work* make_dep_flow(Executor& exe, Option::type options, F&& flow, P&& pred, C&& cb);
 
 
-
-    static void destroy(Work* work) noexcept;
+    /// @brief 销毁工作节点及其关联的拓扑资源
+    /// @details 该函数用于统一管理 Work 和 Topology 的生命周期，具有以下核心作用：
+    /// 1. **资源解耦**：解决 ASan 报错中的“释放后使用”(UAF) 问题，通过外部显式传递 topo 指针，避免在 work 已失效时进行内部解引用。
+    /// 2. **所有权校验**：强制执行 1:1 绑定契约。若传入 topo，会校验其是否确实属于该 work，确保销毁逻辑的原子性。
+    /// 3. **防止泄漏**：自动处理独立异步任务节点及其伴随拓扑的同步释放，消除堆内存孤岛。
+    /// @param work 指向需要销毁的工作节点 (Work) 指针。
+    /// @param topo [可选] 指向关联拓扑 (Topology) 的指针。若提供且匹配，则执行连带销毁。
+    static void destroy(Work* work, Topology* topo = nullptr) noexcept;
 };
 
 // ============================================================================
@@ -578,6 +646,10 @@ public:
     void invoke(Executor&, Worker&, Work*&) override;
 
     TaskType type() const noexcept override { return TaskType::Graph; }
+    // ============================================================================
+    //  [4/6] SubflowWork::dump() 两个重载（完整替换）
+    // ============================================================================
+
     std::string dump() const override {
         decltype(auto) flow = detail::unwrap(m_flow_store);
 
@@ -590,22 +662,54 @@ public:
         std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(this));
         const auto& name = this->m_name.empty() ? std::string(id) : this->m_name;
 
+        const bool has_acq = this->m_semaphores && !this->m_semaphores->acquires.empty();
+        const bool has_rel = this->m_semaphores && !this->m_semaphores->releases.empty();
+
+        if (!has_acq && !has_rel) {
+            std::string out;
+            out += id;
+            out += ": |md\n  <center>";
+            out += _d2_escape(name);
+            out += "<br/><span style=\"color: #6b7280;\">[ ";
+            out += type_name;
+            out += " ]</span></center>\n| {\n";
+            out += "  shape: rectangle\n";
+            out += "  label.near: top-center\n";
+            out += "  style.fill: \"#e8f5e9\"\n";
+            out += "  style.stroke: \"#10b981\"\n";
+            out += "  style.stroke-width: 2\n";
+            out += "  style.border-radius: 14\n\n";
+            out += flow.m_graph._dump();
+            out += "}";
+            return out;
+        }
+
         std::string out;
         out += id;
-        out += ": |md\n  <center>";
-        out += _d2_escape(name);
-
-        out += "<br/><span style=\"color: #6b7280;\">[ ";
-        out += type_name;
-        out += " ]</span></center>\n| {\n";
-
-        out += "  shape: rectangle\n";
-        out += "  label.near: top-center\n";
+        out += ": \"\" {\n";
         out += "  style.fill: \"#e8f5e9\"\n";
         out += "  style.stroke: \"#10b981\"\n";
         out += "  style.stroke-width: 2\n";
-        out += "  style.border-radius: 14\n\n";
+        out += "  style.border-radius: 14\n";
+        out += "  grid-columns: 1\n";
+        out += "  grid-gap: 4\n\n";
+
+        if (has_acq) _d2_pill_bar(out, this->_acquires(), "acq");
+
+        out += "  title: |md\n    <center>";
+        out += _d2_escape(name);
+        out += "<br/><span style=\"color: #6b7280;\">[ ";
+        out += type_name;
+        out += " ]</span></center>\n  | { shape: text }\n\n";
+
+        out += "  content: \"\" {\n";
+        out += "    style.fill: transparent\n";
+        out += "    style.stroke: transparent\n\n";
         out += flow.m_graph._dump();
+        out += "  }\n\n";
+
+        if (has_rel) _d2_pill_bar(out, this->_releases(), "rel");
+
         out += "}";
         return out;
     }
@@ -623,20 +727,52 @@ public:
         std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(this));
         const auto& name = this->m_name.empty() ? std::string(id) : this->m_name;
 
-        os << id << ": |md\n  <center>";
-        _d2_escape(os, name);
-        os << "<br/><span style=\"color: #6b7280;\">[ "
-           << type_name
-           << " ]</span></center>\n| {\n";
-        os << "  shape: rectangle\n";
-        os << "  label.near: top-center\n";
+        const bool has_acq = this->m_semaphores && !this->m_semaphores->acquires.empty();
+        const bool has_rel = this->m_semaphores && !this->m_semaphores->releases.empty();
+
+        if (!has_acq && !has_rel) {
+            os << id << ": |md\n  <center>";
+            _d2_escape(os, name);
+            os << "<br/><span style=\"color: #6b7280;\">[ "
+               << type_name << " ]</span></center>\n| {\n";
+            os << "  shape: rectangle\n";
+            os << "  label.near: top-center\n";
+            os << "  style.fill: \"#e8f5e9\"\n";
+            os << "  style.stroke: \"#10b981\"\n";
+            os << "  style.stroke-width: 2\n";
+            os << "  style.border-radius: 14\n\n";
+            flow.m_graph._dump(os);
+            os << "}";
+            return;
+        }
+
+        os << id << ": \"\" {\n";
         os << "  style.fill: \"#e8f5e9\"\n";
         os << "  style.stroke: \"#10b981\"\n";
         os << "  style.stroke-width: 2\n";
-        os << "  style.border-radius: 14\n\n";
+        os << "  style.border-radius: 14\n";
+        os << "  grid-columns: 1\n";
+        os << "  grid-gap: 4\n\n";
+
+        if (has_acq) _d2_pill_bar(os, this->_acquires(), "acq");
+
+        os << "  title: |md\n    <center>";
+        _d2_escape(os, name);
+        os << "<br/><span style=\"color: #6b7280;\">[ "
+           << type_name << " ]</span></center>\n  | { shape: text }\n\n";
+
+        os << "  content: \"\" {\n";
+        os << "    style.fill: transparent\n";
+        os << "    style.stroke: transparent\n\n";
         flow.m_graph._dump(os);
+        os << "  }\n\n";
+
+        if (has_rel) _d2_pill_bar(os, this->_releases(), "rel");
+
         os << "}";
     }
+
+
 };
 
 /// @brief 与独立 Topology 锁死的顶级基础异步任务，触发后自我燃烧并销毁。
@@ -793,10 +929,13 @@ public:
     void invoke(Executor&, Worker&, Work*&) override;
 
     TaskType type() const noexcept override { return TaskType::Graph; }
+    // ============================================================================
+    //  [5/6] DepFlowWork::dump() 两个重载（与 SubflowWork 对称）
+    // ============================================================================
+
     std::string dump() const override {
         char id[24];
         std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(this));
-
         decltype(auto) flow = detail::unwrap(m_flow_store);
 
         if (flow.m_graph.empty()) {
@@ -805,23 +944,54 @@ public:
 
         const char* type_name = to_string(type());
         const auto& name = this->m_name.empty() ? std::string(id) : this->m_name;
+        const bool has_acq = this->m_semaphores && !this->m_semaphores->acquires.empty();
+        const bool has_rel = this->m_semaphores && !this->m_semaphores->releases.empty();
+
+        if (!has_acq && !has_rel) {
+            std::string out;
+            out += id;
+            out += ": |md\n  <center>";
+            out += _d2_escape(name);
+            out += "<br/><span style=\"color: #6b7280;\">[ ";
+            out += type_name;
+            out += " ]</span></center>\n| {\n";
+            out += "  shape: rectangle\n";
+            out += "  label.near: top-center\n";
+            out += "  style.fill: \"#e8f5e9\"\n";
+            out += "  style.stroke: \"#10b981\"\n";
+            out += "  style.stroke-width: 2\n";
+            out += "  style.border-radius: 14\n\n";
+            out += flow.m_graph._dump();
+            out += "}";
+            return out;
+        }
 
         std::string out;
         out += id;
-        out += ": |md\n  <center>";
-        out += _d2_escape(name);
-
-        out += "<br/><span style=\"color: #6b7280;\">[ ";
-        out += type_name;
-        out += " ]</span></center>\n| {\n";
-
-        out += "  shape: rectangle\n";
-        out += "  label.near: top-center\n";
+        out += ": \"\" {\n";
         out += "  style.fill: \"#e8f5e9\"\n";
         out += "  style.stroke: \"#10b981\"\n";
         out += "  style.stroke-width: 2\n";
-        out += "  style.border-radius: 14\n\n";
+        out += "  style.border-radius: 14\n";
+        out += "  grid-columns: 1\n";
+        out += "  grid-gap: 4\n\n";
+
+        if (has_acq) _d2_pill_bar(out, this->_acquires(), "acq");
+
+        out += "  title: |md\n    <center>";
+        out += _d2_escape(name);
+        out += "<br/><span style=\"color: #6b7280;\">[ ";
+        out += type_name;
+        out += " ]</span></center>\n  | { shape: text }\n\n";
+
+        out += "  content: \"\" {\n";
+        out += "    style.fill: transparent\n";
+        out += "    style.stroke: transparent\n\n";
         out += flow.m_graph._dump();
+        out += "  }\n\n";
+
+        if (has_rel) _d2_pill_bar(out, this->_releases(), "rel");
+
         out += "}";
         return out;
     }
@@ -838,19 +1008,48 @@ public:
         const char* type_name = to_string(type());
         std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(this));
         const auto& name = this->m_name.empty() ? std::string(id) : this->m_name;
+        const bool has_acq = this->m_semaphores && !this->m_semaphores->acquires.empty();
+        const bool has_rel = this->m_semaphores && !this->m_semaphores->releases.empty();
 
-        os << id << ": |md\n  <center>";
-        _d2_escape(os, name);
-        os << "<br/><span style=\"color: #6b7280;\">[ "
-           << type_name
-           << " ]</span></center>\n| {\n";
-        os << "  shape: rectangle\n";
-        os << "  label.near: top-center\n";
+        if (!has_acq && !has_rel) {
+            os << id << ": |md\n  <center>";
+            _d2_escape(os, name);
+            os << "<br/><span style=\"color: #6b7280;\">[ "
+               << type_name << " ]</span></center>\n| {\n";
+            os << "  shape: rectangle\n";
+            os << "  label.near: top-center\n";
+            os << "  style.fill: \"#e8f5e9\"\n";
+            os << "  style.stroke: \"#10b981\"\n";
+            os << "  style.stroke-width: 2\n";
+            os << "  style.border-radius: 14\n\n";
+            flow.m_graph._dump(os);
+            os << "}";
+            return;
+        }
+
+        os << id << ": \"\" {\n";
         os << "  style.fill: \"#e8f5e9\"\n";
         os << "  style.stroke: \"#10b981\"\n";
         os << "  style.stroke-width: 2\n";
-        os << "  style.border-radius: 14\n\n";
+        os << "  style.border-radius: 14\n";
+        os << "  grid-columns: 1\n";
+        os << "  grid-gap: 4\n\n";
+
+        if (has_acq) _d2_pill_bar(os, this->_acquires(), "acq");
+
+        os << "  title: |md\n    <center>";
+        _d2_escape(os, name);
+        os << "<br/><span style=\"color: #6b7280;\">[ "
+           << type_name << " ]</span></center>\n  | { shape: text }\n\n";
+
+        os << "  content: \"\" {\n";
+        os << "    style.fill: transparent\n";
+        os << "    style.stroke: transparent\n\n";
         flow.m_graph._dump(os);
+        os << "  }\n\n";
+
+        if (has_rel) _d2_pill_bar(os, this->_releases(), "rel");
+
         os << "}";
     }
 };
@@ -985,25 +1184,39 @@ Work* Work::make_dep_flow(Executor& exe, Option::type options, F&& flow, P&& pre
         std::forward<C>(cb));
 }
 
-inline void Work::destroy(Work* work) noexcept {
-    // Why: 统一处理关联 Topology 的双向解绑并实施资源销毁。
-    // 若这是独立下发的异步任务节点，则需同步将其宿主 Topology 伴随释放，避免堆内存孤岛。
+template <typename WorkType, typename... Args>
+[[nodiscard]] Work* Work::_make_topo_work(Executor& exe, Option::type options, Args&&... args) {
+    auto* topo = new Topology(exe);
+    auto* w = new WorkType(topo, options, std::forward<Args>(args)...);
+    topo->m_work = w;
+    return w;
+}
+
+inline void Work::destroy(Work* work, Topology* topo) noexcept {
+    // 1. 安全守门员：处理空指针，确保函数在任何情况下都不会对空地址操作
     if (!work) {
         return;
     }
 
-    Topology* topo = work->m_topology;
-    if (topo && topo->m_work == work) {
+    if (topo) {
+        // 2. 契约校验：这是一个关键的安全检查。
+        // 在 Debug 模式下确保这个 Topology 确实属于这个 Work，防止误删不相关的拓扑。
+        TFL_ASSERT(topo->m_work == work);
+
+        // 3. 彻底销毁：同时释放两块堆内存。
+        // 注意：这通常用于异步任务（AsyncTask）执行完毕后的清理。
         delete work;
         delete topo;
     } else {
+        // 4. 单独销毁：只释放 Work 内存。
+        // 这通常用于 Graph 自身的清理逻辑（Graph 统一管理 Work，不管理外挂的 Topology）。
         delete work;
     }
 }
 
+
+
 inline void Work::_set_up(Work* const parent, Topology* const t) noexcept {
-    // Why: 执行前的彻底清洗。清除因上一轮异常残留的标识痕迹，
-    // 并将初始静态阈值（预设好的前驱依赖权重）下发至工作区的并发原子倒数器，为本轮推进建立壁垒。
     m_parent = parent;
     m_topology = t;
     m_exception_ptr = nullptr;
@@ -1020,8 +1233,6 @@ inline void Work::_set_up(const std::size_t join_counter) noexcept {
 
 inline void Work::_erase_successor_at(std::size_t idx) noexcept {
     TFL_ASSERT(idx < m_num_successors);
-    // Why: 不动如山。抛弃传统 vector 擦除动作带来的尾流数据 O(N) 挪步大腾挪。
-    // 使用游标边缘的末尾元素进行 Swap 覆盖，实现绝对冷酷的 O(1) 斩杀线清理（副作用是丧失遍历保序性，但这在 DAG 中无关紧要）。
     const std::size_t last_succ = m_num_successors - 1;
     const std::size_t num_preds = _num_predecessors();
 
@@ -1087,9 +1298,7 @@ inline void Work::_clear_predecessors() noexcept {
     }
 
     _set_join_count(0);
-    while (m_edges.size() > m_num_successors) {
-        m_edges.pop_back();
-    }
+    m_edges.erase(m_edges.begin() + m_num_successors, m_edges.end());
 }
 
 inline void Work::_clear_successors() noexcept {
@@ -1107,87 +1316,130 @@ inline void Work::_clear_successors() noexcept {
             succ->_erase_predecessor_at(idx);
         }
     }
-
-    const std::size_t num_preds = _num_predecessors();
-    for (std::size_t i = 0; i < num_preds; ++i) {
-        m_edges[i] = m_edges[m_num_successors + i];
-    }
-    while (m_edges.size() > num_preds) {
-        m_edges.pop_back();
-    }
+    // 极致优化：直接擦除前半段的后继节点，利用标准库底层的 memmove 将前驱节点整体前移
+    m_edges.erase(m_edges.begin(), m_edges.begin() + m_num_successors);
     m_num_successors = 0;
 }
 
 inline std::expected<void, std::string_view> Work::_can_precede(Work* const target) const {
     if (!target) return std::unexpected{"target is null"};
-    if (target == this) return std::unexpected{"self-loop detected"};
     if (!m_graph) return std::unexpected{"work not attached to graph"};
     if (m_graph != target->m_graph) return std::unexpected{"works belong to different graphs"};
-    if (_contains<Work>(_successors(), target)) return std::unexpected{"edge already exists"};
-    return {};
-}
+    if (std::ranges::contains(_successors(), target)) return std::unexpected{"edge already exists"};
+    const auto this_type = type();
+    const bool this_is_jump = (this_type == TaskType::Jump || this_type == TaskType::MultiJump);
 
-inline bool Work::_can_reach(const Work* target) const {
-    if (!target) return false;
-    if (target == this) return true;
+    // 1. 自环检测
+    if (target == this) {
+        if (!this_is_jump) {
+            return std::unexpected{"invalid topology: self-loops are exclusively allowed for jump-type nodes"};
+        }
+        return {};
+    }
+    if (this_is_jump) return {};
+    const auto target_type = target->type();
+    const bool target_is_jump = (target_type == TaskType::Jump || target_type == TaskType::MultiJump);
+    if (target_is_jump) return {};
 
-    std::vector<const Work*> queue;
-    std::unordered_set<const Work*> visited;
-    queue.reserve(_successors().size());
-
-    for (const auto* succ : _successors()) {
-        if (succ == target) return true;
-        queue.push_back(succ);
-        visited.insert(succ);
+    // 4. 冷路径：无跳转闭环的 BFS 检测
+    if (_has_path_without_jump(target, this)) {
+        return std::unexpected{"invalid topology: strict cycle detected without any jump-type node"};
     }
 
-    for (std::size_t i = 0; i < queue.size(); ++i) {
-        for (const auto* succ : queue[i]->_successors()) {
-            if (succ == target) return true;
+    return {};
+}
+inline bool Work::_has_path_without_jump(const Work* from, const Work* to) const {
+    if (!from || !to) return false;
+
+    // 显式指定底层使用 vector，保留连续内存的 L1 缓存预取优势
+    std::stack<const Work*, std::vector<const Work*>> dfs_stack;
+    unordered_dense::set<const Work*> visited;
+
+    // 预分配容量，避免扩容开销
+    visited.reserve(64);
+
+    dfs_stack.push(from);
+    visited.insert(from);
+
+    // 标准的 DFS 迭代搜索
+    while (!dfs_stack.empty()) {
+        const Work* curr = dfs_stack.top();
+        dfs_stack.pop();
+
+        for (const auto* succ : curr->_successors()) {
+            if (succ == to) return true; // 发现死锁回环
+
+            const auto st = succ->type();
+            if (st == TaskType::Jump || st == TaskType::MultiJump) continue; // 遇跳转截断
+
+            // O(1) 查重，如果是新节点则压栈，准备深搜
             if (visited.insert(succ).second) {
-                queue.push_back(succ);
+                dfs_stack.push(succ);
             }
         }
     }
+
     return false;
 }
 
-inline void Work::_acquire(Semaphore* sem) {
+inline void Work::_acquire(Semaphore* sem, std::size_t count) {
     if (!sem) throw Exception("cannot acquire null semaphore.");
+    if (count == 0) return; // 防御性编程：忽略 0 配额请求
+
     auto& sd = _ensure_semaphores();
-    if (_contains<Semaphore>(std::span<Semaphore* const>{sd.acquires}, sem))
-        throw Exception("semaphore already in acquire list.");
-    sd.acquires.push_back(sem);
+
+    // 裸循环线性查重，极致利用 L1 缓存
+    for (std::size_t i = 0; i < sd.acquires.size(); ++i) {
+        if (sd.acquires[i].sem == sem) {
+            throw Exception("semaphore already in acquire list.");
+        }
+    }
+
+    sd.acquires.emplace_back(sem, count);
 }
 
-inline void Work::_release(Semaphore* sem) {
+inline void Work::_release(Semaphore* sem, std::size_t count) {
     if (!sem) throw Exception("cannot release null semaphore.");
+    if (count == 0) return;
+
     auto& sd = _ensure_semaphores();
-    if (_contains<Semaphore>(std::span<Semaphore* const>{sd.releases}, sem))
-        throw Exception("semaphore already in release list.");
-    sd.releases.push_back(sem);
+
+    // 裸循环线性查重，极致利用 L1 缓存
+    for (std::size_t i = 0; i < sd.releases.size(); ++i) {
+        if (sd.releases[i].sem == sem) {
+            throw Exception("semaphore already in release list.");
+        }
+    }
+
+    sd.releases.emplace_back(sem, count);
 }
+
 
 inline void Work::_remove_acquire(Semaphore* sem) noexcept {
     if (!m_semaphores) return;
     auto& acqs = m_semaphores->acquires;
-    const std::size_t idx = _find_index<Semaphore>(std::span<Semaphore* const>{acqs}, sem);
-    if (idx == static_cast<std::size_t>(-1)) return;
-
-    acqs[idx] = acqs.back();
-    acqs.pop_back();
-    _try_release_semaphores();
+    for (std::size_t i = 0; i < acqs.size(); ++i) {
+        if (acqs[i].sem == sem) {
+            acqs[i] = acqs.back();
+            acqs.pop_back();
+            _try_release_semaphores();
+            return;
+        }
+    }
 }
 
 inline void Work::_remove_release(Semaphore* sem) noexcept {
     if (!m_semaphores) return;
     auto& rels = m_semaphores->releases;
-    const std::size_t idx = _find_index<Semaphore>(std::span<Semaphore* const>{rels}, sem);
-    if (idx == static_cast<std::size_t>(-1)) return;
 
-    rels[idx] = rels.back();
-    rels.pop_back();
-    _try_release_semaphores();
+    for (std::size_t i = 0; i < rels.size(); ++i) {
+        if (rels[i].sem == sem) {
+            rels[i] = rels.back();
+            rels.pop_back();
+            _try_release_semaphores();
+            return;
+        }
+    }
 }
 
 inline void Work::_clear_acquires() noexcept {
@@ -1202,18 +1454,19 @@ inline void Work::_clear_releases() noexcept {
     _try_release_semaphores();
 }
 
-
 template <typename F>
     requires std::invocable<F&, Work*>
 inline bool Work::_try_acquire_semaphores(F&& on_wake) {
     if (!m_semaphores) return true;
     auto& acqs = m_semaphores->acquires;
     for (std::size_t i = 0; i < acqs.size(); ++i) {
-        if (!acqs[i]->_try_acquire(this)) {
+        // 传递当前请求的指定配额数量 count
+        if (!acqs[i].sem->_try_acquire(this, acqs[i].count)) {
             // Why: 如果任务在连续索要多重配额的半途中受挫，必须对前方所有已取得的名额执行撤销与无条件偿还。
             // 这种主动的自我回滚（Rollback）是彻底打破“循环等待”以消灭死锁发生可能性的终极防线。
             for (std::size_t j = i; j > 0; --j) {
-                acqs[j - 1]->_release(on_wake);
+                // 回滚时，严格按照刚才成功借出的 count 数量进行归还
+                acqs[j - 1].sem->_release(on_wake, acqs[j - 1].count);
             }
             return false;
         }
@@ -1225,57 +1478,14 @@ template <typename F>
     requires std::invocable<F&, Work*>
 inline void Work::_release_semaphores(F&& on_wake) {
     if (!m_semaphores) return;
-    for (auto* sem : m_semaphores->releases) {
-        sem->_release(on_wake);
+
+    // 遍历所有 release 描述符，按指定的 count 归还配额
+    for (const auto& req : m_semaphores->releases) {
+        req.sem->_release(on_wake, req.count);
     }
 }
 
-std::string Work::_d2_work(const Work* w,
-                           const char* shape, const char* fill, const char* stroke,
-                           const char* font_color, const char* border_radius,
-                           const char* stroke_dash)
-{
-    char id[24];
-    std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(w));
-
-    const char* type_name = to_string(w->type());
-    const auto& name = w->m_name.empty() ? std::string(id) : w->m_name;
-
-    std::string out;
-    out += id;
-    out += ": |md\n  <center>";
-    out += _d2_escape(name);
-    out += "<br/><span style=\"color: #6b7280;\">[ ";
-    out += type_name;
-    out += " ]</span></center>\n| {\n";
-    out += "  shape: ";
-    out += shape;
-    out += "\n";
-    out += "  style.fill: \"";
-    out += fill;
-    out += "\"\n";
-    out += "  style.stroke: \"";
-    out += stroke;
-    out += "\"\n";
-    out += "  style.font-color: \"";
-    out += font_color;
-    out += "\"\n";
-    out += "  style.border-radius: ";
-    out += border_radius;
-    out += "\n";
-
-    if (stroke_dash && stroke_dash[0] != '\0') {
-        out += "  style.stroke-dash: ";
-        out += stroke_dash;
-        out += "\n";
-    }
-
-    out += "  style.font-size: 14\n";
-    out += "}";
-    return out;
-}
-
-std::string Work::_d2_escape(const std::string& s) {
+inline std::string Work::_d2_escape(const std::string& s) {
     std::string out;
     out.reserve(s.size());
     for (char c : s) {
@@ -1291,37 +1501,7 @@ std::string Work::_d2_escape(const std::string& s) {
     return out;
 }
 
-void Work::_d2_work(std::ostream& os, const Work* w,
-                    const char* shape, const char* fill, const char* stroke,
-                    const char* font_color, const char* border_radius,
-                    const char* stroke_dash)
-{
-    char id[24];
-    std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(w));
-
-    const char* type_name = to_string(w->type());
-    const auto& name = w->m_name.empty() ? std::string(id) : w->m_name;
-
-    os << id << ": |md\n  <center>";
-    _d2_escape(os, name);
-    os << "<br/><span style=\"color: #6b7280;\">[ "
-       << type_name
-       << " ]</span></center>\n| {\n";
-    os << "  shape: " << shape << "\n";
-    os << "  style.fill: \"" << fill << "\"\n";
-    os << "  style.stroke: \"" << stroke << "\"\n";
-    os << "  style.font-color: \"" << font_color << "\"\n";
-    os << "  style.border-radius: " << border_radius << "\n";
-
-    if (stroke_dash && stroke_dash[0] != '\0') {
-        os << "  style.stroke-dash: " << stroke_dash << "\n";
-    }
-
-    os << "  style.font-size: 14\n";
-    os << "}";
-}
-
-void Work::_d2_escape(std::ostream& os, const std::string& s) {
+inline void Work::_d2_escape(std::ostream& os, const std::string& s) {
     for (char c : s) {
         switch (c) {
         case '"':  os << "&quot;"; break;
@@ -1334,12 +1514,476 @@ void Work::_d2_escape(std::ostream& os, const std::string& s) {
     }
 }
 
-template <typename WorkType, typename... Args>
-[[nodiscard]] Work* Work::_make_topo_work(Executor& exe, Option::type options, Args&&... args) {
-    auto* topo = new Topology(exe);
-    auto* w = new WorkType(topo, options, std::forward<Args>(args)...);
-    topo->m_work = w;
-    return w;
+/// @brief 在 |md 块 <center> 内渲染信号量 HTML 行。
+/// @param tag "acq" 或 "rel"，标识获取或释放。
+
+// ============================================================================
+//  [2] 辅助函数实现（替换旧的颜色函数，新增 HTML 生成 + 引号转义）
+// ============================================================================
+
+// ---- D2 引号字符串转义（grid pill 标签专用） ----
+
+/// @brief D2 双引号字符串转义：仅处理 `"` `\`，UTF-8 原样透传。
+/// @details
+/// **与 _d2_escape 的区别**：_d2_escape 面向 |md ... | 块内的 HTML 上下文，
+/// 将 `<>&"` 转为 HTML 实体。而 pill 标签是 D2 引号字符串，
+/// HTML 实体会被原样显示，因此必须使用 D2 自身的转义规则。
+inline std::string Work::_d2_str_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        default:   out += c;
+        }
+    }
+    return out;
+}
+
+inline void Work::_d2_str_escape(std::ostream& os, const std::string& s) {
+    for (char c : s) {
+        switch (c) {
+        case '"':  os << "\\\""; break;
+        case '\\': os << "\\\\"; break;
+        default:   os << c;
+        }
+    }
+}
+
+
+// ---- 地址 → 唯一颜色 ----
+
+inline std::uint8_t Work::_hsl_channel(float p, float q, float t) noexcept {
+    if (t < 0.f) t += 1.f;
+    if (t > 1.f) t -= 1.f;
+    float v;
+    if (t < 1.f / 6.f)      v = p + (q - p) * 6.f * t;
+    else if (t < 1.f / 2.f) v = q;
+    else if (t < 2.f / 3.f) v = p + (q - p) * (2.f / 3.f - t) * 6.f;
+    else                     v = p;
+    return static_cast<std::uint8_t>(v * 255.f + 0.5f);
+}
+
+inline void Work::_hsl_to_hex(float h, float s, float l, char* buf) noexcept {
+    float q = (l < 0.5f) ? l * (1.f + s) : l + s - l * s;
+    float p = 2.f * l - q;
+    auto r = _hsl_channel(p, q, h + 1.f / 3.f);
+    auto g = _hsl_channel(p, q, h);
+    auto b = _hsl_channel(p, q, h - 1.f / 3.f);
+    std::snprintf(buf, 8, "#%02x%02x%02x", r, g, b);
+}
+
+/// @brief 信号量地址 → 唯一配色三元组
+///
+/// @details
+/// 地址经 Murmur-finish 散列 + 黄金比例旋转，在 360° 色轮上拉开最大间距。
+/// - bg: S=0.45, L=0.17 — grid pill 暗底
+/// - fg: S=0.80, L=0.72 — grid pill 亮字
+/// - md: S=0.65, L=0.40 — |md 块内文字（浅色节点背景上高可读性）
+inline Work::_D2SemPillColor Work::_sem_addr_color(const Semaphore* sem) noexcept {
+    constexpr float PHI_INV = 0.6180339887498949f;
+    auto h = reinterpret_cast<std::uintptr_t>(sem);
+    h ^= h >> 16;
+    h *= 0x45d9f3bu;
+    h ^= h >> 16;
+
+    float hue = static_cast<float>(h & 0xFFFFu) / 65536.f;
+    hue = std::fmod(hue * PHI_INV, 1.f);
+
+    _D2SemPillColor c{};
+    _hsl_to_hex(hue, 0.45f, 0.17f, c.bg);
+    _hsl_to_hex(hue, 0.80f, 0.72f, c.fg);
+    _hsl_to_hex(hue, 0.65f, 0.40f, c.md);
+    return c;
+}
+
+
+// ---- |md 块内信号量 HTML 行生成 ----
+
+/// @brief 为 |md 块 <center> 内生成信号量彩色标记行。
+/// @details 每个 SemaphoreReq 生成一行：
+/// `<span style="color:#MDCOLOR; font-size:9px;">● name · max:N · tag:M</span><br/>`
+/// 用于非 rectangle 节点（diamond/hexagon）和 Subflow 容器标题，
+/// 这些场景不能使用 grid 布局，只能在 md 块内嵌 HTML。
+inline void Work::_d2_sem_html(std::string& out, std::span<SemaphoreReq const> reqs, const char* tag) {
+    for (const auto& req : reqs) {
+        auto c = _sem_addr_color(req.sem);
+        out += "  <span style=\"color:";
+        out += c.md;
+        out += "; font-size:9px;\">&#x25CF; ";
+        out += _d2_escape(std::string(req.sem->name()));
+        out += " \xC2\xB7 max:";
+        out += std::to_string(req.sem->max_value());
+        out += " \xC2\xB7 ";
+        out += tag;
+        out += ":";
+        out += std::to_string(req.count);
+        out += "</span><br/>\n";
+    }
+}
+
+inline void Work::_d2_sem_html(std::ostream& os, std::span<SemaphoreReq const> reqs, const char* tag) {
+    for (const auto& req : reqs) {
+        auto c = _sem_addr_color(req.sem);
+        os << "  <span style=\"color:" << c.md
+           << "; font-size:9px;\">&#x25CF; ";
+        _d2_escape(os, std::string(req.sem->name()));
+        os << " \xC2\xB7 max:" << req.sem->max_value()
+           << " \xC2\xB7 " << tag << ":" << req.count
+           << "</span><br/>\n";
+    }
+}
+
+
+// ---- 地址 → 唯一颜色 ----
+
+inline std::uint8_t Work::_hsl_ch(float p, float q, float t) noexcept {
+    if (t < 0.f) t += 1.f;
+    if (t > 1.f) t -= 1.f;
+    float v;
+    if (t < 1.f / 6.f)      v = p + (q - p) * 6.f * t;
+    else if (t < 1.f / 2.f) v = q;
+    else if (t < 2.f / 3.f) v = p + (q - p) * (2.f / 3.f - t) * 6.f;
+    else                     v = p;
+    return static_cast<std::uint8_t>(v * 255.f + 0.5f);
+}
+
+inline void Work::_hsl_hex(float h, float s, float l, char* buf) noexcept {
+    float q = (l < 0.5f) ? l * (1.f + s) : l + s - l * s;
+    float p = 2.f * l - q;
+    std::snprintf(buf, 8, "#%02x%02x%02x",
+                  _hsl_ch(p, q, h + 1.f / 3.f),
+                  _hsl_ch(p, q, h),
+                  _hsl_ch(p, q, h - 1.f / 3.f));
+}
+
+inline Work::_D2SemColor Work::_sem_color(const Semaphore* sem) noexcept {
+    constexpr float PHI_INV = 0.6180339887498949f;
+    auto v = reinterpret_cast<std::uintptr_t>(sem);
+    v ^= v >> 16; v *= 0x45d9f3bu; v ^= v >> 16;
+    float hue = std::fmod(static_cast<float>(v & 0xFFFFu) / 65536.f * PHI_INV, 1.f);
+
+    _D2SemColor c{};
+    _hsl_hex(hue, 0.45f, 0.17f, c.bg);   // grid pill 暗底
+    _hsl_hex(hue, 0.80f, 0.72f, c.fg);   // grid pill 亮字
+    _hsl_hex(hue, 0.70f, 0.38f, c.md);   // |md 块内文字（浅底上高对比度）
+    return c;
+}
+
+
+// ============================================================================
+//  标签格式：acq:[sem_XXXX] [count/max] [name]
+// ============================================================================
+
+
+// ---- grid pill bar（rectangle 节点 + Subflow 外壳专用）----
+
+inline void Work::_d2_pill_bar(std::string& out,
+                        std::span<SemaphoreReq const> reqs, const char* tag)
+{
+    char bar[8];
+    std::snprintf(bar, sizeof(bar), "%c_bar", tag[0]);
+
+    out += "  "; out += bar; out += ": \"\" {\n";
+    out += "    style.fill: transparent\n";
+    out += "    style.stroke: transparent\n";
+    out += "    grid-rows: 1\n";
+    out += "    grid-gap: 6\n\n";
+
+    char pid[8];
+    char sid[32];
+    for (std::size_t i = 0; i < reqs.size(); ++i) {
+        std::snprintf(pid, sizeof(pid), "%c%zu", tag[0], i);
+        std::snprintf(sid, sizeof(sid), "sem_%zx", reinterpret_cast<std::uintptr_t>(reqs[i].sem));
+        auto [bg, fg, md] = _sem_color(reqs[i].sem);
+
+        out += "    "; out += pid;
+        out += ": \""; out += tag;
+        out += ":[";   out += sid;
+        out += "] [";  out += std::to_string(reqs[i].count);
+        out += "/";    out += std::to_string(reqs[i].sem->max_value());
+        out += "] [";  out += _d2_str_escape(std::string(reqs[i].sem->name()));
+        out += "]\" {\n";
+        out += "      shape: rectangle\n";
+        out += "      style.border-radius: 12\n";
+        out += "      style.fill: \"";       out += bg; out += "\"\n";
+        out += "      style.font-color: \""; out += fg; out += "\"\n";
+        out += "      style.stroke: transparent\n";
+        out += "      style.font-size: 10\n";
+        out += "      height: 20\n";
+        out += "    }\n";
+    }
+    out += "  }\n\n";
+}
+
+inline void Work::_d2_pill_bar(std::ostream& os,
+                        std::span<SemaphoreReq const> reqs, const char* tag)
+{
+    char bar[8];
+    std::snprintf(bar, sizeof(bar), "%c_bar", tag[0]);
+
+    os << "  " << bar << ": \"\" {\n";
+    os << "    style.fill: transparent\n";
+    os << "    style.stroke: transparent\n";
+    os << "    grid-rows: 1\n";
+    os << "    grid-gap: 6\n\n";
+
+    char pid[8];
+    char sid[32];
+    for (std::size_t i = 0; i < reqs.size(); ++i) {
+        std::snprintf(pid, sizeof(pid), "%c%zu", tag[0], i);
+        std::snprintf(sid, sizeof(sid), "sem_%zx", reinterpret_cast<std::uintptr_t>(reqs[i].sem));
+        auto [bg, fg, md] = _sem_color(reqs[i].sem);
+
+        os << "    " << pid << ": \""
+           << tag << ":[" << sid
+           << "] [" << reqs[i].count
+           << "/" << reqs[i].sem->max_value()
+           << "] [";
+        _d2_str_escape(os, std::string(reqs[i].sem->name()));
+        os << "]\" {\n";
+        os << "      shape: rectangle\n";
+        os << "      style.border-radius: 12\n";
+        os << "      style.fill: \"" << bg << "\"\n";
+        os << "      style.font-color: \"" << fg << "\"\n";
+        os << "      style.stroke: transparent\n";
+        os << "      style.font-size: 10\n";
+        os << "      height: 20\n";
+        os << "    }\n";
+    }
+    os << "  }\n\n";
+}
+
+
+// ---- |md 块内信号量 pill 行（diamond/hexagon 节点专用，水平排列）----
+
+inline void Work::_d2_sem_lines(std::string& out,
+                         std::span<SemaphoreReq const> reqs, const char* tag)
+{
+    char sid[32];
+    for (std::size_t i = 0; i < reqs.size(); ++i) {
+        std::snprintf(sid, sizeof(sid), "sem_%zx", reinterpret_cast<std::uintptr_t>(reqs[i].sem));
+        auto [bg, fg, md] = _sem_color(reqs[i].sem);
+
+        out += "  <span style=\"";
+        out += "background-color:"; out += bg;
+        out += "; color:";          out += fg;
+        out += "; border-radius:8px";
+        out += "; padding:1px 6px";
+        out += "; font-size:9px";
+        out += ";\">";
+        out += tag;
+        out += ":[";
+        out += sid;
+        out += "] [";
+        out += std::to_string(reqs[i].count);
+        out += "/";
+        out += std::to_string(reqs[i].sem->max_value());
+        out += "] [";
+        out += _d2_escape(std::string(reqs[i].sem->name()));
+        out += "]</span> ";
+    }
+    out += "<br/>\n";
+}
+
+inline void Work::_d2_sem_lines(std::ostream& os,
+                         std::span<SemaphoreReq const> reqs, const char* tag)
+{
+    char sid[32];
+    for (std::size_t i = 0; i < reqs.size(); ++i) {
+        std::snprintf(sid, sizeof(sid), "sem_%zx", reinterpret_cast<std::uintptr_t>(reqs[i].sem));
+        auto [bg, fg, md] = _sem_color(reqs[i].sem);
+
+        os << "  <span style=\""
+           << "background-color:" << bg
+           << "; color:"          << fg
+           << "; border-radius:8px"
+           << "; padding:1px 6px"
+           << "; font-size:9px"
+           << ";\">"
+           << tag << ":[" << sid
+           << "] [" << reqs[i].count
+           << "/" << reqs[i].sem->max_value()
+           << "] [";
+        _d2_escape(os, std::string(reqs[i].sem->name()));
+        os << "]</span> ";
+    }
+    os << "<br/>\n";
+}
+
+// ============================================================================
+//  双轨渲染：
+//    无信号量         → 原始 |md（保留所有形状）
+//    有信号量 + rect   → grid pill bar
+//    有信号量 + 非 rect → |md 内嵌 HTML 行（保留 diamond/hexagon 形状）
+// ============================================================================
+
+inline std::string Work::_d2_work(const Work* w,
+                           const char* shape, const char* fill, const char* stroke,
+                           const char* font_color, const char* border_radius,
+                           const char* stroke_dash)
+{
+    char id[24];
+    std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(w));
+
+    const char* type_name = to_string(w->type());
+    const auto& name = w->m_name.empty() ? std::string(id) : w->m_name;
+
+    const bool has_acq = w->m_semaphores && !w->m_semaphores->acquires.empty();
+    const bool has_rel = w->m_semaphores && !w->m_semaphores->releases.empty();
+    const bool has_sem = has_acq || has_rel;
+    const bool is_rect = (std::strcmp(shape, "rectangle") == 0);
+
+    // ==== 路径 A：无信号量 或 有信号量但非 rectangle → |md 块 ====
+    if (!has_sem || !is_rect) {
+        std::string out;
+        out += id;
+        out += ": |md\n  <center>\n";
+
+        // acquire 行（节点名上方）
+        if (has_acq) {
+            _d2_sem_lines(out, w->_acquires(), "acq");
+        }
+
+        // 节点名 + 类型
+        out += "  <span style=\"color:";
+        out += font_color;
+        out += ";\"><b>";
+        out += _d2_escape(name);
+        out += "</b></span><br/>\n";
+        out += "  <span style=\"color: #6b7280;\">[ ";
+        out += type_name;
+        out += " ]</span>\n";
+
+        // release 行（类型下方）
+        if (has_rel) {
+            out += "  <br/>\n";
+            _d2_sem_lines(out, w->_releases(), "rel");
+        }
+
+        out += "  </center>\n| {\n";
+        out += "  shape: ";              out += shape;         out += "\n";
+        out += "  style.fill: \"";       out += fill;          out += "\"\n";
+        out += "  style.stroke: \"";     out += stroke;        out += "\"\n";
+        out += "  style.font-color: \""; out += font_color;    out += "\"\n";
+        out += "  style.border-radius: ";out += border_radius; out += "\n";
+        if (stroke_dash && stroke_dash[0] != '\0') {
+            out += "  style.stroke-dash: "; out += stroke_dash; out += "\n";
+        }
+        out += "  style.font-size: 14\n";
+        out += "}";
+        return out;
+    }
+
+    // ==== 路径 B：有信号量 + rectangle → grid pill bar ====
+    std::string out;
+    out += id;
+    out += ": \"\" {\n";
+    out += "  style.fill: \"";       out += fill;          out += "\"\n";
+    out += "  style.stroke: \"";     out += stroke;        out += "\"\n";
+    out += "  style.border-radius: ";out += border_radius; out += "\n";
+    if (stroke_dash && stroke_dash[0] != '\0') {
+        out += "  style.stroke-dash: "; out += stroke_dash; out += "\n";
+    }
+    out += "  grid-columns: 1\n";
+    out += "  grid-gap: 6\n\n";
+
+    if (has_acq) _d2_pill_bar(out, w->_acquires(), "acq");
+
+    out += "  mid: |md\n";
+    out += "    <center>\n";
+    out += "    <span style=\"color:"; out += font_color;
+    out += "; font-size:14px;\"><b>";
+    out += _d2_escape(name);
+    out += "</b></span><br/>\n";
+    out += "    <span style=\"color:#6b7280; font-size:11px;\">[ ";
+    out += type_name;
+    out += " ]</span>\n";
+    out += "    </center>\n";
+    out += "  | {\n    shape: text\n  }\n\n";
+
+    if (has_rel) _d2_pill_bar(out, w->_releases(), "rel");
+
+    out += "}";
+    return out;
+}
+
+
+inline void Work::_d2_work(std::ostream& os, const Work* w,
+                    const char* shape, const char* fill, const char* stroke,
+                    const char* font_color, const char* border_radius,
+                    const char* stroke_dash)
+{
+    char id[24];
+    std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(w));
+
+    const char* type_name = to_string(w->type());
+    const auto& name = w->m_name.empty() ? std::string(id) : w->m_name;
+
+    const bool has_acq = w->m_semaphores && !w->m_semaphores->acquires.empty();
+    const bool has_rel = w->m_semaphores && !w->m_semaphores->releases.empty();
+    const bool has_sem = has_acq || has_rel;
+    const bool is_rect = (std::strcmp(shape, "rectangle") == 0);
+
+    // ==== 路径 A：无信号量 或 有信号量但非 rectangle → |md 块 ====
+    if (!has_sem || !is_rect) {
+        os << id << ": |md\n  <center>\n";
+
+        if (has_acq) {
+            _d2_sem_lines(os, w->_acquires(), "acq");
+        }
+
+        os << "  <span style=\"color:" << font_color
+           << ";\"><b>";
+        _d2_escape(os, name);
+        os << "</b></span><br/>\n";
+        os << "  <span style=\"color: #6b7280;\">[ "
+           << type_name << " ]</span>\n";
+
+        if (has_rel) {
+            os << "  <br/>\n";
+            _d2_sem_lines(os, w->_releases(), "rel");
+        }
+
+        os << "  </center>\n| {\n";
+        os << "  shape: " << shape << "\n";
+        os << "  style.fill: \"" << fill << "\"\n";
+        os << "  style.stroke: \"" << stroke << "\"\n";
+        os << "  style.font-color: \"" << font_color << "\"\n";
+        os << "  style.border-radius: " << border_radius << "\n";
+        if (stroke_dash && stroke_dash[0] != '\0')
+            os << "  style.stroke-dash: " << stroke_dash << "\n";
+        os << "  style.font-size: 14\n";
+        os << "}";
+        return;
+    }
+
+    // ==== 路径 B：有信号量 + rectangle → grid pill bar ====
+    os << id << ": \"\" {\n";
+    os << "  style.fill: \"" << fill << "\"\n";
+    os << "  style.stroke: \"" << stroke << "\"\n";
+    os << "  style.border-radius: " << border_radius << "\n";
+    if (stroke_dash && stroke_dash[0] != '\0')
+        os << "  style.stroke-dash: " << stroke_dash << "\n";
+    os << "  grid-columns: 1\n";
+    os << "  grid-gap: 6\n\n";
+
+    if (has_acq) _d2_pill_bar(os, w->_acquires(), "acq");
+
+    os << "  mid: |md\n";
+    os << "    <center>\n";
+    os << "    <span style=\"color:" << font_color << "; font-size:14px;\"><b>";
+    _d2_escape(os, name);
+    os << "</b></span><br/>\n";
+    os << "    <span style=\"color:#6b7280; font-size:11px;\">[ "
+       << type_name << " ]</span>\n";
+    os << "    </center>\n";
+    os << "  | {\n    shape: text\n  }\n\n";
+
+    if (has_rel) _d2_pill_bar(os, w->_releases(), "rel");
+
+    os << "}";
 }
 
 }  // namespace tfl

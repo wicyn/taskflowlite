@@ -22,6 +22,40 @@
 
 namespace tfl {
 
+// 跨平台且规避 Clang 陷阱的缓存行大小推导
+#ifdef __cpp_lib_hardware_interference_size
+    // 1. 如果编译器和标准库完整支持 C++17 特性，优先使用标准库
+inline constexpr std::size_t cache_line_size = std::hardware_destructive_interference_size;
+#else
+    // 2. 否则，根据编译器宏和目标架构进行精细化推导
+#if defined(__APPLE__) && defined(__aarch64__)
+    // 重要补充：Apple Silicon (M1/M2/M3) 的 L1 缓存行大小是 128 字节！
+inline constexpr std::size_t cache_line_size = 128;
+#elif defined(__powerpc64__)
+    // PowerPC64 (如 Power7) 的 L1 D-cache 缓存行大小
+inline constexpr std::size_t cache_line_size = 128;
+#elif defined(__s390x__)
+    // IBM z/Architecture 通常是 256 字节
+inline constexpr std::size_t cache_line_size = 256;
+#elif defined(__arm__)
+    // 32位 ARM 处理器的兼容处理
+#if defined(__ARM_ARCH_5T__)
+inline constexpr std::size_t cache_line_size = 32;
+#else
+inline constexpr std::size_t cache_line_size = 64;
+#endif
+#elif defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
+    // x86 和 x86_64 架构（包含 MSVC 的宏 _M_IX86 / _M_X64）绝大多数是 64 字节
+inline constexpr std::size_t cache_line_size = 64;
+#else
+    // 3. 合理的默认猜测：高估会浪费一点内存，低估则会导致伪共享浪费大量时间
+inline constexpr std::size_t cache_line_size = 64;
+#endif
+#endif
+
+
+
+
 /// @brief 将两个枚举值无损压缩打包成一个 64 位无符号整数键。
 ///
 /// 常用于状态机的 (当前状态, 事件) 查找表，或类型分派映射。

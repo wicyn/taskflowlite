@@ -87,13 +87,13 @@ private:
     static constexpr std::size_t k_mask = cap - 1;
 
     // 2 倍缓存行对齐（典型值为 128 字节），隔离 owner 修改的 bottom 与 stealer 修改的 top
-    alignas(2 * std::hardware_destructive_interference_size)
+    alignas(2 * cache_line_size)
         std::atomic<Tp> m_buf[cap];
 
-    alignas(2 * std::hardware_destructive_interference_size)
+    alignas(2 * cache_line_size)
         std::atomic<std::int64_t> m_top;   ///< 仅 Stealer 写入
 
-    alignas(2 * std::hardware_destructive_interference_size)
+    alignas(2 * cache_line_size)
         std::atomic<std::int64_t> m_bottom; ///< 仅 Owner 写入
 };
 

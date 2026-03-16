@@ -118,6 +118,23 @@ void invoke_like(F&& f, Args&&... args) {
 */
 namespace detail {
 
+// 1. 基础模板 (默认匹配失败)
+template <typename... Ts>
+struct is_sem_count_seq : std::false_type {};
+// 2. 递归终止条件 (当参数包拆解为空时，匹配成功)
+template <>
+struct is_sem_count_seq<> : std::true_type {};
+
+// 3. 递归拆包核心逻辑
+template <typename S, typename C, typename... Rest>
+struct is_sem_count_seq<S, C, Rest...>
+    : std::bool_constant<
+          std::is_lvalue_reference_v<S>
+          && std::same_as<std::remove_cvref_t<S>, Semaphore>
+          && std::convertible_to<C, std::size_t>
+          && is_sem_count_seq<Rest...>::value
+          > {};
+
 // ============================================================================
 //  reference_wrapper 探测
 // ============================================================================
@@ -281,6 +298,10 @@ using multi_jump_return_t =
 template <typename T, typename... Args>
 using runtime_return_t =
     std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>;
+
+
+template <typename... Ts>
+concept sem_count_sequence = detail::is_sem_count_seq<Ts...>::value;
 
 } // namespace tfl
 

@@ -92,7 +92,7 @@ public:
     [[nodiscard]] std::string_view name() const noexcept;
 
     /// @brief 为任务设置易读的名称，用于调试和可视化。
-    AsyncTask& name(const std::string& name);
+    AsyncTask& name(std::string name);
 
     // ==================== 信号量管理 ====================
 
@@ -105,6 +105,14 @@ public:
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     AsyncTask& release(Ts&&... sems);
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+    AsyncTask& acquire(Ts&&... args);
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+    AsyncTask& release(Ts&&... args);
 
     /// @brief 移除指定的获取约束。
     template <typename... Ts>
@@ -124,15 +132,21 @@ public:
 
     // ==================== 迭代访问 ====================
 
-    /// @brief 遍历所有的获取约束信号量。
-    template <std::invocable<Semaphore&> F>
-    void for_each_acquire(F&& visitor)
-        noexcept(std::is_nothrow_invocable_v<F, Semaphore&>);
+    template <typename F>
+        requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
+    void for_each_acquire(F&& visitor) noexcept(
+        std::invocable<F, Semaphore&, std::size_t&>
+            ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
+            : std::is_nothrow_invocable_v<F, Semaphore&>
+        );
 
-    /// @brief 遍历所有的释放行为信号量。
-    template <std::invocable<Semaphore&> F>
-    void for_each_release(F&& visitor)
-        noexcept(std::is_nothrow_invocable_v<F, Semaphore&>);
+    template <typename F>
+        requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
+    void for_each_release(F&& visitor) noexcept(
+        std::invocable<F, Semaphore&, std::size_t&>
+            ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
+            : std::is_nothrow_invocable_v<F, Semaphore&>
+        );
 
     // ==================== 观察者通知 ====================
 
@@ -193,7 +207,7 @@ inline void AsyncTask::_incref() noexcept {
 inline void AsyncTask::_decref() noexcept {
     // Why: 减少引用计数。当最后一份句柄消失且任务已完结时，触发深度销毁流程，回收 Work 与 Topology 的复合内存。
     if(m_work && m_work->m_topology->_decref()) {
-        Work::destroy(m_work);
+        Work::destroy(m_work, m_work->m_topology);
     }
 }
 
@@ -328,8 +342,8 @@ inline std::string_view AsyncTask::name() const noexcept {
     return m_work->m_name;
 }
 
-inline AsyncTask& AsyncTask::name(const std::string& name) {
-    m_work->m_name = name;
+inline AsyncTask& AsyncTask::name(std::string name) {
+    m_work->m_name = std::move(name);
     return *this;
 }
 
@@ -348,16 +362,39 @@ inline std::size_t AsyncTask::num_observers() const noexcept {
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
 AsyncTask& AsyncTask::acquire(Ts&&... sems) {
-    (m_work->_acquire(&sems), ...);
+    (m_work->_acquire(&sems, 1ULL), ...);
     return *this;
 }
 
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
 AsyncTask& AsyncTask::release(Ts&&... sems) {
-    (m_work->_release(&sems), ...);
+    (m_work->_release(&sems, 1ULL), ...);
     return *this;
 }
+
+template <typename... Ts>
+    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+AsyncTask& AsyncTask::acquire(Ts&&... args) {
+    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+        (m_work->_acquire(&std::get<Is * 2>(tup),
+                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
+    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+AsyncTask& AsyncTask::release(Ts&&... args) {
+    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+        (m_work->_release(&std::get<Is * 2>(tup),
+                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
+    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
+    return *this;
+}
+
 
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
@@ -383,19 +420,35 @@ inline AsyncTask& AsyncTask::clear_releases() noexcept {
     return *this;
 }
 
-template <std::invocable<Semaphore&> F>
-void AsyncTask::for_each_acquire(F&& visitor)
-    noexcept(std::is_nothrow_invocable_v<F, Semaphore&>) {
-    for (Semaphore* sem : m_work->_acquires()) {
-        std::invoke(visitor, *sem);
+template <typename F>
+    requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
+void AsyncTask::for_each_acquire(F&& visitor) noexcept(
+    std::invocable<F, Semaphore&, std::size_t&>
+        ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
+        : std::is_nothrow_invocable_v<F, Semaphore&>
+    ) {
+    for (const auto& req : m_work->_acquires()) {
+        if constexpr (std::invocable<F, Semaphore&, std::size_t&>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
     }
 }
 
-template <std::invocable<Semaphore&> F>
-void AsyncTask::for_each_release(F&& visitor)
-    noexcept(std::is_nothrow_invocable_v<F, Semaphore&>) {
-    for (Semaphore* sem : m_work->_releases()) {
-        std::invoke(visitor, *sem);
+template <typename F>
+    requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
+void AsyncTask::for_each_release(F&& visitor) noexcept(
+    std::invocable<F, Semaphore&, std::size_t&>
+        ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
+        : std::is_nothrow_invocable_v<F, Semaphore&>
+    ) {
+    for (const auto& req : m_work->_releases()) {
+        if constexpr (std::invocable<F, Semaphore&, std::size_t&>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
     }
 }
 

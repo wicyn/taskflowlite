@@ -30,10 +30,10 @@ class Flow {
     friend class Task;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS;
+    TFL_WORK_SUBCLASS_FRIENDS
 
-public:
-    constexpr explicit Flow() = default;
+        public:
+                 constexpr explicit Flow() = default;
 
     Flow(const Flow&) = delete;
     Flow& operator=(const Flow&) = delete;
@@ -118,7 +118,7 @@ public:
     [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
     void dump(std::ostream& os, Direction dir = Direction::Default) const;
 
-    Flow& name(const std::string& n);
+    Flow& name(std::string name);
     [[nodiscard]] std::string_view name() const noexcept;
 
 private:
@@ -280,7 +280,6 @@ inline void Flow::for_each(F&& visitor) noexcept(std::is_nothrow_invocable_v<F, 
 // ============================================================================
 //  dump 实现
 // ============================================================================
-
 inline std::string Flow::dump(Direction dir) const {
     std::string out;
     out.reserve(m_graph.size() * 120 + 256);
@@ -289,23 +288,23 @@ inline std::string Flow::dump(Direction dir) const {
     out += to_string(dir);
     out += "\n\n";
 
-    if (!m_name.empty()) {
-        out += "root: |md\n  <center>";
-        out += m_name;
-        out += "<br/><span style=\"color: #6b7280;\">[ ";
-        out += to_string(TaskType::Graph);
-        out += " ]</span></center>\n| {\n";
-        out += "  shape: rectangle\n";
-        out += "  label.near: top-center\n";
-        out += "  style.fill: \"#e8f5e9\"\n";
-        out += "  style.stroke: \"#10b981\"\n";
-        out += "  style.stroke-width: 2\n";
-        out += "  style.border-radius: 14\n\n";
-        out += m_graph._dump();
-        out += "}\n";
-    } else {
-        out += m_graph._dump();
-    }
+    char id[24];
+    std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(&m_graph));
+    const auto& display_name = m_name.empty() ? std::string(id) : m_name;
+
+    out += "root: |md\n  <center>";
+    out += Work::_d2_escape(display_name);
+    out += "<br/><span style=\"color: #6b7280;\">[ ";
+    out += to_string(TaskType::Graph);
+    out += " ]</span></center>\n| {\n";
+    out += "  shape: rectangle\n";
+    out += "  label.near: top-center\n";
+    out += "  style.fill: \"#e8f5e9\"\n";
+    out += "  style.stroke: \"#10b981\"\n";
+    out += "  style.stroke-width: 2\n";
+    out += "  style.border-radius: 14\n\n";
+    out += m_graph._dump();
+    out += "}\n";
 
     return out;
 }
@@ -313,31 +312,31 @@ inline std::string Flow::dump(Direction dir) const {
 inline void Flow::dump(std::ostream& os, Direction dir) const {
     os << "direction: " << to_string(dir) << "\n\n";
 
-    if (!m_name.empty()) {
-        os << "root: |md\n  <center>"
-           << m_name
-           << "<br/><span style=\"color: #6b7280;\">[ "
-           << to_string(TaskType::Graph)
-           << " ]</span></center>\n| {\n";
-        os << "  shape: rectangle\n";
-        os << "  label.near: top-center\n";
-        os << "  style.fill: \"#e8f5e9\"\n";
-        os << "  style.stroke: \"#10b981\"\n";
-        os << "  style.stroke-width: 2\n";
-        os << "  style.border-radius: 14\n\n";
-        m_graph._dump(os);
-        os << "}\n";
-    } else {
-        m_graph._dump(os);
-    }
+    char id[24];
+    std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(&m_graph));
+    const auto& display_name = m_name.empty() ? std::string(id) : m_name;
+
+    os << "root: |md\n  <center>";
+    Work::_d2_escape(os, display_name);
+    os << "<br/><span style=\"color: #6b7280;\">[ "
+       << to_string(TaskType::Graph)
+       << " ]</span></center>\n| {\n";
+    os << "  shape: rectangle\n";
+    os << "  label.near: top-center\n";
+    os << "  style.fill: \"#e8f5e9\"\n";
+    os << "  style.stroke: \"#10b981\"\n";
+    os << "  style.stroke-width: 2\n";
+    os << "  style.border-radius: 14\n\n";
+    m_graph._dump(os);
+    os << "}\n";
 }
 
 // ============================================================================
 //  name 实现
 // ============================================================================
 
-inline Flow& Flow::name(const std::string& n) {
-    m_name = n;
+inline Flow& Flow::name(std::string name) {
+    m_name = std::move(name);
     return *this;
 }
 

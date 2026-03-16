@@ -177,26 +177,6 @@ TEST_CASE("MultiBranch: Concurrent Path Routing", "[branch]") {
     REQUIRE(hits[3].load() == 0);
 }
 
-TEST_CASE("Jump: Backward Retry Loop", "[jump]") {
-    tfl::Flow flow;
-    std::atomic<int> attempts{0};
-
-    auto process = flow.emplace([&] { attempts.fetch_add(1); });
-    auto check = flow.emplace([&](tfl::Jump& jmp) {
-        if (attempts.load() < 5) jmp.to(0); // 跳回 target 0 (即 process)
-    });
-
-    process.precede(check);
-    // 这里假设你的 API 是 jmp_node.precede(target) 将 target 注册为索引 0
-    // 或者类似机制。如果 API 不同请调整这行。
-    check.precede(process);
-
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 2);
-    executor.submit(flow).start().wait();
-
-    REQUIRE(attempts.load() == 5);
-}
 
 // ============================================================================
 // [Runtime] 运行时动态拓扑与子图
@@ -400,4 +380,161 @@ TEST_CASE("Edge: Disconnected Empty Tasks", "[edge]") {
 
     // 只要不崩溃、能正常退出即通过
     REQUIRE_NOTHROW(executor.submit(flow).start().wait());
+}
+
+TEST_CASE("Task Topology Constraints - precede() exception and cycle detection") {
+    tfl::Flow flow;
+    auto nop = []{}; // 空闭包用于占位
+
+    SECTION("1. Normal acyclic precede succeeds") {
+        tfl::Task A = flow.emplace(nop).name("A");
+        tfl::Task B = flow.emplace(nop).name("B");
+
+        // 正常连边不应抛出任何异常
+        REQUIRE_NOTHROW(A.precede(B));
+        CHECK(A.num_successors() == 1);
+        CHECK(B.num_predecessors() == 1);
+    }
+
+    SECTION("2. Self-loop on non-jump node throws exception") {
+        tfl::Task A = flow.emplace(nop).name("A");
+
+        bool caught = false;
+        try {
+            A.precede(A);
+        } catch (const tfl::Exception& e) {
+            caught = true;
+            std::string msg = e.what();
+            // 验证错误信息是否精确匹配我们在 _can_precede 中设置的方案 B
+            CHECK(msg.find("invalid topology: self-loops are exclusively allowed for jump-type nodes") != std::string::npos);
+        }
+        CHECK(caught == true);
+    }
+
+    SECTION("3. Self-loop on jump node succeeds") {
+        // 修复：显式使用接受 tfl::Jump& 的闭包来创建跳转节点
+        tfl::Task JumpA = flow.emplace([](tfl::Jump&){}).name("JumpA");
+
+        // 跳转节点的自环应该被 O(1) 短路豁免
+        REQUIRE_NOTHROW(JumpA.precede(JumpA));
+        CHECK(JumpA.num_successors() == 1);
+    }
+
+    SECTION("4. Strict cycle without jump node throws exception") {
+        tfl::Task A = flow.emplace(nop).name("A");
+        tfl::Task B = flow.emplace(nop).name("B");
+        tfl::Task C = flow.emplace(nop).name("C");
+
+        A.precede(B);
+        B.precede(C);
+
+        // 尝试闭环 C -> A，此时路径为 C -> A -> B -> C，全是常规节点，必然死锁
+        bool caught = false;
+        try {
+            C.precede(A);
+        } catch (const tfl::Exception& e) {
+            caught = true;
+            std::string msg = e.what();
+            CHECK(msg.find("invalid topology: strict cycle detected without any jump-type node") != std::string::npos);
+        }
+        CHECK(caught == true);
+
+        // 验证由于异常打断，危险的边确实没有被连上
+        CHECK(C.num_successors() == 0);
+        CHECK(A.num_predecessors() == 0);
+    }
+
+    SECTION("5. Cycle containing a jump node succeeds (O(1) exemption)") {
+        tfl::Task A = flow.emplace(nop).name("A");
+        tfl::Task B = flow.emplace(nop).name("B");
+
+        // 修复：将 JumpC 创建为真正的跳转节点
+        tfl::Task JumpC = flow.emplace([](tfl::Jump&){}).name("JumpC");
+
+        // 构建 A -> B -> JumpC
+        A.precede(B);
+        B.precede(JumpC);
+
+        // 场景 5.1: 连边起点是 Jump 节点
+        REQUIRE_NOTHROW(JumpC.precede(A));
+        CHECK(JumpC.num_successors() == 1);
+
+
+        tfl::Task X = flow.emplace(nop).name("X");
+        tfl::Task Y = flow.emplace(nop).name("Y");
+
+        // 修复：将 JumpZ 创建为真正的跳转节点
+        tfl::Task JumpZ = flow.emplace([](tfl::Jump&){}).name("JumpZ");
+
+        // 构建 JumpZ -> X -> Y
+        JumpZ.precede(X);
+        X.precede(Y);
+
+        // 场景 5.2: 连边终点是 Jump 节点
+        REQUIRE_NOTHROW(Y.precede(JumpZ));
+        CHECK(Y.num_successors() == 1);
+    }
+
+}
+
+
+TEST_CASE("Topology: Normal nodes strict cycle throws", "[topology]") {
+    tfl::Flow flow;
+    tfl::Task A = flow.emplace([]{}).name("A");
+    tfl::Task B = flow.emplace([]{}).name("B");
+
+    A.precede(B); // 正常连边
+
+    // 预期抛出异常：常规节点反向连边会形成死锁环路
+    REQUIRE_THROWS(B.precede(A));
+}
+
+TEST_CASE("Topology: Normal node self-loop throws tfl::Exception", "[topology]") {
+    tfl::Flow flow;
+    tfl::Task A = flow.emplace([]{}).name("A");
+
+    // 预期抛出 tfl::Exception 类型的异常
+    REQUIRE_THROWS_AS(A.precede(A), tfl::Exception);
+}
+
+
+TEST_CASE("Topology: Cycle detection exact message match", "[topology]") {
+    tfl::Flow flow;
+    tfl::Task A = flow.emplace([]{}).name("A");
+    tfl::Task B = flow.emplace([]{}).name("B");
+    tfl::Task C = flow.emplace([]{}).name("C");
+
+    A.precede(B);
+    B.precede(C);
+
+    // 验证抛出异常，并且 e.what() 中包含特定的子字符串
+    REQUIRE_THROWS_WITH(
+        C.precede(A),
+        Catch::Matchers::ContainsSubstring("invalid topology: strict cycle detected")
+        );
+
+    // 验证异常打断后，危险的边没有被连上
+    CHECK(C.num_successors() == 0);
+    CHECK(A.num_predecessors() == 0);
+}
+
+TEST_CASE("Jump: Backward Retry Loop", "[jump]") {
+    tfl::Flow flow;
+    std::atomic<int> attempts{ 0 };
+    auto start = flow.emplace([&] { });
+    auto process = flow.emplace([&] { attempts.fetch_add(1); });
+    auto check = flow.emplace([&](tfl::Jump& jmp) {
+        if (attempts.load() < 5) jmp.to(0); // 跳回 target 0 (即 process)
+        });
+    start.precede(process);
+    process.precede(check);
+    // 这里假设你的 API 是 jmp_node.precede(target) 将 target 注册为索引 0
+    // 或者类似机制。如果 API 不同请调整这行。
+    check.precede(process);
+
+    tfl::ResumeNever handler;
+    tfl::Executor executor(handler, 2);
+    executor.submit(flow).start().wait();
+
+    REQUIRE(attempts.load() == 5);
 }

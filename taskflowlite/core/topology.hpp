@@ -39,7 +39,7 @@ class Topology {
     friend class Graph;
     friend class Executor;
 
-    TFL_WORK_SUBCLASS_FRIENDS;
+    TFL_WORK_SUBCLASS_FRIENDS
 
 protected:
     /// @brief 生命周期状态枚举

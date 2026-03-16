@@ -52,7 +52,7 @@ public:
     /// @brief 侵入式无锁栈的等待者节点
     /// @details 每个 Worker 线程对应一个 Waiter，组成等待栈
     /// @note 按 2 倍缓存行对齐，消除多线程更新状态时的伪共享
-    struct alignas(2 * std::hardware_destructive_interference_size) Waiter {
+    struct alignas(2 * cache_line_size) Waiter {
         std::atomic<Waiter*> next;  ///< 侵入式链表指针
         std::uint64_t epoch;        ///< prepare_wait 时的全局状态快照
 

@@ -52,7 +52,7 @@ class Branch : public MoveOnly<Branch> {
     friend class Worker;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS;
+    TFL_WORK_SUBCLASS_FRIENDS
 
 public:
 
@@ -196,7 +196,7 @@ class MultiBranch : public MoveOnly<MultiBranch> {
     friend class Worker;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS;
+    TFL_WORK_SUBCLASS_FRIENDS
 
 public:
 

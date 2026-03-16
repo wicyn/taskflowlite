@@ -1,4 +1,4 @@
-/// @file unbounded_queue.hpp
+﻿/// @file unbounded_queue.hpp
 /// @brief 提供可动态增长的无界环形队列，用于任务分发。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -143,8 +143,8 @@ private:
     static constexpr std::size_t k_garbage_reserve = 64;
 
     // Why: 使用 2 倍缓存行大小对齐，防止伪共享
-    alignas(2 * std::hardware_destructive_interference_size) std::atomic<std::int64_t> m_top;
-    alignas(2 * std::hardware_destructive_interference_size) std::atomic<std::int64_t> m_bottom;
+    alignas(2 * cache_line_size) std::atomic<std::int64_t> m_top;
+    alignas(2 * cache_line_size) std::atomic<std::int64_t> m_bottom;
 
     // Why: 使用原子指针因为缓冲区可能被替换
     std::atomic<AtomicRingBuffer<Tp>*> m_buf;
@@ -361,53 +361,72 @@ Tp UnboundedQueue<Tp>::pop() noexcept {
 template <typename Tp>
     requires std::is_pointer_v<Tp>
 Tp UnboundedQueue<Tp>::steal() noexcept {
+    // 1. 读取当前的头指针（Stealer 端）
     std::int64_t top = m_top.load(std::memory_order_acquire);
 
-    // Why: Stealer 需要循环因为可能在扩容时失败或与其他 Stealer 竞争
-    for (;;) {
-        // seq_cst 屏障确保先看到 top 再读取 bottom
-        std::atomic_thread_fence(std::memory_order_seq_cst);
-        std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
+    // Why: Chase-Lev 工作窃取算法的灵魂屏障（Memory Fence）
+    // 强制确保对 m_top 的读取绝对发生在对 m_bottom 的读取之前。
+    // 如果没有这个 seq_cst 屏障，CPU 乱序执行可能会让 Stealer 先看到新的 bottom，
+    // 再看到旧的 top，从而误以为队列有元素，引发致命的并发错误。
+    std::atomic_thread_fence(std::memory_order_seq_cst);
 
-        if (top < bottom) {
-            Tp val = m_buf.load(std::memory_order_acquire)->load(top);
+    // 2. 读取当前的尾指针（Owner 端）
+    std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
 
-            // 竞争：使用 compare_exchange_weak 尝试增加 top
-            // weak 版本可能失败但更快，适合循环
-            if (m_top.compare_exchange_weak(top, top + 1,
-                                            std::memory_order_seq_cst, std::memory_order_relaxed)) {
-                return val;
-            }
-        } else {
-            // 队列空
-            return nullptr;
+    // 3. 判断队列是否有任务
+    // 使用 [[likely]] 引导编译器：我们期望窃取时大概率是有任务的，让这段机器码紧凑排列
+    if (top < bottom) [[likely]] {
+
+        // Why: 必须在 CAS 之前加载数据！
+        // 因为一旦 m_top 的 CAS 成功，Owner 线程随时可能推入新任务并覆盖这个位置的内存。
+        Tp tmp = m_buf.load(std::memory_order_acquire)->load(top);
+
+        // 4. 尝试用强 CAS 抢占该元素的归属权
+        // Why: 奉行“打不过就跑”策略。如果失败，说明恰好有其他 Stealer 或 Owner 抢走了它。
+        // 直接返回 nullptr 而不是死循环重试，彻底避免“缓存行风暴（Cache Line Bouncing）”。
+        if (!m_top.compare_exchange_strong(top, top + 1,
+                                           std::memory_order_seq_cst,
+                                           std::memory_order_relaxed)) [[unlikely]] {
+            return nullptr;  // CAS 失败：竞争丢失，让出 CPU 去窃取其他队列
         }
+
+        return tmp;  // 成功窃取到元素！
     }
+
+    return nullptr;  // 队列为空，直接返回
 }
+
 
 template <typename Tp>
     requires std::is_pointer_v<Tp>
 Tp UnboundedQueue<Tp>::steal(std::size_t& num_empty_steals) noexcept {
     std::int64_t top = m_top.load(std::memory_order_acquire);
 
-    for (;;) {
-        std::atomic_thread_fence(std::memory_order_seq_cst);
-        std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
 
-        if (top < bottom) {
-            num_empty_steals = 0; // 有元素可窃取，重置计数
-            Tp val = m_buf.load(std::memory_order_acquire)->load(top);
+    std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
 
-            if (m_top.compare_exchange_weak(top, top + 1,
-                                            std::memory_order_seq_cst, std::memory_order_relaxed)) {
-                return val;
-            }
-        } else {
-            // 队列空，增加空窃取计数
-            ++num_empty_steals;
+    if (top < bottom) [[likely]] {
+        // 发现目标队列中有任务（即使后续可能没抢到），重置空载窃取计数
+        num_empty_steals = 0;
+
+        Tp tmp = m_buf.load(std::memory_order_acquire)->load(top);
+
+        if (!m_top.compare_exchange_strong(top, top + 1,
+                                           std::memory_order_seq_cst,
+                                           std::memory_order_relaxed)) [[unlikely]] {
+            // CAS 失败说明队列有任务只是被人抢先了，所以不算作 empty steal
             return nullptr;
         }
+
+        return tmp;  // 成功返回元素
+    } else {
+        // 队列真正为空（top >= bottom），累加连续空载窃取计数
+        // 外层调度器可以根据这个计数值决定当前线程是否需要 yield 或 sleep
+        ++num_empty_steals;
     }
+
+    return nullptr;  // 队列为空返回
 }
 
 } // namespace tfl

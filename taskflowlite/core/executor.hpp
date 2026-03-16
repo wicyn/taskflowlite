@@ -15,10 +15,10 @@
 #include "runtime.hpp"
 #include "branch.hpp"
 #include "jump.hpp"
-#include "unbounded_queue_bucket.hpp"
 #include "graph.hpp"
 #include "worker.hpp"
 #include "unordered_dense.hpp"
+#include "unbounded_queue.hpp"
 
 namespace tfl {
 
@@ -52,7 +52,7 @@ class Executor : public Immovable<Executor> {
     friend class AsyncTask;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS;
+    TFL_WORK_SUBCLASS_FRIENDS
 
 public:
     /// @brief 创建调度器并启动工作线程
@@ -140,12 +140,17 @@ public:
     [[nodiscard]] std::size_t num_topologies() const noexcept;
 
 private:
+    struct alignas(2 * cache_line_size) Buffer {
+        std::mutex mutex;
+        UnboundedQueue<Work*> queue{2 * TFL_DEFAULT_QUEUE_SIZE};
+    };
+
     // 64 字节对齐：防止多线程修改 m_num_topologies 时产生伪共享
-    alignas(2 * std::hardware_destructive_interference_size)
+    alignas(2 * cache_line_size)
         std::atomic<std::size_t> m_num_topologies{0};
 
     std::vector<Worker> m_workers;
-    UnboundedQueueBucket<Work*> m_shared_queues;
+    std::vector<Buffer> m_buffers; ///< 队列缓冲区数组
     Notifier m_notifier;
     WorkerHandler& m_handler;
     unordered_dense::map<std::thread::id, Worker*> m_thread_worker_map;
@@ -188,6 +193,12 @@ private:
     /// @brief 异常传播处理
     void _process_exception(Work* w);
 
+    void _push_shared(Work* val);
+
+    template <std::random_access_iterator Iterator>
+        requires std::convertible_to<std::iter_reference_t<Iterator>, Work*>
+    void _push_shared(Iterator first, std::size_t n);
+
     // 任务调度入口
     template <std::random_access_iterator Iterator>
     void _schedule(Worker& wr, Iterator first, std::size_t n);
@@ -219,8 +230,8 @@ private:
 
 inline Executor::Executor(WorkerHandler& handler, std::size_t num_workers)
     : m_workers{num_workers}
+    , m_buffers{static_cast<std::size_t>(std::bit_width(num_workers))}
     , m_notifier{num_workers}
-    , m_shared_queues{num_workers}
     , m_handler{handler} {
     if (num_workers == 0) {
         TFL_THROW("executor must define at least one worker");
@@ -248,7 +259,7 @@ inline void Executor::wait_for_all() const noexcept {
 
 inline std::size_t Executor::num_workers() const noexcept { return m_workers.size(); }
 inline std::size_t Executor::num_waiters() const noexcept { return m_notifier.num_waiters(); }
-inline std::size_t Executor::num_queues() const noexcept { return m_workers.size() + m_shared_queues.size(); }
+inline std::size_t Executor::num_queues() const noexcept { return m_workers.size() + m_buffers.size(); }
 inline std::size_t Executor::num_topologies() const noexcept { return m_num_topologies.load(std::memory_order_relaxed); }
 
 /// @brief 优雅关闭：等待任务完成 → 设置终止标志 → 唤醒等待线程 → 回收线程资源
@@ -422,7 +433,7 @@ inline void Executor::_spawn(std::size_t num_workers) {
         wr.m_rng = Xoshiro{detail::seed, std::random_device{}};
         wr.m_dist.reset(0, num_queues() - 1);
 
-        wr.m_thread = std::thread([this, id, &wr]() noexcept {
+        wr.m_thread = std::thread([this, &wr]() noexcept {
             wr.m_rng.long_jump();  // 随机数序列分离
             m_handler.on_start(wr);
 
@@ -470,13 +481,13 @@ explore:
     std::size_t vtm = wr.m_vtm;
     std::size_t num_steals = 0;
     std::size_t const yield_limit = m_workers.size() * wr.m_adaptive_factor + wr.m_max_steals;
-    std::size_t const shared_size = m_shared_queues.size();
+    std::size_t const shared_size = m_buffers.size();
 
     // Phase 1: 窃取
     for (;;) {
         Work* w = (vtm < m_workers.size())
         ? m_workers[vtm].m_wslq.steal()
-        : m_shared_queues.steal(vtm - m_workers.size());
+        : m_buffers[vtm - m_workers.size()].queue.steal();
 
         if (w) {
             wr.m_vtm = vtm;
@@ -508,7 +519,7 @@ explore:
 
     // Double-check: 唤醒后再次检查队列
     for (std::size_t i = 0; i < shared_size; ++i) {
-        if (!m_shared_queues.empty(i)) {
+        if (!m_buffers[i].queue.empty()) {
             m_notifier.cancel_wait(wr.m_id);
             wr.m_vtm = i + m_workers.size();
             goto explore;
@@ -639,36 +650,84 @@ inline void Executor::_set_up_dep_async_task(Work* w, I first, S last, std::size
 
     for (; first != last; ++first) {
         auto* work = first->m_work;
-
         if (!work) {
             num_predecessors = w->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) - 1;
             continue;
         }
 
         auto& state = work->m_topology->m_state;
+
         for (;;) {
-            auto target = Topology::State::Running;
-            // 加锁：防止在添加依赖的过程中目标拓扑被销毁
-            if (state.compare_exchange_strong(target, Topology::State::Locking,
-                                              std::memory_order_acq_rel,
-                                              std::memory_order_acquire)) {
-                work->m_edges.push_back(w);
-                if (work->m_num_successors < work->m_edges.size() - 1) {
-                    std::swap(work->m_edges[work->m_num_successors], work->m_edges.back());
-                }
-                ++work->m_num_successors;
+            // 1. 每次循环开头，直接获取内存中的最新状态
+            auto target = state.load(std::memory_order_acquire);
 
-                state.store(Topology::State::Running, std::memory_order_release);
-                break;
-            }
-
+            // 2. 目标已完成，直接跳出
             if (target == Topology::State::Finished) {
                 num_predecessors = w->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) - 1;
                 break;
             }
+
+            // 3. 锁被占用：我们只自旋等待，坚决不触发 CAS 操作（减少总线竞争）
+            if (target == Topology::State::Locking) {
+                // 推荐在这里加个硬件 pause 指令，防止 CPU 100% 空转发热
+                continue;
+            }
+
+            // 4. 此时 target 必然是 Idle 或 Running，尝试原子加锁
+            if (state.compare_exchange_weak(target, Topology::State::Locking,
+                                            std::memory_order_acq_rel,
+                                            std::memory_order_acquire)) {
+                // 加锁成功！当前线程独占修改权限
+                work->m_edges.push_back(w);
+                ++work->m_num_successors;
+
+                // 解锁并恢复为原状态 (target 中存的是替换前的 Idle 或 Running)
+                state.store(target, std::memory_order_release);
+                break;
+            }
+            // 5. 如果加锁失败，说明恰好有其他线程抢先了。
+            // 循环会回到开头，重新 load 最新状态，完美闭环！
         }
     }
 }
+
+// template <typename I, typename S>
+//     requires std::sentinel_for<S, I>
+// inline void Executor::_set_up_dep_async_task(Work* w, I first, S last, std::size_t& num_predecessors) {
+//     _increment_topology();
+
+//     for (; first != last; ++first) {
+//         auto* work = first->m_work;
+
+//         if (!work) {
+//             num_predecessors = w->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) - 1;
+//             continue;
+//         }
+
+//         auto& state = work->m_topology->m_state;
+//         for (;;) {
+//             auto target = Topology::State::Running;
+//             // 加锁：防止在添加依赖的过程中目标拓扑被销毁
+//             if (state.compare_exchange_strong(target, Topology::State::Locking,
+//                                               std::memory_order_acq_rel,
+//                                               std::memory_order_acquire)) {
+//                 work->m_edges.push_back(w);
+//                 // if (work->m_num_successors < work->m_edges.size() - 1) {
+//                 //     std::swap(work->m_edges[work->m_num_successors], work->m_edges.back());
+//                 // }
+//                 ++work->m_num_successors;
+
+//                 state.store(Topology::State::Running, std::memory_order_release);
+//                 break;
+//             }
+
+//             if (target == Topology::State::Finished) {
+//                 num_predecessors = w->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) - 1;
+//                 break;
+//             }
+//         }
+//     }
+// }
 
 /// @brief 动态依赖任务完成处理
 inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cache) {
@@ -702,7 +761,7 @@ inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cach
     _decrement_topology();
 
     if (topo->_decref()) {
-        Work::destroy(w);
+        Work::destroy(w, w->m_topology);
     }
 }
 
@@ -731,6 +790,82 @@ inline void Executor::_process_exception(Work* w) {
     w->m_exception_ptr = eptr;
 }
 
+void Executor::_push_shared(Work* val) {
+    std::uintptr_t const ptr = reinterpret_cast<std::uintptr_t>(val);
+    std::size_t const size = m_buffers.size();
+    std::size_t hash = ptr * 11400714819323198485ULL;
+    std::size_t b = 0;
+
+    // 2. 自动判断：是 2 的幂走极速位运算，否则走取模
+    // Why: m_buffers.size() 在构造后是不变的。
+    // 现代 CPU 的分支预测器（Branch Predictor）会对这种“永远不变的分支”达到 100% 的命中率，
+    // 因此这个 if 语句在底层的运行开销几乎为 0。
+    if (std::has_single_bit(size)) [[likely]] {
+        b = hash & (size - 1);
+    } else {
+        b = hash % size;
+    }
+
+    // Fast-Path
+    for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
+        if (m_buffers[curr_b].mutex.try_lock()) {
+            m_buffers[curr_b].queue.push(val);
+            m_buffers[curr_b].mutex.unlock();
+            return;
+        }
+    }
+    for (std::size_t curr_b = 0; curr_b < b; ++curr_b) {
+        if (m_buffers[curr_b].mutex.try_lock()) {
+            m_buffers[curr_b].queue.push(val);
+            m_buffers[curr_b].mutex.unlock();
+            return;
+        }
+    }
+
+    // 直接对目标队列加锁并推送，如果被占用则当前线程阻塞等待
+    std::lock_guard<std::mutex> lock(m_buffers[b].mutex);
+    m_buffers[b].queue.push(val);
+}
+
+template <std::random_access_iterator Iterator>
+    requires std::convertible_to<std::iter_reference_t<Iterator>, Work*>
+void Executor::_push_shared(Iterator first, std::size_t n) {
+    std::uintptr_t const ptr = reinterpret_cast<std::uintptr_t>(*first);
+    std::size_t const size = m_buffers.size();
+    std::size_t hash = ptr * 11400714819323198485ULL;
+    std::size_t b = 0;
+
+    // 2. 自动判断：是 2 的幂走极速位运算，否则走取模
+    // Why: m_buffers.size() 在构造后是不变的。
+    // 现代 CPU 的分支预测器（Branch Predictor）会对这种“永远不变的分支”达到 100% 的命中率，
+    // 因此这个 if 语句在底层的运行开销几乎为 0。
+    if (std::has_single_bit(size)) [[likely]] {
+        b = hash & (size - 1);
+    } else {
+        b = hash % size;
+    }
+
+    // Fast-Path
+    for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
+        if (m_buffers[curr_b].mutex.try_lock()) {
+            m_buffers[curr_b].queue.push(first, n);
+            m_buffers[curr_b].mutex.unlock();
+            return;
+        }
+    }
+    for (std::size_t curr_b = 0; curr_b < b; ++curr_b) {
+        if (m_buffers[curr_b].mutex.try_lock()) {
+            m_buffers[curr_b].queue.push(first, n);
+            m_buffers[curr_b].mutex.unlock();
+            return;
+        }
+    }
+
+    // 直接对目标队列加锁并批量推送
+    std::lock_guard<std::mutex> lock(m_buffers[b].mutex);
+    m_buffers[b].queue.push(first, n);
+}
+
 // ============================================================================
 //  任务调度入口
 // ============================================================================
@@ -742,7 +877,7 @@ inline void Executor::_schedule(Worker& wr, Iterator first, std::size_t n) {
     }
     // 本地队列满时溢出到共享队列
     wr.m_wslq.push(first, n, [&](Iterator remaining, std::size_t count) {
-        m_shared_queues.push(remaining, count);
+        _push_shared(remaining, count);
     });
 
     m_notifier.notify_n(n);
@@ -753,19 +888,19 @@ inline void Executor::_schedule(Iterator first, std::size_t n) {
     if (n == 0) [[unlikely]] {
         return;
     }
-    m_shared_queues.push(first, n);
+    _push_shared(first, n);
     m_notifier.notify_n(n);
 }
 
 inline void Executor::_schedule(Worker& wr, Work* w) {
     wr.m_wslq.push(w, [&]() {
-        m_shared_queues.push(w);
+        _push_shared(w);
     });
     m_notifier.notify_one();
 }
 
 inline void Executor::_schedule(Work* w) {
-    m_shared_queues.push(w);
+    _push_shared(w);
     m_notifier.notify_one();
 }
 
@@ -811,7 +946,7 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
         while (!std::invoke_r<bool>(pred)) {
             Work* w = (vtm < m_workers.size())
             ? m_workers[vtm].m_wslq.steal()
-            : m_shared_queues.steal(vtm - m_workers.size());
+            : m_buffers[vtm - m_workers.size()].queue.steal();;
 
             if (w) [[likely]] {
                 wr.m_vtm = vtm;
@@ -1238,7 +1373,7 @@ void AsyncBasicWork<F, Args...>::invoke(Executor& exe, [[maybe_unused]] Worker& 
         else { try { std::apply(_call, m_args); } catch (...) {} }
     }
     exe._decrement_topology();
-    Work::destroy(this);
+    Work::destroy(this, this->m_topology);
 }
 
 template <typename F, typename... Args>
@@ -1257,7 +1392,7 @@ void AsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, [[maybe_unu
         else { try { std::apply(_call, m_args); } catch (...) {} }
     }
     exe._decrement_topology();
-    Work::destroy(this);
+    Work::destroy(this, this->m_topology);
 }
 
 // ============================================================================
@@ -1290,7 +1425,7 @@ void AsyncBasicPromiseWork<F, R, Args...>::invoke(Executor& exe, [[maybe_unused]
             } catch (...) {
                 m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this);
+                Work::destroy(this, this->m_topology);
                 return;
             }
             m_promise.set_value();
@@ -1301,14 +1436,14 @@ void AsyncBasicPromiseWork<F, R, Args...>::invoke(Executor& exe, [[maybe_unused]
             } catch (...) {
                 m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this);
+                Work::destroy(this, this->m_topology);
                 return;
             }
             m_promise.set_value(std::move(*result));
         }
     }
     exe._decrement_topology();
-    Work::destroy(this);
+    Work::destroy(this, this->m_topology);
 }
 
 template <typename F, typename R, typename... Args>
@@ -1339,7 +1474,7 @@ void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, [
             } catch (...) {
                 m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this);
+                Work::destroy(this, this->m_topology);
                 return;
             }
             m_promise.set_value();
@@ -1350,14 +1485,14 @@ void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, [
             } catch (...) {
                 m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this);
+                Work::destroy(this, this->m_topology);
                 return;
             }
             m_promise.set_value(std::move(*result));
         }
     }
     exe._decrement_topology();
-    Work::destroy(this);
+    Work::destroy(this, this->m_topology);
 }
 
 // ============================================================================

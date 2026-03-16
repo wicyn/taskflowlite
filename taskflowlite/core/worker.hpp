@@ -32,7 +32,7 @@ class Worker {
     friend class WorkerView;
     friend class Work;
 
-    TFL_WORK_SUBCLASS_FRIENDS;
+    TFL_WORK_SUBCLASS_FRIENDS
 
 public:
     /// @brief 获取 Worker 的唯一标识符
@@ -78,7 +78,7 @@ class WorkerView {
     friend class Executor;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS;
+    TFL_WORK_SUBCLASS_FRIENDS
 public:
     [[nodiscard]] std::size_t id() const noexcept { return m_worker.m_id; }
     [[nodiscard]] std::size_t queue_size() const noexcept { return m_worker.m_wslq.size(); }

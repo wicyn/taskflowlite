@@ -56,7 +56,7 @@ class Jump : public MoveOnly<Jump> {
     friend class Worker;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS;
+    TFL_WORK_SUBCLASS_FRIENDS
 
 public:
 
@@ -195,7 +195,7 @@ class MultiJump : public MoveOnly<MultiJump> {
     friend class Worker;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS;
+    TFL_WORK_SUBCLASS_FRIENDS
 
 public:
 

@@ -12,7 +12,7 @@ int main() {
     tfl::Flow flow;
 
     int attempts = 0;
-    constexpr int maxAttempts = 3;
+    int maxAttempts = 3;
 
     auto init = flow.emplace([] { std::cout << "Initializing system...\n"; });
 

@@ -1,4 +1,4 @@
-/// @file graph.hpp
+﻿/// @file graph.hpp
 /// @brief 任务图容器 - DAG 节点的物理存储与生命周期管理
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -31,7 +31,7 @@ class Graph {
     friend class Runtime;
     friend class Work;
 
-    TFL_WORK_SUBCLASS_FRIENDS;
+    TFL_WORK_SUBCLASS_FRIENDS
 
 public:
     using value_type = Work*;

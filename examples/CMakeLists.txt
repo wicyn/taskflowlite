@@ -14,6 +14,7 @@ set(EXAMPLES
     09_pipeline
     10_dump
     11_flow_emplace
+    12_loop_workflow
     main
 )
 

@@ -1,4 +1,4 @@
-/// @file task.hpp
+﻿/// @file task.hpp
 /// @brief 任务句柄 Task 与只读视图 TaskView
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -65,7 +65,7 @@ public:
     // ========================================================================
     //  拓扑构建
     // ========================================================================
-    Task& name(const std::string& n);
+    Task& name(std::string name);
 
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
@@ -98,6 +98,14 @@ public:
     Task& release(Ts&&... sems);
 
     template <typename... Ts>
+        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+    Task& acquire(Ts&&... args);
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+    Task& release(Ts&&... args);
+
+    template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& remove_acquire(Ts&&... sems) noexcept;
 
@@ -119,13 +127,21 @@ public:
     void for_each_successor(F&& visitor)
         noexcept(std::is_nothrow_invocable_v<F, Task>);
 
-    template <std::invocable<Semaphore&> F>
-    void for_each_acquire(F&& visitor)
-        noexcept(std::is_nothrow_invocable_v<F, Semaphore&>);
+    template <typename F>
+        requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
+    void for_each_acquire(F&& visitor) noexcept(
+        std::invocable<F, Semaphore&, std::size_t&>
+            ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
+            : std::is_nothrow_invocable_v<F, Semaphore&>
+        );
 
-    template <std::invocable<Semaphore&> F>
-    void for_each_release(F&& visitor)
-        noexcept(std::is_nothrow_invocable_v<F, Semaphore&>);
+    template <typename F>
+        requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
+    void for_each_release(F&& visitor) noexcept(
+        std::invocable<F, Semaphore&, std::size_t&>
+            ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
+            : std::is_nothrow_invocable_v<F, Semaphore&>
+        );
 
     // ========================================================================
     //  观察者管理
@@ -205,8 +221,8 @@ inline void Task::dump(std::ostream& os, Direction dir) const {
     os << "\n";
 }
 
-inline Task& Task::name(const std::string& n) {
-    m_work->m_name = n;
+inline Task& Task::name(std::string name) {
+    m_work->m_name = std::move(name);
     return *this;
 }
 
@@ -244,14 +260,37 @@ inline Task& Task::clear_successors() noexcept { m_work->_clear_successors(); re
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
 Task& Task::acquire(Ts&&... sems) {
-    (m_work->_acquire(&sems), ...);
+    (m_work->_acquire(&sems, 1ULL), ...);
     return *this;
 }
 
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
 Task& Task::release(Ts&&... sems) {
-    (m_work->_release(&sems), ...);
+    (m_work->_release(&sems, 1ULL), ...);
+    return *this;
+}
+
+
+template <typename... Ts>
+    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+Task& Task::acquire(Ts&&... args) {
+    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+        (m_work->_acquire(&std::get<Is * 2>(tup),
+                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
+    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+Task& Task::release(Ts&&... args) {
+    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+        (m_work->_release(&std::get<Is * 2>(tup),
+                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
+    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
     return *this;
 }
 
@@ -286,17 +325,35 @@ void Task::for_each_successor(F&& visitor) noexcept(std::is_nothrow_invocable_v<
     }
 }
 
-template <std::invocable<Semaphore&> F>
-void Task::for_each_acquire(F&& visitor) noexcept(std::is_nothrow_invocable_v<F, Semaphore&>) {
-    for (Semaphore* sem : m_work->_acquires()) {
-        std::invoke(visitor, *sem);
+template <typename F>
+    requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
+void Task::for_each_acquire(F&& visitor) noexcept(
+    std::invocable<F, Semaphore&, std::size_t&>
+        ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
+        : std::is_nothrow_invocable_v<F, Semaphore&>
+    ) {
+    for (const auto& req : m_work->_acquires()) {
+        if constexpr (std::invocable<F, Semaphore&, std::size_t&>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
     }
 }
 
-template <std::invocable<Semaphore&> F>
-void Task::for_each_release(F&& visitor) noexcept(std::is_nothrow_invocable_v<F, Semaphore&>) {
-    for (Semaphore* sem : m_work->_releases()) {
-        std::invoke(visitor, *sem);
+template <typename F>
+    requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
+void Task::for_each_release(F&& visitor) noexcept(
+    std::invocable<F, Semaphore&, std::size_t&>
+        ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
+        : std::is_nothrow_invocable_v<F, Semaphore&>
+    ) {
+    for (const auto& req : m_work->_releases()) {
+        if constexpr (std::invocable<F, Semaphore&, std::size_t&>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
     }
 }
 
@@ -360,11 +417,22 @@ public:
     template <std::invocable<TaskView> F>
     void for_each_successor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F, TaskView>);
 
-    template <std::invocable<const Semaphore&> F>
-    void for_each_acquire(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F, const Semaphore&>);
 
-    template <std::invocable<const Semaphore&> F>
-    void for_each_release(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F, const Semaphore&>);
+    template <typename F>
+        requires std::invocable<F, const Semaphore&, std::size_t> || std::invocable<F, const Semaphore&>
+    void for_each_acquire(F&& visitor) const noexcept(
+        std::invocable<F, const Semaphore&, std::size_t>
+            ? std::is_nothrow_invocable_v<F, const Semaphore&, std::size_t>
+            : std::is_nothrow_invocable_v<F, const Semaphore&>
+        );
+
+    template <typename F>
+        requires std::invocable<F, const Semaphore&, std::size_t> || std::invocable<F, const Semaphore&>
+    void for_each_release(F&& visitor) const noexcept(
+        std::invocable<F, const Semaphore&, std::size_t>
+            ? std::is_nothrow_invocable_v<F, const Semaphore&, std::size_t>
+            : std::is_nothrow_invocable_v<F, const Semaphore&>
+        );
 
 private:
     explicit TaskView(const Work& work) noexcept : m_work{work} {}
@@ -399,17 +467,35 @@ void TaskView::for_each_successor(F&& visitor) const noexcept(std::is_nothrow_in
     }
 }
 
-template <std::invocable<const Semaphore&> F>
-void TaskView::for_each_acquire(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F, const Semaphore&>) {
-    for (const Semaphore* sem : m_work._acquires()) {
-        std::invoke(std::forward<F>(visitor), *sem);
+template <typename F>
+    requires std::invocable<F, const Semaphore&, std::size_t> || std::invocable<F, const Semaphore&>
+void TaskView::for_each_acquire(F&& visitor) const noexcept(
+    std::invocable<F, const Semaphore&, std::size_t>
+        ? std::is_nothrow_invocable_v<F, const Semaphore&, std::size_t>
+        : std::is_nothrow_invocable_v<F, const Semaphore&>
+    ) {
+    for (const auto& req : m_work._acquires()) {
+        if constexpr (std::invocable<F, const Semaphore&, std::size_t>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
     }
 }
 
-template <std::invocable<const Semaphore&> F>
-void TaskView::for_each_release(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F, const Semaphore&>) {
-    for (const Semaphore* sem : m_work._releases()) {
-        std::invoke(std::forward<F>(visitor), *sem);
+template <typename F>
+    requires std::invocable<F, const Semaphore&, std::size_t> || std::invocable<F, const Semaphore&>
+void TaskView::for_each_release(F&& visitor) const noexcept(
+    std::invocable<F, const Semaphore&, std::size_t>
+        ? std::is_nothrow_invocable_v<F, const Semaphore&, std::size_t>
+        : std::is_nothrow_invocable_v<F, const Semaphore&>
+    ) {
+    for (const auto& req : m_work._releases()) {
+        if constexpr (std::invocable<F, const Semaphore&, std::size_t>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
     }
 }
 

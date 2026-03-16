@@ -2,12 +2,11 @@
 #include <iostream>
 #include <atomic>
 #include <chrono>
-#include <print>
 
 constexpr size_t NUM_LAYERS = 100;           // 层数
 constexpr size_t NUM_TASKS_PER_LAYER = 100;  // 每层任务数
 constexpr size_t NUM_THREADS =8;
-constexpr size_t NUM_ITERATIONS = 100;
+constexpr size_t NUM_ITERATIONS = 10;
 
 int main() {
 {

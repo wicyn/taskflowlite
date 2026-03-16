@@ -23,6 +23,7 @@ class Branch;
 class MultiBranch;
 class Jump;
 class MultiJump;
+class Semaphore;
 
 
 // Work 子类前向声明
