@@ -251,7 +251,7 @@ How do you debug an extremely complex nested topology? Export it in one line as 
 std::ofstream file("pipeline.d2");
 flow.name("MyPipeline").dump(file);
 ```
-> 💡 **Source Reference**: This demonstration can be found in the example program [`example/10_dump.cpp`](example/10_dump.cpp)
+> 💡 **Source Reference**: This demonstration can be found in the examples program [`examples/10_dump.cpp`](examples/10_dump.cpp)
 ![D2 Visualization](documentation/img/d2.svg)
 
 The exported graph is immediately readable: **grey solid lines** represent normal transitions, **blue lines** represent conditional branch choices, and **red dashed lines** represent topology-breaking back-edges from jumps.
