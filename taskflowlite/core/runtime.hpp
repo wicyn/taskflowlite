@@ -19,7 +19,7 @@ namespace tfl {
 /// - 动态提交新任务/子图
 /// - 协作式等待其他任务完成
 /// - 访问当前 Worker 上下文
-class Runtime : public MoveOnly<Runtime> {
+class Runtime : public Immovable<Runtime> {
     friend class Work;
     friend class Flow;
     friend class Executor;

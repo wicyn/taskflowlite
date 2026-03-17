@@ -24,7 +24,7 @@ namespace tfl {
 /// - 嵌套子流程（Subflow）
 ///
 /// @note 所有权：Move-only，禁止拷贝，确保节点所有权的唯一性
-class Flow {
+class Flow : public MoveOnly<Flow> {
     friend class Work;
     friend class Executor;
     friend class Task;
@@ -32,13 +32,8 @@ class Flow {
 
     TFL_WORK_SUBCLASS_FRIENDS
 
-        public:
-                 constexpr explicit Flow() = default;
-
-    Flow(const Flow&) = delete;
-    Flow& operator=(const Flow&) = delete;
-    Flow(Flow&& other) noexcept = default;
-    Flow& operator=(Flow&& other) noexcept = default;
+    public:
+        constexpr explicit Flow() = default;
 
     // ========================================================================
     //  节点插入接口

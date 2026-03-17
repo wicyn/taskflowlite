@@ -1,4 +1,4 @@
-/// @file topology.hpp
+﻿/// @file topology.hpp
 /// @brief 执行拓扑 - 任务图的生命周期管理与状态机
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -10,7 +10,7 @@
 
 #include <atomic>
 #include "forward.hpp"
-
+#include "utility.hpp"
 namespace tfl {
 
 /// @brief 任务图执行拓扑 - 生命周期与状态管理
@@ -31,7 +31,7 @@ namespace tfl {
 /// @par 线程安全
 /// 所有状态操作均为原子操作。Running ↔ Locking 转换作为轻量级自旋锁，
 /// 用于动态添加任务时的并发保护，无需 std::mutex。
-class Topology {
+class Topology : public Immovable<Topology> {
 
     friend class Work;
     friend class Task;

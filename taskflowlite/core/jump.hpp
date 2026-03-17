@@ -49,7 +49,7 @@ namespace tfl {
 ///
 /// @pre 必须由 JumpWork::invoke 在 Worker 线程的栈上临时构造。
 /// @note 禁止将此对象的引用逃逸到外部线程，其生命周期严格限定在 callable 执行期间。
-class Jump : public MoveOnly<Jump> {
+class Jump : public Immovable<Jump> {
     friend class Work;
     friend class Flow;
     friend class Executor;
@@ -188,7 +188,7 @@ inline std::optional<std::size_t> Jump::index(std::string_view name) const noexc
 /// @pre 必须由 MultiJumpWork::invoke 在 Worker 线程的栈上临时构造。
 /// @post 所有选中的 target 在 invoke 返回后被强制置为就绪并调度。
 /// @note 禁止将此对象的引用逃逸到外部线程，其生命周期严格限定在 callable 执行期间。
-class MultiJump : public MoveOnly<MultiJump> {
+class MultiJump : public Immovable<MultiJump> {
     friend class Work;
     friend class Flow;
     friend class Executor;

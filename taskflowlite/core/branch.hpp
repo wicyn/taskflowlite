@@ -45,7 +45,7 @@ namespace tfl {
 ///
 /// @pre 必须由 BranchWork::invoke 在 Worker 线程的栈上临时构造。
 /// @note 禁止将此对象的引用逃逸到外部线程，其生命周期严格限定在 callable 执行期间。
-class Branch : public MoveOnly<Branch> {
+class Branch : public Immovable<Branch> {
     friend class Work;
     friend class Flow;
     friend class Executor;
@@ -189,7 +189,7 @@ inline std::optional<std::size_t> Branch::index(std::string_view name) const noe
 /// @pre 必须由 MultiBranchWork::invoke 在 Worker 线程的栈上临时构造。
 /// @post 所有存留于内部集合的后继节点，将在 invoke 返回后各获得一次额外 join_counter 递减。
 /// @note 禁止将此对象的引用逃逸到外部线程。
-class MultiBranch : public MoveOnly<MultiBranch> {
+class MultiBranch : public Immovable<MultiBranch> {
     friend class Work;
     friend class Flow;
     friend class Executor;

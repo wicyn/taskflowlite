@@ -26,7 +26,7 @@ namespace tfl {
 /// @par 内存布局设计
 /// 多线程竞争的队列（m_wslq）位于头部，紧随其后的是单线程独占的热点数据。
 /// 此布局最大化缓存命中率并减少伪共享（False Sharing）。
-class Worker {
+class Worker : public Immovable<Worker> {
     friend class Executor;
     friend class Runtime;
     friend class WorkerView;

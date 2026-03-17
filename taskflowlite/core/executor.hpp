@@ -193,11 +193,11 @@ private:
     /// @brief 异常传播处理
     void _process_exception(Work* w);
 
-    void _push_shared(Work* val);
+    void _push_global(Work* val);
 
     template <std::random_access_iterator Iterator>
         requires std::convertible_to<std::iter_reference_t<Iterator>, Work*>
-    void _push_shared(Iterator first, std::size_t n);
+    void _push_global(Iterator first, std::size_t n);
 
     // 任务调度入口
     template <std::random_access_iterator Iterator>
@@ -691,44 +691,6 @@ inline void Executor::_set_up_dep_async_task(Work* w, I first, S last, std::size
     }
 }
 
-// template <typename I, typename S>
-//     requires std::sentinel_for<S, I>
-// inline void Executor::_set_up_dep_async_task(Work* w, I first, S last, std::size_t& num_predecessors) {
-//     _increment_topology();
-
-//     for (; first != last; ++first) {
-//         auto* work = first->m_work;
-
-//         if (!work) {
-//             num_predecessors = w->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) - 1;
-//             continue;
-//         }
-
-//         auto& state = work->m_topology->m_state;
-//         for (;;) {
-//             auto target = Topology::State::Running;
-//             // 加锁：防止在添加依赖的过程中目标拓扑被销毁
-//             if (state.compare_exchange_strong(target, Topology::State::Locking,
-//                                               std::memory_order_acq_rel,
-//                                               std::memory_order_acquire)) {
-//                 work->m_edges.push_back(w);
-//                 // if (work->m_num_successors < work->m_edges.size() - 1) {
-//                 //     std::swap(work->m_edges[work->m_num_successors], work->m_edges.back());
-//                 // }
-//                 ++work->m_num_successors;
-
-//                 state.store(Topology::State::Running, std::memory_order_release);
-//                 break;
-//             }
-
-//             if (target == Topology::State::Finished) {
-//                 num_predecessors = w->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) - 1;
-//                 break;
-//             }
-//         }
-//     }
-// }
-
 /// @brief 动态依赖任务完成处理
 inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cache) {
     auto* topo = w->m_topology;
@@ -790,7 +752,7 @@ inline void Executor::_process_exception(Work* w) {
     w->m_exception_ptr = eptr;
 }
 
-void Executor::_push_shared(Work* val) {
+void Executor::_push_global(Work* val) {
     std::uintptr_t const ptr = reinterpret_cast<std::uintptr_t>(val);
     std::size_t const size = m_buffers.size();
     std::size_t hash = ptr * 11400714819323198485ULL;
@@ -808,16 +770,18 @@ void Executor::_push_shared(Work* val) {
 
     // Fast-Path
     for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
-        if (m_buffers[curr_b].mutex.try_lock()) {
-            m_buffers[curr_b].queue.push(val);
-            m_buffers[curr_b].mutex.unlock();
+        auto& buf = m_buffers[curr_b];
+        if (buf.mutex.try_lock()) {
+            buf.queue.push(val);
+            buf.mutex.unlock();
             return;
         }
     }
     for (std::size_t curr_b = 0; curr_b < b; ++curr_b) {
-        if (m_buffers[curr_b].mutex.try_lock()) {
-            m_buffers[curr_b].queue.push(val);
-            m_buffers[curr_b].mutex.unlock();
+        auto& buf = m_buffers[curr_b];
+        if (buf.mutex.try_lock()) {
+            buf.queue.push(val);
+            buf.mutex.unlock();
             return;
         }
     }
@@ -829,7 +793,7 @@ void Executor::_push_shared(Work* val) {
 
 template <std::random_access_iterator Iterator>
     requires std::convertible_to<std::iter_reference_t<Iterator>, Work*>
-void Executor::_push_shared(Iterator first, std::size_t n) {
+void Executor::_push_global(Iterator first, std::size_t n) {
     std::uintptr_t const ptr = reinterpret_cast<std::uintptr_t>(*first);
     std::size_t const size = m_buffers.size();
     std::size_t hash = ptr * 11400714819323198485ULL;
@@ -847,16 +811,18 @@ void Executor::_push_shared(Iterator first, std::size_t n) {
 
     // Fast-Path
     for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
-        if (m_buffers[curr_b].mutex.try_lock()) {
-            m_buffers[curr_b].queue.push(first, n);
-            m_buffers[curr_b].mutex.unlock();
+        auto& buf = m_buffers[curr_b];
+        if (buf.mutex.try_lock()) {
+            buf.queue.push(first, n);
+            buf.mutex.unlock();
             return;
         }
     }
     for (std::size_t curr_b = 0; curr_b < b; ++curr_b) {
-        if (m_buffers[curr_b].mutex.try_lock()) {
-            m_buffers[curr_b].queue.push(first, n);
-            m_buffers[curr_b].mutex.unlock();
+        auto& buf = m_buffers[curr_b];
+        if (buf.mutex.try_lock()) {
+            buf.queue.push(first, n);
+            buf.mutex.unlock();
             return;
         }
     }
@@ -877,7 +843,7 @@ inline void Executor::_schedule(Worker& wr, Iterator first, std::size_t n) {
     }
     // 本地队列满时溢出到共享队列
     wr.m_wslq.push(first, n, [&](Iterator remaining, std::size_t count) {
-        _push_shared(remaining, count);
+        _push_global(remaining, count);
     });
 
     m_notifier.notify_n(n);
@@ -888,19 +854,19 @@ inline void Executor::_schedule(Iterator first, std::size_t n) {
     if (n == 0) [[unlikely]] {
         return;
     }
-    _push_shared(first, n);
+    _push_global(first, n);
     m_notifier.notify_n(n);
 }
 
 inline void Executor::_schedule(Worker& wr, Work* w) {
     wr.m_wslq.push(w, [&]() {
-        _push_shared(w);
+        _push_global(w);
     });
     m_notifier.notify_one();
 }
 
 inline void Executor::_schedule(Work* w) {
-    _push_shared(w);
+    _push_global(w);
     m_notifier.notify_one();
 }
 

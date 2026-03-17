@@ -29,7 +29,7 @@ class Task;
 /// 与传统的 OS 级信号量不同，本组件专为异步任务图设计。
 /// 当任务尝试获取信号量失败时，不会导致底层 Worker 线程阻塞，
 /// 而是将该任务挂起推入内部的等待队列中，释放 Worker 线程去执行其他就绪任务。
-class Semaphore {
+class Semaphore : public Immovable<Semaphore> {
     friend class Work;
     friend class Executor;
     friend class Task;

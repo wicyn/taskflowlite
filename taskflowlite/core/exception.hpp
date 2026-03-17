@@ -1,4 +1,4 @@
-/// @file exception.hpp
+﻿/// @file exception.hpp
 /// @brief 提供框架专用异常类，支持源码位置记录与格式化错误消息。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -39,11 +39,11 @@ public:
     /// @brief 最简单的直接传字符串的构造函数。
     /// @param message 报错的文字信息。
     /// @param loc 报错的位置，编译器会自动填，你不用管。
-    explicit Exception(std::string_view message,
+    explicit Exception(std::string message,
                        std::source_location loc = std::source_location::current())
         // Why: 有时候报错信息很简单，不需要拼字符串。提供这个构造函数能省去解析 format 的开销。
         // 靠着默认参数，编译器在 throw 的那一瞬间就会自动把文件名和行号塞进去。
-        : m_message{message}
+        : m_message{std::move(message)}
         , m_location{loc}
     {}
 
@@ -85,11 +85,11 @@ public:
     /// @param message 报错的文字信息。
     /// @param loc 报错的位置。
     /// @param trace 报错那一瞬间的函数调用链，编译器默认会帮你抓。
-    explicit TraceException(std::string_view message,
+    explicit TraceException(std::string message,
                             std::source_location loc = std::source_location::current(),
                             std::stacktrace trace = std::stacktrace::current())
         // Why: 函数调用栈里面的数据可能很多（好几十层函数），直接用 std::move 把所有权抢过来，避免产生昂贵的深拷贝。
-        : Exception{message, loc}
+        : Exception{std::move(message), loc}
         , m_stacktrace{std::move(trace)}
     {}
 
