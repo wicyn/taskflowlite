@@ -92,7 +92,7 @@ public:
     [[nodiscard]] std::string_view name() const noexcept;
 
     /// @brief 为任务设置易读的名称，用于调试和可视化。
-    AsyncTask& name(std::string name);
+    AsyncTask& name(std::string_view name);
 
     // ==================== 信号量管理 ====================
 
@@ -342,8 +342,8 @@ inline std::string_view AsyncTask::name() const noexcept {
     return m_work->m_name;
 }
 
-inline AsyncTask& AsyncTask::name(std::string name) {
-    m_work->m_name = std::move(name);
+inline AsyncTask& AsyncTask::name(std::string_view name) {
+    m_work->m_name = name;
     return *this;
 }
 

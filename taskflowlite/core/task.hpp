@@ -65,7 +65,7 @@ public:
     // ========================================================================
     //  拓扑构建
     // ========================================================================
-    Task& name(std::string name);
+    Task& name(std::string_view name);
 
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
@@ -221,8 +221,8 @@ inline void Task::dump(std::ostream& os, Direction dir) const {
     os << "\n";
 }
 
-inline Task& Task::name(std::string name) {
-    m_work->m_name = std::move(name);
+inline Task& Task::name(std::string_view name) {
+    m_work->m_name = name;
     return *this;
 }
 
@@ -407,9 +407,11 @@ public:
     [[nodiscard]] std::size_t num_releases() const noexcept;
     [[nodiscard]] std::size_t num_observers() const noexcept;
     [[nodiscard]] TaskType type() const noexcept;
-    [[nodiscard]] std::string dump() const;
     [[nodiscard]] bool has_exception_ptr() const noexcept;
     [[nodiscard]] std::exception_ptr exception_ptr() const noexcept;
+    [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
+    void dump(std::ostream& ostream, Direction dir = Direction::Default) const;
+
 
     template <std::invocable<TaskView> F>
     void for_each_predecessor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F, TaskView>);
@@ -449,9 +451,23 @@ inline std::size_t TaskView::num_acquires() const noexcept { return m_work._num_
 inline std::size_t TaskView::num_releases() const noexcept { return m_work._num_releases(); }
 inline std::size_t TaskView::num_observers() const noexcept { return m_work.m_observers ? m_work.m_observers->observers.size() : 0; }
 inline TaskType TaskView::type() const noexcept { return m_work.type(); }
-inline std::string TaskView::dump() const { return m_work.dump(); }
 inline bool TaskView::has_exception_ptr() const noexcept { return m_work.m_exception_ptr != nullptr; }
 inline std::exception_ptr TaskView::exception_ptr() const noexcept { return m_work.m_exception_ptr; }
+inline std::string TaskView::dump(Direction dir) const {
+    std::string out;
+    out += "direction: ";
+    out += to_string(dir);
+    out += "\n\n";
+    out += m_work.dump();
+    out += "\n";
+    return out;
+}
+
+inline void TaskView::dump(std::ostream& os, Direction dir) const {
+    os << "direction: " << to_string(dir) << "\n\n";
+    m_work.dump(os);
+    os << "\n";
+}
 
 template <std::invocable<TaskView> F>
 void TaskView::for_each_predecessor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F, TaskView>) {

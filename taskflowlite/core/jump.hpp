@@ -68,13 +68,6 @@ public:
     /// @post 若 index 有效则选中对应后继；越界时清除选择（等价于 reset）。
     Jump& to(std::size_t index) noexcept;
 
-    /// @brief 按名称选择跳转目标。O(N) 线性搜索。
-    /// @param name 目标后继的名称标识。
-    /// @return `*this`，支持链式调用。
-    /// @post 首个名称匹配的后继被选中；无匹配时清除选择。
-    /// @note 提供与插入顺序无关的稳定选择方式。
-    Jump& to(std::string_view name) noexcept;
-
     /// @brief 按谓词选择首个满足条件的后继作为跳转目标。
     /// @param pred 接受只读 `TaskView` 并返回 `bool` 的可调用对象。
     /// @return `*this`，支持链式调用。
@@ -91,16 +84,6 @@ public:
 
     /// @brief 返回当前节点的后继总数。
     [[nodiscard]] std::size_t size() const noexcept;
-
-    /// @brief 按索引查询后继名称。
-    /// @param index 要查询的后继索引。
-    /// @return 索引有效时返回名称视图，越界返回 `std::nullopt`。
-    [[nodiscard]] std::optional<std::string_view> name(std::size_t index) const noexcept;
-
-    /// @brief 按名称查询后继索引。
-    /// @param name 要查询的后继名称。
-    /// @return 匹配时返回对应索引，未找到返回 `std::nullopt`。
-    [[nodiscard]] std::optional<std::size_t> index(std::string_view name) const noexcept;
 
 private:
     Work&  m_work;           ///< 绑定至宿主 JumpWork，借此访问后继列表
@@ -119,14 +102,6 @@ private:
 inline Jump& Jump::to(std::size_t index) noexcept {
     auto succs = m_work._successors();
     m_target = (index < succs.size()) ? succs[index] : nullptr;
-    return *this;
-}
-
-inline Jump& Jump::to(std::string_view name) noexcept {
-    m_target = nullptr;
-    for (auto* suc : m_work._successors()) {
-        if (suc->m_name == name) { m_target = suc; return *this; }
-    }
     return *this;
 }
 
@@ -149,20 +124,6 @@ inline Jump& Jump::reset() noexcept {
 inline std::size_t Jump::size() const noexcept {
     return m_work.m_num_successors;
 }
-
-inline std::optional<std::string_view> Jump::name(std::size_t index) const noexcept {
-    auto succs = m_work._successors();
-    return index < succs.size() ? std::optional{succs[index]->m_name} : std::nullopt;
-}
-
-inline std::optional<std::size_t> Jump::index(std::string_view name) const noexcept {
-    auto succs = m_work._successors();
-    for (std::size_t i = 0; i < succs.size(); ++i) {
-        if (succs[i]->m_name == name) return i;
-    }
-    return std::nullopt;
-}
-
 
 /// @brief 多目标跳转控制器。
 ///
@@ -210,15 +171,6 @@ public:
         requires (sizeof...(Is) > 0) && (std::convertible_to<Is, std::size_t> && ...)
     MultiJump& to(Is... indices);
 
-    /// @brief 按名称集批量选择跳转目标。
-    /// @tparam Ns 可转换为 `std::string_view` 的变参名称类型。
-    /// @param names 一组要跳转的后继名称。
-    /// @return `*this`，支持链式调用。
-    /// @post 名称匹配的所有后继被加入跳转集合。
-    template <typename... Ns>
-        requires (sizeof...(Ns) > 0) && (std::convertible_to<Ns, std::string_view> && ...)
-    MultiJump& to(Ns&&... names);
-
     /// @brief 跳转到所有后继（无条件广播）。
     /// @return `*this`，支持链式调用。
     /// @post 全部后继被加入跳转集合。
@@ -243,13 +195,6 @@ public:
 
     /// @brief 返回当前节点的后继总数。
     [[nodiscard]] std::size_t size() const noexcept;
-
-    /// @brief 按索引查询后继名称，越界返回 `std::nullopt`。
-    [[nodiscard]] std::optional<std::string_view> name(std::size_t index) const noexcept;
-
-    /// @brief 按名称查询后继索引，未找到返回 `std::nullopt`。
-    [[nodiscard]] std::optional<std::size_t> index(std::string_view name) const noexcept;
-
 private:
     Work& m_work;                 ///< 绑定至宿主 MultiJumpWork
     SmallVector<Work*> m_targets; ///< 去重后的跳转集合；invoke 返回后 Executor 遍历做强制调度
@@ -284,18 +229,6 @@ MultiJump& MultiJump::to(Is... indices) {
     return *this;
 }
 
-template <typename... Ns>
-    requires (sizeof...(Ns) > 0) && (std::convertible_to<Ns, std::string_view> && ...)
-MultiJump& MultiJump::to(Ns&&... names) {
-    for (auto* suc : m_work._successors()) {
-        // Why: 折叠表达式短路 OR——任一名称命中即终止比对，直接并入跳转集合。
-        if (((suc->m_name == static_cast<std::string_view>(names)) || ...)) {
-            _insert(suc);
-        }
-    }
-    return *this;
-}
-
 inline MultiJump& MultiJump::to_all() {
     auto succs = m_work._successors();
     for (auto* suc : succs) {
@@ -320,19 +253,6 @@ void MultiJump::to_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
 
 inline std::size_t MultiJump::size() const noexcept {
     return m_work.m_num_successors;
-}
-
-inline std::optional<std::string_view> MultiJump::name(std::size_t index) const noexcept {
-    auto succs = m_work._successors();
-    return index < succs.size() ? std::optional{succs[index]->m_name} : std::nullopt;
-}
-
-inline std::optional<std::size_t> MultiJump::index(std::string_view name) const noexcept {
-    auto succs = m_work._successors();
-    for (std::size_t i = 0; i < succs.size(); ++i) {
-        if (succs[i]->m_name == name) return i;
-    }
-    return std::nullopt;
 }
 
 }  // namespace tfl
