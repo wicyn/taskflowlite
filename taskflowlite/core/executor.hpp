@@ -430,11 +430,8 @@ inline void Executor::_spawn(std::size_t num_workers) {
         wr.m_vtm = id;
         wr.m_adaptive_factor = 4;
         wr.m_max_steals = static_cast<std::uint32_t>(num_queues() * 2);
-        wr.m_rng = Xoshiro{detail::seed, std::random_device{}};
-        wr.m_dist.reset(0, num_queues() - 1);
-
         wr.m_thread = std::thread([this, &wr]() noexcept {
-            wr.m_rng.long_jump();  // 随机数序列分离
+            wr.m_rng.seed(std::hash<std::thread::id>{}(std::this_thread::get_id()), num_queues());
             m_handler.on_start(wr);
 
             Work* w = nullptr;
@@ -477,17 +474,19 @@ inline void Executor::_spawn(std::size_t num_workers) {
 /// - steal(): acquire 读取队列状态
 /// - notify_one: release 唤醒等待线程
 inline Work* Executor::_wait_for_work(Worker& wr) noexcept {
+    std::size_t const nw = m_workers.size();
+    std::size_t const nb = m_buffers.size();
+
 explore:
     std::size_t vtm = wr.m_vtm;
     std::size_t num_steals = 0;
-    std::size_t const yield_limit = m_workers.size() * wr.m_adaptive_factor + wr.m_max_steals;
-    std::size_t const shared_size = m_buffers.size();
+    std::size_t const yield_limit = nw * wr.m_adaptive_factor + wr.m_max_steals;
 
     // Phase 1: 窃取
     for (;;) {
-        Work* w = (vtm < m_workers.size())
+        Work* w = (vtm < nw)
         ? m_workers[vtm].m_wslq.steal()
-        : m_buffers[vtm - m_workers.size()].queue.steal();
+        : m_buffers[vtm - nw].queue.steal();
 
         if (w) {
             wr.m_vtm = vtm;
@@ -508,20 +507,17 @@ explore:
             return nullptr;
         }
 
-        // 随机选择 victim（避开自己的队列）
-        do {
-            vtm = wr.m_dist(wr.m_rng);
-        } while (vtm == wr.m_id);
+        vtm = wr.m_rng();
     }
 
     // Phase 3: 阻塞等待
     m_notifier.prepare_wait(wr.m_id);
 
     // Double-check: 唤醒后再次检查队列
-    for (std::size_t i = 0; i < shared_size; ++i) {
+    for (std::size_t i = 0; i < nb; ++i) {
         if (!m_buffers[i].queue.empty()) {
             m_notifier.cancel_wait(wr.m_id);
-            wr.m_vtm = i + m_workers.size();
+            wr.m_vtm = i + nw;
             goto explore;
         }
     }
@@ -534,7 +530,7 @@ explore:
         }
     }
 
-    for (std::size_t i = wr.m_id + 1; i < m_workers.size(); ++i) {
+    for (std::size_t i = wr.m_id + 1; i < nw; ++i) {
         if (!m_workers[i].m_wslq.empty()) {
             m_notifier.cancel_wait(wr.m_id);
             wr.m_vtm = i;
@@ -556,15 +552,53 @@ explore:
 // ============================================================================
 
 inline void Executor::_set_up_graph(Graph& g, Topology* const topo, Work* parent) {
-    if (std::size_t const n = g._set_up(parent, topo); n > 0) {
-        _schedule(g.begin(), n);
+    Work** const data = g.m_works.data();
+    std::size_t const size = g.m_works.size();
+    std::size_t n = 0;
+
+    for (std::size_t i = 0; i < size; ++i) {
+        Work* w = data[i];
+        w->m_parent = parent;
+        w->m_topology = topo;
+        if (w->m_state.load(std::memory_order_relaxed) & Work::State::EXCEPTION) [[unlikely]] {
+            w->m_exception_ptr = nullptr;
+        }
+        w->m_state.store(Work::State::NONE, std::memory_order_relaxed);
+        w->m_join_counter.store(w->_join_count(), std::memory_order_relaxed);
+
+        if (w->_num_predecessors() == 0) {
+            std::swap(data[i], data[n++]);
+        }
     }
+
+    parent->m_join_counter.store(n, std::memory_order_relaxed);
+
+    _schedule(g.begin(), n);
 }
 
 inline void Executor::_set_up_graph(Graph& g, Topology* topo, Worker& wr, Work* parent) {
-    if (std::size_t const n = g._set_up(parent, topo); n > 0) {
-        _schedule(wr, g.begin(), n);
+    Work** const data = g.m_works.data();
+    std::size_t const size = g.m_works.size();
+    std::size_t n = 0;
+
+    for (std::size_t i = 0; i < size; ++i) {
+        Work* w = data[i];
+        w->m_parent = parent;
+        w->m_topology = topo;
+        if (w->m_state.load(std::memory_order_relaxed) & Work::State::EXCEPTION) [[unlikely]] {
+            w->m_exception_ptr = nullptr;
+        }
+        w->m_state.store(Work::State::NONE, std::memory_order_relaxed);
+        w->m_join_counter.store(w->_join_count(), std::memory_order_relaxed);
+
+        if (w->_num_predecessors() == 0) {
+            std::swap(data[i], data[n++]);
+        }
     }
+
+    parent->m_join_counter.store(n, std::memory_order_relaxed);
+
+    _schedule(wr, g.begin(), n);
 }
 
 /// @brief 任务完成后的依赖传播
@@ -581,7 +615,7 @@ inline void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cache) {
     w->m_join_counter.fetch_add(w->_join_count(), std::memory_order_relaxed);
     auto* parent = w->m_parent;
 
-    if (!w->_is_stopped()) [[likely]] {
+    if (!w->_is_exception()) [[likely]] {
         for (auto* suc : w->_successors()) {
             // acq_rel: 确保任务执行结果对后继可见
             if ((suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1)) {
@@ -605,7 +639,7 @@ inline void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cache) {
 inline void Executor::_tear_down_jump_task(Work* w, Worker& wr, Work*& cache, Work* target) {
     w->m_join_counter.fetch_add(w->_join_count(), std::memory_order_relaxed);
     auto* parent = w->m_parent;
-    if (!w->_is_stopped() && target) [[likely]] {
+    if (!w->_is_exception() && target) [[likely]] {
         target->m_join_counter.store(0, std::memory_order_relaxed);
         parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
         if (cache) {
@@ -619,7 +653,7 @@ inline void Executor::_tear_down_jump_task(Work* w, Worker& wr, Work*& cache, Wo
 inline void Executor::_tear_down_multi_jump_task(Work* w, Worker& wr, Work*& cache, const SmallVector<Work*>& targets) {
     w->m_join_counter.fetch_add(w->_join_count(), std::memory_order_relaxed);
     auto* parent = w->m_parent;
-    if (!w->_is_stopped()) [[likely]] {
+    if (!w->_is_exception()) [[likely]] {
         for (auto* target : targets) {
             target->m_join_counter.store(0, std::memory_order_relaxed);
             parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
@@ -753,20 +787,11 @@ inline void Executor::_process_exception(Work* w) {
 }
 
 void Executor::_push_global(Work* val) {
-    std::uintptr_t const ptr = reinterpret_cast<std::uintptr_t>(val);
     std::size_t const size = m_buffers.size();
-    std::size_t hash = ptr * 11400714819323198485ULL;
-    std::size_t b = 0;
-
-    // 2. 自动判断：是 2 的幂走极速位运算，否则走取模
-    // Why: m_buffers.size() 在构造后是不变的。
-    // 现代 CPU 的分支预测器（Branch Predictor）会对这种“永远不变的分支”达到 100% 的命中率，
-    // 因此这个 if 语句在底层的运行开销几乎为 0。
-    if (std::has_single_bit(size)) [[likely]] {
-        b = hash & (size - 1);
-    } else {
-        b = hash % size;
-    }
+    std::size_t const b = detail::mulhi64(
+        reinterpret_cast<std::uintptr_t>(val) * 11400714819323198485ULL,
+        size
+        );
 
     // Fast-Path
     for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
@@ -794,20 +819,11 @@ void Executor::_push_global(Work* val) {
 template <std::random_access_iterator Iterator>
     requires std::convertible_to<std::iter_reference_t<Iterator>, Work*>
 void Executor::_push_global(Iterator first, std::size_t n) {
-    std::uintptr_t const ptr = reinterpret_cast<std::uintptr_t>(*first);
     std::size_t const size = m_buffers.size();
-    std::size_t hash = ptr * 11400714819323198485ULL;
-    std::size_t b = 0;
-
-    // 2. 自动判断：是 2 的幂走极速位运算，否则走取模
-    // Why: m_buffers.size() 在构造后是不变的。
-    // 现代 CPU 的分支预测器（Branch Predictor）会对这种“永远不变的分支”达到 100% 的命中率，
-    // 因此这个 if 语句在底层的运行开销几乎为 0。
-    if (std::has_single_bit(size)) [[likely]] {
-        b = hash & (size - 1);
-    } else {
-        b = hash % size;
-    }
+    std::size_t const b = detail::mulhi64(
+        reinterpret_cast<std::uintptr_t>(*first) * 11400714819323198485ULL,
+        size
+        );
 
     // Fast-Path
     for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
@@ -905,14 +921,15 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
             continue;
         }
 
+        std::size_t const nw = m_workers.size();
         std::size_t num_steals = 0;
-        std::size_t const yield_limit = m_workers.size() * wr.m_adaptive_factor + wr.m_max_steals;
+        std::size_t const yield_limit = nw * wr.m_adaptive_factor + wr.m_max_steals;
         std::size_t vtm = wr.m_vtm;
 
         while (!std::invoke_r<bool>(pred)) {
-            Work* w = (vtm < m_workers.size())
+            Work* w = (vtm < nw)
             ? m_workers[vtm].m_wslq.steal()
-            : m_buffers[vtm - m_workers.size()].queue.steal();;
+            : m_buffers[vtm - nw].queue.steal();;
 
             if (w) [[likely]] {
                 wr.m_vtm = vtm;
@@ -929,12 +946,11 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
                 }
             }
 
-            do {
-                vtm = wr.m_dist(wr.m_rng);
-            } while (vtm == wr.m_id);
+            vtm = wr.m_rng();
         }
     }
 }
+
 
 inline void Executor::_corun_graph(Worker& wr, Graph& g, Work* parent) {
     _set_up_graph(g, parent->m_topology, wr, parent);
@@ -1017,25 +1033,26 @@ inline AsyncTask& AsyncTask::start(I first, S last) {
 
     return *this;
 }
+
 #define TFL_SEM_SCHEDULER [&exe, &wr](Work* t) {               \
 auto& target_exec = t->m_topology->m_executor;              \
-    if (std::addressof(target_exec) == std::addressof(exe)) {   \
+    if (&target_exec == &exe) {   \
         exe._schedule(wr, t);                                   \
 } else {                                                    \
         target_exec._schedule(t);                               \
 }                                                           \
 }
 
-#define TFL_OBSERVER_BEFORE(w, wr)                              \
-if ((w)->m_observers) {                                         \
-        for (auto& aspect : (w)->m_observers->observers) {          \
+#define TFL_OBSERVER_BEFORE(wr)                              \
+if (m_observers) [[unlikely]] {                                         \
+        for (auto& aspect : m_observers->observers) {          \
             aspect->on_before(WorkerView{wr});                      \
     }                                                           \
 }
 
-#define TFL_OBSERVER_AFTER(w, wr)                               \
-if ((w)->m_observers) {                                         \
-        for (auto& aspect : (w)->m_observers->observers) {          \
+#define TFL_OBSERVER_AFTER(wr)                               \
+if (m_observers) [[unlikely]] {                                         \
+        for (auto& aspect : m_observers->observers) {          \
             aspect->on_after(WorkerView{wr});                       \
     }                                                           \
 }
@@ -1046,16 +1063,17 @@ if ((w)->m_observers) {                                         \
 
 template <typename F, typename... Args>
 void BasicWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (this->_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(this->m_parent, wr, cache);
+    if (_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(m_parent, wr, cache);
         return;
     }
 
-    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(this, wr);
+    TFL_OBSERVER_BEFORE(wr);
+
 
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func))) {
@@ -1076,24 +1094,25 @@ void BasicWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
         }
     }
 
-    TFL_OBSERVER_AFTER(this, wr);
+    TFL_OBSERVER_AFTER(wr);
 
-    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    _release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_task(this, wr, cache);
 }
 
 template <typename F, typename... Args>
 void BranchWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (this->_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(this->m_parent, wr, cache);
+    if (_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(m_parent, wr, cache);
         return;
     }
 
-    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(this, wr);
+    TFL_OBSERVER_BEFORE(wr);
+
 
     Branch branch(*this);
     if constexpr (sizeof...(Args) == 0) {
@@ -1119,24 +1138,25 @@ void BranchWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
         target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
     }
 
-    TFL_OBSERVER_AFTER(this, wr);
+    TFL_OBSERVER_AFTER(wr);
 
-    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    _release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_task(this, wr, cache);
 }
 
 template <typename F, typename... Args>
 void MultiBranchWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (this->_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(this->m_parent, wr, cache);
+    if (_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(m_parent, wr, cache);
         return;
     }
 
-    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(this, wr);
+    TFL_OBSERVER_BEFORE(wr);
+
 
     MultiBranch branch(*this);
     if constexpr (sizeof...(Args) == 0) {
@@ -1162,24 +1182,25 @@ void MultiBranchWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache
         target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
     }
 
-    TFL_OBSERVER_AFTER(this, wr);
+    TFL_OBSERVER_AFTER(wr);
 
-    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    _release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_task(this, wr, cache);
 }
 
 template <typename F, typename... Args>
 void JumpWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (this->_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(this->m_parent, wr, cache);
+    if (_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(m_parent, wr, cache);
         return;
     }
 
-    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(this, wr);
+    TFL_OBSERVER_BEFORE(wr);
+
 
     Jump jmp{*this};
     if constexpr (sizeof...(Args) == 0) {
@@ -1201,24 +1222,25 @@ void JumpWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
         }
     }
 
-    TFL_OBSERVER_AFTER(this, wr);
+    TFL_OBSERVER_AFTER(wr);
 
-    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    _release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_jump_task(this, wr, cache, jmp.m_target);
 }
 
 template <typename F, typename... Args>
 void MultiJumpWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (this->_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(this->m_parent, wr, cache);
+    if (_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(m_parent, wr, cache);
         return;
     }
 
-    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(this, wr);
+    TFL_OBSERVER_BEFORE(wr);
+
 
     MultiJump jmp{*this};
     if constexpr (sizeof...(Args) == 0) {
@@ -1240,26 +1262,27 @@ void MultiJumpWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) 
         }
     }
 
-    TFL_OBSERVER_AFTER(this, wr);
+    TFL_OBSERVER_AFTER(wr);
 
-    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    _release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_multi_jump_task(this, wr, cache, jmp.m_targets);
 }
 
 template <typename F, typename... Args>
 void RuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (this->_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(this->m_parent, wr, cache);
+    if (_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(m_parent, wr, cache);
         return;
     }
 
-    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(this, wr);
+    TFL_OBSERVER_BEFORE(wr);
 
-    Runtime rt(*this, wr, *this->m_topology, exe);
+
+    Runtime rt(*this, wr, *m_topology, exe);
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func, rt))) {
             std::invoke(m_func, rt);
@@ -1279,9 +1302,9 @@ void RuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
         }
     }
 
-    TFL_OBSERVER_AFTER(this, wr);
+    TFL_OBSERVER_AFTER(wr);
 
-    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    _release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_task(this, wr, cache);
 }
 
@@ -1294,28 +1317,29 @@ void SubflowWork<FlowStore, P>::invoke(Executor& exe, Worker& wr, Work*& cache) 
     decltype(auto) flow = detail::unwrap(m_flow_store);
 
     if (m_started) {
-        TFL_OBSERVER_AFTER(this, wr);
+        TFL_OBSERVER_AFTER(wr);
     }
 
-    if (this->_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(this->m_parent, wr, cache);
+    if (_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(m_parent, wr, cache);
         m_started = false;
         return;
     }
 
     if (!m_started) {
-        if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+        if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
             return;
         }
     }
 
     if (!std::invoke_r<bool>(m_pred)) {
-        TFL_OBSERVER_BEFORE(this, wr);
+        TFL_OBSERVER_BEFORE(wr);
+
         m_started = true;
-        exe._set_up_graph(flow.m_graph, this->m_topology, wr, this);
+        exe._set_up_graph(flow.m_graph, m_topology, wr, this);
     } else {
         m_started = false;
-        this->_release_semaphores(TFL_SEM_SCHEDULER);
+        _release_semaphores(TFL_SEM_SCHEDULER);
         exe._tear_down_task(this, wr, cache);
     }
 }
@@ -1339,12 +1363,12 @@ void AsyncBasicWork<F, Args...>::invoke(Executor& exe, [[maybe_unused]] Worker& 
         else { try { std::apply(_call, m_args); } catch (...) {} }
     }
     exe._decrement_topology();
-    Work::destroy(this, this->m_topology);
+    Work::destroy(this, m_topology);
 }
 
 template <typename F, typename... Args>
 void AsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
-    Runtime rt(*this, wr, *this->m_topology, exe);
+    Runtime rt(*this, wr, *m_topology, exe);
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func, rt)))
             std::invoke(m_func, rt);
@@ -1358,7 +1382,7 @@ void AsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, [[maybe_unu
         else { try { std::apply(_call, m_args); } catch (...) {} }
     }
     exe._decrement_topology();
-    Work::destroy(this, this->m_topology);
+    Work::destroy(this, m_topology);
 }
 
 // ============================================================================
@@ -1391,7 +1415,7 @@ void AsyncBasicPromiseWork<F, R, Args...>::invoke(Executor& exe, [[maybe_unused]
             } catch (...) {
                 m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this, this->m_topology);
+                Work::destroy(this, m_topology);
                 return;
             }
             m_promise.set_value();
@@ -1402,19 +1426,19 @@ void AsyncBasicPromiseWork<F, R, Args...>::invoke(Executor& exe, [[maybe_unused]
             } catch (...) {
                 m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this, this->m_topology);
+                Work::destroy(this, m_topology);
                 return;
             }
             m_promise.set_value(std::move(*result));
         }
     }
     exe._decrement_topology();
-    Work::destroy(this, this->m_topology);
+    Work::destroy(this, m_topology);
 }
 
 template <typename F, typename R, typename... Args>
 void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
-    Runtime rt(*this, wr, *this->m_topology, exe);
+    Runtime rt(*this, wr, *m_topology, exe);
 
     auto _do_invoke = [&]() {
         if constexpr (sizeof...(Args) == 0) {
@@ -1440,7 +1464,7 @@ void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, [
             } catch (...) {
                 m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this, this->m_topology);
+                Work::destroy(this, m_topology);
                 return;
             }
             m_promise.set_value();
@@ -1451,14 +1475,14 @@ void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, [
             } catch (...) {
                 m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this, this->m_topology);
+                Work::destroy(this, m_topology);
                 return;
             }
             m_promise.set_value(std::move(*result));
         }
     }
     exe._decrement_topology();
-    Work::destroy(this, this->m_topology);
+    Work::destroy(this, m_topology);
 }
 
 // ============================================================================
@@ -1467,11 +1491,12 @@ void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, [
 
 template <typename F, typename... Args>
 void DepAsyncBasicWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(this, wr);
+    TFL_OBSERVER_BEFORE(wr);
+
 
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func))) {
@@ -1492,21 +1517,22 @@ void DepAsyncBasicWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cac
         }
     }
 
-    TFL_OBSERVER_AFTER(this, wr);
+    TFL_OBSERVER_AFTER(wr);
 
-    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    _release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_dep_async_task(this, wr, cache);
 }
 
 template <typename F, typename... Args>
 void DepAsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(this, wr);
+    TFL_OBSERVER_BEFORE(wr);
 
-    Runtime rt(*this, wr, *this->m_topology, exe);
+
+    Runtime rt(*this, wr, *m_topology, exe);
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func, rt))) {
             std::invoke(m_func, rt);
@@ -1526,9 +1552,9 @@ void DepAsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& c
         }
     }
 
-    TFL_OBSERVER_AFTER(this, wr);
+    TFL_OBSERVER_AFTER(wr);
 
-    this->_release_semaphores(TFL_SEM_SCHEDULER);
+    _release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_dep_async_task(this, wr, cache);
 }
 
@@ -1541,20 +1567,21 @@ void DepFlowWork<FlowStore, P, C>::invoke(Executor& exe, Worker& wr, Work*& cach
     decltype(auto) flow = detail::unwrap(m_flow_store);
 
     if (m_started) {
-        TFL_OBSERVER_AFTER(this, wr);
+        TFL_OBSERVER_AFTER(wr);
     } else {
-        if (!this->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+        if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
             return;
         }
     }
 
-    if (!std::invoke_r<bool>(m_pred) && !this->_is_stopped()) {
-        TFL_OBSERVER_BEFORE(this, wr);
+    if (!std::invoke_r<bool>(m_pred) && !_is_stopped()) {
+        TFL_OBSERVER_BEFORE(wr);
+
         m_started = true;
-        exe._set_up_graph(flow.m_graph, this->m_topology, wr, this);
+        exe._set_up_graph(flow.m_graph, m_topology, wr, this);
     } else {
         m_started = false;
-        this->_release_semaphores(TFL_SEM_SCHEDULER);
+        _release_semaphores(TFL_SEM_SCHEDULER);
         std::invoke(m_callback);
         exe._tear_down_dep_async_task(this, wr, cache);
     }

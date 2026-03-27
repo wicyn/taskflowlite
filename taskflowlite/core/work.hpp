@@ -174,23 +174,20 @@ protected:
     virtual void dump(std::ostream& ostream) const = 0;
 
 private:
-    // 冷数据区：调试信息、异常（访问频率低）
-    std::string m_name;
-    const Graph* m_graph{nullptr};
-    std::exception_ptr m_exception_ptr{nullptr};
 
-    // 热数据区：调度核心状态（访问频率高，缓存行友好）
-    std::atomic<State::type> m_state{State::NONE};
-    Topology* m_topology{nullptr};
-    Option::type m_options{Option::NONE};
-    Work* m_parent{nullptr};
-    std::atomic<std::size_t> m_join_counter{0};  // 依赖计数器，并发递减
-    std::size_t m_num_successors{0};            // edges 数组分割点
-    std::vector<Work*> m_edges;                 // [后继 | 前驱] 统一存储
+    std::string             m_name;                         ///< 节点名称（调试/D2 可视化用）
+    const Graph*            m_graph{nullptr};               ///< 归属的任务物理图指针
+    std::exception_ptr      m_exception_ptr{nullptr};       ///< 捕获的异常（冷路径）
 
-    // 扩展区：按需分配（延迟分配优化内存）
-    std::unique_ptr<SemaphoreData> m_semaphores;
-    std::unique_ptr<ObserverData> m_observers;
+    Topology*               m_topology{nullptr};            ///< 执行拓扑上下文（invoke 开头读）
+    Work*                       m_parent{nullptr};          ///< 父容器（tear_down 循环内高频读）
+    std::atomic<State::type>    m_state{State::NONE};       ///< 运行期状态 (4B)
+    Option::type                m_options{Option::NONE};    ///< 静态选项
+    std::atomic<std::size_t>    m_join_counter{0};          ///< 依赖计数器
+    std::size_t                 m_num_successors{0};        ///< edges 分割点
+    std::vector<Work*>          m_edges;                    ///< [后继|前驱] 统一存储
+    std::unique_ptr<SemaphoreData>  m_semaphores;           ///< 信号量约束
+    std::unique_ptr<ObserverData>   m_observers;            ///< 生命周期观察者（按需延迟分配）
 
     /// @brief 依据节点类型返回其作为前驱时，对后继产生的基础影响权重。
     [[nodiscard]] std::size_t _join_weight() const noexcept {
@@ -317,7 +314,6 @@ private:
     void _clear_predecessors() noexcept;
     void _clear_successors() noexcept;
 
-    void _set_up(Work* parent, Topology* t) noexcept;
     void _set_up(std::size_t join_counter) noexcept;
     [[nodiscard]] bool _has_path_without_jump(const Work* from, const Work* to) const;
     [[nodiscard]] std::expected<void, std::string_view> _can_precede(Work* target) const;
@@ -1215,15 +1211,6 @@ inline void Work::destroy(Work* work, Topology* topo) noexcept {
 }
 
 
-
-inline void Work::_set_up(Work* const parent, Topology* const t) noexcept {
-    m_parent = parent;
-    m_topology = t;
-    m_exception_ptr = nullptr;
-    m_state.store(State::NONE, std::memory_order_relaxed);
-    m_join_counter.store(_join_count(), std::memory_order_relaxed);
-}
-
 inline void Work::_set_up(const std::size_t join_counter) noexcept {
     m_exception_ptr = nullptr;
     m_state.store(State::NONE, std::memory_order_relaxed);
@@ -1457,7 +1444,7 @@ inline void Work::_clear_releases() noexcept {
 template <typename F>
     requires std::invocable<F&, Work*>
 inline bool Work::_try_acquire_semaphores(F&& on_wake) {
-    if (!m_semaphores) return true;
+    if (!m_semaphores) [[likely]] return true;
     auto& acqs = m_semaphores->acquires;
     for (std::size_t i = 0; i < acqs.size(); ++i) {
         // 传递当前请求的指定配额数量 count
@@ -1477,7 +1464,7 @@ inline bool Work::_try_acquire_semaphores(F&& on_wake) {
 template <typename F>
     requires std::invocable<F&, Work*>
 inline void Work::_release_semaphores(F&& on_wake) {
-    if (!m_semaphores) return;
+    if (!m_semaphores) [[likely]] return;
 
     // 遍历所有 release 描述符，按指定的 count 归还配额
     for (const auto& req : m_semaphores->releases) {

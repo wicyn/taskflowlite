@@ -91,10 +91,6 @@ private:
     /// @brief O(1) 节点删除：Swap-with-last
     constexpr void _erase(Work* const work) noexcept;
 
-    /// @brief 原地分区：提取所有起点节点到数组前端
-    /// @return 起点任务数量
-    [[nodiscard]] std::size_t _set_up(Work* const parent, Topology* const t) noexcept;
-
     /// @brief 清空所有节点
     constexpr void _clear() noexcept;
 
@@ -154,30 +150,6 @@ constexpr void Graph::_erase(Work* const work) noexcept {
     *it = m_works.back();
     m_works.pop_back();
     Work::destroy(work);
-}
-
-/// @brief 原地分区：提取起点节点
-///
-/// @par 算法（类似 std::partition）
-/// 遍历数组，当发现入度为 0 的节点时，将其与前端交换。
-/// 遍历完成后，前 n 个节点即为起点任务。
-///
-/// @post 前 n 个节点为起点任务，可直接提交给调度器
-inline std::size_t Graph::_set_up(Work* const parent, Topology* const t) noexcept {
-    Work** const data = m_works.data();
-    std::size_t const size = m_works.size();
-    std::size_t n = 0;
-
-    for (std::size_t i = 0; i < size; ++i) {
-        data[i]->_set_up(parent, t);
-
-        if (data[i]->_num_predecessors() == 0) {
-            std::swap(data[i], data[n++]);
-        }
-    }
-
-    parent->m_join_counter.store(n, std::memory_order_relaxed);
-    return n;
 }
 
 inline std::string Graph::_dump() const {

@@ -64,13 +64,6 @@ public:
     /// @post 若 index 在合法范围内，则选中对应后继；若发生越界，则安全清除当前选择（等价于 reset）。
     Branch& allow(std::size_t index) noexcept;
 
-    /// @brief 按名称标识选择后继。O(N) 线性搜索。
-    /// @param name 目标后继的静态名称标识。
-    /// @return `*this`，支持链式调用。
-    /// @post 首个名称匹配的后继被选中；若全图无匹配，则清除当前选择。
-    /// @note 提供与图插入顺序无关的稳定选择机制。
-    Branch& allow(std::string_view name) noexcept;
-
     /// @brief 按自定义谓词动态评估并选择首个满足条件的后继。
     /// @tparam Pred 满足 predicate 概念的闭包类型。
     /// @param pred 接受只读 `TaskView` 并返回 `bool` 的可调用对象。
@@ -88,16 +81,6 @@ public:
 
     /// @brief 获取当前分支节点所连接的后继总数。
     [[nodiscard]] std::size_t size() const noexcept;
-
-    /// @brief 根据给定索引安全查询后继节点的名称。
-    /// @param index 欲查询的后继索引。
-    /// @return 若索引有效则返回包装好的名称视图；越界则返回 `std::nullopt`。
-    [[nodiscard]] std::optional<std::string_view> name(std::size_t index) const noexcept;
-
-    /// @brief 根据给定名称安全反查后继节点的索引。
-    /// @param name 欲查询的后继名称。
-    /// @return 若命中则返回对应索引；否则返回 `std::nullopt`。
-    [[nodiscard]] std::optional<std::size_t> index(std::string_view name) const noexcept;
 
 private:
     Work&  m_work;           ///< 绑定至宿主 BranchWork，借此访问底层的关联边数据
@@ -124,14 +107,6 @@ inline Branch& Branch::allow(std::size_t index) noexcept {
     return *this;
 }
 
-inline Branch& Branch::allow(std::string_view name) noexcept {
-    m_target = nullptr;
-    for (auto* suc : m_work._successors()) {
-        if (suc->m_name == name) { m_target = suc; return *this; }
-    }
-    return *this;
-}
-
 template <predicate<TaskView> Pred>
 Branch& Branch::allow_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
     m_target = nullptr;
@@ -150,19 +125,6 @@ inline Branch& Branch::reset() noexcept {
 
 inline std::size_t Branch::size() const noexcept {
     return m_work.m_num_successors;
-}
-
-inline std::optional<std::string_view> Branch::name(std::size_t index) const noexcept {
-    auto succs = m_work._successors();
-    return index < succs.size() ? std::optional{succs[index]->m_name} : std::nullopt;
-}
-
-inline std::optional<std::size_t> Branch::index(std::string_view name) const noexcept {
-    auto succs = m_work._successors();
-    for (std::size_t i = 0; i < succs.size(); ++i) {
-        if (succs[i]->m_name == name) return i;
-    }
-    return std::nullopt;
 }
 
 
@@ -211,15 +173,6 @@ public:
         requires (sizeof...(Is) > 0) && (std::convertible_to<Is, std::size_t> && ...)
     MultiBranch& allow(Is... indices);
 
-    /// @brief 按名称集合批量点亮后继。
-    /// @tparam Ns 可转换为 `std::string_view` 的变参名称类型包。
-    /// @param names 一组需放行的后继名称标识。
-    /// @return `*this`，支持链式调用。
-    /// @post 将所有名称匹配上的节点纳入放行集合。
-    template <typename... Ns>
-        requires (sizeof...(Ns) > 0) && (std::convertible_to<Ns, std::string_view> && ...)
-    MultiBranch& allow(Ns&&... names);
-
     /// @brief 一键选中该节点挂载的所有下游后继（启动全图广播模式）。
     /// @return `*this`，支持链式调用。
     /// @post 全部后继被加入选择集合。
@@ -245,12 +198,6 @@ public:
 
     /// @brief 返回当前节点的后继总数。
     [[nodiscard]] std::size_t size() const noexcept;
-
-    /// @brief 按索引查询后继名称，越界返回 `std::nullopt`。
-    [[nodiscard]] std::optional<std::string_view> name(std::size_t index) const noexcept;
-
-    /// @brief 按名称查询后继索引，未找到返回 `std::nullopt`。
-    [[nodiscard]] std::optional<std::size_t> index(std::string_view name) const noexcept;
 
 private:
     Work& m_work;                 ///< 关联宿主 MultiBranchWork，用以映射底层图结构
@@ -291,19 +238,6 @@ MultiBranch& MultiBranch::allow(Is... indices) {
     return *this;
 }
 
-template <typename... Ns>
-    requires (sizeof...(Ns) > 0) && (std::convertible_to<Ns, std::string_view> && ...)
-MultiBranch& MultiBranch::allow(Ns&&... names) {
-    for (auto* suc : m_work._successors()) {
-        // Why: 将多字符串比较下推至逻辑短路 OR 门（折叠表达式）。
-        // 一旦匹配上参数包内的任一名字即终止本轮比对，急速并入目标队列。
-        if (((suc->m_name == static_cast<std::string_view>(names)) || ...)) {
-            _insert(suc);
-        }
-    }
-    return *this;
-}
-
 inline MultiBranch& MultiBranch::allow_all() {
     for (auto* suc : m_work._successors()) {
         _insert(suc);
@@ -327,19 +261,6 @@ void MultiBranch::allow_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
 
 inline std::size_t MultiBranch::size() const noexcept {
     return m_work.m_num_successors;
-}
-
-inline std::optional<std::string_view> MultiBranch::name(std::size_t index) const noexcept {
-    auto succs = m_work._successors();
-    return index < succs.size() ? std::optional{succs[index]->m_name} : std::nullopt;
-}
-
-inline std::optional<std::size_t> MultiBranch::index(std::string_view name) const noexcept {
-    auto succs = m_work._successors();
-    for (std::size_t i = 0; i < succs.size(); ++i) {
-        if (succs[i]->m_name == name) return i;
-    }
-    return std::nullopt;
 }
 
 }  // namespace tfl
