@@ -118,19 +118,22 @@ int main() {
 
 ## 🧠 Core Features & API
 
-### 1. Bulk Insertion & DAG Orchestration
+### 1. Batch Insertion & DAG Orchestration
 
-TaskflowLite supports seamless `std::tuple` unpacking and perfect forwarding, making it trivial to pass arguments and `std::ref` without verbose lambda captures.
+TaskflowLite provides a robust parameter encapsulation mechanism via `tfl::pack`. It automatically handles function type decay and offers seamless support for `std::ref`, allowing you to orchestrate complex DAG topologies without verbose lambda captures or potential compile-time deduction errors.
 
 ```cpp
 tfl::Flow flow;
 int counter = 0;
 
-// Bulk-insert tasks with arguments via tuple
+// Use tfl::pack to batch insert tasks with parameters
+// tfl::pack ensures function names automatically decay into function pointers,
+// avoiding the CTAD pitfalls of std::tuple.
 auto [t1, t2] = flow.emplace(
-    std::tuple{[](int a) { std::cout << "Val: " << a << "\n"; }, 42},
-    std::tuple{[](int& c) { c = 100; }, std::ref(counter)} // Zero-copy reference passing
+    tfl::pack{[](int a) { std::cout << "Val: " << a << "\n"; }, 42},
+    tfl::pack{[](int& c) { c = 100; }, std::ref(counter)} // Secure reference passing
 );
+
 t1.precede(t2);
 ```
 
