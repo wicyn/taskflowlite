@@ -89,9 +89,9 @@ class Flow : public MoveOnly<Flow> {
 
     // 2. 批量插入多个带参数的节点 (通过 std::tuple / std::pair 打包)
     // 返回 tuple 以支持 auto [...] 结构化绑定
-    template <typename... Tuples>
-        requires (sizeof...(Tuples) > 1) && (tuple_like<Tuples> && ...)
-    auto emplace(Tuples&&... task_tuples);
+    template <typename... Packs>
+        requires (sizeof...(Packs) > 1) && (task_pack<Packs> && ...)
+    auto emplace(Packs&&... task_packs);
 
     // ========================================================================
     //  图操作接口
@@ -223,17 +223,37 @@ inline auto Flow::emplace(Ts&&... tasks) {
     return std::make_tuple(this->emplace(std::forward<Ts>(tasks))...);
 }
 
-// 2. 批量插入多个带参数的节点 (Tuple 重载)
-template <typename... Tuples>
-    requires (sizeof...(Tuples) > 1) && (tuple_like<Tuples> && ...)
-inline auto Flow::emplace(Tuples&&... task_tuples) {
+/// @brief 批量插入多个带参数的任务（tfl::pack 重载）。
+///
+/// @details 每个 tfl::pack 内部持有 decay 后的 tuple，
+///   通过 std::apply 展开后转发到单任务 emplace 重载。
+///
+/// @code
+///   auto [t1, t2, t3] = flow.emplace(
+///       tfl::pack{&MyService::process, &service, 999},
+///       tfl::pack{MyFunctor{10}, std::ref(counter)},
+///       tfl::pack{free_func_ref, std::ref(counter)}
+///   );
+///   t1.precede(t2);
+///   t2.precede(t3);
+/// @endcode
+///
+/// @tparam Packs 参数包类型，每个必须是 tfl::pack。
+/// @param task_packs 由 tfl::pack{callable, args...} 构造的任务描述。
+/// @return std::tuple<Task, Task, ...>，每个 Task 对应一个插入的节点。
+template <typename... Packs>
+    requires (sizeof...(Packs) > 1) && (task_pack<Packs> && ...)
+inline auto Flow::emplace(Packs&&... task_packs) {
     return std::make_tuple(
         std::apply(
             [this]<typename... Args>(Args&&... args) {
                 return this->emplace(std::forward<Args>(args)...);
-            }, std::forward<Tuples>(task_tuples))...
+            },
+            std::forward<Packs>(task_packs).data  // ← 取 .data（decay 后的 tuple）
+            )...
         );
 }
+
 // ============================================================================
 //  图操作实现
 // ============================================================================

@@ -14,6 +14,7 @@
 #include <memory>
 #include <stack>
 #include <future>
+#include <cmath>
 
 #include "enums.hpp"
 #include "utility.hpp"
@@ -1678,7 +1679,7 @@ inline void Work::_d2_pill_bar(std::string& out,
     out += "    grid-rows: 1\n";
     out += "    grid-gap: 6\n\n";
 
-    char pid[8];
+    char pid[24];
     char sid[32];
     for (std::size_t i = 0; i < reqs.size(); ++i) {
         std::snprintf(pid, sizeof(pid), "%c%zu", tag[0], i);
@@ -1716,7 +1717,7 @@ inline void Work::_d2_pill_bar(std::ostream& os,
     os << "    grid-rows: 1\n";
     os << "    grid-gap: 6\n\n";
 
-    char pid[8];
+    char pid[24];
     char sid[32];
     for (std::size_t i = 0; i < reqs.size(); ++i) {
         std::snprintf(pid, sizeof(pid), "%c%zu", tag[0], i);

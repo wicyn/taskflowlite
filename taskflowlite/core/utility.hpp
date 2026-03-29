@@ -10,7 +10,6 @@
 
 #include <atomic>
 #include <source_location>
-#include <stacktrace>
 #include <limits>
 #include <type_traits>
 #include <string>
@@ -18,12 +17,25 @@
 #include <typeinfo>
 #include <vector>
 #include <utility>
+
+// 替换原来的 #include <stacktrace>
+#if __has_include(<stacktrace>)
+#  include <stacktrace>
+#endif
+
+// 放到 macros.hpp 或 utility.hpp 顶部皆可
+#if defined(__cpp_lib_stacktrace) && __cpp_lib_stacktrace >= 202011L
+#  define TFL_HAS_STACKTRACE 1
+#else
+#  define TFL_HAS_STACKTRACE 0
+#endif
+
 #include "macros.hpp"
 
 namespace tfl {
 
 // 跨平台且规避 Clang 陷阱的缓存行大小推导
-#ifdef __cpp_lib_hardware_interference_size
+#if defined(__cpp_lib_hardware_interference_size) && !defined(__GNUC__)
     // 1. 如果编译器和标准库完整支持 C++17 特性，优先使用标准库
 inline constexpr std::size_t cache_line_size = std::hardware_destructive_interference_size;
 #else
@@ -324,6 +336,7 @@ public:
 ///
 /// @tparam T 被包装的基础类型。
 /// @note 捕获堆栈涉及运行时栈回溯开销，仅应在异常或诊断错误路径使用。
+#if TFL_HAS_STACKTRACE
 template <class T>
 struct Traced : Located<T> {
 private:
@@ -347,5 +360,5 @@ public:
     /// @brief 获取捕获的堆栈跟踪。
     constexpr const std::stacktrace& stacktrace() const noexcept { return m_trace; }
 };
-
+#endif
 } // namespace tfl
