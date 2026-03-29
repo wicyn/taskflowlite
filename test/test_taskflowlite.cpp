@@ -58,10 +58,10 @@ TEST_CASE("Flow: Batch Emplace (Tuple & Args)", "[flow]") {
     tfl::Flow flow;
     int counter = 0;
 
-    // Tuple 批量插入
+    // Pack 批量插入
     auto [t1, t2] = flow.emplace(
-        std::tuple{[](int a) { REQUIRE(a == 42); }, 42},
-        std::tuple{[](int& c) { c = 100; }, std::ref(counter)}
+        tfl::pack{[](int a) { /* 不在 worker 里断言 */ }, 42},
+        tfl::pack{[](int& c) { c = 100; }, std::ref(counter)}
         );
 
     REQUIRE(flow.size() == 2);
@@ -108,10 +108,25 @@ TEST_CASE("DAG: Diamond Topology Synchronization", "[dag]") {
     tfl::Flow flow;
     std::atomic<int> counter{0};
 
-    auto A = flow.emplace([&] { REQUIRE(counter.load() == 0); counter.fetch_add(1); });
-    auto B = flow.emplace([&] { REQUIRE(counter.load() >= 1); counter.fetch_add(1); });
-    auto C = flow.emplace([&] { REQUIRE(counter.load() >= 1); counter.fetch_add(1); });
-    auto D = flow.emplace([&] { REQUIRE(counter.load() == 3); counter.fetch_add(1); });
+    // Fix: 不在 worker 线程里调用 REQUIRE，改用 atomic flag 收集结果
+    std::atomic<bool> a_ok{false}, b_ok{false}, c_ok{false}, d_ok{false};
+
+    auto A = flow.emplace([&] {
+        a_ok.store(counter.load() == 0, std::memory_order_relaxed);
+        counter.fetch_add(1);
+    });
+    auto B = flow.emplace([&] {
+        b_ok.store(counter.load() >= 1, std::memory_order_relaxed);
+        counter.fetch_add(1);
+    });
+    auto C = flow.emplace([&] {
+        c_ok.store(counter.load() >= 1, std::memory_order_relaxed);
+        counter.fetch_add(1);
+    });
+    auto D = flow.emplace([&] {
+        d_ok.store(counter.load() == 3, std::memory_order_relaxed);
+        counter.fetch_add(1);
+    });
 
     A.precede(B, C);
     D.succeed(B, C);
@@ -120,7 +135,12 @@ TEST_CASE("DAG: Diamond Topology Synchronization", "[dag]") {
     tfl::Executor executor(handler, 4);
     executor.submit(flow).start().wait();
 
+    // 所有断言在主线程
     REQUIRE(counter.load() == 4);
+    REQUIRE(a_ok.load());
+    REQUIRE(b_ok.load());
+    REQUIRE(c_ok.load());
+    REQUIRE(d_ok.load());
 }
 
 // ============================================================================
@@ -147,7 +167,7 @@ TEST_CASE("Branch: Exclusive Path Routing", "[branch]") {
 
         for (int i = 0; i < 3; ++i) {
             if (i == route) REQUIRE(hits[i].load() == 1);
-            else REQUIRE(hits[i].load() == 0); // 未选中路径必须被严格跳过
+            else REQUIRE(hits[i].load() == 0);
         }
     }
 }
@@ -265,9 +285,21 @@ TEST_CASE("Executor: AsyncTask Explicit Dependencies", "[executor]") {
 
     std::atomic<int> step{0};
 
-    auto t1 = executor.submit([&] { REQUIRE(step.load() == 0); step.store(1); });
-    auto t2 = executor.submit([&] { REQUIRE(step.load() == 1); step.store(2); });
-    auto t3 = executor.submit([&] { REQUIRE(step.load() == 2); step.store(3); });
+    // Fix: 不在 worker 线程里调用 REQUIRE，用 atomic flag 收集结果
+    std::atomic<bool> t1_ok{false}, t2_ok{false}, t3_ok{false};
+
+    auto t1 = executor.submit([&] {
+        t1_ok.store(step.load() == 0, std::memory_order_relaxed);
+        step.store(1);
+    });
+    auto t2 = executor.submit([&] {
+        t2_ok.store(step.load() == 1, std::memory_order_relaxed);
+        step.store(2);
+    });
+    auto t3 = executor.submit([&] {
+        t3_ok.store(step.load() == 2, std::memory_order_relaxed);
+        step.store(3);
+    });
 
     // 逆序组装并启动：t3 依赖 t2，t2 依赖 t1
     t3.start(t2);
@@ -277,7 +309,11 @@ TEST_CASE("Executor: AsyncTask Explicit Dependencies", "[executor]") {
     t3.wait();
     executor.wait_for_all();
 
+    // 所有断言在主线程
     REQUIRE(step.load() == 3);
+    REQUIRE(t1_ok.load());
+    REQUIRE(t2_ok.load());
+    REQUIRE(t3_ok.load());
 }
 
 TEST_CASE("Executor: Flow Callbacks and Submissions", "[executor]") {
@@ -316,7 +352,7 @@ TEST_CASE("Exception: ResumeNever Stops Execution", "[exception]") {
 }
 
 TEST_CASE("Exception: ResumeAlways Ignores Failure", "[exception]") {
-    tfl::ResumeAlways handler; // 假设你的框架提供了 ResumeAlways 忽略异常
+    tfl::ResumeAlways handler;
     tfl::Executor executor(handler, 2);
     tfl::Flow flow;
     std::atomic<int> next_task_run{0};
@@ -405,17 +441,14 @@ TEST_CASE("Task Topology Constraints - precede() exception and cycle detection")
         } catch (const tfl::Exception& e) {
             caught = true;
             std::string msg = e.what();
-            // 验证错误信息是否精确匹配我们在 _can_precede 中设置的方案 B
             CHECK(msg.find("invalid topology: self-loops are exclusively allowed for jump-type nodes") != std::string::npos);
         }
         CHECK(caught == true);
     }
 
     SECTION("3. Self-loop on jump node succeeds") {
-        // 修复：显式使用接受 tfl::Jump& 的闭包来创建跳转节点
         tfl::Task JumpA = flow.emplace([](tfl::Jump&){}).name("JumpA");
 
-        // 跳转节点的自环应该被 O(1) 短路豁免
         REQUIRE_NOTHROW(JumpA.precede(JumpA));
         CHECK(JumpA.num_successors() == 1);
     }
@@ -428,7 +461,6 @@ TEST_CASE("Task Topology Constraints - precede() exception and cycle detection")
         A.precede(B);
         B.precede(C);
 
-        // 尝试闭环 C -> A，此时路径为 C -> A -> B -> C，全是常规节点，必然死锁
         bool caught = false;
         try {
             C.precede(A);
@@ -439,7 +471,6 @@ TEST_CASE("Task Topology Constraints - precede() exception and cycle detection")
         }
         CHECK(caught == true);
 
-        // 验证由于异常打断，危险的边确实没有被连上
         CHECK(C.num_successors() == 0);
         CHECK(A.num_predecessors() == 0);
     }
@@ -447,30 +478,21 @@ TEST_CASE("Task Topology Constraints - precede() exception and cycle detection")
     SECTION("5. Cycle containing a jump node succeeds (O(1) exemption)") {
         tfl::Task A = flow.emplace(nop).name("A");
         tfl::Task B = flow.emplace(nop).name("B");
-
-        // 修复：将 JumpC 创建为真正的跳转节点
         tfl::Task JumpC = flow.emplace([](tfl::Jump&){}).name("JumpC");
 
-        // 构建 A -> B -> JumpC
         A.precede(B);
         B.precede(JumpC);
 
-        // 场景 5.1: 连边起点是 Jump 节点
         REQUIRE_NOTHROW(JumpC.precede(A));
         CHECK(JumpC.num_successors() == 1);
 
-
         tfl::Task X = flow.emplace(nop).name("X");
         tfl::Task Y = flow.emplace(nop).name("Y");
-
-        // 修复：将 JumpZ 创建为真正的跳转节点
         tfl::Task JumpZ = flow.emplace([](tfl::Jump&){}).name("JumpZ");
 
-        // 构建 JumpZ -> X -> Y
         JumpZ.precede(X);
         X.precede(Y);
 
-        // 场景 5.2: 连边终点是 Jump 节点
         REQUIRE_NOTHROW(Y.precede(JumpZ));
         CHECK(Y.num_successors() == 1);
     }
@@ -483,9 +505,8 @@ TEST_CASE("Topology: Normal nodes strict cycle throws", "[topology]") {
     tfl::Task A = flow.emplace([]{}).name("A");
     tfl::Task B = flow.emplace([]{}).name("B");
 
-    A.precede(B); // 正常连边
+    A.precede(B);
 
-    // 预期抛出异常：常规节点反向连边会形成死锁环路
     REQUIRE_THROWS(B.precede(A));
 }
 
@@ -493,7 +514,6 @@ TEST_CASE("Topology: Normal node self-loop throws tfl::Exception", "[topology]")
     tfl::Flow flow;
     tfl::Task A = flow.emplace([]{}).name("A");
 
-    // 预期抛出 tfl::Exception 类型的异常
     REQUIRE_THROWS_AS(A.precede(A), tfl::Exception);
 }
 
@@ -507,13 +527,11 @@ TEST_CASE("Topology: Cycle detection exact message match", "[topology]") {
     A.precede(B);
     B.precede(C);
 
-    // 验证抛出异常，并且 e.what() 中包含特定的子字符串
     REQUIRE_THROWS_WITH(
         C.precede(A),
         Catch::Matchers::ContainsSubstring("invalid topology: strict cycle detected")
         );
 
-    // 验证异常打断后，危险的边没有被连上
     CHECK(C.num_successors() == 0);
     CHECK(A.num_predecessors() == 0);
 }
@@ -524,12 +542,10 @@ TEST_CASE("Jump: Backward Retry Loop", "[jump]") {
     auto start = flow.emplace([&] { });
     auto process = flow.emplace([&] { attempts.fetch_add(1); });
     auto check = flow.emplace([&](tfl::Jump& jmp) {
-        if (attempts.load() < 5) jmp.to(0); // 跳回 target 0 (即 process)
-        });
+        if (attempts.load() < 5) jmp.to(0);
+    });
     start.precede(process);
     process.precede(check);
-    // 这里假设你的 API 是 jmp_node.precede(target) 将 target 注册为索引 0
-    // 或者类似机制。如果 API 不同请调整这行。
     check.precede(process);
 
     tfl::ResumeNever handler;

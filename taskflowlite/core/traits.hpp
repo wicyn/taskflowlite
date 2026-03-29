@@ -185,25 +185,8 @@ template <typename T>
     }
 }
 
-// ============================================================================
-//  tuple_like 探测
-// ============================================================================
-
-template <typename T>
-struct is_tuple_like_impl : std::false_type {};
-
-template <typename... Args>
-struct is_tuple_like_impl<std::tuple<Args...>> : std::true_type {};
-
 } // namespace detail
 
-// ============================================================================
-//  Concepts — 基础类型约束
-// ============================================================================
-
-/// @brief C++20 tuple-like 概念，匹配 std::tuple / std::pair / std::array
-template <typename T>
-concept tuple_like = detail::is_tuple_like_impl<std::remove_cvref_t<T>>::value;
 
 /// @brief 核心捕获约束：确保给定的所有类型均能被框架安全地持久化存储。
 ///
@@ -302,6 +285,77 @@ using runtime_return_t =
 
 template <typename... Ts>
 concept sem_count_sequence = detail::is_sem_count_seq<Ts...>::value;
+
+
+
+
+
+
+/// @brief 带自动 decay 的任务参数包。
+///
+/// @details 用于 `Flow::emplace(packs...)` 批量插入重载。
+///   内部存储 `std::tuple<std::decay_t<Ts>...>`，构造时自动退化
+///   函数类型和数组类型，避免 `std::tuple` CTAD 的 by-ref guide 陷阱。
+///
+/// @tparam Ts 原始参数类型（由 CTAD 推导，未退化）。
+///
+/// @par 内存布局
+///   与等价的 `std::tuple<std::decay_t<Ts>...>` 完全相同，零额外开销。
+///
+/// @par 退化规则
+///   | 原始类型          | decay 后            | 说明                  |
+///   |-------------------|---------------------|-----------------------|
+///   | `void(int&)`      | `void(*)(int&)`     | 函数 → 函数指针       |
+///   | `int[5]`          | `int*`              | 数组 → 指针           |
+///   | `const int&`      | `int`               | 去 cv + 去引用        |
+///   | `ref_wrapper<T>`  | `ref_wrapper<T>`    | 不变（已是对象类型）  |
+template <typename... Ts>
+struct pack {
+    /// @brief 退化后的内部存储类型。
+    using tuple_type = std::tuple<std::decay_t<Ts>...>;
+
+    tuple_type data;
+
+    /// @brief 构造并自动 decay 所有参数。
+    ///
+    /// @param args 任务的可调用对象和参数，第一个通常是 callable，
+    ///             后续是传给 callable 的参数（支持 std::ref）。
+    constexpr pack(Ts&&... args)
+        : data(std::forward<Ts>(args)...) {}
+};
+
+/// @brief CTAD guide：`tfl::pack{a, b, c}` → `pack<decltype(a), decltype(b), decltype(c)>`。
+///
+/// @details 注意 Ts... 推导的是**原始类型**（可能包含函数类型、数组类型），
+///   退化发生在 pack 的成员类型 `std::tuple<std::decay_t<Ts>...>` 中，
+///   而非 CTAD guide 本身——这是刻意设计：如果在 guide 中就 decay，
+///   构造函数的参数类型会和 guide 推导的类型不匹配，导致编译错误。
+template <typename... Ts>
+pack(Ts&&...) -> pack<Ts...>;
+
+// ============================================================================
+//  pack 探测
+// ============================================================================
+namespace detail {
+
+/// @brief pack 类型萃取（主模板：不是 pack）。
+template <typename T>
+struct is_pack_impl : std::false_type {};
+
+/// @brief pack 类型萃取（特化：是 pack）。
+template <typename... Args>
+struct is_pack_impl<pack<Args...>> : std::true_type {};
+
+}  // namespace detail
+
+/// @brief 约束类型为 tfl::pack，拒绝裸 std::tuple。
+///
+/// @details 用于 `Flow::emplace(Packs&&...)` 的 requires 子句，
+///   确保用户必须使用 `tfl::pack{...}` 构造参数包，
+///   从而强制走 decay 路径，杜绝 CTAD 陷阱。
+template <typename T>
+concept task_pack = detail::is_pack_impl<std::remove_cvref_t<T>>::value;
+
 
 } // namespace tfl
 

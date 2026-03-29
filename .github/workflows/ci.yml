@@ -1,61 +1,81 @@
 ﻿name: TaskflowLite CI
-
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-
 jobs:
   build-and-test:
     name: ${{ matrix.os }} | ${{ matrix.build_type }} | San=${{ matrix.sanitizer }}
     runs-on: ${{ matrix.os }}
-
     strategy:
-      fail-fast: false # 即使某个平台跑挂了，也让其他平台继续跑完
+      fail-fast: false
       matrix:
-        # 使用 include 精确控制我们要跑的 6 种测试组合
         include:
-          # === Ubuntu (Linux) 测试组 ===
           - os: ubuntu-latest
             build_type: Release
             sanitizer: OFF
           - os: ubuntu-latest
             build_type: Debug
-            sanitizer: ON   # 触发 CMake 里的 TSan + UBSan
-
-          # === macOS (苹果) 测试组 ===
+            sanitizer: ON
           - os: macos-latest
             build_type: Release
             sanitizer: OFF
           - os: macos-latest
             build_type: Debug
-            sanitizer: ON   # 触发 CMake 里的 TSan + UBSan
-
-          # === Windows 测试组 ===
+            sanitizer: ON
           - os: windows-latest
             build_type: Release
             sanitizer: OFF
           - os: windows-latest
             build_type: Debug
-            sanitizer: ON   # 触发 CMake 里的 MSVC ASan
-
+            sanitizer: ON
     steps:
-    - name: 📥 Checkout Repository
+    - name: Checkout Repository
       uses: actions/checkout@v4
-
-    - name: ⚙️ Configure CMake
+    - name: Configure CMake
       run: >
         cmake -S . -B build
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
         -DTASKFLOWLITE_BUILD_TESTS=ON
         -DTASKFLOWLITE_ENABLE_SANITIZER=${{ matrix.sanitizer }}
-
-    - name: 🔨 Build
-      # --config 用于兼容 Windows/MSVC 的多配置生成器
+    - name: Build
       run: cmake --build build --config ${{ matrix.build_type }} --parallel 4
-
-    - name: 🧪 Run Tests
+    - name: Prepare ASan DLLs (Windows Only)
+      if: matrix.os == 'windows-latest' && matrix.sanitizer == 'ON'
+      shell: pwsh
       working-directory: ${{github.workspace}}/build
-      # 使用 ctest 运行，如果出错则打印详细日志
+      run: |
+        $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+        $msvcVer = (Get-ChildItem "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).Name
+        $asanDir = "$vsPath\VC\Tools\MSVC\$msvcVer\bin\Hostx64\x64"
+        $testExe = Get-ChildItem -Path . -Filter "TaskflowLiteTest.exe" -Recurse | Select-Object -First 1
+        if ($testExe) {
+            Write-Host "Found test executable at: $($testExe.DirectoryName)"
+            Write-Host "Copying ASan runtime DLLs from: $asanDir"
+            Copy-Item -Path "$asanDir\clang_rt.asan*.dll" -Destination $testExe.DirectoryName -Force
+            Write-Host "Copy complete."
+        } else {
+            Write-Warning "TaskflowLiteTest.exe not found! Build step might have failed."
+        }
+    - name: Run Tests (Unix)
+      if: matrix.os != 'windows-latest'
+      working-directory: ${{github.workspace}}/build
+      env:
+        TSAN_OPTIONS: ${{ (matrix.sanitizer == 'ON') && format('suppressions={0}/tsan_suppressions.txt', github.workspace) || '' }}
+      run: |
+        if [ -n "$TSAN_OPTIONS" ]; then
+        printf '%s\n' \
+          'race:Catch::RunContext' \
+          'race:Catch::Detail' \
+          'race:Catch::StringStreams' \
+          'race:Catch::OutputRedirect' \
+          'race:Catch::ConsoleReporter' \
+          'race:__sanitizer::IsAccessibleMemoryRange' \
+          > ${{github.workspace}}/tsan_suppressions.txt
+        fi
+        ctest -C ${{ matrix.build_type }} --output-on-failure
+    - name: Run Tests (Windows)
+      if: matrix.os == 'windows-latest'
+      working-directory: ${{github.workspace}}/build
       run: ctest -C ${{ matrix.build_type }} --output-on-failure

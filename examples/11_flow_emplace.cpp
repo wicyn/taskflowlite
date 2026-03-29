@@ -1,4 +1,4 @@
-#include "../taskflowlite/taskflowlite.hpp"
+﻿#include "../taskflowlite/taskflowlite.hpp"
 #include <iostream>
 #include <string>
 #include <tuple>
@@ -404,13 +404,21 @@ int main() {
     auto shared_svc2 = std::make_shared<MyService>(MyService{"SharedDirect"});
     flow.emplace(&MyService::process, shared_svc2, 400);
 
-    // D12. std::mem_fn 包装成员函数
+#if defined(__clang__) && defined(__apple_build_version__)
+    // D12. macOS Clang SFINAE workaround:
+    // Directly use member function pointer to avoid libc++'s std::mem_fn + Concepts conflict.
+    flow.emplace(&MyService::process, &service, 500);
+
+    // D13. Direct member function pointer + std::ref
+    flow.emplace(&MyService::multi_args, std::ref(service), 66, 7.77);
+#else
+    // D12. std::mem_fn wrapper (Works on GCC/MSVC)
     auto mem_fn_wrapper = std::mem_fn(&MyService::process);
     flow.emplace(mem_fn_wrapper, &service, 500);
 
-    // D13. std::mem_fn + std::ref(对象)
+    // D13. std::mem_fn + std::ref(object)
     flow.emplace(std::mem_fn(&MyService::multi_args), std::ref(service), 66, 7.77);
-
+#endif
     // ========================================================================
     // 类别 E: std::function — 类型擦除包装
     // ========================================================================
@@ -689,20 +697,20 @@ int main() {
         );
     i2_t1.precede(i2_t2);
 
-    // I3. 批量 Tuple 插入 — 每个 tuple 是一个带参数的任务
+    // I3. 批量  插入 — 每个 pack 是一个带参数的任务
     auto [i3_t1, i3_t2, i3_t3] = flow.emplace(
         // 成员函数 + 对象指针 + 参数
-        std::tuple{&MyService::process, &service, 999},
+        tfl::pack{&MyService::process, &service, 999},
         // Functor + std::ref 参数
-        std::tuple{MyFunctor{10}, std::ref(global_counter)},
+        tfl::pack{MyFunctor{10}, std::ref(global_counter)},
         // Lambda + 参数
-        std::tuple{[](int x) { std::cout << "I3. tuple lambda x=" << x << "\n"; }, 42}
+        tfl::pack{[](int x) { std::cout << "I3. tuple lambda x=" << x << "\n"; }, 42}
         );
 
     // I4. 批量 Tuple + ref 参数
     auto [i4_t1, i4_t2] = flow.emplace(
-        std::tuple{free_func_ref, std::ref(global_counter)},
-        std::tuple{[](int& r) { r += 1; }, std::ref(global_counter)}
+        tfl::pack{free_func_ref, std::ref(global_counter)},
+        tfl::pack{[](int& r) { r += 1; }, std::ref(global_counter)}
         );
 
     // ========================================================================

@@ -11,7 +11,6 @@
 #include <exception>
 #include <string>
 #include <source_location>
-#include <stacktrace>
 #include <format>
 #include "utility.hpp"
 
@@ -67,6 +66,7 @@ protected:
 /// 除了 `Exception` 原本的功能，它里面还多存了一个 `std::stacktrace`。
 /// @note 注意：抓取调用栈是个比较费 CPU 的操作。一般只有在遇到那种死活查不出原因的致命错误时才用它。
 /// 平时普通的业务报错，用上面那个轻量级的 `Exception` 就够了。
+#if TFL_HAS_STACKTRACE
 class TraceException : public Exception {
 public:
     /// @brief 像 std::format 一样拼字符串，并且抓取调用栈的构造函数。
@@ -101,5 +101,5 @@ public:
 private:
     std::stacktrace m_stacktrace; ///< 存着完整的调用栈数据
 };
-
+#endif
 }  // namespace tfl

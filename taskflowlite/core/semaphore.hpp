@@ -20,10 +20,6 @@
 
 namespace tfl {
 
-class Work;
-class Executor;
-class Task;
-
 /// @brief 任务级并发控制信号量。
 ///
 /// 与传统的 OS 级信号量不同，本组件专为异步任务图设计。
@@ -74,7 +70,7 @@ public:
 
     /// @brief 线程安全地设置信号量的名称。
     /// @param name 新的信号量名称。
-    Semaphore& name(std::string name);
+    Semaphore& name(std::string_view name);
 
 private:
     std::string m_name;
@@ -154,9 +150,9 @@ inline std::string_view Semaphore::name() const noexcept {
     return m_name;
 }
 
-inline Semaphore& Semaphore::name(std::string name) {
-    m_name = std::move(name);
-    // 注意：原代码此处缺少 return *this; ，若有需要请自行补上
+inline Semaphore& Semaphore::name(std::string_view name) {
+    m_name = name;
+    return *this;
 }
 
 inline bool Semaphore::_try_acquire(Work* w) {

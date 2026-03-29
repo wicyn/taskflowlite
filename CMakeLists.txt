@@ -131,7 +131,8 @@ if(TFL_IS_TOP_LEVEL)
             message(STATUS "🧵 Auto-Sanitizer: Unix-like OS detected. Enabling TSan + UBSan.")
             if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                 target_compile_options(tfl_internal_flags INTERFACE
-                    -fsanitize=thread,undefined -g -fno-omit-frame-pointer)
+                    -fsanitize=thread,undefined -g -fno-omit-frame-pointer
+                    -Wno-tsan) #不支持独立 atomic_thread_fence，压制已知警告
                 target_link_options(tfl_internal_flags INTERFACE
                     -fsanitize=thread,undefined)
             endif()
