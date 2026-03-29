@@ -140,30 +140,29 @@ protected:
         }
     };
 
+
+    using InvokeFn = void(*)(Work*, Executor&, Worker&, Work*&);
+
     /// @brief 默认构造函数（专供占位符如 NullWork 的中间状态使用）。
     explicit Work() = default;
 
     /// @brief 静态图内节点构造函数。
     /// @param graph 节点归属的任务物理图指针。
     /// @param options 初始选项配置（内部会自动掩除低 24 位的计数值）。
-    explicit Work(Graph* graph, Option::type options) noexcept
-        : m_graph{graph}
+    explicit Work(InvokeFn fn, Graph* graph, Option::type options) noexcept
+        : m_invoke{fn}
+        , m_graph{graph}
         , m_options{options & Option::FLAG_MASK} {}
 
     /// @brief 独立异步任务构造函数。
     /// @param topo 该任务绑定的独立执行拓扑上下文。
     /// @param options 初始选项配置。
-    explicit Work(Topology* topo, Option::type options) noexcept
-        : m_topology{topo}
+    explicit Work(InvokeFn fn, Topology* topo, Option::type options) noexcept
+        : m_invoke{fn}
+        , m_topology{topo}
         , m_options{options & Option::FLAG_MASK} {}
 
     virtual ~Work() noexcept = default;
-
-    /// @brief 节点的核心执行调度入口，由底层 Worker 线程驱动。
-    /// @param exec 驱动当前拓扑的执行器实例。
-    /// @param wr 承载当前执行栈的工作线程。
-    /// @param cache 零开销调度暂存器，向调用方输出紧接着应被执行的后继节点。
-    virtual void invoke(Executor& exec, Worker& wr, Work*& cache) = 0;
 
     /// @brief 获取该节点的底层逻辑类型枚举。
     [[nodiscard]] virtual TaskType type() const noexcept = 0;
@@ -175,11 +174,11 @@ protected:
     virtual void dump(std::ostream& ostream) const = 0;
 
 private:
-
     std::string             m_name;                         ///< 节点名称（调试/D2 可视化用）
     const Graph*            m_graph{nullptr};               ///< 归属的任务物理图指针
     std::exception_ptr      m_exception_ptr{nullptr};       ///< 捕获的异常（冷路径）
 
+    InvokeFn                m_invoke{nullptr};
     Topology*               m_topology{nullptr};            ///< 执行拓扑上下文（invoke 开头读）
     Work*                       m_parent{nullptr};          ///< 父容器（tear_down 循环内高频读）
     std::atomic<State::type>    m_state{State::NONE};       ///< 运行期状态 (4B)
@@ -504,15 +503,15 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit BasicWork(Graph* g, Option::type opts, U&& f, Us&&... args)
-        : Work{g, opts}
+        : Work{&invoke, g, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Basic; }
-    std::string dump() const override { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::Basic; }
+    std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
     }
 };
@@ -526,15 +525,15 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit BranchWork(Graph* g, Option::type opts, U&& f, Us&&... args)
-        : Work{g, opts}
+        : Work{&invoke, g, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Branch; }
-    std::string dump() const override { return _d2_work(this, "diamond", "#dbeafe", "#3b82f6", "#1e3a5f", "8"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::Branch; }
+    std::string dump() const override final { return _d2_work(this, "diamond", "#dbeafe", "#3b82f6", "#1e3a5f", "8"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "diamond", "#dbeafe", "#3b82f6", "#1e3a5f", "8");
     }
 };
@@ -548,15 +547,15 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit MultiBranchWork(Graph* g, Option::type opts, U&& f, Us&&... args)
-        : Work{g, opts}
+        : Work{&invoke, g, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::MultiBranch; }
-    std::string dump() const override { return _d2_work(this, "hexagon", "#bfdbfe", "#2563eb", "#1e3a5f", "8"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::MultiBranch; }
+    std::string dump() const override final { return _d2_work(this, "hexagon", "#bfdbfe", "#2563eb", "#1e3a5f", "8"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "hexagon", "#bfdbfe", "#2563eb", "#1e3a5f", "8");
     }
 };
@@ -570,15 +569,15 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit JumpWork(Graph* g, Option::type opts, U&& f, Us&&... args)
-        : Work{g, opts}
+        : Work{&invoke, g, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Jump; }
-    std::string dump() const override { return _d2_work(this, "diamond", "#fee2e2", "#ef4444", "#7f1d1d", "8", "5"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::Jump; }
+    std::string dump() const override final { return _d2_work(this, "diamond", "#fee2e2", "#ef4444", "#7f1d1d", "8", "5"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "diamond", "#fee2e2", "#ef4444", "#7f1d1d", "8", "5");
     }
 };
@@ -592,15 +591,15 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit MultiJumpWork(Graph* g, Option::type opts, U&& f, Us&&... args)
-        : Work{g, opts}
+        : Work{&invoke, g, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::MultiJump; }
-    std::string dump() const override { return _d2_work(this, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::MultiJump; }
+    std::string dump() const override final { return _d2_work(this, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5");
     }
 };
@@ -614,15 +613,15 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit RuntimeWork(Graph* g, Option::type opts, U&& f, Us&&... args)
-        : Work{g, opts}
+        : Work{&invoke, g, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Runtime; }
-    std::string dump() const override { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::Runtime; }
+    std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
     }
 };
@@ -636,18 +635,18 @@ class SubflowWork final : public Work {
 public:
     template <typename U, typename V>
     explicit SubflowWork(Graph* g, Option::type opts, U&& flow_store, V&& pred)
-        : Work(g, opts)
+        : Work{&invoke, g, opts}
         , m_flow_store(std::forward<U>(flow_store))
         , m_pred(std::forward<V>(pred)) {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Graph; }
+    TaskType type() const noexcept override final { return TaskType::Graph; }
     // ============================================================================
     //  [4/6] SubflowWork::dump() 两个重载（完整替换）
     // ============================================================================
 
-    std::string dump() const override {
+    std::string dump() const override final {
         decltype(auto) flow = detail::unwrap(m_flow_store);
 
         if (flow.m_graph.empty()) {
@@ -711,7 +710,7 @@ public:
         return out;
     }
 
-    void dump(std::ostream& os) const override {
+    void dump(std::ostream& os) const override final {
         decltype(auto) flow = detail::unwrap(m_flow_store);
 
         if (flow.m_graph.empty()) {
@@ -781,15 +780,15 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit AsyncBasicWork(Topology* t, Option::type opts, U&& f, Us&&... args)
-        : Work{t, opts}
+        : Work{&invoke, t, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Basic; }
-    std::string dump() const override { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::Basic; }
+    std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
     }
 };
@@ -803,15 +802,15 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit AsyncRuntimeWork(Topology* t, Option::type opts, U&& f, Us&&... args)
-        : Work{t, opts}
+        : Work{&invoke, t, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Runtime; }
-    std::string dump() const override { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::Runtime; }
+    std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
     }
 };
@@ -826,16 +825,16 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit AsyncBasicPromiseWork(Topology* t, Option::type opts, U&& f, std::promise<R>&& p, Us&&... args)
-        : Work{t, opts}
+        : Work{&invoke, t, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...}
         , m_promise{std::move(p)} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Basic; }
-    std::string dump() const override { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::Basic; }
+    std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
     }
 };
@@ -850,16 +849,16 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit AsyncRuntimePromiseWork(Topology* t, Option::type opts, U&& f, std::promise<R>&& p, Us&&... args)
-        : Work{t, opts}
+        : Work{&invoke, t, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...}
         , m_promise{std::move(p)} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Runtime; }
-    std::string dump() const override { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::Runtime; }
+    std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
     }
 };
@@ -873,15 +872,15 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit DepAsyncBasicWork(Topology* t, Option::type opts, U&& f, Us&&... args)
-        : Work{t, opts}
+        : Work{&invoke, t, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Basic; }
-    std::string dump() const override { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::Basic; }
+    std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
     }
 };
@@ -895,15 +894,15 @@ public:
     template <typename U, typename... Us>
         requires std::constructible_from<F, U>
     explicit DepAsyncRuntimeWork(Topology* t, Option::type opts, U&& f, Us&&... args)
-        : Work{t, opts}
+        : Work{&invoke, t, opts}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Runtime; }
-    std::string dump() const override { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::Runtime; }
+    std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
     }
 };
@@ -918,19 +917,19 @@ class DepFlowWork final : public Work {
 public:
     template <typename U, typename V, typename W>
     explicit DepFlowWork(Topology* t, Option::type opts, U&& flow_store, V&& pred, W&& cb)
-        : Work(t, opts)
+        : Work{&invoke, t, opts}
         , m_flow_store(std::forward<U>(flow_store))
         , m_pred(std::forward<V>(pred))
         , m_callback(std::forward<W>(cb)) {}
 
-    void invoke(Executor&, Worker&, Work*&) override;
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override { return TaskType::Graph; }
+    TaskType type() const noexcept override final { return TaskType::Graph; }
     // ============================================================================
     //  [5/6] DepFlowWork::dump() 两个重载（与 SubflowWork 对称）
     // ============================================================================
 
-    std::string dump() const override {
+    std::string dump() const override final {
         char id[24];
         std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(this));
         decltype(auto) flow = detail::unwrap(m_flow_store);
@@ -993,7 +992,7 @@ public:
         return out;
     }
 
-    void dump(std::ostream& os) const override {
+    void dump(std::ostream& os) const override final {
         decltype(auto) flow = detail::unwrap(m_flow_store);
 
         if (flow.m_graph.empty()) {
@@ -1055,13 +1054,13 @@ public:
 class NullWork final : public Work {
 public:
     explicit NullWork(Topology* t, Option::type opts)
-        : Work(t, opts) {}
+        : Work{&invoke, t, opts} {}
 
-    void invoke(Executor&, Worker&, Work*&) override {}
+    static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache) {}
 
-    TaskType type() const noexcept override { return TaskType::None; }
-    std::string dump() const override { return _d2_work(this, "circle", "#f5f5f5", "#bdbdbd", "#9e9e9e", "8"); }
-    void dump(std::ostream& os) const override {
+    TaskType type() const noexcept override final { return TaskType::None; }
+    std::string dump() const override final { return _d2_work(this, "circle", "#f5f5f5", "#bdbdbd", "#9e9e9e", "8"); }
+    void dump(std::ostream& os) const override final {
         _d2_work(os, this, "circle", "#f5f5f5", "#bdbdbd", "#9e9e9e", "8");
     }
 };

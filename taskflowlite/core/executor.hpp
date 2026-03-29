@@ -989,7 +989,7 @@ inline Worker* Executor::_this_worker() {
 inline void Executor::_invoke(Worker& wr, Work* w) {
     do {
         Work* cache{nullptr};
-        w->invoke(*this, wr, cache);
+        w->m_invoke(w, *this, wr, cache);
         w = cache; // 链式执行
     } while (w);
 }
@@ -1043,16 +1043,16 @@ auto& target_exec = t->m_topology->m_executor;              \
 }                                                           \
 }
 
-#define TFL_OBSERVER_BEFORE(wr)                              \
-if (m_observers) [[unlikely]] {                                         \
-        for (auto& aspect : m_observers->observers) {          \
+#define TFL_OBSERVER_BEFORE(w, wr)                              \
+if (w->m_observers) [[unlikely]] {                                         \
+        for (auto& aspect : w->m_observers->observers) {          \
             aspect->on_before(WorkerView{wr});                      \
     }                                                           \
 }
 
-#define TFL_OBSERVER_AFTER(wr)                               \
-if (m_observers) [[unlikely]] {                                         \
-        for (auto& aspect : m_observers->observers) {          \
+#define TFL_OBSERVER_AFTER(w, wr)                               \
+if (w->m_observers) [[unlikely]] {                                         \
+        for (auto& aspect : w->m_observers->observers) {          \
             aspect->on_after(WorkerView{wr});                       \
     }                                                           \
 }
@@ -1062,75 +1062,77 @@ if (m_observers) [[unlikely]] {                                         \
 // ============================================================================
 
 template <typename F, typename... Args>
-void BasicWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(m_parent, wr, cache);
+void BasicWork<F, Args...>::invoke(Work* self, Executor& exe, Worker& wr, Work*& cache) {
+    auto* w = static_cast<BasicWork*>(self);
+    if (w->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
 
-    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(wr);
+    TFL_OBSERVER_BEFORE(w, wr);
 
 
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func))) {
-            std::invoke(m_func);
+            std::invoke(w->m_func);
         } else {
-            try { std::invoke(m_func); }
-            catch (...) { exe._process_exception(this); }
+            try { std::invoke(w->m_func); }
+            catch (...) { exe._process_exception(w); }
         }
     } else {
         auto _call = [&](auto&&... a) {
-            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
         };
         if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, m_args);
+            std::apply(_call, w->m_args);
         } else {
-            try { std::apply(_call, m_args); }
-            catch (...) { exe._process_exception(this); }
+            try { std::apply(_call, w->m_args); }
+            catch (...) { exe._process_exception(w); }
         }
     }
 
-    TFL_OBSERVER_AFTER(wr);
+    TFL_OBSERVER_AFTER(w, wr);
 
-    _release_semaphores(TFL_SEM_SCHEDULER);
-    exe._tear_down_task(this, wr, cache);
+    w->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_task(w, wr, cache);
 }
 
 template <typename F, typename... Args>
-void BranchWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(m_parent, wr, cache);
+void BranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+    auto* w = static_cast<BranchWork*>(self);
+    if (w->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
 
-    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(wr);
+    TFL_OBSERVER_BEFORE(w, wr);
 
 
-    Branch branch(*this);
+    Branch branch(*w);
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func, branch))) {
-            std::invoke(m_func, branch);
+            std::invoke(w->m_func, branch);
         } else {
-            try { std::invoke(m_func, branch); }
-            catch (...) { exe._process_exception(this); }
+            try { std::invoke(w->m_func, branch); }
+            catch (...) { exe._process_exception(w); }
         }
     } else {
         auto _call = [&](auto&&... a) {
-            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
+            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
         };
         if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, m_args);
+            std::apply(_call, w->m_args);
         } else {
-            try { std::apply(_call, m_args); }
-            catch (...) { exe._process_exception(this); }
+            try { std::apply(_call, w->m_args); }
+            catch (...) { exe._process_exception(w); }
         }
     }
 
@@ -1138,43 +1140,44 @@ void BranchWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
         target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
     }
 
-    TFL_OBSERVER_AFTER(wr);
+    TFL_OBSERVER_AFTER(w, wr);
 
-    _release_semaphores(TFL_SEM_SCHEDULER);
-    exe._tear_down_task(this, wr, cache);
+    w->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_task(w, wr, cache);
 }
 
 template <typename F, typename... Args>
-void MultiBranchWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(m_parent, wr, cache);
+void MultiBranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+    auto* w = static_cast<MultiBranchWork*>(self);
+    if (w->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
 
-    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(wr);
+    TFL_OBSERVER_BEFORE(w, wr);
 
 
-    MultiBranch branch(*this);
+    MultiBranch branch(*w);
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func, branch))) {
-            std::invoke(m_func, branch);
+            std::invoke(w->m_func, branch);
         } else {
-            try { std::invoke(m_func, branch); }
-            catch (...) { exe._process_exception(this); }
+            try { std::invoke(w->m_func, branch); }
+            catch (...) { exe._process_exception(w); }
         }
     } else {
         auto _call = [&](auto&&... a) {
-            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
+            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
         };
         if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, m_args);
+            std::apply(_call, w->m_args);
         } else {
-            try { std::apply(_call, m_args); }
-            catch (...) { exe._process_exception(this); }
+            try { std::apply(_call, w->m_args); }
+            catch (...) { exe._process_exception(w); }
         }
     }
 
@@ -1182,130 +1185,133 @@ void MultiBranchWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache
         target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
     }
 
-    TFL_OBSERVER_AFTER(wr);
+    TFL_OBSERVER_AFTER(w, wr);
 
-    _release_semaphores(TFL_SEM_SCHEDULER);
-    exe._tear_down_task(this, wr, cache);
+    w->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_task(w, wr, cache);
 }
 
 template <typename F, typename... Args>
-void JumpWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(m_parent, wr, cache);
+void JumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+    auto* w = static_cast<JumpWork*>(self);
+    if (w->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
 
-    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(wr);
+    TFL_OBSERVER_BEFORE(w, wr);
 
 
-    Jump jmp{*this};
+    Jump jmp{*w};
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func, jmp))) {
-            std::invoke(m_func, jmp);
+            std::invoke(w->m_func, jmp);
         } else {
-            try { std::invoke(m_func, jmp); }
-            catch (...) { exe._process_exception(this); }
+            try { std::invoke(w->m_func, jmp); }
+            catch (...) { exe._process_exception(w); }
         }
     } else {
         auto _call = [&](auto&&... a) {
-            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
+            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
         };
         if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, m_args);
+            std::apply(_call, w->m_args);
         } else {
-            try { std::apply(_call, m_args); }
-            catch (...) { exe._process_exception(this); }
+            try { std::apply(_call, w->m_args); }
+            catch (...) { exe._process_exception(w); }
         }
     }
 
-    TFL_OBSERVER_AFTER(wr);
+    TFL_OBSERVER_AFTER(w, wr);
 
-    _release_semaphores(TFL_SEM_SCHEDULER);
-    exe._tear_down_jump_task(this, wr, cache, jmp.m_target);
+    w->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_jump_task(w, wr, cache, jmp.m_target);
 }
 
 template <typename F, typename... Args>
-void MultiJumpWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(m_parent, wr, cache);
+void MultiJumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+    auto* w = static_cast<MultiJumpWork*>(self);
+    if (w->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
 
-    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(wr);
+    TFL_OBSERVER_BEFORE(w, wr);
 
 
-    MultiJump jmp{*this};
+    MultiJump jmp{*w};
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func, jmp))) {
-            std::invoke(m_func, jmp);
+            std::invoke(w->m_func, jmp);
         } else {
-            try { std::invoke(m_func, jmp); }
-            catch (...) { exe._process_exception(this); }
+            try { std::invoke(w->m_func, jmp); }
+            catch (...) { exe._process_exception(w); }
         }
     } else {
         auto _call = [&](auto&&... a) {
-            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
+            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
         };
         if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, m_args);
+            std::apply(_call, w->m_args);
         } else {
-            try { std::apply(_call, m_args); }
-            catch (...) { exe._process_exception(this); }
+            try { std::apply(_call, w->m_args); }
+            catch (...) { exe._process_exception(w); }
         }
     }
 
-    TFL_OBSERVER_AFTER(wr);
+    TFL_OBSERVER_AFTER(w, wr);
 
-    _release_semaphores(TFL_SEM_SCHEDULER);
-    exe._tear_down_multi_jump_task(this, wr, cache, jmp.m_targets);
+    w->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_multi_jump_task(w, wr, cache, jmp.m_targets);
 }
 
 template <typename F, typename... Args>
-void RuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(m_parent, wr, cache);
+void RuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+    auto* w = static_cast<RuntimeWork*>(self);
+    if (w->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
 
-    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(wr);
+    TFL_OBSERVER_BEFORE(w, wr);
 
 
-    Runtime rt(*this, wr, *m_topology, exe);
+    Runtime rt(*w, wr, *w->m_topology, exe);
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func, rt))) {
-            std::invoke(m_func, rt);
+            std::invoke(w->m_func, rt);
         } else {
-            try { std::invoke(m_func, rt); }
-            catch (...) { exe._process_exception(this); }
+            try { std::invoke(w->m_func, rt); }
+            catch (...) { exe._process_exception(w); }
         }
     } else {
         auto _call = [&](auto&&... a) {
-            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
         };
         if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, m_args);
+            std::apply(_call, w->m_args);
         } else {
-            try { std::apply(_call, m_args); }
-            catch (...) { exe._process_exception(this); }
+            try { std::apply(_call, w->m_args); }
+            catch (...) { exe._process_exception(w); }
         }
     }
 
-    TFL_OBSERVER_AFTER(wr);
+    TFL_OBSERVER_AFTER(w, wr);
 
-    _release_semaphores(TFL_SEM_SCHEDULER);
-    exe._tear_down_task(this, wr, cache);
+    w->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_task(w, wr, cache);
 }
 
 // ============================================================================
@@ -1313,34 +1319,35 @@ void RuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
 // ============================================================================
 
 template <typename FlowStore, typename P>
-void SubflowWork<FlowStore, P>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    decltype(auto) flow = detail::unwrap(m_flow_store);
+void SubflowWork<FlowStore, P>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+    auto* w = static_cast<SubflowWork*>(self);
+    decltype(auto) flow = detail::unwrap(w->m_flow_store);
 
-    if (m_started) {
-        TFL_OBSERVER_AFTER(wr);
+    if (w->m_started) {
+        TFL_OBSERVER_AFTER(w, wr);
     }
 
-    if (_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(m_parent, wr, cache);
-        m_started = false;
+    if (w->_is_stopped()) [[unlikely]] {
+        exe._schedule_parent(w->m_parent, wr, cache);
+        w->m_started = false;
         return;
     }
 
-    if (!m_started) {
-        if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+    if (!w->m_started) {
+        if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
             return;
         }
     }
 
-    if (!std::invoke_r<bool>(m_pred)) {
-        TFL_OBSERVER_BEFORE(wr);
+    if (!std::invoke_r<bool>(w->m_pred)) {
+        TFL_OBSERVER_BEFORE(w, wr);
 
-        m_started = true;
-        exe._set_up_graph(flow.m_graph, m_topology, wr, this);
+        w->m_started = true;
+        exe._set_up_graph(flow.m_graph, w->m_topology, wr, w);
     } else {
-        m_started = false;
-        _release_semaphores(TFL_SEM_SCHEDULER);
-        exe._tear_down_task(this, wr, cache);
+        w->m_started = false;
+        w->_release_semaphores(TFL_SEM_SCHEDULER);
+        exe._tear_down_task(w, wr, cache);
     }
 }
 
@@ -1349,40 +1356,42 @@ void SubflowWork<FlowStore, P>::invoke(Executor& exe, Worker& wr, Work*& cache) 
 // ============================================================================
 
 template <typename F, typename... Args>
-void AsyncBasicWork<F, Args...>::invoke(Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
+void AsyncBasicWork<F, Args...>::invoke(Work* self,Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
+    auto* w = static_cast<AsyncBasicWork*>(self);
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func)))
-            std::invoke(m_func);
-        else { try { std::invoke(m_func); } catch (...) {} }
+            std::invoke(w->m_func);
+        else { try { std::invoke(w->m_func); } catch (...) {} }
     } else {
         auto _call = [&](auto&&... a) {
-            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
         };
         if constexpr (noexcept(std::apply(_call, m_args)))
-            std::apply(_call, m_args);
-        else { try { std::apply(_call, m_args); } catch (...) {} }
+            std::apply(_call, w->m_args);
+        else { try { std::apply(_call, w->m_args); } catch (...) {} }
     }
     exe._decrement_topology();
-    Work::destroy(this, m_topology);
+    Work::destroy(w, w->m_topology);
 }
 
 template <typename F, typename... Args>
-void AsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
-    Runtime rt(*this, wr, *m_topology, exe);
+void AsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
+    auto* w = static_cast<AsyncRuntimeWork*>(self);
+    Runtime rt(*w, wr, *w->m_topology, exe);
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func, rt)))
-            std::invoke(m_func, rt);
-        else { try { std::invoke(m_func, rt); } catch (...) {} }
+            std::invoke(w->m_func, rt);
+        else { try { std::invoke(w->m_func, rt); } catch (...) {} }
     } else {
         auto _call = [&](auto&&... a) {
-            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
         };
         if constexpr (noexcept(std::apply(_call, m_args)))
-            std::apply(_call, m_args);
-        else { try { std::apply(_call, m_args); } catch (...) {} }
+            std::apply(_call, w->m_args);
+        else { try { std::apply(_call, w->m_args); } catch (...) {} }
     }
     exe._decrement_topology();
-    Work::destroy(this, m_topology);
+    Work::destroy(w, w->m_topology);
 }
 
 // ============================================================================
@@ -1390,99 +1399,101 @@ void AsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, [[maybe_unu
 // ============================================================================
 
 template <typename F, typename R, typename... Args>
-void AsyncBasicPromiseWork<F, R, Args...>::invoke(Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
+void AsyncBasicPromiseWork<F, R, Args...>::invoke(Work* self,Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
+    auto* w = static_cast<AsyncBasicPromiseWork*>(self);
     auto _do_invoke = [&]() {
         if constexpr (sizeof...(Args) == 0) {
-            return std::invoke(m_func);
+            return std::invoke(w->m_func);
         } else {
             return std::apply([&](auto&&... a) {
-                return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
-            }, m_args);
+                return std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+            }, w->m_args);
         }
     };
 
     if constexpr (noexcept(_do_invoke())) {
         if constexpr (std::is_void_v<R>) {
             _do_invoke();
-            m_promise.set_value();
+            w->m_promise.set_value();
         } else {
-            m_promise.set_value(_do_invoke());
+            w->m_promise.set_value(_do_invoke());
         }
     } else {
         if constexpr (std::is_void_v<R>) {
             try {
                 _do_invoke();
             } catch (...) {
-                m_promise.set_exception(std::current_exception());
+                w->m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this, m_topology);
+                Work::destroy(w, w->m_topology);
                 return;
             }
-            m_promise.set_value();
+            w->m_promise.set_value();
         } else {
             std::optional<R> result;
             try {
                 result.emplace(_do_invoke());
             } catch (...) {
-                m_promise.set_exception(std::current_exception());
+                w->m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this, m_topology);
+                Work::destroy(w, w->m_topology);
                 return;
             }
-            m_promise.set_value(std::move(*result));
+            w->m_promise.set_value(std::move(*result));
         }
     }
     exe._decrement_topology();
-    Work::destroy(this, m_topology);
+    Work::destroy(w, w->m_topology);
 }
 
 template <typename F, typename R, typename... Args>
-void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
-    Runtime rt(*this, wr, *m_topology, exe);
+void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Work* self,Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
+    auto* w = static_cast<AsyncRuntimePromiseWork*>(self);
+    Runtime rt(*w, wr, *w->m_topology, exe);
 
     auto _do_invoke = [&]() {
         if constexpr (sizeof...(Args) == 0) {
-            return std::invoke(m_func, rt);
+            return std::invoke(w->m_func, rt);
         } else {
             return std::apply([&](auto&&... a) {
-                return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
-            }, m_args);
+                return std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+            }, w->m_args);
         }
     };
 
     if constexpr (noexcept(_do_invoke())) {
         if constexpr (std::is_void_v<R>) {
             _do_invoke();
-            m_promise.set_value();
+            w->m_promise.set_value();
         } else {
-            m_promise.set_value(_do_invoke());
+            w->m_promise.set_value(_do_invoke());
         }
     } else {
         if constexpr (std::is_void_v<R>) {
             try {
                 _do_invoke();
             } catch (...) {
-                m_promise.set_exception(std::current_exception());
+                w->m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this, m_topology);
+                Work::destroy(w, w->m_topology);
                 return;
             }
-            m_promise.set_value();
+            w->m_promise.set_value();
         } else {
             std::optional<R> result;
             try {
                 result.emplace(_do_invoke());
             } catch (...) {
-                m_promise.set_exception(std::current_exception());
+                w->m_promise.set_exception(std::current_exception());
                 exe._decrement_topology();
-                Work::destroy(this, m_topology);
+                Work::destroy(w, w->m_topology);
                 return;
             }
-            m_promise.set_value(std::move(*result));
+            w->m_promise.set_value(std::move(*result));
         }
     }
     exe._decrement_topology();
-    Work::destroy(this, m_topology);
+    Work::destroy(w, w->m_topology);
 }
 
 // ============================================================================
@@ -1490,72 +1501,74 @@ void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Executor& exe, Worker& wr, [
 // ============================================================================
 
 template <typename F, typename... Args>
-void DepAsyncBasicWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+void DepAsyncBasicWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+    auto* w = static_cast<DepAsyncBasicWork*>(self);
+    if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(wr);
+    TFL_OBSERVER_BEFORE(w, wr);
 
 
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func))) {
-            std::invoke(m_func);
+            std::invoke(w->m_func);
         } else {
-            try { std::invoke(m_func); }
-            catch (...) { exe._process_exception(this); }
+            try { std::invoke(w->m_func); }
+            catch (...) { exe._process_exception(w); }
         }
     } else {
         auto _call = [&](auto&&... a) {
-            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
         };
         if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, m_args);
+            std::apply(_call, w->m_args);
         } else {
-            try { std::apply(_call, m_args); }
-            catch (...) { exe._process_exception(this); }
+            try { std::apply(_call, w->m_args); }
+            catch (...) { exe._process_exception(w); }
         }
     }
 
-    TFL_OBSERVER_AFTER(wr);
+    TFL_OBSERVER_AFTER(w, wr);
 
-    _release_semaphores(TFL_SEM_SCHEDULER);
-    exe._tear_down_dep_async_task(this, wr, cache);
+    w->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_dep_async_task(w, wr, cache);
 }
 
 template <typename F, typename... Args>
-void DepAsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+void DepAsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+    auto* w = static_cast<DepAsyncRuntimeWork*>(self);
+    if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
     }
 
-    TFL_OBSERVER_BEFORE(wr);
+    TFL_OBSERVER_BEFORE(w, wr);
 
 
-    Runtime rt(*this, wr, *m_topology, exe);
+    Runtime rt(*w, wr, *w->m_topology, exe);
     if constexpr (sizeof...(Args) == 0) {
         if constexpr (noexcept(std::invoke(m_func, rt))) {
-            std::invoke(m_func, rt);
+            std::invoke(w->m_func, rt);
         } else {
-            try { std::invoke(m_func, rt); }
-            catch (...) { exe._process_exception(this); }
+            try { std::invoke(w->m_func, rt); }
+            catch (...) { exe._process_exception(w); }
         }
     } else {
         auto _call = [&](auto&&... a) {
-            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
         };
         if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, m_args);
+            std::apply(_call, w->m_args);
         } else {
-            try { std::apply(_call, m_args); }
-            catch (...) { exe._process_exception(this); }
+            try { std::apply(_call, w->m_args); }
+            catch (...) { exe._process_exception(w); }
         }
     }
 
-    TFL_OBSERVER_AFTER(wr);
+    TFL_OBSERVER_AFTER(w, wr);
 
-    _release_semaphores(TFL_SEM_SCHEDULER);
-    exe._tear_down_dep_async_task(this, wr, cache);
+    w->_release_semaphores(TFL_SEM_SCHEDULER);
+    exe._tear_down_dep_async_task(w, wr, cache);
 }
 
 // ============================================================================
@@ -1563,27 +1576,28 @@ void DepAsyncRuntimeWork<F, Args...>::invoke(Executor& exe, Worker& wr, Work*& c
 // ============================================================================
 
 template <typename FlowStore, typename P, typename C>
-void DepFlowWork<FlowStore, P, C>::invoke(Executor& exe, Worker& wr, Work*& cache) {
-    decltype(auto) flow = detail::unwrap(m_flow_store);
+void DepFlowWork<FlowStore, P, C>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+    auto* w = static_cast<DepFlowWork*>(self);
+    decltype(auto) flow = detail::unwrap(w->m_flow_store);
 
-    if (m_started) {
-        TFL_OBSERVER_AFTER(wr);
+    if (w->m_started) {
+        TFL_OBSERVER_AFTER(w, wr);
     } else {
-        if (!_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
+        if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
             return;
         }
     }
 
-    if (!std::invoke_r<bool>(m_pred) && !_is_stopped()) {
-        TFL_OBSERVER_BEFORE(wr);
+    if (!std::invoke_r<bool>(w->m_pred) && !w->_is_stopped()) {
+        TFL_OBSERVER_BEFORE(w, wr);
 
-        m_started = true;
-        exe._set_up_graph(flow.m_graph, m_topology, wr, this);
+        w->m_started = true;
+        exe._set_up_graph(flow.m_graph, w->m_topology, wr, w);
     } else {
-        m_started = false;
-        _release_semaphores(TFL_SEM_SCHEDULER);
-        std::invoke(m_callback);
-        exe._tear_down_dep_async_task(this, wr, cache);
+        w->m_started = false;
+        w->_release_semaphores(TFL_SEM_SCHEDULER);
+        std::invoke(w->m_callback);
+        exe._tear_down_dep_async_task(w, wr, cache);
     }
 }
 
@@ -1716,7 +1730,7 @@ inline void Runtime::run(Task task) {
     w->m_parent->m_join_counter.fetch_add(1, std::memory_order_acq_rel);
 
     Work* cache{nullptr};
-    w->invoke(m_executor, m_worker, cache);
+    w->m_invoke(w, m_executor, m_worker, cache);
     if (cache) {
         m_executor._schedule(m_worker, cache);
     }
