@@ -118,17 +118,19 @@ int main() {
 
 ### 1. 批量插入与 DAG 编排
 
-TaskflowLite 支持无缝解包 `std::tuple` 和完美转发，让你可以极度优雅地传递参数和 `std::ref`，告别冗长的 Lambda 捕获。
+TaskflowLite 通过 `tfl::pack` 提供健壮的参数封装机制。它能自动处理函数类型的退化，并完美支持 `std::ref`，让你在编排复杂的 DAG 拓扑时，告别冗长的 Lambda 捕获和潜在的编译期推导错误。
 
 ```cpp
 tfl::Flow flow;
 int counter = 0;
 
-// 使用 Tuple 批量插入带参数的任务
+// 使用 tfl::pack 批量插入带参数的任务
+// tfl::pack 确保了函数名会自动退化为函数指针，避免了 std::tuple 的 CTAD 缺陷
 auto [t1, t2] = flow.emplace(
-    std::tuple{[](int a) { std::cout << "Val: " << a << "\n"; }, 42},
-    std::tuple{[](int& c) { c = 100; }, std::ref(counter)} // 零拷贝引用传递
+    tfl::pack{[](int a) { std::cout << "Val: " << a << "\n"; }, 42},
+    tfl::pack{[](int& c) { c = 100; }, std::ref(counter)} // 安全的引用传递
 );
+
 t1.precede(t2);
 ```
 
