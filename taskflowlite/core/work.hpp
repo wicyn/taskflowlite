@@ -497,7 +497,7 @@ public:
 /// @brief 承载 `void()` 标准闭包的基础同步工作元。
 template <typename F, typename... Args>
 class BasicWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
@@ -519,7 +519,7 @@ public:
 /// @brief 为闭包注入单一通道挑选权杖 `Branch&` 的条件工作元。
 template <typename F, typename... Args>
 class BranchWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
@@ -541,7 +541,7 @@ public:
 /// @brief 为闭包注入多线广播挑选权杖 `MultiBranch&` 的并行激活工作元。
 template <typename F, typename... Args>
 class MultiBranchWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
@@ -563,7 +563,7 @@ public:
 /// @brief 授权在图内执行强制物理传送跃迁指令 `Jump&` 的中断工作元。
 template <typename F, typename... Args>
 class JumpWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
@@ -585,7 +585,7 @@ public:
 /// @brief 授权同时摧毁并重置多个下游依赖计数网 `MultiJump&` 的广播跃迁元。
 template <typename F, typename... Args>
 class MultiJumpWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
@@ -607,7 +607,7 @@ public:
 /// @brief 提供 `Runtime&` 接口，赋予节点在执行期实时操纵所在线程栈与编排图谱的能力。
 template <typename F, typename... Args>
 class RuntimeWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
@@ -630,14 +630,14 @@ public:
 template <typename FlowStore, typename P>
 class SubflowWork final : public Work {
     FlowStore m_flow_store;
-    [[no_unique_address]] P m_pred;
+    P m_pred;
     bool m_started{false};
 public:
     template <typename U, typename V>
     explicit SubflowWork(Graph* g, Option::type opts, U&& flow_store, V&& pred)
         : Work{&invoke, g, opts}
-        , m_flow_store(std::forward<U>(flow_store))
-        , m_pred(std::forward<V>(pred)) {}
+        , m_flow_store{std::forward<U>(flow_store)}
+        , m_pred{std::forward<V>(pred)} {}
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
@@ -774,7 +774,7 @@ public:
 /// @brief 与独立 Topology 锁死的顶级基础异步任务，触发后自我燃烧并销毁。
 template <typename F, typename... Args>
 class AsyncBasicWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
@@ -796,7 +796,7 @@ public:
 /// @brief 与独立 Topology 锁死的顶级扩展异步任务。
 template <typename F, typename... Args>
 class AsyncRuntimeWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
@@ -818,7 +818,7 @@ public:
 /// @brief 内部熔接了 promise 的 Promise 同步通道基础异步任务。
 template <typename F, typename R, typename... Args>
 class AsyncBasicPromiseWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
     std::promise<R> m_promise;
 public:
@@ -842,7 +842,7 @@ public:
 /// @brief 内部熔接了 promise 的 Promise 同步通道扩展异步任务。
 template <typename F, typename R, typename... Args>
 class AsyncRuntimePromiseWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
     std::promise<R> m_promise;
 public:
@@ -866,7 +866,7 @@ public:
 /// @brief 被高阶外部拓扑锁定的依赖型常规任务，需完成 CAS 抢占才能挂载入依赖树。
 template <typename F, typename... Args>
 class DepAsyncBasicWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
@@ -888,7 +888,7 @@ public:
 /// @brief 被高阶外部拓扑锁定的依赖型动态挂载任务。
 template <typename F, typename... Args>
 class DepAsyncRuntimeWork final : public Work {
-    [[no_unique_address]] F m_func;
+    F m_func;
     [[no_unique_address]] std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
@@ -911,16 +911,16 @@ public:
 template <typename FlowStore, typename P, typename C>
 class DepFlowWork final : public Work {
     FlowStore m_flow_store;
-    [[no_unique_address]] P m_pred;
-    [[no_unique_address]] C m_callback;
+    P m_pred;
+    C m_callback;
     bool m_started{false};
 public:
     template <typename U, typename V, typename W>
     explicit DepFlowWork(Topology* t, Option::type opts, U&& flow_store, V&& pred, W&& cb)
         : Work{&invoke, t, opts}
-        , m_flow_store(std::forward<U>(flow_store))
-        , m_pred(std::forward<V>(pred))
-        , m_callback(std::forward<W>(cb)) {}
+        , m_flow_store{std::forward<U>(flow_store)}
+        , m_pred{std::forward<V>(pred)}
+        , m_callback{std::forward<W>(cb)} {}
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
@@ -1212,7 +1212,9 @@ inline void Work::destroy(Work* work, Topology* topo) noexcept {
 
 
 inline void Work::_set_up(const std::size_t join_counter) noexcept {
-    m_exception_ptr = nullptr;
+    if (m_state.load(std::memory_order_relaxed) & Work::State::EXCEPTION) [[unlikely]] {
+        m_exception_ptr = nullptr;
+    }
     m_state.store(State::NONE, std::memory_order_relaxed);
     m_join_counter.store(join_counter, std::memory_order_relaxed);
 }

@@ -46,53 +46,53 @@ public:
     using reverse_iterator = std::vector<Work*>::reverse_iterator;
     using const_reverse_iterator = std::vector<Work*>::const_reverse_iterator;
 
-    constexpr Graph() = default;
-    constexpr ~Graph() noexcept;
+    Graph() = default;
+    ~Graph() noexcept;
 
-    [[nodiscard]] constexpr iterator begin() noexcept { return m_works.begin(); }
-    [[nodiscard]] constexpr iterator end() noexcept { return m_works.end(); }
-    [[nodiscard]] constexpr const_iterator begin() const noexcept { return m_works.begin(); }
-    [[nodiscard]] constexpr const_iterator end() const noexcept { return m_works.end(); }
-    [[nodiscard]] constexpr const_iterator cbegin() const noexcept { return m_works.cbegin(); }
-    [[nodiscard]] constexpr const_iterator cend() const noexcept { return m_works.cend(); }
-    [[nodiscard]] constexpr reverse_iterator rbegin() noexcept { return m_works.rbegin(); }
-    [[nodiscard]] constexpr reverse_iterator rend() noexcept { return m_works.rend(); }
-    [[nodiscard]] constexpr const_reverse_iterator rbegin() const noexcept { return m_works.rbegin(); }
-    [[nodiscard]] constexpr const_reverse_iterator rend() const noexcept { return m_works.rend(); }
-    [[nodiscard]] constexpr const_reverse_iterator crbegin() const noexcept { return m_works.crbegin(); }
-    [[nodiscard]] constexpr const_reverse_iterator crend() const noexcept { return m_works.crend(); }
+    [[nodiscard]] iterator begin() noexcept { return m_works.begin(); }
+    [[nodiscard]] iterator end() noexcept { return m_works.end(); }
+    [[nodiscard]] const_iterator begin() const noexcept { return m_works.begin(); }
+    [[nodiscard]] const_iterator end() const noexcept { return m_works.end(); }
+    [[nodiscard]] const_iterator cbegin() const noexcept { return m_works.cbegin(); }
+    [[nodiscard]] const_iterator cend() const noexcept { return m_works.cend(); }
+    [[nodiscard]] reverse_iterator rbegin() noexcept { return m_works.rbegin(); }
+    [[nodiscard]] reverse_iterator rend() noexcept { return m_works.rend(); }
+    [[nodiscard]] const_reverse_iterator rbegin() const noexcept { return m_works.rbegin(); }
+    [[nodiscard]] const_reverse_iterator rend() const noexcept { return m_works.rend(); }
+    [[nodiscard]] const_reverse_iterator crbegin() const noexcept { return m_works.crbegin(); }
+    [[nodiscard]] const_reverse_iterator crend() const noexcept { return m_works.crend(); }
 
-    [[nodiscard]] constexpr bool empty() const noexcept { return m_works.empty(); }
-    [[nodiscard]] constexpr size_type size() const noexcept { return m_works.size(); }
-    [[nodiscard]] constexpr size_type capacity() const noexcept { return m_works.capacity(); }
+    [[nodiscard]] bool empty() const noexcept { return m_works.empty(); }
+    [[nodiscard]] size_type size() const noexcept { return m_works.size(); }
+    [[nodiscard]] size_type capacity() const noexcept { return m_works.capacity(); }
 
-    [[nodiscard]] constexpr reference operator[](size_type pos) noexcept { return m_works[pos]; }
-    [[nodiscard]] constexpr const_reference operator[](size_type pos) const noexcept { return m_works[pos]; }
-    [[nodiscard]] constexpr reference front() noexcept { return m_works.front(); }
-    [[nodiscard]] constexpr const_reference front() const noexcept { return m_works.front(); }
-    [[nodiscard]] constexpr reference back() noexcept { return m_works.back(); }
-    [[nodiscard]] constexpr const_reference back() const noexcept { return m_works.back(); }
-    [[nodiscard]] constexpr pointer data() noexcept { return m_works.data(); }
-    [[nodiscard]] constexpr const_pointer data() const noexcept { return m_works.data(); }
+    [[nodiscard]] reference operator[](size_type pos) noexcept { return m_works[pos]; }
+    [[nodiscard]] const_reference operator[](size_type pos) const noexcept { return m_works[pos]; }
+    [[nodiscard]] reference front() noexcept { return m_works.front(); }
+    [[nodiscard]] const_reference front() const noexcept { return m_works.front(); }
+    [[nodiscard]] reference back() noexcept { return m_works.back(); }
+    [[nodiscard]] const_reference back() const noexcept { return m_works.back(); }
+    [[nodiscard]] pointer data() noexcept { return m_works.data(); }
+    [[nodiscard]] const_pointer data() const noexcept { return m_works.data(); }
 
 private:
     std::vector<Work*> m_works;
 
     // 禁用拷贝：防止双重释放
-    constexpr Graph(const Graph&) = delete;
-    constexpr Graph& operator=(const Graph&) = delete;
+    Graph(const Graph&) = delete;
+    Graph& operator=(const Graph&) = delete;
 
-    constexpr Graph(Graph&& other) noexcept;
-    constexpr Graph& operator=(Graph&& other) noexcept;
+    Graph(Graph&& other) noexcept;
+    Graph& operator=(Graph&& other) noexcept;
 
     /// @brief 节点注册：添加到图中
     [[nodiscard]] Work* _emplace(Work* work);
 
     /// @brief O(1) 节点删除：Swap-with-last
-    constexpr void _erase(Work* const work) noexcept;
+    void _erase(Work* const work) noexcept;
 
     /// @brief 清空所有节点
-    constexpr void _clear() noexcept;
+    void _clear() noexcept;
 
     /// @brief D2 可视化导出
     [[nodiscard]] std::string _dump() const;
@@ -103,10 +103,10 @@ private:
 // Implementation
 // ============================================================================
 
-constexpr Graph::Graph(Graph&& other) noexcept
+inline Graph::Graph(Graph&& other) noexcept
     : m_works{std::exchange(other.m_works, {})} {}
 
-constexpr Graph& Graph::operator=(Graph&& other) noexcept {
+inline Graph& Graph::operator=(Graph&& other) noexcept {
     if (this != &other) {
         _clear();
         m_works = std::exchange(other.m_works, {});
@@ -114,14 +114,14 @@ constexpr Graph& Graph::operator=(Graph&& other) noexcept {
     return *this;
 }
 
-constexpr void Graph::_clear() noexcept {
+inline void Graph::_clear() noexcept {
     for (Work* w : m_works) {
         Work::destroy(w);
     }
     m_works.clear();
 }
 
-constexpr Graph::~Graph() noexcept {
+inline Graph::~Graph() noexcept {
     _clear();
 }
 
@@ -138,7 +138,7 @@ Work* Graph::_emplace(Work* work) {
 /// 3. pop_back
 ///
 /// @note 节点顺序无关性：DAG 中节点遍历顺序不影响语义
-constexpr void Graph::_erase(Work* const work) noexcept {
+inline void Graph::_erase(Work* const work) noexcept {
     if (!work || work->m_graph != this) return;
 
     work->_clear_predecessors();
