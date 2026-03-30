@@ -110,7 +110,8 @@ inline Branch& Branch::allow(std::size_t index) noexcept {
 template <predicate<TaskView> Pred>
 Branch& Branch::allow_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
     m_target = nullptr;
-    for (auto* suc : m_work._successors()) {
+    auto succs = m_work._successors();
+    for (auto* suc : succs) {
         // Why: 强制包装一层只读的 TaskView 传入谓词，严格隔离底层 Work 节点的写入权限，
         // 防范用户在谓词求值期间意外篡改图结构。
         if (std::invoke_r<bool>(pred, TaskView{*suc})) { m_target = suc; return *this; }
@@ -192,7 +193,7 @@ public:
     /// @param pred 接受只读 `TaskView` 并返回 `bool` 的可调用对象。
     /// @post 凡是促使谓词评估为 true 的节点均并入放行大盘。
     template <predicate<TaskView> Pred>
-    void allow_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
+    MultiBranch& allow_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
 
     // ==================== 查询接口 ====================
 
@@ -239,7 +240,8 @@ MultiBranch& MultiBranch::allow(Is... indices) {
 }
 
 inline MultiBranch& MultiBranch::allow_all() {
-    for (auto* suc : m_work._successors()) {
+    auto succs = m_work._successors();
+    for (auto* suc : succs) {
         _insert(suc);
     }
     return *this;
@@ -251,8 +253,9 @@ inline MultiBranch& MultiBranch::reset() noexcept {
 }
 
 template <predicate<TaskView> Pred>
-void MultiBranch::allow_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
-    for (auto* suc : m_work._successors()) {
+MultiBranch& MultiBranch::allow_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
+    auto succs = m_work._successors();
+    for (auto* suc : succs) {
         if (std::invoke_r<bool>(pred, TaskView{*suc})) {
             _insert(suc);
         }

@@ -616,7 +616,8 @@ inline void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cache) {
     auto* parent = w->m_parent;
 
     if (!w->_is_exception()) [[likely]] {
-        for (auto* suc : w->_successors()) {
+        auto succs = w->_successors();
+        for (auto* suc : succs) {
             // acq_rel: 确保任务执行结果对后继可见
             if ((suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1)) {
                 parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
@@ -740,7 +741,8 @@ inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cach
     // 唤醒等待者
     topo->m_state.notify_all();
 
-    for (auto* const suc : w->_successors()) {
+    auto succs = w->_successors();
+    for (auto* suc : succs) {
         if ((suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1)) {
             auto& suc_exec = suc->m_topology->m_executor;
             if (&suc_exec == this) {

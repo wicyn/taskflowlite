@@ -297,7 +297,6 @@ inline std::size_t AsyncTask::hash_value() const noexcept {
 }
 
 inline std::size_t AsyncTask::use_count() const noexcept {
-    // Why: 采用 relaxed 序读取。由于 use_count 仅供调试或估计，不需要强同步开销。
     return m_work->m_topology->m_use_count.load(std::memory_order_relaxed);
 }
 
