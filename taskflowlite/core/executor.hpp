@@ -166,7 +166,6 @@ private:
     ///   3. Park & Wait：无可用任务，阻塞等待唤醒
     [[nodiscard]] Work* _wait_for_work(Worker& wr) noexcept;
 
-    void _set_up_graph(Graph& g, Topology* topo, Work* parent);
     void _set_up_graph(Graph& g, Topology* topo, Worker& wr, Work* parent);
 
     /// @brief 任务完成后的后处理
@@ -459,7 +458,7 @@ inline void Executor::_spawn(std::size_t num_workers) {
             m_handler.on_stop(wr);
         });
 
-        m_thread_worker_map.emplace(wr.m_thread.get_id(), std::addressof(wr));
+        m_thread_worker_map.emplace(wr.m_thread.get_id(), &wr);
     }
 }
 
@@ -545,35 +544,6 @@ explore:
 
     m_notifier.commit_wait(wr.m_id);
     goto explore;
-}
-
-// ============================================================================
-//  任务图设置与收尾
-// ============================================================================
-
-inline void Executor::_set_up_graph(Graph& g, Topology* const topo, Work* parent) {
-    Work** const data = g.m_works.data();
-    std::size_t const size = g.m_works.size();
-    std::size_t n = 0;
-
-    for (std::size_t i = 0; i < size; ++i) {
-        Work* w = data[i];
-        w->m_parent = parent;
-        w->m_topology = topo;
-        if (w->m_state.load(std::memory_order_relaxed) & Work::State::EXCEPTION) [[unlikely]] {
-            w->m_exception_ptr = nullptr;
-        }
-        w->m_state.store(Work::State::NONE, std::memory_order_relaxed);
-        w->m_join_counter.store(w->_join_count(), std::memory_order_relaxed);
-
-        if (w->_num_predecessors() == 0) {
-            std::swap(data[i], data[n++]);
-        }
-    }
-
-    parent->m_join_counter.store(n, std::memory_order_relaxed);
-
-    _schedule(g.begin(), n);
 }
 
 inline void Executor::_set_up_graph(Graph& g, Topology* topo, Worker& wr, Work* parent) {
