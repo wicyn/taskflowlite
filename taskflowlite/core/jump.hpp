@@ -108,7 +108,8 @@ inline Jump& Jump::to(std::size_t index) noexcept {
 template <predicate<TaskView> Pred>
 Jump& Jump::to_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
     m_target = nullptr;
-    for (auto* suc : m_work._successors()) {
+    auto succs = m_work._successors();
+    for (auto* suc : succs) {
         // Why: 包装为只读 TaskView 传入谓词，隔离底层 Work 的写入权限，
         // 防止用户在谓词求值期间篡改图结构。
         if (std::invoke_r<bool>(pred, TaskView{*suc})) { m_target = suc; return *this; }
@@ -189,7 +190,7 @@ public:
     /// @param pred 接受只读 `TaskView` 并返回 `bool` 的可调用对象。
     /// @post 所有满足条件的后继被加入跳转集合。
     template <predicate<TaskView> Pred>
-    void to_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
+    MultiJump& to_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
 
     // ==================== 查询接口 ====================
 
@@ -243,12 +244,14 @@ inline MultiJump& MultiJump::reset() noexcept {
 }
 
 template <predicate<TaskView> Pred>
-void MultiJump::to_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
-    for (auto* suc : m_work._successors()) {
+MultiJump& MultiJump::to_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
+    auto succs = m_work._successors();
+    for (auto* suc : succs) {
         if (std::invoke_r<bool>(pred, TaskView{*suc})) {
             _insert(suc);
         }
     }
+    return *this;
 }
 
 inline std::size_t MultiJump::size() const noexcept {

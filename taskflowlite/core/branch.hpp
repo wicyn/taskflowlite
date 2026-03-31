@@ -260,6 +260,7 @@ MultiBranch& MultiBranch::allow_if(Pred&& pred) noexcept(noexcept_predicate<Pred
             _insert(suc);
         }
     }
+    return *this;
 }
 
 inline std::size_t MultiBranch::size() const noexcept {
