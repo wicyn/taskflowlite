@@ -54,11 +54,11 @@ class Executor : public Immovable<Executor> {
 
     TFL_WORK_SUBCLASS_FRIENDS
 
-public:
-    /// @brief 创建调度器并启动工作线程
-    /// @param handler 异常处理策略（WorkerHandler）
-    /// @param num_workers 工作线程数量（默认 CPU 核心数）
-    explicit Executor(WorkerHandler& handler, std::size_t num_workers = std::thread::hardware_concurrency());
+        public:
+                 /// @brief 创建调度器并启动工作线程
+                 /// @param handler 异常处理策略（WorkerHandler）
+                 /// @param num_workers 工作线程数量（默认 CPU 核心数）
+                 explicit Executor(WorkerHandler& handler, std::size_t num_workers = std::thread::hardware_concurrency());
 
     /// @brief 销毁调度器
     /// @post 等待所有已提交任务执行完成，停止所有工作线程并释放资源
@@ -166,7 +166,7 @@ private:
     ///   3. Park & Wait：无可用任务，阻塞等待唤醒
     [[nodiscard]] Work* _wait_for_work(Worker& wr) noexcept;
 
-    void _set_up_graph(Graph& g, Topology* topo, Worker& wr, Work* parent);
+    [[nodiscard]] std::size_t _set_up_graph(Graph& g, Topology* topo, Work* parent);
 
     /// @brief 任务完成后的后处理
     /// @details
@@ -221,6 +221,7 @@ private:
 
     /// @brief 获取当前线程对应的 Worker
     [[nodiscard]] Worker* _this_worker();
+
 };
 
 // ============================================================================
@@ -233,7 +234,7 @@ inline Executor::Executor(WorkerHandler& handler, std::size_t num_workers)
     , m_notifier{num_workers}
     , m_handler{handler} {
     if (num_workers == 0) {
-        TFL_THROW("executor must define at least one worker");
+        TFL_THROW("Executor must define at least one worker.");
     }
     _spawn(num_workers);
 }
@@ -546,7 +547,7 @@ explore:
     goto explore;
 }
 
-inline void Executor::_set_up_graph(Graph& g, Topology* topo, Worker& wr, Work* parent) {
+inline std::size_t Executor::_set_up_graph(Graph& g, Topology* topo, Work* parent) {
     Work** const data = g.m_works.data();
     std::size_t const size = g.m_works.size();
     std::size_t n = 0;
@@ -565,10 +566,7 @@ inline void Executor::_set_up_graph(Graph& g, Topology* topo, Worker& wr, Work* 
             std::swap(data[i], data[n++]);
         }
     }
-
-    parent->m_join_counter.store(n, std::memory_order_relaxed);
-
-    _schedule(wr, g.begin(), n);
+    return n;
 }
 
 /// @brief 任务完成后的依赖传播
@@ -584,10 +582,10 @@ inline void Executor::_set_up_graph(Graph& g, Topology* topo, Worker& wr, Work* 
 inline void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cache) {
     w->m_join_counter.fetch_add(w->_join_count(), std::memory_order_relaxed);
     auto* parent = w->m_parent;
-
     if (!w->_is_exception()) [[likely]] {
-        auto succs = w->_successors();
-        for (auto* suc : succs) {
+        const std::size_t sz = w->m_num_successors;
+        for (std::size_t i = 0; i < sz; ++i) {
+            auto* suc = w->m_edges[i];
             // acq_rel: 确保任务执行结果对后继可见
             if ((suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1)) {
                 parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
@@ -711,8 +709,9 @@ inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cach
     // 唤醒等待者
     topo->m_state.notify_all();
 
-    auto succs = w->_successors();
-    for (auto* suc : succs) {
+    const std::size_t sz = w->m_num_successors;
+    for (std::size_t i = 0; i < sz; ++i) {
+        auto* suc = w->m_edges[i];
         if ((suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1)) {
             auto& suc_exec = suc->m_topology->m_executor;
             if (&suc_exec == this) {
@@ -925,7 +924,13 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
 
 
 inline void Executor::_corun_graph(Worker& wr, Graph& g, Work* parent) {
-    _set_up_graph(g, parent->m_topology, wr, parent);
+    auto num_srcs = _set_up_graph(g, parent->m_topology, parent);
+    if(num_srcs == 0) {
+        return;
+    }
+    parent->m_join_counter.store(num_srcs, std::memory_order_relaxed);
+    _schedule(wr, g.begin(), num_srcs);
+
     _corun_until(wr, [parent]() noexcept { return parent->m_join_counter.load(std::memory_order_acquire) == 0; });
 }
 
@@ -1015,19 +1020,6 @@ auto& target_exec = t->m_topology->m_executor;              \
 }                                                           \
 }
 
-#define TFL_OBSERVER_BEFORE(w, wr)                              \
-if (w->m_observers) [[unlikely]] {                                         \
-        for (auto& aspect : w->m_observers->observers) {          \
-            aspect->on_before(WorkerView{wr});                      \
-    }                                                           \
-}
-
-#define TFL_OBSERVER_AFTER(w, wr)                               \
-if (w->m_observers) [[unlikely]] {                                         \
-        for (auto& aspect : w->m_observers->observers) {          \
-            aspect->on_after(WorkerView{wr});                       \
-    }                                                           \
-}
 
 // ============================================================================
 //  invoke 实现 — 同步任务
@@ -1045,30 +1037,25 @@ void BasicWork<F, Args...>::invoke(Work* self, Executor& exe, Worker& wr, Work*&
         return;
     }
 
-    TFL_OBSERVER_BEFORE(w, wr);
-
+    w->_notify_before(wr);
 
     if constexpr (sizeof...(Args) == 0) {
-        if constexpr (noexcept(std::invoke(m_func))) {
+        try {
             std::invoke(w->m_func);
-        } else {
-            try { std::invoke(w->m_func); }
-            catch (...) { exe._process_exception(w); }
+        } catch (...) {
+            exe._process_exception(w);
         }
     } else {
-        auto _call = [&](auto&&... a) {
-            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
-        };
-        if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, w->m_args);
-        } else {
-            try { std::apply(_call, w->m_args); }
-            catch (...) { exe._process_exception(w); }
+        try {
+            std::apply([&w](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...))) {
+                std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+            }, w->m_args);
+        } catch (...) {
+            exe._process_exception(w);
         }
     }
 
-    TFL_OBSERVER_AFTER(w, wr);
-
+    w->_notify_after(wr);
     w->_release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_task(w, wr, cache);
 }
@@ -1085,26 +1072,22 @@ void BranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*&
         return;
     }
 
-    TFL_OBSERVER_BEFORE(w, wr);
-
+    w->_notify_before(wr);
 
     Branch branch(*w);
     if constexpr (sizeof...(Args) == 0) {
-        if constexpr (noexcept(std::invoke(m_func, branch))) {
+        try {
             std::invoke(w->m_func, branch);
-        } else {
-            try { std::invoke(w->m_func, branch); }
-            catch (...) { exe._process_exception(w); }
+        } catch (...) {
+            exe._process_exception(w);
         }
     } else {
-        auto _call = [&](auto&&... a) {
-            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
-        };
-        if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, w->m_args);
-        } else {
-            try { std::apply(_call, w->m_args); }
-            catch (...) { exe._process_exception(w); }
+        try {
+            std::apply([&w, &branch](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch))) {
+                std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
+            }, w->m_args);
+        } catch (...) {
+            exe._process_exception(w);
         }
     }
 
@@ -1112,8 +1095,7 @@ void BranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*&
         target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
     }
 
-    TFL_OBSERVER_AFTER(w, wr);
-
+    w->_notify_after(wr);
     w->_release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_task(w, wr, cache);
 }
@@ -1130,26 +1112,22 @@ void MultiBranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, W
         return;
     }
 
-    TFL_OBSERVER_BEFORE(w, wr);
-
+    w->_notify_before(wr);
 
     MultiBranch branch(*w);
     if constexpr (sizeof...(Args) == 0) {
-        if constexpr (noexcept(std::invoke(m_func, branch))) {
+        try {
             std::invoke(w->m_func, branch);
-        } else {
-            try { std::invoke(w->m_func, branch); }
-            catch (...) { exe._process_exception(w); }
+        } catch (...) {
+            exe._process_exception(w);
         }
     } else {
-        auto _call = [&](auto&&... a) {
-            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
-        };
-        if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, w->m_args);
-        } else {
-            try { std::apply(_call, w->m_args); }
-            catch (...) { exe._process_exception(w); }
+        try {
+            std::apply([&w, &branch](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch))) {
+                std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
+            }, w->m_args);
+        } catch (...) {
+            exe._process_exception(w);
         }
     }
 
@@ -1157,8 +1135,7 @@ void MultiBranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, W
         target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
     }
 
-    TFL_OBSERVER_AFTER(w, wr);
-
+    w->_notify_after(wr);
     w->_release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_task(w, wr, cache);
 }
@@ -1175,31 +1152,26 @@ void JumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& c
         return;
     }
 
-    TFL_OBSERVER_BEFORE(w, wr);
-
+    w->_notify_before(wr);
 
     Jump jmp{*w};
     if constexpr (sizeof...(Args) == 0) {
-        if constexpr (noexcept(std::invoke(m_func, jmp))) {
+        try {
             std::invoke(w->m_func, jmp);
-        } else {
-            try { std::invoke(w->m_func, jmp); }
-            catch (...) { exe._process_exception(w); }
+        } catch (...) {
+            exe._process_exception(w);
         }
     } else {
-        auto _call = [&](auto&&... a) {
-            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
-        };
-        if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, w->m_args);
-        } else {
-            try { std::apply(_call, w->m_args); }
-            catch (...) { exe._process_exception(w); }
+        try {
+            std::apply([&w, &jmp](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp))) {
+                std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
+            }, w->m_args);
+        } catch (...) {
+            exe._process_exception(w);
         }
     }
 
-    TFL_OBSERVER_AFTER(w, wr);
-
+    w->_notify_after(wr);
     w->_release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_jump_task(w, wr, cache, jmp.m_target);
 }
@@ -1216,31 +1188,26 @@ void MultiJumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Wor
         return;
     }
 
-    TFL_OBSERVER_BEFORE(w, wr);
-
+    w->_notify_before(wr);
 
     MultiJump jmp{*w};
     if constexpr (sizeof...(Args) == 0) {
-        if constexpr (noexcept(std::invoke(m_func, jmp))) {
+        try {
             std::invoke(w->m_func, jmp);
-        } else {
-            try { std::invoke(w->m_func, jmp); }
-            catch (...) { exe._process_exception(w); }
+        } catch (...) {
+            exe._process_exception(w);
         }
     } else {
-        auto _call = [&](auto&&... a) {
-            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
-        };
-        if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, w->m_args);
-        } else {
-            try { std::apply(_call, w->m_args); }
-            catch (...) { exe._process_exception(w); }
+        try {
+            std::apply([&w, &jmp](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp))) {
+                std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
+            }, w->m_args);
+        } catch (...) {
+            exe._process_exception(w);
         }
     }
 
-    TFL_OBSERVER_AFTER(w, wr);
-
+    w->_notify_after(wr);
     w->_release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_multi_jump_task(w, wr, cache, jmp.m_targets);
 }
@@ -1257,31 +1224,26 @@ void RuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*
         return;
     }
 
-    TFL_OBSERVER_BEFORE(w, wr);
-
+    w->_notify_before(wr);
 
     Runtime rt(*w, wr, *w->m_topology, exe);
     if constexpr (sizeof...(Args) == 0) {
-        if constexpr (noexcept(std::invoke(m_func, rt))) {
+        try {
             std::invoke(w->m_func, rt);
-        } else {
-            try { std::invoke(w->m_func, rt); }
-            catch (...) { exe._process_exception(w); }
+        } catch (...) {
+            exe._process_exception(w);
         }
     } else {
-        auto _call = [&](auto&&... a) {
-            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
-        };
-        if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, w->m_args);
-        } else {
-            try { std::apply(_call, w->m_args); }
-            catch (...) { exe._process_exception(w); }
+        try {
+            std::apply([&w, &rt](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt))) {
+                std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+            }, w->m_args);
+        } catch (...) {
+            exe._process_exception(w);
         }
     }
 
-    TFL_OBSERVER_AFTER(w, wr);
-
+    w->_notify_after(wr);
     w->_release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_task(w, wr, cache);
 }
@@ -1293,33 +1255,35 @@ void RuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*
 template <typename FlowStore, typename P>
 void SubflowWork<FlowStore, P>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<SubflowWork*>(self);
-    decltype(auto) flow = detail::unwrap(w->m_flow_store);
+    auto& graph = detail::unwrap(w->m_flow_store).m_graph;
 
-    if (w->m_started) {
-        TFL_OBSERVER_AFTER(w, wr);
-    }
-
-    if (w->_is_stopped()) [[unlikely]] {
-        exe._schedule_parent(w->m_parent, wr, cache);
-        w->m_started = false;
-        return;
-    }
-
-    if (!w->m_started) {
+    // ── 状态分流：m_num_sources > 0 表示子图刚跑完的重入，否则为首次进入 ──
+    if (w->m_num_sources > 0) {
+        // 重入：子图已执行完毕，通知观察者"本节点一轮工作结束"
+        w->_notify_after(wr);
+    } else {
+        // 首次进入：竞争获取信号量，失败则让出执行权等待唤醒
         if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
             return;
         }
+        // 初始化子图拓扑：重置各节点 join_counter、清除异常残留、
+        // 将零入度源节点 swap 到 graph 前端，返回源节点数量
+        w->m_num_sources = exe._set_up_graph(graph, w->m_topology, w);
     }
 
-    if (!std::invoke_r<bool>(w->m_pred)) {
-        TFL_OBSERVER_BEFORE(w, wr);
-
-        w->m_started = true;
-        exe._set_up_graph(flow.m_graph, w->m_topology, wr, w);
+    // ── 终止判定：三条件任一成立即结束循环 ──
+    //   pred == true    → 用户谓词决定停止迭代
+    //   num_sources == 0 → 子图为空或所有节点均有前驱（无法启动）
+    //   _is_stopped()   → 拓扑层面已被异常终止
+    if (bool pred = std::invoke_r<bool>(w->m_pred); pred || w->m_num_sources == 0 || w->_is_stopped()) {
+        w->m_num_sources = 0;                              // 归零，为下次图复用做好准备
+        w->_release_semaphores(TFL_SEM_SCHEDULER);         // 归还信号量配额，唤醒等待者
+        exe._tear_down_task(w, wr, cache);                 // 走静态图依赖传播，通知后继节点
     } else {
-        w->m_started = false;
-        w->_release_semaphores(TFL_SEM_SCHEDULER);
-        exe._tear_down_task(w, wr, cache);
+        // ── 启动子图：设置屏障并批量调度源节点 ──
+        w->_notify_before(wr);                             // 通知观察者"本节点即将开始新一轮"
+        w->m_join_counter.store(w->m_num_sources, std::memory_order_relaxed); // 倒计时屏障
+        exe._schedule(wr, graph.begin(), w->m_num_sources);// 批量投递源节点进调度队列
     }
 }
 
@@ -1331,17 +1295,17 @@ template <typename F, typename... Args>
 void AsyncBasicWork<F, Args...>::invoke(Work* self,Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
     auto* w = static_cast<AsyncBasicWork*>(self);
     if constexpr (sizeof...(Args) == 0) {
-        if constexpr (noexcept(std::invoke(m_func)))
+        try {
             std::invoke(w->m_func);
-        else { try { std::invoke(w->m_func); } catch (...) {} }
+        } catch (...) {}
     } else {
-        auto _call = [&](auto&&... a) {
-            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
-        };
-        if constexpr (noexcept(std::apply(_call, m_args)))
-            std::apply(_call, w->m_args);
-        else { try { std::apply(_call, w->m_args); } catch (...) {} }
+        try {
+            std::apply([&w](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...))) {
+                std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+            }, w->m_args);
+        } catch (...) {}
     }
+
     exe._decrement_topology();
     Work::destroy(w, w->m_topology);
 }
@@ -1351,17 +1315,17 @@ void AsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, 
     auto* w = static_cast<AsyncRuntimeWork*>(self);
     Runtime rt(*w, wr, *w->m_topology, exe);
     if constexpr (sizeof...(Args) == 0) {
-        if constexpr (noexcept(std::invoke(m_func, rt)))
+        try {
             std::invoke(w->m_func, rt);
-        else { try { std::invoke(w->m_func, rt); } catch (...) {} }
+        } catch (...) {}
     } else {
-        auto _call = [&](auto&&... a) {
-            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
-        };
-        if constexpr (noexcept(std::apply(_call, m_args)))
-            std::apply(_call, w->m_args);
-        else { try { std::apply(_call, w->m_args); } catch (...) {} }
+        try {
+            std::apply([&w, &rt](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt))) {
+                std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+            }, w->m_args);
+        } catch (...) {}
     }
+
     exe._decrement_topology();
     Work::destroy(w, w->m_topology);
 }
@@ -1373,99 +1337,66 @@ void AsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, 
 template <typename F, typename R, typename... Args>
 void AsyncBasicPromiseWork<F, R, Args...>::invoke(Work* self,Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
     auto* w = static_cast<AsyncBasicPromiseWork*>(self);
-    auto _do_invoke = [&]() {
-        if constexpr (sizeof...(Args) == 0) {
-            return std::invoke(w->m_func);
+    try {
+        if constexpr (std::is_void_v<R>) {
+            if constexpr (sizeof...(Args) == 0) {
+                std::invoke(w->m_func);
+            } else {
+                std::apply([&w](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...))) {
+                    std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                }, w->m_args);
+            }
+            w->m_promise.set_value();
         } else {
-            return std::apply([&](auto&&... a) {
-                return std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
-            }, w->m_args);
+            if constexpr (sizeof...(Args) == 0) {
+                w->m_promise.set_value(std::invoke(w->m_func));
+            } else {
+                w->m_promise.set_value(std::apply([&w](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...))) {
+                    return std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                }, w->m_args));
+            }
         }
-    };
 
-    if constexpr (noexcept(_do_invoke())) {
-        if constexpr (std::is_void_v<R>) {
-            _do_invoke();
-            w->m_promise.set_value();
-        } else {
-            w->m_promise.set_value(_do_invoke());
-        }
-    } else {
-        if constexpr (std::is_void_v<R>) {
-            try {
-                _do_invoke();
-            } catch (...) {
-                w->m_promise.set_exception(std::current_exception());
-                exe._decrement_topology();
-                Work::destroy(w, w->m_topology);
-                return;
-            }
-            w->m_promise.set_value();
-        } else {
-            std::optional<R> result;
-            try {
-                result.emplace(_do_invoke());
-            } catch (...) {
-                w->m_promise.set_exception(std::current_exception());
-                exe._decrement_topology();
-                Work::destroy(w, w->m_topology);
-                return;
-            }
-            w->m_promise.set_value(std::move(*result));
-        }
+        exe._decrement_topology();
+        Work::destroy(w, w->m_topology);
+    } catch (...) {
+        w->m_promise.set_exception(std::current_exception());
+        exe._decrement_topology();
+        Work::destroy(w, w->m_topology);
     }
-    exe._decrement_topology();
-    Work::destroy(w, w->m_topology);
 }
 
 template <typename F, typename R, typename... Args>
 void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Work* self,Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
     auto* w = static_cast<AsyncRuntimePromiseWork*>(self);
     Runtime rt(*w, wr, *w->m_topology, exe);
-
-    auto _do_invoke = [&]() {
-        if constexpr (sizeof...(Args) == 0) {
-            return std::invoke(w->m_func, rt);
-        } else {
-            return std::apply([&](auto&&... a) {
-                return std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
-            }, w->m_args);
-        }
-    };
-
-    if constexpr (noexcept(_do_invoke())) {
+    try {
         if constexpr (std::is_void_v<R>) {
-            _do_invoke();
-            w->m_promise.set_value();
-        } else {
-            w->m_promise.set_value(_do_invoke());
-        }
-    } else {
-        if constexpr (std::is_void_v<R>) {
-            try {
-                _do_invoke();
-            } catch (...) {
-                w->m_promise.set_exception(std::current_exception());
-                exe._decrement_topology();
-                Work::destroy(w, w->m_topology);
-                return;
+            if constexpr (sizeof...(Args) == 0) {
+                std::invoke(w->m_func, rt);
+            } else {
+                std::apply([&w, &rt](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt))) {
+                    std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                }, w->m_args);
             }
             w->m_promise.set_value();
         } else {
-            std::optional<R> result;
-            try {
-                result.emplace(_do_invoke());
-            } catch (...) {
-                w->m_promise.set_exception(std::current_exception());
-                exe._decrement_topology();
-                Work::destroy(w, w->m_topology);
-                return;
+            if constexpr (sizeof...(Args) == 0) {
+                w->m_promise.set_value(std::invoke(w->m_func, rt));
+            } else {
+                w->m_promise.set_value(std::apply([&w, &rt](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt))) {
+                    return std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                }, w->m_args));
             }
-            w->m_promise.set_value(std::move(*result));
         }
+
+        exe._decrement_topology();
+        Work::destroy(w, w->m_topology);
+    } catch (...) {
+        w->m_promise.set_exception(std::current_exception());
+        exe._decrement_topology();
+        Work::destroy(w, w->m_topology);
     }
-    exe._decrement_topology();
-    Work::destroy(w, w->m_topology);
 }
 
 // ============================================================================
@@ -1479,30 +1410,25 @@ void DepAsyncBasicWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr,
         return;
     }
 
-    TFL_OBSERVER_BEFORE(w, wr);
-
+    w->_notify_before(wr);
 
     if constexpr (sizeof...(Args) == 0) {
-        if constexpr (noexcept(std::invoke(m_func))) {
+        try {
             std::invoke(w->m_func);
-        } else {
-            try { std::invoke(w->m_func); }
-            catch (...) { exe._process_exception(w); }
+        } catch (...) {
+            exe._process_exception(w);
         }
     } else {
-        auto _call = [&](auto&&... a) {
-            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
-        };
-        if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, w->m_args);
-        } else {
-            try { std::apply(_call, w->m_args); }
-            catch (...) { exe._process_exception(w); }
+        try {
+            std::apply([&w](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...))) {
+                std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+            }, w->m_args);
+        } catch (...) {
+            exe._process_exception(w);
         }
     }
 
-    TFL_OBSERVER_AFTER(w, wr);
-
+    w->_notify_after(wr);
     w->_release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_dep_async_task(w, wr, cache);
 }
@@ -1514,31 +1440,26 @@ void DepAsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& w
         return;
     }
 
-    TFL_OBSERVER_BEFORE(w, wr);
-
+    w->_notify_before(wr);
 
     Runtime rt(*w, wr, *w->m_topology, exe);
     if constexpr (sizeof...(Args) == 0) {
-        if constexpr (noexcept(std::invoke(m_func, rt))) {
+        try {
             std::invoke(w->m_func, rt);
-        } else {
-            try { std::invoke(w->m_func, rt); }
-            catch (...) { exe._process_exception(w); }
+        } catch (...) {
+            exe._process_exception(w);
         }
     } else {
-        auto _call = [&](auto&&... a) {
-            std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
-        };
-        if constexpr (noexcept(std::apply(_call, m_args))) {
-            std::apply(_call, w->m_args);
-        } else {
-            try { std::apply(_call, w->m_args); }
-            catch (...) { exe._process_exception(w); }
+        try {
+            std::apply([&w, &rt](auto&&... a) noexcept(noexcept(std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt))) {
+                std::invoke(w->m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+            }, w->m_args);
+        } catch (...) {
+            exe._process_exception(w);
         }
     }
 
-    TFL_OBSERVER_AFTER(w, wr);
-
+    w->_notify_after(wr);
     w->_release_semaphores(TFL_SEM_SCHEDULER);
     exe._tear_down_dep_async_task(w, wr, cache);
 }
@@ -1547,35 +1468,49 @@ void DepAsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& w
 //  invoke 实现 — 有依赖的子流程
 // ============================================================================
 
+/// @brief DepFlowWork 的核心调度入口 — 条件循环驱动子图执行。
+///
+/// @details
+/// **重入式状态机设计**：利用 m_num_sources 兼任"是否已启动"的判据，
+/// 首次进入时 m_num_sources == 0，触发信号量获取与
+/// 子图拓扑初始化；子图跑完后 PREEMPTED 机制将控制权交还本节点，
+/// 此时 m_num_sources > 0 标识重入，仅执行观察者回调。
 template <typename FlowStore, typename P, typename C>
 void DepFlowWork<FlowStore, P, C>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<DepFlowWork*>(self);
-    decltype(auto) flow = detail::unwrap(w->m_flow_store);
+    auto& graph = detail::unwrap(w->m_flow_store).m_graph;
 
-    if (w->m_started) {
-        TFL_OBSERVER_AFTER(w, wr);
+    // ── 状态分流：m_num_sources > 0 表示子图刚跑完的重入，否则为首次进入 ──
+    if (w->m_num_sources > 0) {
+        // 重入：子图已执行完毕，通知观察者"本节点一轮工作结束"
+        w->_notify_after(wr);
     } else {
+        // 首次进入：竞争获取信号量，失败则让出执行权等待唤醒
         if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
             return;
         }
+        // 初始化子图拓扑：重置各节点 join_counter、清除异常残留、
+        // 将零入度源节点 swap 到 graph 前端，返回源节点数量
+        w->m_num_sources = exe._set_up_graph(graph, w->m_topology, w);
     }
 
-    if (!std::invoke_r<bool>(w->m_pred) && !w->_is_stopped()) {
-        TFL_OBSERVER_BEFORE(w, wr);
-
-        w->m_started = true;
-        exe._set_up_graph(flow.m_graph, w->m_topology, wr, w);
+    // ── 终止判定：三条件任一成立即结束循环 ──
+    //   pred == true  → 用户谓词决定停止迭代
+    //   num_sources == 0 → 子图为空或所有节点均有前驱（无法启动）
+    //   _is_stopped() → 拓扑层面已被异常终止
+    if (bool pred = std::invoke_r<bool>(w->m_pred); pred || w->m_num_sources == 0 || w->_is_stopped()) {
+        w->m_num_sources = 0;                              // 归零，为下次 start() 重入做好准备
+        w->_release_semaphores(TFL_SEM_SCHEDULER);         // 归还信号量配额，唤醒等待者
+        std::invoke(w->m_callback);                        // 用户终止回调（生命周期落幕通知）
+        exe._tear_down_dep_async_task(w, wr, cache);       // 拆除异步依赖链，传播完成信号给下游
     } else {
-        w->m_started = false;
-        w->_release_semaphores(TFL_SEM_SCHEDULER);
-        std::invoke(w->m_callback);
-        exe._tear_down_dep_async_task(w, wr, cache);
+        // ── 启动子图：设置屏障并批量调度源节点 ──
+        w->_notify_before(wr);                             // 通知观察者"本节点即将开始新一轮"
+        w->m_join_counter.store(w->m_num_sources, std::memory_order_relaxed); // 倒计时屏障
+        exe._schedule(wr, graph.begin(), w->m_num_sources);// 批量投递源节点进调度队列
     }
 }
-
 #undef TFL_SEM_SCHEDULER
-#undef TFL_OBSERVER_BEFORE
-#undef TFL_OBSERVER_AFTER
 
 // ============================================================================
 //  实现部分：Runtime 路由适配器

@@ -1,4 +1,4 @@
-# 🚀 TaskflowLite (tfl)
+﻿# 🚀 TaskflowLite (tfl)
 
 **An ultra-fast, lock-free, zero-overhead task scheduling and DAG orchestration engine for modern C++23**
 
@@ -166,7 +166,7 @@ Reuse the DAG engine to express `if-else` and `while` loop logic natively.
 auto start = flow.emplace([] { puts("Start"); }); // Explicit entry point
 
 auto check = flow.emplace([](tfl::Branch& br) {
-    br.allow(1); // Activate successor at index 1 (failure), skip 0
+    br.select(1); // Activate successor at index 1 (failure), skip 0
 });
 auto success = flow.emplace([] { puts("OK"); });
 auto failure = flow.emplace([] { puts("Fail"); });
@@ -181,7 +181,7 @@ auto init = flow.emplace([] { puts("Init"); }); // Explicit entry point
 
 auto process = flow.emplace([]{ /* business logic */ });
 auto retry = flow.emplace([](tfl::Jump& jmp) {
-    if (need_retry()) jmp.to(0); // Jump: pull back target 0 and reset its dependency count
+    if (need_retry()) jmp.select(0); // Jump: pull back target 0 and reset its dependency count
 });
 
 init.precede(process);   // Entry point: execution begins here
@@ -296,20 +296,61 @@ target_compile_options(your_target PRIVATE -O3 -march=native)
 
 ---
 
-## 🚀 Benchmarks
+## 🚀 Performance Benchmarks
 
-Testing an extremely dense fully-connected mesh DAG (100 layers × 100 tasks per layer, fully interconnected, executed 100 times):
+### Test Environment
 
-```cpp
-// See benchmark/benchmark.cpp for full code
-// Build a 100×100 fully-connected matrix network
-for (std::size_t layer = 1; layer < 100; ++layer) {
-    for (auto& prev : layers[layer - 1])
-        for (auto& curr : layers[layer])
-            prev.precede(curr); // Dense dependency wiring
-}
-executor.submit(flow, 100).start().wait();
-```
+* **Baseline**: [Taskflow v4.0.0](https://github.com/taskflow/taskflow)
+* **Benchmark code**:
+  * Comprehensive suite: [`benchmarks/benchmark.cpp`](benchmarks/benchmark.cpp) (TaskflowLite)
+    and [`benchmarks/bench_taskflow.cpp`](benchmarks/bench_taskflow.cpp) (Taskflow control group),
+    covering 18 fully symmetric workloads for apples-to-apples comparison.
+  * Micro-benchmark: [`benchmarks/bench_taskflowlite.cpp`](benchmarks/bench_taskflowlite.cpp)
+    and [`benchmarks/bench_taskflow.cpp`](benchmarks/bench_taskflow.cpp),
+    focused on extreme scheduling density with a 100-layer × 100-task topology.
+* **Hardware**: Intel® Core™ i7-9750H @ 2.60 GHz (6C/12T) / Windows 11
+* **Build config**: MSVC 2022 / Release / `/O2`, identical hardware, thread count, and iteration count across both libraries.
+
+### Comprehensive Results (lower is better)
+
+| # | Workload | Taskflow (ms) | TaskflowLite (ms) | Speedup |
+|---|---|---:|---:|---:|
+| 01 | 32 parallel \| 8 threads \| 500k runs   | 1607 | 1270 | **+21.0%** |
+| 02 | 32 serial   \| 1 thread  \| 1M runs    | 1310 | 1034 | **+21.1%** |
+| 03 | diamond DAG \| 2 threads \| 1M runs    |  361 |  317 | **+12.2%** |
+| 04a | 4×2  full   \| 2 threads \| 1M runs   |  592 |  563 | **+4.9%**  |
+| 04b | 6×4  full   \| 4 threads \| 500k runs | 1766 | 1694 | **+4.1%**  |
+| 04c | 8×8  full   \| 8 threads \| 100k runs | 1253 | 1027 | **+18.0%** |
+| 04d | 8×16 full   \| 8 threads \| 50k runs  | 1453 | 1125 | **+22.6%** |
+| 04e | 8×32 full   \| 8 threads \| 20k runs  | 1475 | 1107 | **+24.9%** |
+| 04f | 6×100 full  \| 8 threads \| 2k runs   |  672 |  508 | **+24.4%** |
+| 05 | binary tree  \| 8 threads \| 500k runs | 2754 | 2195 | **+20.3%** |
+| 06 | 1→256→1     \| 8 threads \| 100k runs | 4043 | 3363 | **+16.8%** |
+| 07 | 16 pipes     \| 8 threads \| 200k runs | 2436 | 1690 | **+30.6%** |
+| 08 | 16×16 grid   \| 8 threads \| 100k runs | 2701 | 1896 | **+29.8%** |
+| 09 | sparse DAG   \| 8 threads \| 500k runs | 3874 | 2831 | **+26.9%** |
+| 10 | cond / jump retry \| 1 thread \| 1M iter |  52 |   55 | −5.8%      |
+| 11 | multi-cond / multi-jump \| 4 threads \| 200k iter | 76 | 62 | **+18.4%** |
+| 12 | subflow ×1   \| 4 threads \| 200k runs |  196 |  156 | **+20.4%** |
+| 13 | subflow loop \| 2 threads \| 500k iter |  156 |  114 | **+26.9%** |
+| **Total** | **18 workloads** | **26877** | **20957** | **+22.0%** |
+
+### Micro-benchmark: 100 Layers × 100 Tasks
+
+A second micro-benchmark targets raw **scheduling overhead density**. It builds a
+topology of 100 layers with 100 tasks per layer, testing two extreme shapes:
+**fully-connected** (990,000 edges) and **no-connection** (10,000 purely parallel
+tasks). Each runs for 10 iterations on 8 threads.
+
+| Scenario | Metric | Taskflow | TaskflowLite | Speedup |
+|---|---|---:|---:|---:|
+| **Full-Connected** (100×100, 990k edges) | Total time       | 97.77 ms    | 51.48 ms    | **+47.3%** |
+|                                          | Per run          | 9.78 ms     | 5.15 ms     | **+47.3%** |
+|                                          | Per task         | 977.72 ns   | 514.84 ns   | **+47.3%** |
+| **No Connection** (10k parallel tasks)   | Total time       | 14.57 ms    | 9.22 ms     | **+36.7%** |
+|                                          | Per run          | 1.46 ms     | 0.92 ms     | **+36.7%** |
+|                                          | Per task         | 145.73 ns   | 92.23 ns    | **+36.7%** |
+
 
 ---
 

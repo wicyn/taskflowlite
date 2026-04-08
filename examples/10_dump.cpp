@@ -46,7 +46,7 @@ int main() {
     // ================================================================
     // validate (Branch): 验证前获取事务锁，确保验证期间数据一致性
     auto validate = flow.emplace([](tfl::Branch& br) {
-        br.allow(0);
+        br.select(0);
     });
     validate.name("validate");
     validate.acquire(txn_lock, 1);
@@ -68,7 +68,7 @@ int main() {
 
     // retry (Jump): 重试前获取网络配额，确保重试路径不会打爆网络
     auto retry = flow.emplace([](tfl::Jump& jmp) {
-        jmp.to(0);
+        jmp.select(0);
     });
     retry.name("retry");
     retry.acquire(net_quota, 1);
@@ -82,9 +82,9 @@ int main() {
     // ================================================================
     // dispatch (MultiBranch): 分发决策需要读数据库路由表 + CPU 计算路由
     auto dispatch = flow.emplace([](tfl::MultiBranch& mbr) {
-        mbr.allow(0);
-        mbr.allow(1);
-        mbr.allow(2);
+        mbr.select(0);
+        mbr.select(1);
+        mbr.select(2);
     });
     dispatch.name("dispatch");
     dispatch.acquire(db_pool, 1);
@@ -159,7 +159,7 @@ int main() {
     // -- 管线 C: Runtime → Branch(ok/fail) --
     tfl::Flow pipeline_c;
     auto c_rt    = pipeline_c.emplace([](tfl::Runtime&){}); c_rt.name("dynamic_C");
-    auto c_check = pipeline_c.emplace([](tfl::Branch& br){ br.allow(0); });
+    auto c_check = pipeline_c.emplace([](tfl::Branch& br){ br.select(0); });
     c_check.name("check_C");
     auto c_ok    = pipeline_c.emplace([]{});  c_ok.name("ok_C");
     auto c_fail  = pipeline_c.emplace([]{});  c_fail.name("fail_C");
@@ -209,7 +209,7 @@ int main() {
     // ================================================================
     // scatter (MultiJump): 散射前获取事务锁，保证输出原子性
     auto scatter = flow.emplace([](tfl::MultiJump& mjmp) {
-        mjmp.to(0); mjmp.to(1); mjmp.to(2); mjmp.to(3);
+        mjmp.select(0); mjmp.select(1); mjmp.select(2); mjmp.select(3);
     });
     scatter.name("scatter_output");
     scatter.acquire(txn_lock, 1);

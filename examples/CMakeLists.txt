@@ -26,3 +26,15 @@ endforeach()
 
 # Group by folder in IDEs
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${EXAMPLES})
+
+add_custom_target(run_all_examples
+    COMMAND ${CMAKE_COMMAND} -E echo "Running all examples..."
+    USES_TERMINAL
+)
+foreach(example ${EXAMPLES})
+    add_dependencies(run_all_examples ${example})
+    add_custom_command(TARGET run_all_examples POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E echo "===== Running ${example} ====="
+        COMMAND $<TARGET_FILE:${example}>
+    )
+endforeach()

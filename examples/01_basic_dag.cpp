@@ -276,10 +276,10 @@ int main() {
          auto b4_check = flow_b.emplace([](std::atomic<int>& e, std::atomic<bool>& stop, tfl::Jump& jmp) {
              if (e.load() < 3 && !stop.load()) {
                  std::cout<< "  [B4_Check] Continue loop, jump to train\n";
-                 jmp.to(0);  // 跳回 b2_train
+                 jmp.select(0);  // 跳回 b2_train
              } else {
                  std::cout<< "  [B4_Check] Exit loop, jump to save\n";
-                 jmp.to(1);  // 跳到 b5_save
+                 jmp.select(1);  // 跳到 b5_save
              }
          }, std::ref(epoch), std::ref(stop_flag));
 
@@ -290,7 +290,7 @@ int main() {
          // B6. MultiBranch: 多路径分发 (使用索引)
          auto b6_test_br = flow_b.emplace([](tfl::MultiBranch& br) {
              std::cout<< "  [B6_TestBr] MultiBranch dispatch to tests 0 and 2\n";
-             br.allow(0, 2);  // 只运行 test_0 和 test_2
+             br.select(0, 2);  // 只运行 test_0 和 test_2
          });
 
          auto b7_t0 = flow_b.emplace([] { std::cout<< "    [B7_Test_0] Unit test\n"; });
@@ -301,13 +301,13 @@ int main() {
          // B7. MultiJump: 收集所有测试结果
          auto b8_collect = flow_b.emplace([](tfl::MultiJump& jmp) {
              std::cout<< "  [B8_Collect] MultiJump to all successors\n";
-             jmp.to_all();
+             jmp.select_all();
          });
 
          // B8. Branch: 条件决策 (使用索引)
          auto b9_decision = flow_b.emplace([](tfl::Branch& br) {
              std::cout<< "  [B9_Decision] Branch condition\n";
-             br.allow(0);  // 选择第一个后继 (pass)
+             br.select(0);  // 选择第一个后继 (pass)
          });
 
          auto b10_pass = flow_b.emplace([] {
@@ -382,7 +382,7 @@ int main() {
 
          auto c3 = flow_c.emplace([](tfl::Branch& br) {
              std::cout<< "  [C3] Check validation result\n";
-             br.allow(0);  // 选择 good
+             br.select(0);  // 选择 good
          });
 
          auto c4_good = flow_c.emplace([] {
@@ -425,9 +425,9 @@ int main() {
          auto d3 = flow_d.emplace([](std::atomic<bool>& stop, std::atomic<int>& ep, tfl::Branch& br) {
              std::cout<< "  [D3] Check stop condition\n";
              if (stop.load() || ep.load() >= 10) {
-                 br.allow(0);  // stop
+                 br.select(0);  // stop
              } else {
-                 br.allow(1);  // continue
+                 br.select(1);  // continue
              }
          }, std::ref(stop_flag), std::ref(epoch));
 
@@ -554,7 +554,7 @@ int main() {
 
          auto v2 = flow_viz.emplace(std::move(sub_viz)).name("Subflow");
 
-         auto v3 = flow_viz.emplace([](tfl::Branch& br){ br.allow(0); }).name("Branch");
+         auto v3 = flow_viz.emplace([](tfl::Branch& br){ br.select(0); }).name("Branch");
          auto v4 = flow_viz.emplace([]{}).name("PathA");
          auto v5 = flow_viz.emplace([]{}).name("PathB");
 
