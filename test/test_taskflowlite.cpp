@@ -155,7 +155,7 @@ TEST_CASE("Branch: Exclusive Path Routing", "[branch]") {
         tfl::Flow flow;
         std::atomic<int> hits[3] = {0, 0, 0};
 
-        auto branch = flow.emplace([route](tfl::Branch& br) { br.allow(route); });
+        auto branch = flow.emplace([route](tfl::Branch& br) { br.select(route); });
 
         auto p0 = flow.emplace([&] { hits[0]++; });
         auto p1 = flow.emplace([&] { hits[1]++; });
@@ -177,7 +177,7 @@ TEST_CASE("MultiBranch: Concurrent Path Routing", "[branch]") {
     std::atomic<int> hits[4] = {0, 0, 0, 0};
 
     auto mbr = flow.emplace([](tfl::MultiBranch& mb) {
-        mb.allow(0).allow(2); // 仅激活 0 和 2
+        mb.select(0).select(2); // 仅激活 0 和 2
     });
 
     auto p0 = flow.emplace([&] { hits[0]++; });
@@ -542,7 +542,7 @@ TEST_CASE("Jump: Backward Retry Loop", "[jump]") {
     auto start = flow.emplace([&] { });
     auto process = flow.emplace([&] { attempts.fetch_add(1); });
     auto check = flow.emplace([&](tfl::Jump& jmp) {
-        if (attempts.load() < 5) jmp.to(0);
+        if (attempts.load() < 5) jmp.select(0);
     });
     start.precede(process);
     process.precede(check);

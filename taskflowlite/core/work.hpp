@@ -78,13 +78,13 @@ class Work : public Immovable<Work> {
 
     TFL_WORK_SUBCLASS_FRIENDS
 
-public:
-    /// @brief 静态选项配置位域（构建时确定，执行期只读）。
-    ///
-    /// 利用位域压缩技术，将布尔标志和构建期累计的入度计数（join count）
-    /// 强行塞入单个 32 位无符号整数中，极致节省节点内存开销。
-    struct Option {
-        using type = std::uint32_t;
+        public:
+                 /// @brief 静态选项配置位域（构建时确定，执行期只读）。
+                 ///
+                 /// 利用位域压缩技术，将布尔标志和构建期累计的入度计数（join count）
+                 /// 强行塞入单个 32 位无符号整数中，极致节省节点内存开销。
+                 struct Option {
+        using type = std::uint64_t;
 
         static constexpr unsigned BITS       = sizeof(type) * 8;
         static constexpr unsigned FLAG_BITS  = 8;
@@ -307,6 +307,9 @@ private:
         requires std::invocable<F&, Work*>
     void _release_semaphores(F&& on_wake);
 
+    void _notify_before(Worker& wr) const;
+    void _notify_after(Worker& wr) const;
+
     void _erase_successor_at(std::size_t idx) noexcept;
     void _erase_predecessor_at(std::size_t idx) noexcept;
     void _precede(Work* target);
@@ -509,8 +512,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Basic; }
-    std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Basic; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
     }
@@ -531,8 +534,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Branch; }
-    std::string dump() const override final { return _d2_work(this, "diamond", "#dbeafe", "#3b82f6", "#1e3a5f", "8"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Branch; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "diamond", "#dbeafe", "#3b82f6", "#1e3a5f", "8"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "diamond", "#dbeafe", "#3b82f6", "#1e3a5f", "8");
     }
@@ -553,8 +556,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::MultiBranch; }
-    std::string dump() const override final { return _d2_work(this, "hexagon", "#bfdbfe", "#2563eb", "#1e3a5f", "8"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::MultiBranch; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "hexagon", "#bfdbfe", "#2563eb", "#1e3a5f", "8"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "hexagon", "#bfdbfe", "#2563eb", "#1e3a5f", "8");
     }
@@ -575,8 +578,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Jump; }
-    std::string dump() const override final { return _d2_work(this, "diamond", "#fee2e2", "#ef4444", "#7f1d1d", "8", "5"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Jump; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "diamond", "#fee2e2", "#ef4444", "#7f1d1d", "8", "5"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "diamond", "#fee2e2", "#ef4444", "#7f1d1d", "8", "5");
     }
@@ -597,8 +600,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::MultiJump; }
-    std::string dump() const override final { return _d2_work(this, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::MultiJump; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5");
     }
@@ -619,8 +622,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Runtime; }
-    std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Runtime; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
     }
@@ -630,8 +633,8 @@ public:
 template <typename FlowStore, typename P>
 class SubflowWork final : public Work {
     FlowStore m_flow_store;
+    std::size_t m_num_sources{0};
     P m_pred;
-    bool m_started{false};
 public:
     template <typename U, typename V>
     explicit SubflowWork(Graph* g, Option::type opts, U&& flow_store, V&& pred)
@@ -641,12 +644,12 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Graph; }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Graph; }
     // ============================================================================
     //  [4/6] SubflowWork::dump() 两个重载（完整替换）
     // ============================================================================
 
-    std::string dump() const override final {
+    [[nodiscard]] std::string dump() const override final {
         decltype(auto) flow = detail::unwrap(m_flow_store);
 
         if (flow.m_graph.empty()) {
@@ -786,8 +789,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Basic; }
-    std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Basic; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
     }
@@ -808,8 +811,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Runtime; }
-    std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Runtime; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
     }
@@ -832,8 +835,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Basic; }
-    std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Basic; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
     }
@@ -856,8 +859,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Runtime; }
-    std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Runtime; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
     }
@@ -878,8 +881,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Basic; }
-    std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Basic; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
     }
@@ -900,8 +903,8 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Runtime; }
-    std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Runtime; }
+    [[nodiscard]] std::string dump() const override final { return _d2_work(this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30"); }
     void dump(std::ostream& os) const override final {
         _d2_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
     }
@@ -911,9 +914,10 @@ public:
 template <typename FlowStore, typename P, typename C>
 class DepFlowWork final : public Work {
     FlowStore m_flow_store;
+    std::size_t m_num_sources{0};
     P m_pred;
     C m_callback;
-    bool m_started{false};
+
 public:
     template <typename U, typename V, typename W>
     explicit DepFlowWork(Topology* t, Option::type opts, U&& flow_store, V&& pred, W&& cb)
@@ -924,12 +928,12 @@ public:
 
     static void invoke(Work* self, Executor& exe, Worker& wr, Work*& cache);
 
-    TaskType type() const noexcept override final { return TaskType::Graph; }
+    [[nodiscard]] TaskType type() const noexcept override final { return TaskType::Graph; }
     // ============================================================================
     //  [5/6] DepFlowWork::dump() 两个重载（与 SubflowWork 对称）
     // ============================================================================
 
-    std::string dump() const override final {
+    [[nodiscard]] std::string dump() const override final {
         char id[24];
         std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(this));
         decltype(auto) flow = detail::unwrap(m_flow_store);
@@ -1474,6 +1478,22 @@ inline void Work::_release_semaphores(F&& on_wake) {
     }
 }
 
+inline void Work::_notify_before(Worker& wr) const {
+    if (m_observers) {
+        for (auto& aspect : m_observers->observers) {
+            aspect->on_before(WorkerView{wr});
+        }
+    }
+}
+
+inline void Work::_notify_after(Worker& wr) const {
+    if (m_observers) {
+        for (auto& aspect : m_observers->observers) {
+            aspect->on_after(WorkerView{wr});
+        }
+    }
+}
+
 inline std::string Work::_d2_escape(const std::string& s) {
     std::string out;
     out.reserve(s.size());
@@ -1669,7 +1689,7 @@ inline Work::_D2SemColor Work::_sem_color(const Semaphore* sem) noexcept {
 // ---- grid pill bar（rectangle 节点 + Subflow 外壳专用）----
 
 inline void Work::_d2_pill_bar(std::string& out,
-                        std::span<SemaphoreReq const> reqs, const char* tag)
+                               std::span<SemaphoreReq const> reqs, const char* tag)
 {
     char bar[8];
     std::snprintf(bar, sizeof(bar), "%c_bar", tag[0]);
@@ -1707,7 +1727,7 @@ inline void Work::_d2_pill_bar(std::string& out,
 }
 
 inline void Work::_d2_pill_bar(std::ostream& os,
-                        std::span<SemaphoreReq const> reqs, const char* tag)
+                               std::span<SemaphoreReq const> reqs, const char* tag)
 {
     char bar[8];
     std::snprintf(bar, sizeof(bar), "%c_bar", tag[0]);
@@ -1748,7 +1768,7 @@ inline void Work::_d2_pill_bar(std::ostream& os,
 // ---- |md 块内信号量 pill 行（diamond/hexagon 节点专用，水平排列）----
 
 inline void Work::_d2_sem_lines(std::string& out,
-                         std::span<SemaphoreReq const> reqs, const char* tag)
+                                std::span<SemaphoreReq const> reqs, const char* tag)
 {
     char sid[32];
     for (std::size_t i = 0; i < reqs.size(); ++i) {
@@ -1777,7 +1797,7 @@ inline void Work::_d2_sem_lines(std::string& out,
 }
 
 inline void Work::_d2_sem_lines(std::ostream& os,
-                         std::span<SemaphoreReq const> reqs, const char* tag)
+                                std::span<SemaphoreReq const> reqs, const char* tag)
 {
     char sid[32];
     for (std::size_t i = 0; i < reqs.size(); ++i) {
@@ -1809,9 +1829,9 @@ inline void Work::_d2_sem_lines(std::ostream& os,
 // ============================================================================
 
 inline std::string Work::_d2_work(const Work* w,
-                           const char* shape, const char* fill, const char* stroke,
-                           const char* font_color, const char* border_radius,
-                           const char* stroke_dash)
+                                  const char* shape, const char* fill, const char* stroke,
+                                  const char* font_color, const char* border_radius,
+                                  const char* stroke_dash)
 {
     char id[24];
     std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(w));
@@ -1900,9 +1920,9 @@ inline std::string Work::_d2_work(const Work* w,
 
 
 inline void Work::_d2_work(std::ostream& os, const Work* w,
-                    const char* shape, const char* fill, const char* stroke,
-                    const char* font_color, const char* border_radius,
-                    const char* stroke_dash)
+                           const char* shape, const char* fill, const char* stroke,
+                           const char* font_color, const char* border_radius,
+                           const char* stroke_dash)
 {
     char id[24];
     std::snprintf(id, sizeof(id), "p%zx", reinterpret_cast<std::uintptr_t>(w));

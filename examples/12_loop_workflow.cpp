@@ -36,7 +36,7 @@ void build_training_loop() {
                                        if (accuracy < 0.8 && current_epoch < max_epochs) {
                                            std::cout << "[4. Check] Accuracy not met criteria. Jumping back to Train...\n\n";
                                            // 触发底层的执行器跃迁，重置后续依赖计数，跳回 train 节点
-                                           // jump_ctrl.to(train); // 假设的 Jump API
+                                           // jump_ctrl.select(train); // 假设的 Jump API
                                        } else {
                                            std::cout << "[4. Check] Training finished! Criteria met or max epochs reached.\n\n";
                                        }

@@ -1,4 +1,4 @@
-# 🚀 TaskflowLite (tfl)
+﻿# 🚀 TaskflowLite (tfl)
 
 **为现代 C++23 打造的极速、无锁、零开销的任务调度与 DAG 编排引擎**
 
@@ -163,7 +163,7 @@ flow.emplace([](tfl::Runtime& rt) {
 auto start = flow.emplace([] { puts("Start"); }); // 明确的无依赖起点
 
 auto check = flow.emplace([](tfl::Branch& br) {
-    br.allow(1); // 激活下标为 1 (failure) 的后继节点，跳过 0
+    br.select(1); // 激活下标为 1 (failure) 的后继节点，跳过 0
 });
 auto success = flow.emplace([] { puts("OK"); });
 auto failure = flow.emplace([] { puts("Fail"); });
@@ -178,7 +178,7 @@ auto init = flow.emplace([] { puts("Init"); });   // 明确的无依赖起点
 
 auto process = flow.emplace([]{ /* 业务逻辑 */ });
 auto retry = flow.emplace([](tfl::Jump& jmp) {
-    if (need_retry()) jmp.to(0); // 触发跳转，拉回 target 0 并重置其依赖
+    if (need_retry()) jmp.select(0); // 触发跳转，拉回 target 0 并重置其依赖
 });
 
 init.precede(process);   // 连线起点：系统从这里进入
@@ -295,18 +295,57 @@ target_compile_options(your_target PRIVATE -O3 -march=native)
 
 ## 🚀 性能基准测试
 
-测试极高密度的全连接网状 DAG（100 层，每层 100 个任务，互相全连接，执行 100 次）：
+### 测试环境
 
-```cpp
-// 详见 benchmark/benchmark.cpp
-// 构建 100x100 的全连接矩阵网络
-for (std::size_t layer = 1; layer < 100; ++layer) {
-    for (auto& prev : layers[layer - 1])
-        for (auto& curr : layers[layer])
-            prev.precede(curr); // 密集的依赖连线
-}
-executor.submit(flow, 100).start().wait();
-```
+* **对比对象**：[Taskflow v4.0.0](https://github.com/taskflow/taskflow)
+* **基准代码**：
+  * 综合对照：[`benchmarks/benchmark.cpp`](benchmarks/benchmark.cpp)（TaskflowLite）
+    与 [`benchmarks/bench_taskflow.cpp`](benchmarks/bench_taskflow.cpp)（Taskflow 对照组），
+    覆盖完全对称的 18 组工作负载。
+  * 微基准：[`benchmarks/bench_taskflowlite.cpp`](benchmarks/bench_taskflowlite.cpp)
+    与 [`benchmarks/bench_taskflow.cpp`](benchmarks/bench_taskflow.cpp)，
+    聚焦 100 层 × 100 任务的极限调度密度。
+* **测试硬件**：Intel® Core™ i7-9750H @ 2.60GHz（6C/12T）/ Windows 11
+* **构建配置**：MSVC 2022 / Release / `/O2`，相同硬件、相同线程数、相同迭代次数。
+### 综合对比结果（时间越低越好）
+
+| # | 测试场景 | Taskflow (ms) | TaskflowLite (ms) | 提升 |
+|---|---|---:|---:|---:|
+| 01 | 32 parallel \| 8 threads \| 500k runs   | 1607 | 1270 | **+21.0%** |
+| 02 | 32 serial   \| 1 thread  \| 1M runs    | 1310 | 1034 | **+21.1%** |
+| 03 | diamond DAG \| 2 threads \| 1M runs    |  361 |  317 | **+12.2%** |
+| 04a | 4×2  full   \| 2 threads \| 1M runs   |  592 |  563 | **+4.9%**  |
+| 04b | 6×4  full   \| 4 threads \| 500k runs | 1766 | 1694 | **+4.1%**  |
+| 04c | 8×8  full   \| 8 threads \| 100k runs | 1253 | 1027 | **+18.0%** |
+| 04d | 8×16 full   \| 8 threads \| 50k runs  | 1453 | 1125 | **+22.6%** |
+| 04e | 8×32 full   \| 8 threads \| 20k runs  | 1475 | 1107 | **+24.9%** |
+| 04f | 6×100 full  \| 8 threads \| 2k runs   |  672 |  508 | **+24.4%** |
+| 05 | binary tree  \| 8 threads \| 500k runs | 2754 | 2195 | **+20.3%** |
+| 06 | 1→256→1     \| 8 threads \| 100k runs | 4043 | 3363 | **+16.8%** |
+| 07 | 16 pipes     \| 8 threads \| 200k runs | 2436 | 1690 | **+30.6%** |
+| 08 | 16×16 grid   \| 8 threads \| 100k runs | 2701 | 1896 | **+29.8%** |
+| 09 | sparse DAG   \| 8 threads \| 500k runs | 3874 | 2831 | **+26.9%** |
+| 10 | cond / jump retry \| 1 thread \| 1M iter |  52 |   55 | −5.8%      |
+| 11 | multi-cond / multi-jump \| 4 threads \| 200k iter | 76 | 62 | **+18.4%** |
+| 12 | subflow ×1   \| 4 threads \| 200k runs |  196 |  156 | **+20.4%** |
+| 13 | subflow loop \| 2 threads \| 500k iter |  156 |  114 | **+26.9%** |
+| **总计** | **18 组场景** | **26877** | **20957** | **+22.0%** |
+
+### 微基准：100 层 × 100 任务
+
+另一组聚焦"调度开销密度"的微基准，构建 100 层 × 每层 100 个任务的拓扑，
+分别测试**全连接**（990,000 条边）与**无连接**（纯并行 10,000 任务）两种极端形态，
+均执行 10 次迭代，8 线程。
+
+| 场景 | 指标 | Taskflow | TaskflowLite | 提升 |
+|---|---|---:|---:|---:|
+| **Full-Connected**（100×100，990k 边） | 总耗时       | 97.77 ms    | 51.48 ms    | **+47.3%** |
+|                                         | 单轮平均     | 9.78 ms     | 5.15 ms     | **+47.3%** |
+|                                         | 单任务平均   | 977.72 ns   | 514.84 ns   | **+47.3%** |
+| **No Connection**（纯并行 10k 任务）    | 总耗时       | 14.57 ms    | 9.22 ms     | **+36.7%** |
+|                                         | 单轮平均     | 1.46 ms     | 0.92 ms     | **+36.7%** |
+|                                         | 单任务平均   | 145.73 ns   | 92.23 ns    | **+36.7%** |
+
 
 ---
 

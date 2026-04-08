@@ -8,10 +8,9 @@
 
 #pragma once
 
-#include <optional>
-#include <string_view>
 #include <cstddef>
 #include <concepts>
+#include <initializer_list>
 #include <span>
 #include "task.hpp"
 #include "small_vector.hpp"
@@ -37,14 +36,11 @@ namespace tfl {
 ///   Jump:    join_counter  = 0 (强制)    → 必定就绪    → 立即调度
 /// ```
 ///
-/// 这意味着 Jump 目标不会等待任何其他前驱完成，实现真正的
-/// "goto" 语义。适用于错误恢复、状态机跳转、提前终止等场景。
-///
 /// **选择语义（Last-write-wins）**
 ///
-/// - 支持按索引、名称、谓词三种选择方式
-/// - 多次 `to()` 调用以最后一次为准
-/// - 不调用任何 `to()` 则不执行跳转，走常规 tear_down 路径
+/// - 支持按索引、谓词、下标赋值三种选择方式
+/// - 多次 `select()` 或 `operator[]` 赋值以最后一次为准
+/// - 不调用任何 `select()` 则不执行跳转，走常规 tear_down 路径
 /// - `reset()` 可显式取消当前选择
 ///
 /// @pre 必须由 JumpWork::invoke 在 Worker 线程的栈上临时构造。
@@ -58,7 +54,26 @@ class Jump : public Immovable<Jump> {
 
     TFL_WORK_SUBCLASS_FRIENDS
 
-public:
+        public:
+
+                 /// @brief 下标赋值代理，支持 `jump[i] = true/false` 语法。
+                 class Proxy {
+        friend class Jump;
+        Jump& m_jmp;
+        std::size_t m_idx;
+        Proxy(Jump& jmp, std::size_t idx) noexcept : m_jmp{jmp}, m_idx{idx} {}
+    public:
+        /// @brief `jump[i] = true` 选中第 i 个后继；`= false` 若当前选中即为 i 则清除。
+        Jump& operator=(bool on) noexcept {
+            if (on) {
+                m_jmp.select(m_idx);
+            } else if (m_idx < m_jmp.m_work.m_num_successors
+                       && m_jmp.m_target == m_jmp.m_work.m_edges[m_idx]) {
+                m_jmp.m_target = nullptr;
+            }
+            return m_jmp;
+        }
+    };
 
     // ==================== 跳转操作 ====================
 
@@ -66,19 +81,24 @@ public:
     /// @param index 目标后继在后继数组中的位置。
     /// @return `*this`，支持链式调用。
     /// @post 若 index 有效则选中对应后继；越界时清除选择（等价于 reset）。
-    Jump& to(std::size_t index) noexcept;
+    template <std::integral I>
+        requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+    Jump& select(I index) noexcept;
 
     /// @brief 按谓词选择首个满足条件的后继作为跳转目标。
     /// @param pred 接受只读 `TaskView` 并返回 `bool` 的可调用对象。
     /// @return `*this`，支持链式调用。
     /// @post 首个满足谓词的后继被选中；无匹配时清除选择。
     template <predicate<TaskView> Pred>
-    Jump& to_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
+    Jump& select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
 
     /// @brief 取消跳转。
     /// @return `*this`，支持链式调用。
     /// @post 内部目标指针置空，invoke 结束后走常规 tear_down 路径。
     Jump& reset() noexcept;
+
+    /// @brief 下标赋值：`jump[i] = true` 选中，`jump[i] = false` 条件清除。
+    [[nodiscard]] Proxy operator[](std::size_t index) noexcept;
 
     // ==================== 查询接口 ====================
 
@@ -90,29 +110,28 @@ private:
     Work* m_target{nullptr}; ///< 选中的跳转目标；invoke 结束后由 _tear_down_jump_task 直接置 counter=0 并调度
 
     explicit Jump(Work& work) noexcept : m_work{work} {}
-
-    [[nodiscard]] bool _empty() const noexcept { return m_target == nullptr; }
-    [[nodiscard]] Work* _target() const noexcept { return m_target; }
 };
 
 // ============================================================
 //  Jump 内联实现
 // ============================================================
-
-inline Jump& Jump::to(std::size_t index) noexcept {
-    auto succs = m_work._successors();
-    m_target = (index < succs.size()) ? succs[index] : nullptr;
+template <std::integral I>
+    requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+Jump& Jump::select(I index) noexcept {
+    const auto idx = static_cast<std::size_t>(index);
+    m_target = (idx < m_work.m_num_successors) ? m_work.m_edges[idx] : nullptr;
     return *this;
 }
 
 template <predicate<TaskView> Pred>
-Jump& Jump::to_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
+Jump& Jump::select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
     m_target = nullptr;
-    auto succs = m_work._successors();
-    for (auto* suc : succs) {
-        // Why: 包装为只读 TaskView 传入谓词，隔离底层 Work 的写入权限，
-        // 防止用户在谓词求值期间篡改图结构。
-        if (std::invoke_r<bool>(pred, TaskView{*suc})) { m_target = suc; return *this; }
+    const std::size_t sz = m_work.m_num_successors;
+    for (std::size_t i = 0; i < sz; ++i) {
+        if (std::invoke_r<bool>(pred, TaskView{*m_work.m_edges[i]})) {
+            m_target = m_work.m_edges[i];
+            return *this;
+        }
     }
     return *this;
 }
@@ -120,6 +139,10 @@ Jump& Jump::to_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
 inline Jump& Jump::reset() noexcept {
     m_target = nullptr;
     return *this;
+}
+
+inline Jump::Proxy Jump::operator[](std::size_t index) noexcept {
+    return {*this, index};
 }
 
 inline std::size_t Jump::size() const noexcept {
@@ -136,10 +159,17 @@ inline std::size_t Jump::size() const noexcept {
 /// @details
 /// **选择语义（Accumulative）**
 ///
-/// - 所有 `to()` 调用均为 **累积** 生效，而非覆盖
+/// - 所有 `select()` / `operator[]` 调用均为 **累积** 生效，而非覆盖
 /// - 内部自动去重：同一后继不会被重复跳转，避免重复调度
-/// - `to_all()` 实现无条件广播
+/// - `select_all()` 实现无条件广播
 /// - `reset()` 清空全部已累积的选择
+///
+/// **下标语法**
+///
+/// ```
+///   mj[5]       = true;                  // 单索引开关
+///   mj[1, 2, 3] = {false, true, false};  // 多索引，编译期强制个数一致
+/// ```
 ///
 /// **存储与性能**
 ///
@@ -159,7 +189,66 @@ class MultiJump : public Immovable<MultiJump> {
 
     TFL_WORK_SUBCLASS_FRIENDS
 
-public:
+        public:
+
+                 /// @brief 单索引赋值代理：`mj[i] = true/false`。
+                 class Proxy {
+        friend class MultiJump;
+        MultiJump& m_mj;
+        std::size_t m_idx;
+        Proxy(MultiJump& mj, std::size_t idx) noexcept : m_mj{mj}, m_idx{idx} {}
+    public:
+        /// @brief `= true` 加入跳转集合；`= false` 移除。越界静默忽略。
+        MultiJump& operator=(bool on) {
+            if (m_idx >= m_mj.m_work.m_num_successors) return m_mj;
+            Work* w = m_mj.m_work.m_edges[m_idx];
+            if (on) m_mj._insert(w);
+            else    m_mj._erase(w);
+            return m_mj;
+        }
+    };
+
+    /// @brief 多索引赋值代理：`mj[i, j, k] = {b0, b1, b2}`，编译期强制个数一致。
+    /// @tparam N 索引个数，由 operator[] 变参包大小推导，编译期固定。
+    template <std::size_t N>
+    class MultiProxy {
+        friend class MultiJump;
+        MultiJump& m_mj;
+        std::size_t m_indices[N]; ///< 原生 C 数组，N 编译期已知，零额外开销
+
+        template <typename... Is>
+        MultiProxy(MultiJump& mj, Is... indices) noexcept
+            : m_mj{mj}, m_indices{static_cast<std::size_t>(indices)...} {}
+
+    public:
+        /// @brief `mj[1, 2, 3] = {false, true, false}` — 编译期强制个数一致。
+        template <std::size_t M>
+            requires (M == N)
+        MultiJump& operator=(const bool (&mask)[M]) {
+            const std::size_t sz = m_mj.m_work.m_num_successors;
+            for (std::size_t i = 0; i < N; ++i) {
+                if (m_indices[i] >= sz) continue;
+                Work* w = m_mj.m_work.m_edges[m_indices[i]];
+                if (mask[i]) m_mj._insert(w);
+                else         m_mj._erase(w);
+            }
+            return m_mj;
+        }
+    };
+
+    // ==================== 下标操作 ====================
+
+    /// @brief 单索引：`mj[i] = true/false`。
+    template <std::integral I>
+        requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+    [[nodiscard]] Proxy operator[](I index) noexcept;
+
+    /// @brief 多索引（≥2）：`mj[i, j, k] = {b0, b1, b2}`。
+    template <typename... Is>
+        requires (sizeof...(Is) > 1)
+                && (std::integral<Is> && ...)
+                && (!std::same_as<std::remove_cvref_t<Is>, bool> && ...)
+    [[nodiscard]] MultiProxy<sizeof...(Is)> operator[](Is... indices) noexcept;
 
     // ==================== 跳转操作 ====================
 
@@ -169,13 +258,15 @@ public:
     /// @return `*this`，支持链式调用。
     /// @post 所有有效索引对应的后继被加入跳转集合，越界索引自动忽略。
     template <typename... Is>
-        requires (sizeof...(Is) > 0) && (std::convertible_to<Is, std::size_t> && ...)
-    MultiJump& to(Is... indices);
+        requires (sizeof...(Is) > 0)
+                && (std::integral<Is> && ...)
+                && (!std::same_as<std::remove_cvref_t<Is>, bool> && ...)
+    MultiJump& select(Is... indices);
 
     /// @brief 跳转到所有后继（无条件广播）。
     /// @return `*this`，支持链式调用。
     /// @post 全部后继被加入跳转集合。
-    MultiJump& to_all();
+    MultiJump& select_all();
 
     /// @brief 清空所有已累积的跳转目标。
     /// @return `*this`，支持链式调用。
@@ -184,18 +275,19 @@ public:
 
     /// @brief 按谓词选择所有满足条件的后继作为跳转目标。
     ///
-    /// 与 `Jump::to_if` 不同：不是只选首个匹配，
+    /// 与 `Jump::select_if` 不同：不是只选首个匹配，
     /// 而是选中所有满足谓词的后继。
     ///
     /// @param pred 接受只读 `TaskView` 并返回 `bool` 的可调用对象。
     /// @post 所有满足条件的后继被加入跳转集合。
     template <predicate<TaskView> Pred>
-    MultiJump& to_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
+    MultiJump& select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
 
     // ==================== 查询接口 ====================
 
     /// @brief 返回当前节点的后继总数。
     [[nodiscard]] std::size_t size() const noexcept;
+
 private:
     Work& m_work;                 ///< 绑定至宿主 MultiJumpWork
     SmallVector<Work*> m_targets; ///< 去重后的跳转集合；invoke 返回后 Executor 遍历做强制调度
@@ -204,11 +296,22 @@ private:
 
     /// 去重插入。
     void _insert(Work* w) {
-        // Why: 典型扇出数 < 10，线性扫描去重优于 hash set 的常数开销。
+        if (m_targets.size() >= m_work.m_num_successors) return;
         for (auto* t : m_targets) {
             if (t == w) return;
         }
         m_targets.push_back(w);
+    }
+
+    /// 线性查找移除（swap-and-pop，O(1) 删除，顺序无关）。
+    void _erase(Work* w) noexcept {
+        for (auto it = m_targets.begin(); it != m_targets.end(); ++it) {
+            if (*it == w) {
+                *it = m_targets.back();
+                m_targets.pop_back();
+                return;
+            }
+        }
     }
 };
 
@@ -216,24 +319,37 @@ private:
 //  MultiJump 内联实现
 // ============================================================
 
+template <std::integral I>
+    requires (!std::same_as<std::remove_cvref_t<I>, bool>)
+MultiJump::Proxy MultiJump::operator[](I index) noexcept {
+    return {*this, static_cast<std::size_t>(index)};
+}
 template <typename... Is>
-    requires (sizeof...(Is) > 0) && (std::convertible_to<Is, std::size_t> && ...)
-MultiJump& MultiJump::to(Is... indices) {
-    auto succs = m_work._successors();
-    const std::size_t sz = succs.size();
+    requires (sizeof...(Is) > 1)
+            && (std::integral<Is> && ...)
+            && (!std::same_as<std::remove_cvref_t<Is>, bool> && ...)
+MultiJump::MultiProxy<sizeof...(Is)> MultiJump::operator[](Is... indices) noexcept {
+    return {*this, indices...};
+}
 
-    // Why: IIFE + 折叠表达式在编译期展开变参，运行期零开销越界过滤。
+template <typename... Is>
+    requires (sizeof...(Is) > 0)
+            && (std::integral<Is> && ...)
+            && (!std::same_as<std::remove_cvref_t<Is>, bool> && ...)
+MultiJump& MultiJump::select(Is... indices) {
+    const std::size_t sz = m_work.m_num_successors;
+
     ([&](std::size_t idx) {
-        if (idx < sz) _insert(succs[idx]);
+        if (idx < sz) _insert(m_work.m_edges[idx]);
     }(static_cast<std::size_t>(indices)), ...);
 
     return *this;
 }
 
-inline MultiJump& MultiJump::to_all() {
-    auto succs = m_work._successors();
-    for (auto* suc : succs) {
-        _insert(suc);
+inline MultiJump& MultiJump::select_all() {
+    const std::size_t sz = m_work.m_num_successors;
+    for (std::size_t i = 0; i < sz; ++i) {
+        _insert(m_work.m_edges[i]);
     }
     return *this;
 }
@@ -244,11 +360,11 @@ inline MultiJump& MultiJump::reset() noexcept {
 }
 
 template <predicate<TaskView> Pred>
-MultiJump& MultiJump::to_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
-    auto succs = m_work._successors();
-    for (auto* suc : succs) {
-        if (std::invoke_r<bool>(pred, TaskView{*suc})) {
-            _insert(suc);
+MultiJump& MultiJump::select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
+    const std::size_t sz = m_work.m_num_successors;
+    for (std::size_t i = 0; i < sz; ++i) {
+        if (std::invoke_r<bool>(pred, TaskView{*m_work.m_edges[i]})) {
+            _insert(m_work.m_edges[i]);
         }
     }
     return *this;
