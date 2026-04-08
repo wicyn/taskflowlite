@@ -431,7 +431,7 @@ inline void Executor::_spawn(std::size_t num_workers) {
         wr.m_adaptive_factor = 4;
         wr.m_max_steals = static_cast<std::uint32_t>(num_queues() * 2);
         wr.m_thread = std::thread([this, &wr]() noexcept {
-            wr.m_rng.seed(std::hash<std::thread::id>{}(std::this_thread::get_id()), num_queues());
+            wr.m_rng.seed(std::hash<std::thread::id>{}(std::this_thread::get_id()), static_cast<std::uint32_t>(num_queues()));
             m_handler.on_start(wr);
 
             Work* w = nullptr;
