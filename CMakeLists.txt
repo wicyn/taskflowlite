@@ -54,8 +54,34 @@ option(TASKFLOWLITE_BUILD_EXAMPLES "Build TaskflowLite examples" ${TFL_IS_TOP_LE
 option(TASKFLOWLITE_BUILD_BENCHMARKS "Build TaskflowLite benchmarks" ON)
 option(TASKFLOWLITE_BUILD_TESTS "Build TaskflowLite unit tests" ${TFL_IS_TOP_LEVEL})
 
-# 智能 Sanitizer 总开关 (CI 核心)
-option(TASKFLOWLITE_ENABLE_SANITIZER "Auto-enable ASan on Windows, and TSan+UBSan on Unix" OFF)
+# Sanitizer 三态开关：OFF / ASAN / TSAN (CI 核心)
+# Why: ASan 和 TSan 不能同时启用 (运行时互斥)，且各自捕获完全不同类别的 bug，
+#      所以必须独立成 job 才能完整覆盖。
+set(TASKFLOWLITE_SANITIZER "OFF" CACHE STRING "Sanitizer mode: OFF, ASAN, TSAN")
+set_property(CACHE TASKFLOWLITE_SANITIZER PROPERTY STRINGS OFF ASAN TSAN)
+
+# 向后兼容旧的布尔开关 TASKFLOWLITE_ENABLE_SANITIZER
+# Why: 避免本地脚本和外部 superbuild 突然炸掉，给一个 deprecation 过渡期。
+if(DEFINED TASKFLOWLITE_ENABLE_SANITIZER)
+    message(WARNING
+        "TASKFLOWLITE_ENABLE_SANITIZER is deprecated. "
+        "Use -DTASKFLOWLITE_SANITIZER=ASAN|TSAN|OFF instead.")
+    if(TASKFLOWLITE_ENABLE_SANITIZER)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+            set(TASKFLOWLITE_SANITIZER "ASAN")
+        else()
+            set(TASKFLOWLITE_SANITIZER "TSAN")
+        endif()
+    endif()
+endif()
+
+# 规范化用户输入 (允许 asan / Asan / ASAN 都生效)
+string(TOUPPER "${TASKFLOWLITE_SANITIZER}" TASKFLOWLITE_SANITIZER)
+if(NOT TASKFLOWLITE_SANITIZER MATCHES "^(OFF|ASAN|TSAN)$")
+    message(FATAL_ERROR
+        "TASKFLOWLITE_SANITIZER must be one of: OFF, ASAN, TSAN "
+        "(got: ${TASKFLOWLITE_SANITIZER})")
+endif()
 
 # ==============================================================================
 # 核心库目标定义 (Header-Only Target)
@@ -104,38 +130,58 @@ if(TFL_IS_TOP_LEVEL)
         )
     endif()
 
-    # 2. 智能 Sanitizer 注入逻辑 (按操作系统分发)
-    if(TASKFLOWLITE_ENABLE_SANITIZER)
-        if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-            message(STATUS "🛠️ Auto-Sanitizer: Windows detected. Enabling AddressSanitizer (ASan).")
-            if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-                target_compile_options(tfl_internal_flags INTERFACE /fsanitize=address /Zi)
+    # 2. Sanitizer 注入逻辑 (按值分发：ASAN / TSAN)
+    # Why: ASan 抓 use-after-free / heap-buffer-overflow / stack-overflow，
+    #      TSan 抓 data race / lock order inversion。两者必须分开 job 跑，
+    #      运行时不能共存。
+    if(TASKFLOWLITE_SANITIZER STREQUAL "ASAN")
+        message(STATUS "🛠️  Sanitizer: AddressSanitizer (ASan) enabled.")
 
-                # 解决 MSVC 下 ASan 的常见冲突：移除基本运行时检查
-                string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+            target_compile_options(tfl_internal_flags INTERFACE /fsanitize=address /Zi)
 
-                # 解决 LNK4300: Debug 模式下开启 ASan 必须禁用增量链接
-                target_link_options(tfl_internal_flags INTERFACE $<$<CONFIG:Debug>:/INCREMENTAL:NO>)
+            # 解决 MSVC 下 ASan 的常见冲突：移除基本运行时检查
+            string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
 
-                # 解决 LNK4302: Release 等非 Debug 模式下开启 ASan 必须生成调试符号
-                target_link_options(tfl_internal_flags INTERFACE
-                    $<$<NOT:$<CONFIG:Debug>>:/DEBUG>
-                    $<$<NOT:$<CONFIG:Debug>>:/OPT:REF>
-                    $<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>
-                )
+            # 解决 LNK4300: Debug 模式下开启 ASan 必须禁用增量链接
+            target_link_options(tfl_internal_flags INTERFACE
+                $<$<CONFIG:Debug>:/INCREMENTAL:NO>)
 
-            elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang") # clang-cl
-                target_compile_options(tfl_internal_flags INTERFACE -fsanitize=address -g -fno-omit-frame-pointer)
-            endif()
-        else()
-            message(STATUS "🧵 Auto-Sanitizer: Unix-like OS detected. Enabling TSan + UBSan.")
-            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-                target_compile_options(tfl_internal_flags INTERFACE
-                    -fsanitize=thread,undefined -g -fno-omit-frame-pointer
-                    -Wno-tsan) #不支持独立 atomic_thread_fence，压制已知警告
-                target_link_options(tfl_internal_flags INTERFACE
-                    -fsanitize=thread,undefined)
-            endif()
+            # 解决 LNK4302: Release 等非 Debug 模式下开启 ASan 必须生成调试符号
+            target_link_options(tfl_internal_flags INTERFACE
+                $<$<NOT:$<CONFIG:Debug>>:/DEBUG>
+                $<$<NOT:$<CONFIG:Debug>>:/OPT:REF>
+                $<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>
+            )
+
+        elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+            # Unix (含 clang-cl) 上 ASan 顺便带 UBSan，两者运行时兼容
+            target_compile_options(tfl_internal_flags INTERFACE
+                -fsanitize=address,undefined
+                -fno-omit-frame-pointer
+                -fno-sanitize-recover=all
+                -g)
+            target_link_options(tfl_internal_flags INTERFACE
+                -fsanitize=address,undefined)
+        endif()
+
+    elseif(TASKFLOWLITE_SANITIZER STREQUAL "TSAN")
+        message(STATUS "🧵 Sanitizer: ThreadSanitizer (TSan) enabled.")
+
+        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+            message(FATAL_ERROR
+                "ThreadSanitizer is not supported on MSVC. "
+                "Use TASKFLOWLITE_SANITIZER=ASAN on Windows, "
+                "or switch to clang-cl / a Unix host for TSan coverage.")
+        elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(tfl_internal_flags INTERFACE
+                -fsanitize=thread,undefined
+                -fno-omit-frame-pointer
+                -g
+                -O1
+                -Wno-tsan) # 不支持独立 atomic_thread_fence，压制已知警告
+            target_link_options(tfl_internal_flags INTERFACE
+                -fsanitize=thread,undefined)
         endif()
     endif()
 endif()
@@ -211,7 +257,7 @@ if(TFL_IS_TOP_LEVEL)
     message(STATUS "Build examples:   ${TASKFLOWLITE_BUILD_EXAMPLES}")
     message(STATUS "Build tests:      ${TASKFLOWLITE_BUILD_TESTS}")
     message(STATUS "Build benchmarks: ${TASKFLOWLITE_BUILD_BENCHMARKS}")
-    message(STATUS "Auto Sanitizer:   ${TASKFLOWLITE_ENABLE_SANITIZER}")
+    message(STATUS "Sanitizer:        ${TASKFLOWLITE_SANITIZER}")
     message(STATUS "==================================")
     message(STATUS "")
 endif()

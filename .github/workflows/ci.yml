@@ -1,9 +1,11 @@
 ﻿name: TaskflowLite CI
+
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+
 jobs:
   build-and-test:
     name: ${{ matrix.os }} | ${{ matrix.build_type }} | San=${{ matrix.sanitizer }}
@@ -12,37 +14,53 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ---------- Ubuntu ----------
           - os: ubuntu-latest
             build_type: Release
             sanitizer: OFF
           - os: ubuntu-latest
             build_type: Debug
-            sanitizer: ON
+            sanitizer: ASAN
+          - os: ubuntu-latest
+            build_type: Debug
+            sanitizer: TSAN
+
+          # ---------- macOS ----------
           - os: macos-latest
             build_type: Release
             sanitizer: OFF
           - os: macos-latest
             build_type: Debug
-            sanitizer: ON
+            sanitizer: ASAN
+          - os: macos-latest
+            build_type: Debug
+            sanitizer: TSAN
+
+          # ---------- Windows ----------
+          # Note: TSan is not supported on MSVC, so Windows only gets ASan coverage.
           - os: windows-latest
             build_type: Release
             sanitizer: OFF
           - os: windows-latest
             build_type: Debug
-            sanitizer: ON
+            sanitizer: ASAN
+
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
+
     - name: Configure CMake
       run: >
         cmake -S . -B build
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
         -DTASKFLOWLITE_BUILD_TESTS=ON
-        -DTASKFLOWLITE_ENABLE_SANITIZER=${{ matrix.sanitizer }}
+        -DTASKFLOWLITE_SANITIZER=${{ matrix.sanitizer }}
+
     - name: Build
       run: cmake --build build --config ${{ matrix.build_type }} --parallel 4
+
     - name: Prepare ASan DLLs (Windows Only)
-      if: matrix.os == 'windows-latest' && matrix.sanitizer == 'ON'
+      if: matrix.os == 'windows-latest' && matrix.sanitizer == 'ASAN'
       shell: pwsh
       working-directory: ${{github.workspace}}/build
       run: |
@@ -58,23 +76,28 @@ jobs:
         } else {
             Write-Warning "TaskflowLiteTest.exe not found! Build step might have failed."
         }
+
     - name: Run Tests (Unix)
       if: matrix.os != 'windows-latest'
       working-directory: ${{github.workspace}}/build
       env:
-        TSAN_OPTIONS: ${{ (matrix.sanitizer == 'ON') && format('suppressions={0}/tsan_suppressions.txt', github.workspace) || '' }}
+        TSAN_OPTIONS: ${{ (matrix.sanitizer == 'TSAN') && format('suppressions={0}/tsan_suppressions.txt', github.workspace) || '' }}
+        # ASan + UBSan: halt on first error, print full stack traces
+        ASAN_OPTIONS: ${{ (matrix.sanitizer == 'ASAN') && 'halt_on_error=1:abort_on_error=1:print_stacktrace=1' || '' }}
+        UBSAN_OPTIONS: ${{ (matrix.sanitizer == 'ASAN') && 'halt_on_error=1:print_stacktrace=1' || '' }}
       run: |
-        if [ -n "$TSAN_OPTIONS" ]; then
-        printf '%s\n' \
-          'race:Catch::RunContext' \
-          'race:Catch::Detail' \
-          'race:Catch::StringStreams' \
-          'race:Catch::OutputRedirect' \
-          'race:Catch::ConsoleReporter' \
-          'race:__sanitizer::IsAccessibleMemoryRange' \
-          > ${{github.workspace}}/tsan_suppressions.txt
+        if [ "${{ matrix.sanitizer }}" = "TSAN" ]; then
+          printf '%s\n' \
+            'race:Catch::RunContext' \
+            'race:Catch::Detail' \
+            'race:Catch::StringStreams' \
+            'race:Catch::OutputRedirect' \
+            'race:Catch::ConsoleReporter' \
+            'race:__sanitizer::IsAccessibleMemoryRange' \
+            > ${{github.workspace}}/tsan_suppressions.txt
         fi
         ctest -C ${{ matrix.build_type }} --output-on-failure
+
     - name: Run Tests (Windows)
       if: matrix.os == 'windows-latest'
       working-directory: ${{github.workspace}}/build
