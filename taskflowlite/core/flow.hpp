@@ -30,12 +30,12 @@ class Flow : public MoveOnly<Flow> {
     friend class Task;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS
+    TFL_WORK_SUBCLASS_FRIENDS;
 
-    public:
-        constexpr explicit Flow() = default;
+public:
+    constexpr explicit Flow() = default;
 
-    // ========================================================================
+    // =====================================================a===================
     //  节点插入接口
     // ========================================================================
 

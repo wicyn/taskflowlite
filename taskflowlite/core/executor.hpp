@@ -52,13 +52,13 @@ class Executor : public Immovable<Executor> {
     friend class AsyncTask;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS
+    TFL_WORK_SUBCLASS_FRIENDS;
 
-        public:
-                 /// @brief 创建调度器并启动工作线程
-                 /// @param handler 异常处理策略（WorkerHandler）
-                 /// @param num_workers 工作线程数量（默认 CPU 核心数）
-                 explicit Executor(WorkerHandler& handler, std::size_t num_workers = std::thread::hardware_concurrency());
+public:
+    /// @brief 创建调度器并启动工作线程
+    /// @param handler 异常处理策略（WorkerHandler）
+    /// @param num_workers 工作线程数量（默认 CPU 核心数）
+    explicit Executor(WorkerHandler& handler, std::size_t num_workers = std::thread::hardware_concurrency());
 
     /// @brief 销毁调度器
     /// @post 等待所有已提交任务执行完成，停止所有工作线程并释放资源

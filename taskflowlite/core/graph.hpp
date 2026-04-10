@@ -31,7 +31,7 @@ class Graph {
     friend class Runtime;
     friend class Work;
 
-    TFL_WORK_SUBCLASS_FRIENDS
+    TFL_WORK_SUBCLASS_FRIENDS;
 
 public:
     using value_type = Work*;

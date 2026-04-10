@@ -24,7 +24,7 @@ class Runtime : public Immovable<Runtime> {
     friend class Flow;
     friend class Executor;
     friend class Worker;
-    TFL_WORK_SUBCLASS_FRIENDS
+    TFL_WORK_SUBCLASS_FRIENDS;
 public:
     // ========================================================================
     //  动态任务提交 — Flow
