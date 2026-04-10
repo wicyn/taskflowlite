@@ -65,7 +65,9 @@ public:
     // ========================================================================
     //  拓扑构建
     // ========================================================================
-    Task& name(std::string_view name);
+    template <typename S>
+        requires std::constructible_from<std::string, S>
+    Task& name(S&& name);
 
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
@@ -221,8 +223,11 @@ inline void Task::dump(std::ostream& os, Direction dir) const {
     os << "\n";
 }
 
-inline Task& Task::name(std::string_view name) {
-    m_work->m_name = name;
+
+template <typename S>
+    requires std::constructible_from<std::string, S>
+inline Task& Task::name(S&& name) {
+    m_work->m_name = std::forward<S>(name);
     return *this;
 }
 

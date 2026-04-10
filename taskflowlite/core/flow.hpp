@@ -113,7 +113,10 @@ class Flow : public MoveOnly<Flow> {
     [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
     void dump(std::ostream& os, Direction dir = Direction::Default) const;
 
-    Flow& name(std::string name);
+    template <typename S>
+        requires std::constructible_from<std::string, S>
+    Flow& name(S&& name);
+
     [[nodiscard]] std::string_view name() const noexcept;
 
 private:
@@ -349,9 +352,10 @@ inline void Flow::dump(std::ostream& os, Direction dir) const {
 // ============================================================================
 //  name 实现
 // ============================================================================
-
-inline Flow& Flow::name(std::string name) {
-    m_name = std::move(name);
+template <typename S>
+    requires std::constructible_from<std::string, S>
+inline Flow& Flow::name(S&& name) {
+    m_name = std::forward<S>(name);
     return *this;
 }
 

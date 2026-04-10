@@ -70,8 +70,9 @@ public:
 
     /// @brief 线程安全地设置信号量的名称。
     /// @param name 新的信号量名称。
-    Semaphore& name(std::string_view name);
-
+    template <typename S>
+        requires std::constructible_from<std::string, S>
+    Semaphore& name(S&& name);
 private:
     std::string m_name;
     mutable std::mutex m_lock;       ///< 保护内部状态的互斥锁
@@ -150,8 +151,10 @@ inline std::string_view Semaphore::name() const noexcept {
     return m_name;
 }
 
-inline Semaphore& Semaphore::name(std::string_view name) {
-    m_name = name;
+template <typename S>
+    requires std::constructible_from<std::string, S>
+inline Semaphore& Semaphore::name(S&& name) {
+    m_name = std::forward<S>(name);
     return *this;
 }
 
