@@ -76,14 +76,14 @@ class Work : public Immovable<Work> {
     friend class Jump;
     friend class MultiJump;
 
-    TFL_WORK_SUBCLASS_FRIENDS
+    TFL_WORK_SUBCLASS_FRIENDS;
 
-        public:
-                 /// @brief 静态选项配置位域（构建时确定，执行期只读）。
-                 ///
-                 /// 利用位域压缩技术，将布尔标志和构建期累计的入度计数（join count）
-                 /// 强行塞入单个 32 位无符号整数中，极致节省节点内存开销。
-                 struct Option {
+public:
+    /// @brief 静态选项配置位域（构建时确定，执行期只读）。
+    ///
+    /// 利用位域压缩技术，将布尔标志和构建期累计的入度计数（join count）
+    /// 强行塞入单个 32 位无符号整数中，极致节省节点内存开销。
+    struct Option {
         using type = std::uint64_t;
 
         static constexpr unsigned BITS       = sizeof(type) * 8;

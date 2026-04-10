@@ -51,12 +51,12 @@ class Branch : public Immovable<Branch> {
     friend class Worker;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS
+    TFL_WORK_SUBCLASS_FRIENDS;
 
-        public:
+public:
 
-                 /// @brief 下标赋值代理，支持 `branch[i] = true/false` 语法。
-                 class Proxy {
+    /// @brief 下标赋值代理，支持 `branch[i] = true/false` 语法。
+    class Proxy {
         friend class Branch;
         Branch& m_br;
         std::size_t m_idx;
@@ -191,12 +191,12 @@ class MultiBranch : public Immovable<MultiBranch> {
     friend class Worker;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS
+    TFL_WORK_SUBCLASS_FRIENDS;
 
-        public:
+public:
 
-                 /// @brief 单索引赋值代理：`mb[i] = true/false`。
-                 class Proxy {
+    /// @brief 单索引赋值代理：`mb[i] = true/false`。
+    class Proxy {
         friend class MultiBranch;
         MultiBranch& m_mb;
         std::size_t m_idx;

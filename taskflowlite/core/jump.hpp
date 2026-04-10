@@ -52,12 +52,12 @@ class Jump : public Immovable<Jump> {
     friend class Worker;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS
+    TFL_WORK_SUBCLASS_FRIENDS;
 
-        public:
+public:
 
-                 /// @brief 下标赋值代理，支持 `jump[i] = true/false` 语法。
-                 class Proxy {
+    /// @brief 下标赋值代理，支持 `jump[i] = true/false` 语法。
+    class Proxy {
         friend class Jump;
         Jump& m_jmp;
         std::size_t m_idx;
@@ -187,12 +187,12 @@ class MultiJump : public Immovable<MultiJump> {
     friend class Worker;
     friend class Runtime;
 
-    TFL_WORK_SUBCLASS_FRIENDS
+    TFL_WORK_SUBCLASS_FRIENDS;
 
-        public:
+public:
 
-                 /// @brief 单索引赋值代理：`mj[i] = true/false`。
-                 class Proxy {
+    /// @brief 单索引赋值代理：`mj[i] = true/false`。
+    class Proxy {
         friend class MultiJump;
         MultiJump& m_mj;
         std::size_t m_idx;
