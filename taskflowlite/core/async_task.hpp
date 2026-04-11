@@ -299,7 +299,7 @@ inline std::size_t AsyncTask::hash_value() const noexcept {
 }
 
 inline std::size_t AsyncTask::use_count() const noexcept {
-    return m_work->m_topology->m_use_count.load(std::memory_order_relaxed);
+    return m_work->m_topology->_use_count();
 }
 
 inline bool AsyncTask::running() const noexcept {

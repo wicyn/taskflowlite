@@ -66,41 +66,8 @@ inline constexpr std::size_t cache_line_size = 64;
 #endif
 
 
-
-
-/// @brief 将两个枚举值无损压缩打包成一个 64 位无符号整数键。
-///
-/// 常用于状态机的 (当前状态, 事件) 查找表，或类型分派映射。
-/// E1 占据高位，E2 占据低位，通过位操作确保有符号枚举处理时不发生意外的符号扩展。
-///
-/// @tparam E1 第一个枚举类型。
-/// @tparam E2 第二个枚举类型。
-/// @param e1 第一个枚举值。
-/// @param e2 第二个枚举值。
-/// @return 打包后的 64 位键值。
-/// @pre `E1` 和 `E2` 的底层类型总字节数不能超过 8 字节（64 位）。
-/// @post 返回值完全可逆，可通过位移还原双枚举。
-template<typename E1, typename E2>
-    requires (std::is_enum_v<E1> && std::is_enum_v<E2> &&
-             (sizeof(std::underlying_type_t<E1>) + sizeof(std::underlying_type_t<E2>) <= sizeof(std::uint64_t)))
-inline constexpr auto make_key(E1 e1, E2 e2) noexcept ->std::uint64_t {
-
-    using U1 = std::underlying_type_t<E1>;
-    using U2 = std::underlying_type_t<E2>;
-
-    constexpr unsigned bits1 = sizeof(U1) * 8;
-    constexpr unsigned bits2 = sizeof(U2) * 8;
-
-    // 利用 C++ 规范处理负值转换的模 2^64 特性
-    const auto v1 = static_cast<std::uint64_t>(static_cast<U1>(e1));
-    const auto v2 = static_cast<std::uint64_t>(static_cast<U2>(e2));
-
-    // 生成掩码以清除由于负值强转可能带来的高位符号扩展
-    constexpr std::uint64_t mask1 = (1ULL << bits1) - 1ULL;
-    constexpr std::uint64_t mask2 = (1ULL << bits2) - 1ULL;
-
-    return ((v1 & mask1) << bits2) | (v2 & mask2);
-}
+/// @brief 每字节的二进制位数，等价于 C 的 CHAR_BIT。
+inline constexpr unsigned char_bits = std::numeric_limits<unsigned char>::digits;
 
 /// @brief 不可拷贝、不可移动的 CRTP 空基类。
 ///
