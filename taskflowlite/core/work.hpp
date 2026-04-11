@@ -285,14 +285,6 @@ private:
     [[nodiscard]] std::size_t _num_acquires() const noexcept { return m_semaphores ? m_semaphores->acquires.size() : 0; }
     [[nodiscard]] std::size_t _num_releases() const noexcept { return m_semaphores ? m_semaphores->releases.size() : 0; }
 
-    template <typename T>
-    [[nodiscard]] static std::size_t _find_index(std::span<T* const> s, T* target) noexcept {
-        for (std::size_t i = 0; i < s.size(); ++i) {
-            if (s[i] == target) return i;
-        }
-        return static_cast<std::size_t>(-1);
-    }
-
     void _acquire(Semaphore* sem, std::size_t count);
     void _release(Semaphore* sem, std::size_t count);
     void _remove_acquire(Semaphore* sem) noexcept;
@@ -1270,14 +1262,15 @@ inline void Work::_precede(Work* const target) {
 inline void Work::_remove_successor(Work* const target) noexcept {
     if (!target) return;
 
-    const std::size_t idx = _find_index<Work>(_successors(), target);
-    if (idx == static_cast<std::size_t>(-1)) return;
+    auto succ = _successors();
+    auto it = std::ranges::find(succ, target);
+    if (it == succ.end()) return;
+    _erase_successor_at(static_cast<std::size_t>(it - succ.begin()));
 
-    _erase_successor_at(idx);
-
-    const std::size_t pidx = _find_index<Work>(target->_predecessors(), this);
-    TFL_ASSERT(pidx != static_cast<std::size_t>(-1) && "predecessor must exist");
-    target->_erase_predecessor_at(pidx);
+    auto pred = target->_predecessors();
+    auto pit = std::ranges::find(pred, this);
+    TFL_ASSERT(pit != pred.end() && "predecessor must exist");
+    target->_erase_predecessor_at(static_cast<std::size_t>(pit - pred.begin()));
 
     if (std::size_t w = _join_weight(); w > 0) {
         target->_sub_join_count(w);
@@ -1286,9 +1279,10 @@ inline void Work::_remove_successor(Work* const target) noexcept {
 
 inline void Work::_clear_predecessors() noexcept {
     for (Work* pred : _predecessors()) {
-        const std::size_t idx = _find_index<Work>(pred->_successors(), this);
-        TFL_ASSERT(idx != static_cast<std::size_t>(-1) && "successor must exist");
-        pred->_erase_successor_at(idx);
+        auto succ = pred->_successors();
+        auto it = std::ranges::find(succ, this);
+        TFL_ASSERT(it != succ.end() && "successor must exist");
+        pred->_erase_successor_at(static_cast<std::size_t>(it - succ.begin()));
     }
 
     _set_join_count(0);
@@ -1296,20 +1290,18 @@ inline void Work::_clear_predecessors() noexcept {
 }
 
 inline void Work::_clear_successors() noexcept {
-    if (std::size_t w = _join_weight(); w > 0) {
-        for (Work* succ : _successors()) {
+    const std::size_t w = _join_weight();
+
+    for (Work* succ : _successors()) {
+        if (w > 0) {
             succ->_sub_join_count(w);
-            const std::size_t idx = _find_index<Work>(succ->_predecessors(), this);
-            TFL_ASSERT(idx != static_cast<std::size_t>(-1) && "predecessor must exist");
-            succ->_erase_predecessor_at(idx);
         }
-    } else {
-        for (Work* succ : _successors()) {
-            const std::size_t idx = _find_index<Work>(succ->_predecessors(), this);
-            TFL_ASSERT(idx != static_cast<std::size_t>(-1) && "predecessor must exist");
-            succ->_erase_predecessor_at(idx);
-        }
+        auto pred = succ->_predecessors();
+        auto it = std::ranges::find(pred, this);
+        TFL_ASSERT(it != pred.end() && "predecessor must exist");
+        succ->_erase_predecessor_at(static_cast<std::size_t>(it - pred.begin()));
     }
+
     // 极致优化：直接擦除前半段的后继节点，利用标准库底层的 memmove 将前驱节点整体前移
     m_edges.erase(m_edges.begin(), m_edges.begin() + m_num_successors);
     m_num_successors = 0;
