@@ -15,6 +15,7 @@
 #include <stack>
 #include <future>
 #include <cmath>
+#include <climits>
 
 #include "enums.hpp"
 #include "utility.hpp"
@@ -86,7 +87,7 @@ public:
     struct Option {
         using type = std::uint64_t;
 
-        static constexpr unsigned BITS       = sizeof(type) * 8;
+        static constexpr unsigned BITS       = sizeof(type) * char_bits;
         static constexpr unsigned FLAG_BITS  = 8;
         static constexpr unsigned COUNT_BITS = BITS - FLAG_BITS;
 
@@ -105,7 +106,7 @@ protected:
     struct State {
         using type = std::uint32_t;
 
-        static constexpr unsigned BITS       = sizeof(type) * 8;
+        static constexpr unsigned BITS       = sizeof(type) * char_bits;
         static constexpr type NONE      = 0;
 
         /// @brief 标记该节点在执行用户闭包的过程中抛出了异常。
@@ -240,8 +241,8 @@ private:
     [[nodiscard]] bool _is_exception() const noexcept { return m_state.load(std::memory_order_relaxed) & State::EXCEPTION; }
     [[nodiscard]] bool _is_caught() const noexcept { return m_state.load(std::memory_order_relaxed) & State::CAUGHT; }
 
-    [[nodiscard]] bool _is_stopped() const noexcept {
-        return (m_state.load(std::memory_order_relaxed) & State::EXCEPTION) || m_topology->_is_stopped();
+    [[nodiscard]] bool _should_abort() const noexcept {
+        return (m_state.load(std::memory_order_relaxed) & State::EXCEPTION) || m_topology->m_stopped.test(std::memory_order_relaxed);
     }
 
     [[nodiscard]] bool _try_catch_exception() noexcept {

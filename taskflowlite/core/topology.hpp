@@ -66,10 +66,10 @@ private:
     void _wait() const noexcept;
     void _stop() noexcept;
     void _incref() noexcept;
-    bool _decref() noexcept;
-    [[nodiscard]] bool _is_stopped() const noexcept;
+    [[nodiscard]] bool _decref() noexcept;
     [[nodiscard]] bool _is_running() const noexcept;
     [[nodiscard]] bool _is_finished() const noexcept;
+    [[nodiscard]] std::size_t _use_count() const noexcept;
 };
 
 // ============================================================================
@@ -117,10 +117,6 @@ inline bool Topology::_decref() noexcept {
     return m_use_count.fetch_sub(1, std::memory_order_acq_rel) == 1;
 }
 
-inline bool Topology::_is_stopped() const noexcept {
-    return m_stopped.test(std::memory_order_relaxed);
-}
-
 inline bool Topology::_is_running() const noexcept {
     auto s = m_state.load(std::memory_order_relaxed);
     return s == State::Running || s == State::Locking;
@@ -130,4 +126,7 @@ inline bool Topology::_is_finished() const noexcept {
     return m_state.load(std::memory_order_relaxed) == State::Finished;
 }
 
+inline std::size_t Topology::_use_count() const noexcept {
+    return m_use_count.load(std::memory_order_relaxed);
+}
 }  // namespace tfl

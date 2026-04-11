@@ -1028,7 +1028,7 @@ auto& target_exec = t->m_topology->m_executor;              \
 template <typename F, typename... Args>
 void BasicWork<F, Args...>::invoke(Work* self, Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<BasicWork*>(self);
-    if (w->_is_stopped()) [[unlikely]] {
+    if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
@@ -1063,7 +1063,7 @@ void BasicWork<F, Args...>::invoke(Work* self, Executor& exe, Worker& wr, Work*&
 template <typename F, typename... Args>
 void BranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<BranchWork*>(self);
-    if (w->_is_stopped()) [[unlikely]] {
+    if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
@@ -1103,7 +1103,7 @@ void BranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*&
 template <typename F, typename... Args>
 void MultiBranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<MultiBranchWork*>(self);
-    if (w->_is_stopped()) [[unlikely]] {
+    if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
@@ -1143,7 +1143,7 @@ void MultiBranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, W
 template <typename F, typename... Args>
 void JumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<JumpWork*>(self);
-    if (w->_is_stopped()) [[unlikely]] {
+    if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
@@ -1179,7 +1179,7 @@ void JumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& c
 template <typename F, typename... Args>
 void MultiJumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<MultiJumpWork*>(self);
-    if (w->_is_stopped()) [[unlikely]] {
+    if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
@@ -1215,7 +1215,7 @@ void MultiJumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Wor
 template <typename F, typename... Args>
 void RuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<RuntimeWork*>(self);
-    if (w->_is_stopped()) [[unlikely]] {
+    if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
         return;
     }
@@ -1274,8 +1274,8 @@ void SubflowWork<FlowStore, P>::invoke(Work* self,Executor& exe, Worker& wr, Wor
     // ── 终止判定：三条件任一成立即结束循环 ──
     //   pred == true    → 用户谓词决定停止迭代
     //   num_sources == 0 → 子图为空或所有节点均有前驱（无法启动）
-    //   _is_stopped()   → 拓扑层面已被异常终止
-    if (bool pred = std::invoke_r<bool>(w->m_pred); pred || w->m_num_sources == 0 || w->_is_stopped()) {
+    //   _should_abort()   → 拓扑层面已被异常终止
+    if (bool pred = std::invoke_r<bool>(w->m_pred); pred || w->m_num_sources == 0 || w->_should_abort()) {
         w->m_num_sources = 0;                              // 归零，为下次图复用做好准备
         w->_release_semaphores(TFL_SEM_SCHEDULER);         // 归还信号量配额，唤醒等待者
         exe._tear_down_task(w, wr, cache);                 // 走静态图依赖传播，通知后继节点
@@ -1497,8 +1497,8 @@ void DepFlowWork<FlowStore, P, C>::invoke(Work* self,Executor& exe, Worker& wr, 
     // ── 终止判定：三条件任一成立即结束循环 ──
     //   pred == true  → 用户谓词决定停止迭代
     //   num_sources == 0 → 子图为空或所有节点均有前驱（无法启动）
-    //   _is_stopped() → 拓扑层面已被异常终止
-    if (bool pred = std::invoke_r<bool>(w->m_pred); pred || w->m_num_sources == 0 || w->_is_stopped()) {
+    //   _should_abort() → 拓扑层面已被异常终止
+    if (bool pred = std::invoke_r<bool>(w->m_pred); pred || w->m_num_sources == 0 || w->_should_abort()) {
         w->m_num_sources = 0;                              // 归零，为下次 start() 重入做好准备
         w->_release_semaphores(TFL_SEM_SCHEDULER);         // 归还信号量配额，唤醒等待者
         std::invoke(w->m_callback);                        // 用户终止回调（生命周期落幕通知）
