@@ -547,7 +547,7 @@ explore:
     goto explore;
 }
 
-inline std::size_t Executor::_set_up_graph(Graph& g, Topology* topo, Work* parent) {
+TFL_FORCE_INLINE std::size_t Executor::_set_up_graph(Graph& g, Topology* topo, Work* parent) {
     Work** const data = g.m_works.data();
     std::size_t const size = g.m_works.size();
     std::size_t n = 0;
@@ -560,9 +560,9 @@ inline std::size_t Executor::_set_up_graph(Graph& g, Topology* topo, Work* paren
             w->m_exception_ptr = nullptr;
         }
         w->m_state.store(Work::State::NONE, std::memory_order_relaxed);
-        w->m_join_counter.store(w->_join_count(), std::memory_order_relaxed);
+        w->m_join_counter.store(w->m_options & Work::Option::COUNT_MASK, std::memory_order_relaxed);
 
-        if (w->_num_predecessors() == 0) {
+        if ((w->m_edges.size() - w->m_num_successors) == 0) {
             std::swap(data[i], data[n++]);
         }
     }
@@ -579,7 +579,7 @@ inline std::size_t Executor::_set_up_graph(Graph& g, Topology* topo, Work* paren
 /// @memory_order
 /// - fetch_sub(acq_rel): 确保当前任务结果对后继可见
 /// - fetch_add(relaxed): 仅计数，不需跨线程同步
-inline void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cache) {
+TFL_FORCE_INLINE void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cache) {
     w->m_join_counter.fetch_add(w->_join_count(), std::memory_order_relaxed);
     auto* parent = w->m_parent;
     if (!w->_is_exception()) [[likely]] {
@@ -605,7 +605,7 @@ inline void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cache) {
 /// @par 设计意图
 /// Jump 任务是"特权通道"，可以无视正常依赖关系直接跳转到目标节点。
 /// 这里通过直接将目标节点的 join_counter 置零来实现"强制执行"。
-inline void Executor::_tear_down_jump_task(Work* w, Worker& wr, Work*& cache, Work* target) {
+TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work* w, Worker& wr, Work*& cache, Work* target) {
     w->m_join_counter.fetch_add(w->_join_count(), std::memory_order_relaxed);
     auto* parent = w->m_parent;
     if (!w->_is_exception() && target) [[likely]] {
@@ -619,7 +619,7 @@ inline void Executor::_tear_down_jump_task(Work* w, Worker& wr, Work*& cache, Wo
     _schedule_parent(parent, wr, cache);
 }
 
-inline void Executor::_tear_down_multi_jump_task(Work* w, Worker& wr, Work*& cache, const SmallVector<Work*>& targets) {
+TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work* w, Worker& wr, Work*& cache, const SmallVector<Work*>& targets) {
     w->m_join_counter.fetch_add(w->_join_count(), std::memory_order_relaxed);
     auto* parent = w->m_parent;
     if (!w->_is_exception()) [[likely]] {
@@ -672,7 +672,6 @@ inline void Executor::_set_up_dep_async_task(Work* w, I first, S last, std::size
 
             // 3. 锁被占用：我们只自旋等待，坚决不触发 CAS 操作（减少总线竞争）
             if (target == Topology::State::Locking) {
-                // 推荐在这里加个硬件 pause 指令，防止 CPU 100% 空转发热
                 continue;
             }
 
@@ -757,7 +756,7 @@ inline void Executor::_process_exception(Work* w) {
     w->m_exception_ptr = eptr;
 }
 
-void Executor::_push_global(Work* val) {
+inline void Executor::_push_global(Work* val) {
     std::size_t const size = m_buffers.size();
     std::size_t const b = detail::mulhi64(
         reinterpret_cast<std::uintptr_t>(val) * 11400714819323198485ULL,
@@ -789,7 +788,7 @@ void Executor::_push_global(Work* val) {
 
 template <std::random_access_iterator Iterator>
     requires std::convertible_to<std::iter_reference_t<Iterator>, Work*>
-void Executor::_push_global(Iterator first, std::size_t n) {
+inline void Executor::_push_global(Iterator first, std::size_t n) {
     std::size_t const size = m_buffers.size();
     std::size_t const b = detail::mulhi64(
         reinterpret_cast<std::uintptr_t>(*first) * 11400714819323198485ULL,
@@ -863,7 +862,7 @@ inline void Executor::_schedule(Work* w) {
 /// 当子任务全部完成时：
 /// - 普通父任务：等待后续调度
 /// - PREEMPTED 父任务：直接插入 cache 继续执行（抢占执行权）
-inline void Executor::_schedule_parent(Work* parent, Worker& wr, Work*& cache) {
+TFL_FORCE_INLINE void Executor::_schedule_parent(Work* parent, Worker& wr, Work*& cache) {
     auto ops = parent->m_options;
     if (parent->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         if (ops & Work::Option::PREEMPTED) {
@@ -963,7 +962,7 @@ inline Worker* Executor::_this_worker() {
 /// @par 链式执行
 /// 任务完成后可能产生满足执行条件的后继（放入 cache）。
 /// 这里直接执行 cache 中的任务，避免再次入队出队的开销。
-inline void Executor::_invoke(Worker& wr, Work* w) {
+TFL_FORCE_INLINE void Executor::_invoke(Worker& wr, Work* w) {
     do {
         Work* cache{nullptr};
         w->m_invoke(w, *this, wr, cache);
@@ -1026,7 +1025,7 @@ auto& target_exec = t->m_topology->m_executor;              \
 // ============================================================================
 
 template <typename F, typename... Args>
-void BasicWork<F, Args...>::invoke(Work* self, Executor& exe, Worker& wr, Work*& cache) {
+inline void BasicWork<F, Args...>::invoke(Work* self, Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<BasicWork*>(self);
     if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
@@ -1061,7 +1060,7 @@ void BasicWork<F, Args...>::invoke(Work* self, Executor& exe, Worker& wr, Work*&
 }
 
 template <typename F, typename... Args>
-void BranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+inline void BranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<BranchWork*>(self);
     if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
@@ -1101,7 +1100,7 @@ void BranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*&
 }
 
 template <typename F, typename... Args>
-void MultiBranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+inline void MultiBranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<MultiBranchWork*>(self);
     if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
@@ -1141,7 +1140,7 @@ void MultiBranchWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, W
 }
 
 template <typename F, typename... Args>
-void JumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+inline void JumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<JumpWork*>(self);
     if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
@@ -1177,7 +1176,7 @@ void JumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& c
 }
 
 template <typename F, typename... Args>
-void MultiJumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+inline void MultiJumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<MultiJumpWork*>(self);
     if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
@@ -1213,7 +1212,7 @@ void MultiJumpWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Wor
 }
 
 template <typename F, typename... Args>
-void RuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+inline void RuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<RuntimeWork*>(self);
     if (w->_should_abort()) [[unlikely]] {
         exe._schedule_parent(w->m_parent, wr, cache);
@@ -1253,7 +1252,7 @@ void RuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*
 // ============================================================================
 
 template <typename FlowStore, typename P>
-void SubflowWork<FlowStore, P>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+inline void SubflowWork<FlowStore, P>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<SubflowWork*>(self);
     auto& graph = detail::unwrap(w->m_flow_store).m_graph;
 
@@ -1292,7 +1291,7 @@ void SubflowWork<FlowStore, P>::invoke(Work* self,Executor& exe, Worker& wr, Wor
 // ============================================================================
 
 template <typename F, typename... Args>
-void AsyncBasicWork<F, Args...>::invoke(Work* self,Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
+inline void AsyncBasicWork<F, Args...>::invoke(Work* self,Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
     auto* w = static_cast<AsyncBasicWork*>(self);
     if constexpr (sizeof...(Args) == 0) {
         try {
@@ -1311,7 +1310,7 @@ void AsyncBasicWork<F, Args...>::invoke(Work* self,Executor& exe, [[maybe_unused
 }
 
 template <typename F, typename... Args>
-void AsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
+inline void AsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
     auto* w = static_cast<AsyncRuntimeWork*>(self);
     Runtime rt(*w, wr, *w->m_topology, exe);
     if constexpr (sizeof...(Args) == 0) {
@@ -1335,7 +1334,7 @@ void AsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, 
 // ============================================================================
 
 template <typename F, typename R, typename... Args>
-void AsyncBasicPromiseWork<F, R, Args...>::invoke(Work* self,Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
+inline void AsyncBasicPromiseWork<F, R, Args...>::invoke(Work* self,Executor& exe, [[maybe_unused]] Worker& wr, [[maybe_unused]] Work*& cache) {
     auto* w = static_cast<AsyncBasicPromiseWork*>(self);
     try {
         if constexpr (std::is_void_v<R>) {
@@ -1367,7 +1366,7 @@ void AsyncBasicPromiseWork<F, R, Args...>::invoke(Work* self,Executor& exe, [[ma
 }
 
 template <typename F, typename R, typename... Args>
-void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Work* self,Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
+inline void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Work* self,Executor& exe, Worker& wr, [[maybe_unused]] Work*& cache) {
     auto* w = static_cast<AsyncRuntimePromiseWork*>(self);
     Runtime rt(*w, wr, *w->m_topology, exe);
     try {
@@ -1404,7 +1403,7 @@ void AsyncRuntimePromiseWork<F, R, Args...>::invoke(Work* self,Executor& exe, Wo
 // ============================================================================
 
 template <typename F, typename... Args>
-void DepAsyncBasicWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+inline void DepAsyncBasicWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<DepAsyncBasicWork*>(self);
     if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
@@ -1434,7 +1433,7 @@ void DepAsyncBasicWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr,
 }
 
 template <typename F, typename... Args>
-void DepAsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+inline void DepAsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<DepAsyncRuntimeWork*>(self);
     if (!w->_try_acquire_semaphores(TFL_SEM_SCHEDULER)) {
         return;
@@ -1476,7 +1475,7 @@ void DepAsyncRuntimeWork<F, Args...>::invoke(Work* self,Executor& exe, Worker& w
 /// 子图拓扑初始化；子图跑完后 PREEMPTED 机制将控制权交还本节点，
 /// 此时 m_num_sources > 0 标识重入，仅执行观察者回调。
 template <typename FlowStore, typename P, typename C>
-void DepFlowWork<FlowStore, P, C>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
+inline void DepFlowWork<FlowStore, P, C>::invoke(Work* self,Executor& exe, Worker& wr, Work*& cache) {
     auto* w = static_cast<DepFlowWork*>(self);
     auto& graph = detail::unwrap(w->m_flow_store).m_graph;
 

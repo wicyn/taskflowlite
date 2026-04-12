@@ -55,17 +55,17 @@ private:
     // 核心任务队列：Owner 线程 LIFO 存取，Stealer 线程 FIFO 窃取
     BoundedQueue<Work*, TFL_DEFAULT_QUEUE_SIZE> m_wslq;
 
-    SplitMix64 m_rng;                     ///< 随机数生成器（每个 Worker 独立序列）
-    std::size_t m_vtm{0};                ///< 上次成功窃取的队列索引（局部性优化）
-    std::uint32_t m_adaptive_factor{4};  ///< 动态退避系数（窃取失败阈值调整）
-    std::uint32_t m_max_steals{0};       ///< 单轮最大窃取尝试次数
-    std::size_t m_id{0};                 ///< 全局唯一 ID
+    SplitMix64          m_rng;                     ///< 随机数生成器（每个 Worker 独立序列）
+    std::size_t         m_vtm{0};                ///< 上次成功窃取的队列索引（局部性优化）
+    std::uint32_t       m_adaptive_factor{4};  ///< 动态退避系数（窃取失败阈值调整）
+    std::uint32_t       m_max_steals{0};       ///< 单轮最大窃取尝试次数
+    std::size_t         m_id{0};                 ///< 全局唯一 ID
 
     // ---- 独立 cache line：跨线程终止信号 ----
     alignas(2 * cache_line_size)
         std::atomic_flag m_terminate = ATOMIC_FLAG_INIT;
 
-    std::thread m_thread;
+    std::thread         m_thread;
 };
 /// @brief Worker 的只读安全视图代理
 ///

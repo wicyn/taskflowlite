@@ -1,4 +1,5 @@
-﻿/// @file bounded_queue.hpp
+﻿
+/// @file bounded_queue.hpp
 /// @brief 无锁有界环形队列 - Work-Stealing 调度器的本地任务队列核心
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -91,10 +92,10 @@ private:
         std::atomic<Tp> m_buf[cap];
 
     alignas(2 * cache_line_size)
-        std::atomic<std::int64_t> m_top;   ///< 仅 Stealer 写入
+        std::atomic<std::int64_t> m_top{0};              ///< 仅 Stealer 写入，独占缓存行
 
     alignas(2 * cache_line_size)
-        std::atomic<std::int64_t> m_bottom; ///< 仅 Owner 写入
+        std::atomic<std::int64_t> m_bottom{0};           ///< 仅 Owner 写入，独占缓存行
 };
 
 // ============================================================================
@@ -160,7 +161,7 @@ bool BoundedQueue<Tp, cap>::try_push(Tp val) noexcept {
 
     // @invariant: 队列满的条件是 (bottom - top) + 1 > cap
     // 即剩余空间 < 1 时不可推入
-    if (static_cast<std::int64_t>(cap) < (bottom - top) + 1) {
+    if (static_cast<std::int64_t>(cap) < (bottom - top) + 1) [[unlikely]] {
         return false;
     }
 
@@ -182,7 +183,7 @@ void BoundedQueue<Tp, cap>::push(Tp val, C&& on_full) {
     std::int64_t const bottom = m_bottom.load(std::memory_order_relaxed);
     std::int64_t const top = m_top.load(std::memory_order_acquire);
 
-    if (static_cast<std::int64_t>(cap) < (bottom - top) + 1) {
+    if (static_cast<std::int64_t>(cap) < (bottom - top) + 1) [[unlikely]] {
         std::invoke(on_full); // 溢出处理
         return;
     }
@@ -216,7 +217,7 @@ void BoundedQueue<Tp, cap>::push(Iterator first, std::size_t n, C&& on_full) {
 
     std::size_t const count = static_cast<std::size_t>(
         std::min(static_cast<std::int64_t>(n), available)
-    );
+        );
 
     // 批量写入缓冲区（全部使用 relaxed 序，最后一次性 publish）
     for (std::size_t i = 0; i < count; ++i) {
@@ -271,16 +272,16 @@ Tp BoundedQueue<Tp, cap>::pop() noexcept {
 
     std::int64_t top = m_top.load(std::memory_order_relaxed);
 
-    if (top <= bottom) {
+    if (top <= bottom) [[likely]] {
         Tp val = m_buf[static_cast<std::size_t>(bottom) & k_mask].load(std::memory_order_relaxed);
 
         // 最后一个元素的竞争处理
-        if (top == bottom) {
+        if (top == bottom) [[unlikely]] {
             // CAS: 尝试原子地将 top 从 top 改为 top+1
             // success: release 语义使本次 pop 结果对其他线程可见
             // failure: Stealer 已抢先，放弃并还原 bottom
             if (!m_top.compare_exchange_strong(top, top + 1,
-                                               std::memory_order_seq_cst, std::memory_order_relaxed)) {
+                                               std::memory_order_seq_cst, std::memory_order_relaxed)) [[unlikely]] {
                 m_bottom.store(bottom + 1, std::memory_order_relaxed);
                 return nullptr;
             }
@@ -317,19 +318,19 @@ Tp BoundedQueue<Tp, cap>::pop() noexcept {
 /// @note: 即使窃取成功，原元素仍保留在队列中（被覆盖前），这是安全的设计
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
-Tp BoundedQueue<Tp, cap>::steal() noexcept {
+TFL_FORCE_INLINE Tp BoundedQueue<Tp, cap>::steal() noexcept {
     std::int64_t top = m_top.load(std::memory_order_acquire);
     std::atomic_thread_fence(std::memory_order_seq_cst);
     std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
 
     Tp val{nullptr};
-    if (top < bottom) {
+    if (top < bottom) [[likely]] {
         // 读取元素（此时尚未真正"获取"，仅作为候选）
         val = m_buf[static_cast<std::size_t>(top) & k_mask].load(std::memory_order_relaxed);
 
         // CAS 尝试获取元素（可能与其他 Stealer 竞争）
         if (!m_top.compare_exchange_strong(top, top + 1,
-                                           std::memory_order_seq_cst, std::memory_order_relaxed)) {
+                                           std::memory_order_seq_cst, std::memory_order_relaxed)) [[unlikely]] {
             return nullptr; // 竞争失败
         }
     }
@@ -346,18 +347,18 @@ Tp BoundedQueue<Tp, cap>::steal() noexcept {
 /// @performance: 成功窃取时 O(1)，空窃取时 O(1)
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
-Tp BoundedQueue<Tp, cap>::steal(std::size_t& num_empty_steals) noexcept {
+TFL_FORCE_INLINE Tp BoundedQueue<Tp, cap>::steal(std::size_t& num_empty_steals) noexcept {
     std::int64_t top = m_top.load(std::memory_order_acquire);
     std::atomic_thread_fence(std::memory_order_seq_cst);
     std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
 
     Tp val{nullptr};
-    if (top < bottom) {
+    if (top < bottom) [[likely]] {
         num_empty_steals = 0; // 成功窃取，重置计数器
         val = m_buf[static_cast<std::size_t>(top) & k_mask].load(std::memory_order_relaxed);
 
         if (!m_top.compare_exchange_strong(top, top + 1,
-                                           std::memory_order_seq_cst, std::memory_order_relaxed)) {
+                                           std::memory_order_seq_cst, std::memory_order_relaxed)) [[unlikely]] {
             return nullptr;
         }
     } else {

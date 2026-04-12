@@ -1442,7 +1442,7 @@ inline void Work::_clear_releases() noexcept {
 
 template <typename F>
     requires std::invocable<F&, Work*>
-inline bool Work::_try_acquire_semaphores(F&& on_wake) {
+TFL_FORCE_INLINE bool Work::_try_acquire_semaphores(F&& on_wake) {
     if (!m_semaphores) [[likely]] return true;
     auto& acqs = m_semaphores->acquires;
     for (std::size_t i = 0; i < acqs.size(); ++i) {
@@ -1462,7 +1462,7 @@ inline bool Work::_try_acquire_semaphores(F&& on_wake) {
 
 template <typename F>
     requires std::invocable<F&, Work*>
-inline void Work::_release_semaphores(F&& on_wake) {
+TFL_FORCE_INLINE void Work::_release_semaphores(F&& on_wake) {
     if (!m_semaphores) [[likely]] return;
 
     // 遍历所有 release 描述符，按指定的 count 归还配额
@@ -1471,19 +1471,17 @@ inline void Work::_release_semaphores(F&& on_wake) {
     }
 }
 
-inline void Work::_notify_before(Worker& wr) const {
-    if (m_observers) {
-        for (auto& aspect : m_observers->observers) {
-            aspect->on_before(WorkerView{wr});
-        }
+TFL_FORCE_INLINE void Work::_notify_before(Worker& wr) const {
+    if (!m_observers) [[likely]] return;
+    for (auto& aspect : m_observers->observers) {
+        aspect->on_before(WorkerView{wr});
     }
 }
 
-inline void Work::_notify_after(Worker& wr) const {
-    if (m_observers) {
-        for (auto& aspect : m_observers->observers) {
-            aspect->on_after(WorkerView{wr});
-        }
+TFL_FORCE_INLINE void Work::_notify_after(Worker& wr) const {
+    if (!m_observers) [[likely]] return;
+    for (auto& aspect : m_observers->observers) {
+        aspect->on_after(WorkerView{wr});
     }
 }
 
