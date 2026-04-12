@@ -313,27 +313,29 @@ target_compile_options(your_target PRIVATE -O3 -march=native)
 
 ### Comprehensive Results (lower is better)
 
+> Data is from a representative single run on the same hardware; trends are consistent across multiple runs.
+
 | # | Workload | Taskflow (ms) | TaskflowLite (ms) | Speedup |
 |---|---|---:|---:|---:|
-| 01 | 32 parallel \| 8 threads \| 500k runs   | 1607 | 1270 | **+21.0%** |
-| 02 | 32 serial   \| 1 thread  \| 1M runs    | 1310 | 1034 | **+21.1%** |
-| 03 | diamond DAG \| 2 threads \| 1M runs    |  361 |  317 | **+12.2%** |
-| 04a | 4×2  full   \| 2 threads \| 1M runs   |  592 |  563 | **+4.9%**  |
-| 04b | 6×4  full   \| 4 threads \| 500k runs | 1766 | 1694 | **+4.1%**  |
-| 04c | 8×8  full   \| 8 threads \| 100k runs | 1253 | 1027 | **+18.0%** |
-| 04d | 8×16 full   \| 8 threads \| 50k runs  | 1453 | 1125 | **+22.6%** |
-| 04e | 8×32 full   \| 8 threads \| 20k runs  | 1475 | 1107 | **+24.9%** |
-| 04f | 6×100 full  \| 8 threads \| 2k runs   |  672 |  508 | **+24.4%** |
-| 05 | binary tree  \| 8 threads \| 500k runs | 2754 | 2195 | **+20.3%** |
-| 06 | 1→256→1     \| 8 threads \| 100k runs | 4043 | 3363 | **+16.8%** |
-| 07 | 16 pipes     \| 8 threads \| 200k runs | 2436 | 1690 | **+30.6%** |
-| 08 | 16×16 grid   \| 8 threads \| 100k runs | 2701 | 1896 | **+29.8%** |
-| 09 | sparse DAG   \| 8 threads \| 500k runs | 3874 | 2831 | **+26.9%** |
-| 10 | cond / jump retry \| 1 thread \| 1M iter |  52 |   55 | −5.8%      |
-| 11 | multi-cond / multi-jump \| 4 threads \| 200k iter | 76 | 62 | **+18.4%** |
-| 12 | subflow ×1   \| 4 threads \| 200k runs |  196 |  156 | **+20.4%** |
-| 13 | subflow loop \| 2 threads \| 500k iter |  156 |  114 | **+26.9%** |
-| **Total** | **18 workloads** | **26877** | **20957** | **+22.0%** |
+| 01 | 32 parallel \| 8 threads \| 500k runs   | 1442 | 1106 | **+23.3%** |
+| 02 | 32 serial   \| 1 thread  \| 1M runs    | 1330 | 1007 | **+24.3%** |
+| 03 | diamond DAG \| 2 threads \| 1M runs    |  362 |  296 | **+18.2%** |
+| 04a | 4×2  full   \| 2 threads \| 1M runs   |  602 |  512 | **+15.0%** |
+| 04b | 6×4  full   \| 4 threads \| 500k runs | 1762 | 1689 | **+4.1%**  |
+| 04c | 8×8  full   \| 8 threads \| 100k runs | 1218 | 1043 | **+14.4%** |
+| 04d | 8×16 full   \| 8 threads \| 50k runs  | 1448 | 1154 | **+20.3%** |
+| 04e | 8×32 full   \| 8 threads \| 20k runs  | 1476 | 1151 | **+22.0%** |
+| 04f | 6×100 full  \| 8 threads \| 2k runs   |  675 |  509 | **+24.6%** |
+| 05 | binary tree  \| 8 threads \| 500k runs | 3220 | 2221 | **+31.0%** |
+| 06 | 1→256→1     \| 8 threads \| 100k runs | 4056 | 3452 | **+14.9%** |
+| 07 | 16 pipes     \| 8 threads \| 200k runs | 2468 | 1685 | **+31.7%** |
+| 08 | 16×16 grid   \| 8 threads \| 100k runs | 2731 | 1962 | **+28.2%** |
+| 09 | sparse DAG   \| 8 threads \| 500k runs | 3862 | 2888 | **+25.2%** |
+| 10 | cond / jump retry \| 1 thread \| 1M iter |  54 |   53 | **+1.9%**  |
+| 11 | multi-cond / multi-jump \| 4 threads \| 200k iter | 75 | 60 | **+20.0%** |
+| 12 | subflow ×1   \| 4 threads \| 200k runs |  209 |  148 | **+29.2%** |
+| 13 | subflow loop \| 2 threads \| 500k iter |  158 |  107 | **+32.3%** |
+| **Total** | **18 workloads** | **27148** | **21043** | **+22.5%** |
 
 ### Micro-benchmark: 100 Layers × 100 Tasks
 
@@ -344,13 +346,12 @@ tasks). Each runs for 10 iterations on 8 threads.
 
 | Scenario | Metric | Taskflow | TaskflowLite | Speedup |
 |---|---|---:|---:|---:|
-| **Full-Connected** (100×100, 990k edges) | Total time       | 97.77 ms    | 51.48 ms    | **+47.3%** |
-|                                          | Per run          | 9.78 ms     | 5.15 ms     | **+47.3%** |
-|                                          | Per task         | 977.72 ns   | 514.84 ns   | **+47.3%** |
-| **No Connection** (10k parallel tasks)   | Total time       | 14.57 ms    | 9.22 ms     | **+36.7%** |
-|                                          | Per run          | 1.46 ms     | 0.92 ms     | **+36.7%** |
-|                                          | Per task         | 145.73 ns   | 92.23 ns    | **+36.7%** |
-
+| **Full-Connected** (100×100, 990k edges) | Total time       | 71.51 ms    | 50.03 ms    | **+30.0%** |
+|                                          | Per run          | 7.15 ms     | 5.00 ms     | **+30.0%** |
+|                                          | Per task         | 715.06 ns   | 500.30 ns   | **+30.0%** |
+| **No Connection** (10k parallel tasks)   | Total time       | 11.61 ms    | 8.64 ms     | **+25.6%** |
+|                                          | Per run          | 1.16 ms     | 0.86 ms     | **+25.6%** |
+|                                          | Per task         | 116.14 ns   | 86.42 ns    | **+25.6%** |
 
 ---
 

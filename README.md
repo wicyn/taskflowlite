@@ -307,29 +307,33 @@ target_compile_options(your_target PRIVATE -O3 -march=native)
     聚焦 100 层 × 100 任务的极限调度密度。
 * **测试硬件**：Intel® Core™ i7-9750H @ 2.60GHz（6C/12T）/ Windows 11
 * **构建配置**：MSVC 2022 / Release / `/O2`，相同硬件、相同线程数、相同迭代次数。
+
 ### 综合对比结果（时间越低越好）
+
+> 数据为同一硬件下连续运行的代表性一次结果，多次运行趋势一致。
 
 | # | 测试场景 | Taskflow (ms) | TaskflowLite (ms) | 提升 |
 |---|---|---:|---:|---:|
-| 01 | 32 parallel \| 8 threads \| 500k runs   | 1607 | 1270 | **+21.0%** |
-| 02 | 32 serial   \| 1 thread  \| 1M runs    | 1310 | 1034 | **+21.1%** |
-| 03 | diamond DAG \| 2 threads \| 1M runs    |  361 |  317 | **+12.2%** |
-| 04a | 4×2  full   \| 2 threads \| 1M runs   |  592 |  563 | **+4.9%**  |
-| 04b | 6×4  full   \| 4 threads \| 500k runs | 1766 | 1694 | **+4.1%**  |
-| 04c | 8×8  full   \| 8 threads \| 100k runs | 1253 | 1027 | **+18.0%** |
-| 04d | 8×16 full   \| 8 threads \| 50k runs  | 1453 | 1125 | **+22.6%** |
-| 04e | 8×32 full   \| 8 threads \| 20k runs  | 1475 | 1107 | **+24.9%** |
-| 04f | 6×100 full  \| 8 threads \| 2k runs   |  672 |  508 | **+24.4%** |
-| 05 | binary tree  \| 8 threads \| 500k runs | 2754 | 2195 | **+20.3%** |
-| 06 | 1→256→1     \| 8 threads \| 100k runs | 4043 | 3363 | **+16.8%** |
-| 07 | 16 pipes     \| 8 threads \| 200k runs | 2436 | 1690 | **+30.6%** |
-| 08 | 16×16 grid   \| 8 threads \| 100k runs | 2701 | 1896 | **+29.8%** |
-| 09 | sparse DAG   \| 8 threads \| 500k runs | 3874 | 2831 | **+26.9%** |
-| 10 | cond / jump retry \| 1 thread \| 1M iter |  52 |   55 | −5.8%      |
-| 11 | multi-cond / multi-jump \| 4 threads \| 200k iter | 76 | 62 | **+18.4%** |
-| 12 | subflow ×1   \| 4 threads \| 200k runs |  196 |  156 | **+20.4%** |
-| 13 | subflow loop \| 2 threads \| 500k iter |  156 |  114 | **+26.9%** |
-| **总计** | **18 组场景** | **26877** | **20957** | **+22.0%** |
+| 01 | 32 parallel \| 8 threads \| 500k runs   | 1442 | 1106 | **+23.3%** |
+| 02 | 32 serial   \| 1 thread  \| 1M runs    | 1330 | 1007 | **+24.3%** |
+| 03 | diamond DAG \| 2 threads \| 1M runs    |  362 |  296 | **+18.2%** |
+| 04a | 4×2  full   \| 2 threads \| 1M runs   |  602 |  512 | **+15.0%** |
+| 04b | 6×4  full   \| 4 threads \| 500k runs | 1762 | 1689 | **+4.1%**  |
+| 04c | 8×8  full   \| 8 threads \| 100k runs | 1218 | 1043 | **+14.4%** |
+| 04d | 8×16 full   \| 8 threads \| 50k runs  | 1448 | 1154 | **+20.3%** |
+| 04e | 8×32 full   \| 8 threads \| 20k runs  | 1476 | 1151 | **+22.0%** |
+| 04f | 6×100 full  \| 8 threads \| 2k runs   |  675 |  509 | **+24.6%** |
+| 05 | binary tree  \| 8 threads \| 500k runs | 3220 | 2221 | **+31.0%** |
+| 06 | 1→256→1     \| 8 threads \| 100k runs | 4056 | 3452 | **+14.9%** |
+| 07 | 16 pipes     \| 8 threads \| 200k runs | 2468 | 1685 | **+31.7%** |
+| 08 | 16×16 grid   \| 8 threads \| 100k runs | 2731 | 1962 | **+28.2%** |
+| 09 | sparse DAG   \| 8 threads \| 500k runs | 3862 | 2888 | **+25.2%** |
+| 10 | cond / jump retry \| 1 thread \| 1M iter |  54 |   53 | **+1.9%**  |
+| 11 | multi-cond / multi-jump \| 4 threads \| 200k iter | 75 | 60 | **+20.0%** |
+| 12 | subflow ×1   \| 4 threads \| 200k runs |  209 |  148 | **+29.2%** |
+| 13 | subflow loop \| 2 threads \| 500k iter |  158 |  107 | **+32.3%** |
+| **总计** | **18 组场景** | **27148** | **21043** | **+22.5%** |
+
 
 ### 微基准：100 层 × 100 任务
 
@@ -339,13 +343,12 @@ target_compile_options(your_target PRIVATE -O3 -march=native)
 
 | 场景 | 指标 | Taskflow | TaskflowLite | 提升 |
 |---|---|---:|---:|---:|
-| **Full-Connected**（100×100，990k 边） | 总耗时       | 97.77 ms    | 51.48 ms    | **+47.3%** |
-|                                         | 单轮平均     | 9.78 ms     | 5.15 ms     | **+47.3%** |
-|                                         | 单任务平均   | 977.72 ns   | 514.84 ns   | **+47.3%** |
-| **No Connection**（纯并行 10k 任务）    | 总耗时       | 14.57 ms    | 9.22 ms     | **+36.7%** |
-|                                         | 单轮平均     | 1.46 ms     | 0.92 ms     | **+36.7%** |
-|                                         | 单任务平均   | 145.73 ns   | 92.23 ns    | **+36.7%** |
-
+| **Full-Connected**（100×100，990k 边） | 总耗时       | 71.51 ms    | 50.03 ms    | **+30.0%** |
+|                                         | 单轮平均     | 7.15 ms     | 5.00 ms     | **+30.0%** |
+|                                         | 单任务平均   | 715.06 ns   | 500.30 ns   | **+30.0%** |
+| **No Connection**（纯并行 10k 任务）    | 总耗时       | 11.61 ms    | 8.64 ms     | **+25.6%** |
+|                                         | 单轮平均     | 1.16 ms     | 0.86 ms     | **+25.6%** |
+|                                         | 单任务平均   | 116.14 ns   | 86.42 ns    | **+25.6%** |
 
 ---
 

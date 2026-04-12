@@ -335,14 +335,14 @@ Tp UnboundedQueue<Tp>::pop() noexcept {
 
     std::int64_t top = m_top.load(std::memory_order_relaxed);
 
-    if (top <= bottom) {
+    if (top <= bottom) [[likely]] {
         Tp val = buf->load(bottom);
 
         // 队列仅剩一个元素，可能与 Stealer 竞争
-        if (top == bottom) {
+        if (top == bottom) [[unlikely]] {
             // 使用 CAS 尝试原子增加 top
             if (!m_top.compare_exchange_strong(top, top + 1,
-                                               std::memory_order_seq_cst, std::memory_order_relaxed)) {
+                                               std::memory_order_seq_cst, std::memory_order_relaxed)) [[unlikely]] {
                 // 竞争失败，还原 bottom 并返回空
                 m_bottom.store(bottom + 1, std::memory_order_relaxed);
                 return nullptr;

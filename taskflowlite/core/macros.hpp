@@ -32,6 +32,55 @@
 #else
 #define TFL_NO_INLINE
 #endif
+// ============================================================================
+//  热 / 冷路径属性
+// ============================================================================
+
+/// @brief 标记函数为热路径，提示编译器优先优化、更激进地内联。
+#if defined(__GNUC__) || defined(__clang__)
+#define TFL_HOT  __attribute__((hot))
+#define TFL_COLD __attribute__((cold))
+#else
+#define TFL_HOT
+#define TFL_COLD
+#endif
+
+// ============================================================================
+//  硬件预取指令
+// ============================================================================
+
+/// @brief 读预取：将 ptr 所在缓存行预取到 L1（locality=3 = 最高驻留）。
+/// @note 在执行当前任务期间提前加载下一个 Work 节点，隐藏内存延迟。
+#if defined(__GNUC__) || defined(__clang__)
+#  define TFL_PREFETCH_R(ptr) __builtin_prefetch((ptr), 0, 3)
+#  define TFL_PREFETCH_W(ptr) __builtin_prefetch((ptr), 1, 1)
+#elif defined(_MSC_VER)
+#  include <immintrin.h>
+#  define TFL_PREFETCH_R(ptr) _mm_prefetch(reinterpret_cast<const char*>(ptr), _MM_HINT_T0)
+#  define TFL_PREFETCH_W(ptr) _mm_prefetch(reinterpret_cast<const char*>(ptr), _MM_HINT_T1)
+#else
+#  define TFL_PREFETCH_R(ptr) ((void)(ptr))
+#  define TFL_PREFETCH_W(ptr) ((void)(ptr))
+#endif
+
+// ============================================================================
+//  自旋等待 PAUSE 指令
+// ============================================================================
+
+/// @brief 在自旋等待循环中发出 CPU PAUSE 提示，降低超线程竞争与功耗。
+/// @note x86: _mm_pause / PAUSE 指令；ARM64: yield；其他：空操作。
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#  ifdef _MSC_VER
+#    include <immintrin.h>
+#    define TFL_PAUSE() _mm_pause()
+#  else
+#    define TFL_PAUSE() __asm__ volatile("pause" ::: "memory")
+#  endif
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#  define TFL_PAUSE() __asm__ volatile("yield" ::: "memory")
+#else
+#  define TFL_PAUSE() std::atomic_signal_fence(std::memory_order_seq_cst)
+#endif
 
 // ============================================================================
 //  分支预测优化
@@ -354,5 +403,5 @@ do { \
 #else
 // Release 模式下完全剔除代码生成
 #define TFL_CHECK(expr) ((void)0)
-#define TFL_CHECK_EX(expr, msg) ((void)0)     
+#define TFL_CHECK_EX(expr, msg) ((void)0)
 #endif
