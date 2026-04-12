@@ -318,7 +318,7 @@ Tp BoundedQueue<Tp, cap>::pop() noexcept {
 /// @note: 即使窃取成功，原元素仍保留在队列中（被覆盖前），这是安全的设计
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
-TFL_FORCE_INLINE Tp BoundedQueue<Tp, cap>::steal() noexcept {
+Tp BoundedQueue<Tp, cap>::steal() noexcept {
     std::int64_t top = m_top.load(std::memory_order_acquire);
     std::atomic_thread_fence(std::memory_order_seq_cst);
     std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
@@ -347,7 +347,7 @@ TFL_FORCE_INLINE Tp BoundedQueue<Tp, cap>::steal() noexcept {
 /// @performance: 成功窃取时 O(1)，空窃取时 O(1)
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
-TFL_FORCE_INLINE Tp BoundedQueue<Tp, cap>::steal(std::size_t& num_empty_steals) noexcept {
+Tp BoundedQueue<Tp, cap>::steal(std::size_t& num_empty_steals) noexcept {
     std::int64_t top = m_top.load(std::memory_order_acquire);
     std::atomic_thread_fence(std::memory_order_seq_cst);
     std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
