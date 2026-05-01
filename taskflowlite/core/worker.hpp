@@ -1,5 +1,5 @@
 ﻿/// @file worker.hpp
-/// @brief 工作线程运行时状态容器 - Work-Stealing 调度器的执行单元
+/// @brief 工作线程实体 Worker / 安全视图 WorkerView / 钩子接口 WorkerHandler
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-03-02
@@ -17,15 +17,50 @@
 
 namespace tfl {
 
-/// @brief 工作线程运行时状态容器
+/// @brief 工作线程运行时容器 —— 1:1 映射到 1 个 OS 线程的执行单元。
 ///
 /// @details
-/// 每个 Worker 对象对应一个底层 OS 线程，持有 Work-Stealing 调度所需的全部上下文数据。
-/// Worker 由 Executor 统一拥有和初始化，在调度器生命周期内与底层线程绑定。
+/// `Worker` 持有一个 OS 线程 + 该线程独占的所有调度上下文（本地队列、随机数
+/// 引擎、终止标志、统计量）。`Executor` 在构造时 `_spawn` 创建固定数量的 Worker，
+/// 此后这些 Worker 与底层线程在 Executor 生命周期内死锁绑定。
 ///
-/// @par 内存布局设计
-/// 多线程竞争的队列（m_wslq）位于头部，紧随其后的是单线程独占的热点数据。
-/// 此布局最大化缓存命中率并减少伪共享（False Sharing）。
+/// ============================================================================
+///  内存布局 —— 减少伪共享（False Sharing）
+/// ============================================================================
+/// 字段顺序按"竞争性"分层：
+///
+/// | 区段                | 字段                          | 访问模式                  |
+/// |---------------------|------------------------------|--------------------------|
+/// | 头部（多线程竞争）   | `m_wslq`（BoundedQueue）     | owner LIFO + stealer FIFO |
+/// | 中部（单线程独占）   | rng / vtm / adaptive_factor  | owner 线程读写             |
+/// | 独立 cache line     | `m_terminate`                | shutdown 时跨线程写        |
+/// | 尾部                | thread                       | 仅生命周期端点              |
+///
+/// `m_terminate` 显式 `alignas(2 * cache_line_size)` 隔离 —— 否则 owner 线程
+/// 频繁修改本地队列字段会拖累 shutdown 路径的 atomic_flag 性能。
+///
+/// ============================================================================
+///  核心字段语义
+/// ============================================================================
+/// - **`m_wslq`**：BoundedQueue<Work*> 本地任务队列。owner LIFO 操作（push/pop）
+///   保证缓存温度，stealer 从另一端 FIFO 偷（粒度大、争用少）；
+/// - **`m_rng`**：SplitMix64 引擎，独立种子（hash(thread_id)）—— 防多 worker
+///   同时偷同一队列；
+/// - **`m_vtm`**：上次成功窃取的目标队列索引 —— 局部性优化，下次先试这个；
+/// - **`m_adaptive_factor`**：窃取失败次数的退避系数（1~8），动态调整 yield 频率；
+/// - **`m_terminate`**：shutdown 信号位，relaxed 读 / relaxed 写。
+///
+/// ============================================================================
+///  对外暴露
+/// ============================================================================
+/// `Worker` 的 public 接口非常薄 —— 只读查询（id / queue_size / capacity / thread）。
+/// 写操作全部走 friend（Executor / Runtime / Work / WorkerView），这是分层访问
+/// 控制：调度器有充分修改权，用户态只能读。
+///
+/// @see WorkerView         给 TaskObserver 用的安全切片
+/// @see WorkerHandler      生命周期钩子
+/// @see Executor::_spawn   Worker 的创建与启动
+/// @see BoundedQueue       本地队列实现
 class Worker : public Immovable<Worker> {
     friend class Executor;
     friend class Runtime;
@@ -67,11 +102,24 @@ private:
 
     std::thread         m_thread;
 };
-/// @brief Worker 的只读安全视图代理
+
+
+/// @brief Worker 的只读安全视图 —— 给 TaskObserver / 用户态回调用。
 ///
 /// @details
-/// 专为 TaskObserver 设计。通过向用户空间传递 WorkerView 而非 Worker 引用，
-/// 从编译器层面彻底杜绝用户态代码篡改内部调度状态。
+/// `WorkerView` 持有 `const Worker&`，**编译期** 屏蔽全部写操作。它出现的理由
+/// 与 `TaskView` 完全平行：把"线程安全契约"提升到类型层 —— 用户在回调里拿到的
+/// 是只读切片，写访问编译就过不了。
+///
+/// 暴露字段：id / queue_size / queue_capacity / thread。
+///
+/// 构造私有，仅 friend 可造（Work / Flow / Executor / Runtime + Work 子类）。
+/// 这保证 WorkerView 实例只能由调度器内部产生再传给用户回调，用户拿不到
+/// 任意构造它的能力。
+///
+/// @see Worker          本视图代理的对象
+/// @see TaskObserver    主要消费者
+/// @see TaskView        TaskObserver 的另一个安全参数
 class WorkerView {
     friend class Work;
     friend class Flow;
@@ -94,15 +142,43 @@ private:
     const Worker& m_worker;
 };
 
-/// @brief 工作线程生命周期钩子（策略模式接口）
+
+/// @brief 工作线程生命周期钩子 —— 策略模式注入点。
 ///
 /// @details
-/// 允许用户在三个关键生命周期节点注入自定义逻辑：
-/// - on_start: 线程启动后、进入调度循环前
-/// - on_stop: 线程退出调度循环前
-/// - on_exception: 发生未捕获异常时
+/// `WorkerHandler` 把 Worker 线程的三个关键时刻暴露给用户：启动、停止、异常。
+/// `Executor` 在构造时通过引用收纳一个 handler 实例，所有 worker 共享。
 ///
-/// 所有回调标记为 noexcept，用户扩展代码必须自行处理异常。
+/// ============================================================================
+///  三个钩子的语义
+/// ============================================================================
+/// - **`on_start(Worker&)`** ：线程刚创建、进入调度循环之前。
+///   典型用途：CPU 亲和性绑定（`sched_setaffinity`）、线程重命名（`pthread_setname_np`）、
+///   TLS 初始化、tracing 上下文挂载。
+///
+/// - **`on_stop(Worker&)`**  ：线程退出调度循环之前（终止 / shutdown 路径）。
+///   典型用途：TLS 资源回收、累计指标输出、tracing 上下文卸载。
+///
+/// - **`on_exception(Worker&, exception_ptr)`** ：节点 invoke 抛未捕获异常时。
+///   返回值决定线程命运 —— `true` 吞掉继续，`false` 终止本 worker。
+///
+/// 全部钩子标记 `noexcept` —— 用户实现自己 try-catch；钩子里再抛异常会
+/// std::terminate。
+///
+/// ============================================================================
+///  内置策略：ResumeAlways vs ResumeNever
+/// ============================================================================
+/// 框架给出两种典型实现，覆盖光谱两端：
+///
+/// | 策略           | 适用场景                                                 |
+/// |----------------|---------------------------------------------------------|
+/// | `ResumeAlways` | 业务任务，单点失败不应拖垮整体 —— 静默吞异常             |
+/// | `ResumeNever`  | 数据处理 pipeline / 事务批处理 —— 任何错误立即停 worker |
+///
+/// 用户可继承 WorkerHandler 实现自定义策略（如"只允许 std::bad_alloc 通过"）。
+///
+/// @see Executor::Executor(WorkerHandler&)  注入点
+/// @see Executor::_spawn   钩子调用位置
 class WorkerHandler {
 public:
     virtual ~WorkerHandler() = default;

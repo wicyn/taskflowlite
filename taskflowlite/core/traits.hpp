@@ -1,11 +1,15 @@
 ﻿/// @file traits.hpp
-/// @brief 提供框架核心类型约束概念（Concepts）与类型萃取工具，用于编译期类型检查与推导。
-///
+/// @brief 类型概念与萃取 —— 框架的 C++20 concepts 集中地
 /// @details
-/// **unwrap_ref_decay_t 行为概要**
+/// 本文件汇集所有用户签名约束：
+/// - `basic_invocable` / `runtime_invocable` / `branch_invocable` / ... ：
+///   按签名形态分类的 invocable 概念，驱动 Flow::emplace 的重载分发；
+/// - `flow_type` / `predicate` / `callback` ：Flow 提交 API 的辅助约束；
+/// - `capturable<T...>` ：确保用户传入的所有类型都能被框架安全持久化存储；
+/// - `pack<Ts...>`     ：批量插入用的参数打包器（见下）。
 ///
-/// 框架中存储的 callable 类型均经过 `std::unwrap_ref_decay_t<T>` 处理
-/// （先 decay 再解包 reference_wrapper）。详细推导见 docs/reference_wrapper_notes.md。
+/// 这些 concepts 让框架的 API 在类型不匹配时给出**清晰的编译错误**，
+/// 而不是模板深处的"recursive instantiation 200 deep"。
 ///
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -219,9 +223,15 @@ concept noexcept_predicate =
 template <typename C>
 concept callback = std::invocable<std::decay_t<C>&>;
 
+
 /// @brief 检查是否为 Flow 任务图类型
+///
+///   1. 必须暴露 `Graph& graph()` 与 `const Graph& graph() const` 接口
 template <typename F>
-concept flow_type = std::same_as<std::remove_cvref_t<F>, Flow>;
+concept flow_type = requires(std::remove_cvref_t<F>& f, const std::remove_cvref_t<F>& cf) {
+        { f.graph()  } -> std::same_as<Graph&>;
+        { cf.graph() } -> std::same_as<const Graph&>;
+    };
 
 // ============================================================================
 //  Concepts — 任务节点类型约束
@@ -356,6 +366,33 @@ struct is_pack_impl<pack<Args...>> : std::true_type {};
 template <typename T>
 concept task_pack = detail::is_pack_impl<std::remove_cvref_t<T>>::value;
 
+
+
+namespace anchor {
+
+/// @brief 不设锚 —— 异常沿 m_parent 链向上传播，由更上游的锚点归档。
+///        语义最轻；适合"我就是个叶子，出错丢给爹处理"的场景。
+struct none_t      { explicit constexpr none_t()     = default; };
+
+/// @brief 隐式锚 —— 构造期置 Implicit::ANCHORED（非原子，运行期只读）。
+///        语义：本节点天生是个异常汇聚点；与 Subflow / Runtime body 同档。
+struct implicit_t  { explicit constexpr implicit_t() = default; };
+
+/// @brief 显式锚 —— 构造期置 Explicit::ANCHORED（原子位）。
+///        语义：本节点是运行期可被 AnchorGuard / corun 动态翻转的会话锚。
+///        与 DepAsync* / corun 同档,适合需要"把 child 异常截在我这里"的场景。
+struct explicit_t  { explicit constexpr explicit_t() = default; };
+
+} // namespace anchor
+
+// inline constexpr anchor::none_t     none_v{};
+// inline constexpr anchor::implicit_t implicit_v{};
+// inline constexpr anchor::explicit_t explicit_v{};   // ← 'explicit_v' 不是关键字
+
+template <typename T>
+concept anchor_tag = std::same_as<T, anchor::none_t>
+                     || std::same_as<T, anchor::implicit_t>
+                     || std::same_as<T, anchor::explicit_t>;
 
 } // namespace tfl
 

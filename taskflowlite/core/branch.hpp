@@ -1,5 +1,5 @@
 ﻿/// @file branch.hpp
-/// @brief 提供条件分支控制器，通过 join_counter 差额机制实现 DAG 内的动态路由。
+/// @brief 条件分支控制器 Branch / MultiBranch —— DAG 内的运行时动态路由
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-03-02
@@ -17,33 +17,57 @@
 
 namespace tfl {
 
-/// @brief 单目标分支选择器。
-///
-/// 在 BranchWork 的 callable 内部使用，为用户提供运行时的后继选择能力。
-/// 能够在不修改图物理拓扑的前提下，实现动态的 if/else 条件调度。
+/// @brief 单目标分支选择器 —— DAG 节点内的"if/else 路由权杖"。
 ///
 /// @details
-/// **调度原理（差额机制）**
+/// `Branch` 是 `BranchWork::invoke` 在 worker 栈上为用户构造的 **临时控制凭据**：
+/// 用户的闭包通过形参 `Branch&` 拿到它，调用 `select(i)` / `select_if(pred)` 决定
+/// 本次执行后哪个后继被放行。它不持有数据、不分配内存，仅是 `Work` 后继边表的
+/// 一个语义代理。
 ///
-/// BranchWork 的每条后继边初始权重为 2（普通边为 1），通过差额控制调度：
+/// ============================================================================
+///  调度原理 —— 差额机制（Weight-Difference Trick）
+/// ============================================================================
+/// `BranchWork` 出边的初始 `join_weight` 是 **2**（普通边为 1），分支语义靠这一字
+/// 之差表达：
 ///
-/// ```
-///    选中:   join_counter = 2 - 1(select) - 1(tear_down) = 0 → 被调度
-///    未选中: join_counter = 2 - 0        - 1(tear_down) = 1 → 阻塞
-/// ```
+/// @code
+///    被选中:   后继 join_counter = 2 - 1(select)  - 1(tear_down) = 0  → 被调度
+///    未选中:   后继 join_counter = 2 -    0       - 1(tear_down) = 1  → 等待其他前驱
+/// @endcode
 ///
-/// 这种机制完全复用了 DAG 现有的原子计数器，无需引入额外的状态分支或
-/// 特殊的 tear_down 路径。
+/// 即"未选中"的后继并非永久阻塞，仍有其他前驱来填那 1 的差额；这与 `Jump`
+/// 的"强制清零"形成本质对比 —— Branch 走的是**协作式语义**，Jump 是**抢占式**。
 ///
-/// **选择语义（Last-write-wins）**
+/// 这种设计的工程美感在于：**完全复用 DAG 现有的原子计数器**，不需要新的状态
+/// 字段、不需要分支特化的 tear_down 路径，只是把边权调成 2 而已。
 ///
-/// - 支持按索引、谓词、下标赋值三种选择方式
-/// - 多次 `select()` 或 `operator[]` 赋值以最后一次为准（覆盖前值）
-/// - 不调用任何 `select()` 则所有后继均被安全阻塞
-/// - `reset()` 可显式取消当前选择
+/// ============================================================================
+///  选择语义（Last-Write-Wins）
+/// ============================================================================
+/// - 多次 `select()` / `operator[]=` 以最后一次为准（覆盖前值）；
+/// - 不调用任何 select → 所有后继被安全阻塞（差额永远未填平）；
+/// - `reset()` 显式清除，等价于"什么都没选"；
+/// - `select_if(pred)` 短路：首个匹配即停。
 ///
-/// @pre 必须由 BranchWork::invoke 在 Worker 线程的栈上临时构造。
-/// @note 禁止将此对象的引用逃逸到外部线程，其生命周期严格限定在 callable 执行期间。
+/// ============================================================================
+///  下标代理 Proxy —— 让 select 长成 `branch[i] = true`
+/// ============================================================================
+/// `Proxy` 是 `operator[]` 返回的零成本包装，仅持 `Branch&` + 索引。
+/// `branch[i] = true` 等价 `select(i)`，`branch[i] = false` 在"当前选中即为 i"
+/// 时取消（语义对称）。这是 Modern C++ 里"赋值即调用"的常见手法。
+///
+/// ============================================================================
+///  生命周期约束 —— 严格栈帧绑定
+/// ============================================================================
+/// `Branch` 由 `BranchWork::invoke` 在 worker 栈上构造，传引用给用户闭包。
+/// 闭包返回即销毁。**禁止逃逸**到外部线程或异步上下文 —— 一旦 invoke 返回，
+/// 持有它的 `Work*` 进入 tear_down，行为未定义。这与 `Runtime` 的栈帧约束相同。
+///
+/// @pre 由 BranchWork::invoke 构造，传引用给闭包，不可逃逸。
+/// @see Jump          强制清零的"抢占式"对偶
+/// @see MultiBranch   多目标累积版
+/// @see BranchWork    宿主节点类型
 class Branch : public Immovable<Branch> {
     friend class Work;
     friend class Flow;
@@ -107,7 +131,7 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
 
 private:
-    Work&  m_work;           ///< 绑定至宿主 BranchWork，借此访问底层的关联边数据
+    Work& m_work;           ///< 绑定至宿主 BranchWork，借此访问底层的关联边数据
     Work* m_target{nullptr}; ///< 暂存被选中的后继指针，供 invoke 结束后 Executor 执行额外的 join_counter 递减
 
     explicit Branch(Work& work) noexcept : m_work{work} {}
@@ -154,36 +178,47 @@ inline std::size_t Branch::size() const noexcept {
     return m_work.m_num_successors;
 }
 
-/// @brief 多目标分支选择器。
-///
-/// 在 MultiBranchWork 的 callable 内部使用。
-/// 与普通 Branch 的互斥选择不同，MultiBranch 允许同时点亮多个下游链路，
-/// 适用于表达广播（Broadcast）、多条件并发路由等复杂流控模式。
+/// @brief 多目标分支选择器 —— "广播 / 多条件并发路由"权杖。
 ///
 /// @details
-/// **选择语义（Accumulative）**
+/// 与 `Branch` 互斥选择不同，`MultiBranch` 允许同时点亮 N 条下游链路 ——
+/// 每个被选中的后继都获得一次额外 `join_counter -= 1`。底层调度协议复用
+/// 同样的差额机制（边权 2），仅 select 集合从单个变为去重集合。
 ///
-/// - 所有的 `select()` / `operator[]` 调用均为 **累积** 生效，而非覆盖
-/// - 内部自动去重
-/// - `select_all()` 一键实现无差别广播
-/// - `reset()` 清空全部已累积的放行意图
+/// ============================================================================
+///  累积语义（Accumulative，与 Branch 的覆盖语义对照）
+/// ============================================================================
+/// - 多次 `select(...)` / `operator[]=true` **累积** 生效；
+/// - 内部用 `SmallVector<Work*>` 存放选中集，`_insert` 线性查重；
+/// - `select_all()` 一键全选（广播）；
+/// - `reset()` 清空全部累积；
+/// - `select_if(pred)` 选 **所有** 满足谓词的（不像 Branch::select_if 只选首个）。
 ///
-/// **下标语法**
+/// ============================================================================
+///  存储选型 —— 为什么用 SmallVector 不用 hash set？
+/// ============================================================================
+/// DAG 节点的典型扇出数极低（业内统计普遍 < 4，少数 < 10）。
+/// 在这个规模上：
+/// - hash set 的常数开销（哈希计算 + 桶访问 + 链表跳转）远大于 4 次 ptr 比较；
+/// - SmallVector 内置小缓冲区避免堆分配；
+/// - 删除走 swap-with-last，O(1) 且不碰内存分配器。
 ///
-/// ```
-///   mb[5]       = true;                  // 单索引开关
-///   mb[1, 2, 3] = {false, true, false};  // 多索引，编译期强制个数一致
-/// ```
+/// 这是典型的"小集合优化"：**不要为渐近复杂度妥协常数因子**。
 ///
-/// **存储与性能**
+/// ============================================================================
+///  下标语法 —— 单 / 多索引双形态
+/// ============================================================================
+/// @code
+///   mb[5]       = true;                  // 单索引：Proxy
+///   mb[1, 2, 3] = {false, true, false};  // 多索引：MultiProxy<3>
+/// @endcode
+/// `MultiProxy<N>` 把索引存进 `std::size_t[N]` 原生数组（N 编译期已知，
+/// 零额外开销），赋值时编译期强制 `bool[N]` 等长 —— 长度不一致直接编译错。
 ///
-/// 使用 SmallVector 存储选中集合，小数量后继时避免堆分配。
-/// 去重采用线性扫描——DAG 节点的典型扇出数极低（通常 < 4），
-/// 线性扫描优于 hash set 的常数开销。
-///
-/// @pre 必须由 MultiBranchWork::invoke 在 Worker 线程的栈上临时构造。
-/// @post 所有存留于内部集合的后继节点，将在 invoke 返回后各获得一次额外 join_counter 递减。
-/// @note 禁止将此对象的引用逃逸到外部线程。
+/// @pre 由 MultiBranchWork::invoke 构造，传引用给闭包，不可逃逸。
+/// @see Branch       单目标互斥版
+/// @see MultiJump    "强制清零"对偶版
+/// @see MultiBranchWork  宿主节点类型
 class MultiBranch : public Immovable<MultiBranch> {
     friend class Work;
     friend class Flow;
@@ -294,8 +329,8 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
 
 private:
-    Work& m_work;                 ///< 关联宿主 MultiBranchWork，用以映射底层图结构
-    SmallVector<Work*> m_targets; ///< 内置轻量缓冲区的去重集合，供 invoke 返回后 Executor 遍历做额外递减
+    Work&               m_work;                 ///< 关联宿主 MultiBranchWork，用以映射底层图结构
+    SmallVector<Work*>  m_targets; ///< 内置轻量缓冲区的去重集合，供 invoke 返回后 Executor 遍历做额外递减
 
     explicit MultiBranch(Work& work) noexcept : m_work{work} {}
 

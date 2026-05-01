@@ -1,5 +1,5 @@
 ﻿/// @file utility.hpp
-/// @brief taskflowlite 框架通用工具集，提供类型安全转换、CRTP 基类与反射包装器等基础支持。
+/// @brief 框架基础工具集 —— CRTP 基类、类型安全转换、源码位置包装等
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-03-02
@@ -69,13 +69,27 @@ inline constexpr std::size_t cache_line_size = 64;
 /// @brief 每字节的二进制位数，等价于 C 的 CHAR_BIT。
 inline constexpr unsigned char_bits = std::numeric_limits<unsigned char>::digits;
 
-/// @brief 不可拷贝、不可移动的 CRTP 空基类。
+
+/// @brief CRTP 空基类：禁拷贝 + 禁移动 —— "地址即身份"。
 ///
-/// 采用 CRTP 避免多重继承下的空基类歧义问题，适用于需要固定内存地址的底层组件
-/// （如 Executor、Worker、Topology）。
+/// @details
+/// `Immovable<CRTP>` 是框架内"一旦构造，地址绝不挪窝"类型的统一标记。被它继承
+/// 的对象禁掉了所有四种特殊成员（拷贝构造 / 移动构造 / 拷贝赋值 / 移动赋值）。
 ///
-/// @tparam CRTP 派生类类型。
-/// @note EBO (空基类优化) 会确保该基类不增加派生类的内存开销。
+/// ============================================================================
+///  CRTP 的妙用 —— 防误用 + 唯一类型
+/// ============================================================================
+/// 为什么是 `Immovable<CRTP>` 而不是 `Immovable`（无模板）？
+/// - 多重继承时，多个基类的"非模板 Immovable"会冲突（钻石问题）；
+/// - 模板特化让每个派生类的 Immovable 是独立类型，避免冲突；
+/// - 同时通过 `static_assert(!requires{sizeof(CRTP);})` 检测 CRTP 误用 ——
+///   基类实例化时派生类必须仍是不完整类型，否则有人写了 `Immovable<int>` 这种
+///   错用。
+///
+/// EBO（Empty Base Optimization）保证不增加派生类大小。
+///
+/// @tparam CRTP 派生类（可设为 void 用于某些边角场景）
+/// @see MoveOnly  允许移动的对偶基类
 template <typename CRTP>
 struct Immovable {
     // CRTP 模式在基类实例化时派生类必定为不完整类型，此断言防止非 CRTP 误用

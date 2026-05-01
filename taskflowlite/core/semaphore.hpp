@@ -1,5 +1,5 @@
 ﻿/// @file semaphore.hpp
-/// @brief 提供任务级别的信号量同步原语，用于限制特定任务组的并发执行数量。
+/// @brief 任务级信号量 Semaphore —— 不阻塞 Worker 线程的并发限流原语
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-03-02
@@ -16,15 +16,80 @@
 #include <string>
 #include <string_view>
 #include <functional>
+
+#include "small_vector.hpp"
 #include "exception.hpp"
 
 namespace tfl {
 
-/// @brief 任务级并发控制信号量。
+/// @brief 任务级并发限流信号量 —— 配额不足时挂起任务而非线程。
 ///
-/// 与传统的 OS 级信号量不同，本组件专为异步任务图设计。
-/// 当任务尝试获取信号量失败时，不会导致底层 Worker 线程阻塞，
-/// 而是将该任务挂起推入内部的等待队列中，释放 Worker 线程去执行其他就绪任务。
+/// @details
+/// `Semaphore` 是 taskflow-lite 在 OS 级信号量之上做的关键再设计：
+/// **不允许 Worker 线程阻塞**。任务 `acquire` 失败时，Worker 不睡眠，而是
+/// 把该任务放进信号量内部的等待队列，**立即返回去执行其他就绪任务** ——
+/// 这是工作池在面对"资源竞争"场景时仍保持满 CPU 利用率的根因。
+///
+/// ============================================================================
+///  与 OS Semaphore 的本质差异
+/// ============================================================================
+///
+/// | 维度          | OS Semaphore (POSIX/std)        | tfl::Semaphore                 |
+/// |---------------|----------------------------------|--------------------------------|
+/// | 阻塞对象      | **线程**                          | **任务**（Work* 入等待队列）    |
+/// | 失败行为      | 调用线程 OS 挂起                   | 任务挂起，线程返回工作池           |
+/// | 适用场景      | 跨进程同步、生产者消费者            | DAG 内并发限流、资源池             |
+/// | 死锁风险      | 高（线程被锁，工作池可能枯竭）       | 极低（线程不阻塞，仍能 steal）     |
+/// | 唤醒          | OS condvar / futex                | release 时把 waiter 推回调度器   |
+///
+/// 这是"M:N 调度（M 任务 : N 线程）"模型成立的必要前提。
+///
+/// ============================================================================
+///  Acquire / Release 协议
+/// ============================================================================
+/// **Acquire（`_try_acquire`）**：
+/// - 配额充足 → 原子扣减 + 返回 true，调度器继续 invoke 任务；
+/// - 配额不足 → 把任务推入 `m_waiters`，返回 false。Worker 拿到 false 立刻让
+///   该任务"消失"出本次调度，不做任何 tear_down 处理 —— 由后续 release 唤醒。
+/// - **多 sem 的部分回滚**：节点声明多个 acquire 时，任意一个失败就把已成功
+///   获取的逐个 release 回滚 —— `_try_acquire_semaphores` 的工作。
+///
+/// **Release（`_release`）**：
+/// - 加回配额（防御性裁剪到 max_value 上限，防止用户 release 数对不上）；
+/// - 把全部 waiter 一次性 swap 到栈局部变量后释放锁 —— 经典"惊群批处理"
+///   优化：唤醒过程不在临界区内进行；
+/// - 唤醒的 waiters 由调用方统一推回调度器（参数 `out`）。
+///
+/// ============================================================================
+///  reset 的硬约束
+/// ============================================================================
+/// `reset()` / `reset(max, current)` 要求 **当前等待队列必须为空**，否则抛
+/// `Exception`。原因：waiter 已经把自己锁定在某个 max_value 上，运行时改变
+/// 容量会破坏调用契约。
+///
+/// ============================================================================
+///  线程安全
+/// ============================================================================
+/// 全局 `m_lock` mutex 保护内部状态。这是框架内为数不多的**走 mutex 而非原子**的
+/// 组件 —— 因为信号量操作天然要求原子地读 m_value、决定是否扣减、必要时入队 ——
+/// 这套"读-决策-写"的 RMW 用 mutex 表达比用复杂的原子组合更直观，且不在热路径上。
+///
+/// ============================================================================
+///  使用示例
+/// ============================================================================
+/// @code
+///   Semaphore db_pool{4};        // 数据库连接池上限 4
+///
+///   auto t = flow.emplace([]{ query_db(); });
+///   t.acquire(db_pool).release(db_pool);   // 进入需占 1，完成时释放 1
+///
+///   // 或多配额
+///   auto heavy = flow.emplace([]{ batch_query(); });
+///   heavy.acquire(db_pool, 3).release(db_pool, 3);  // 占 3 个连接
+/// @endcode
+///
+/// @see Task::acquire / Task::release  用户配置入口
+/// @see Work::_try_acquire_semaphores  执行期协议
 class Semaphore : public Immovable<Semaphore> {
     friend class Work;
     friend class Executor;
@@ -78,18 +143,8 @@ private:
     mutable std::mutex m_lock;       ///< 保护内部状态的互斥锁
     std::size_t m_max_value{0};      ///< 允许的最大并发边界
     std::size_t m_value{0};          ///< 运行时动态追踪的当前可用授权数
-    std::vector<Work*> m_waiters;    ///< 因获取失败而被迫挂起的拦截任务队列
+    SmallVector<Work*> m_waiters;    ///< 因获取失败而被迫挂起的拦截任务队列
 
-    /// @brief 框架内部调用：尝试非阻塞地获取一个授权配额。
-    /// @param w 发起尝试的任务节点指针。
-    /// @return 成功扣减计数返回 true；否则自动将该任务压入等待队列并返回 false。
-    [[nodiscard]] bool _try_acquire(Work* w);
-
-    /// @brief 框架内部调用：释放一个授权配额并唤醒所有等待者。
-    /// @param on_wake 唤醒回调闭包，由调用方负责将解封的任务重新排入调度引擎。
-    template <typename F>
-        requires std::invocable<F&, Work*>
-    void _release(F&& on_wake);
 
     /// @brief 框架内部调用：尝试非阻塞地获取指定数量的授权配额。
     /// @param w 发起尝试的任务节点指针。
@@ -97,12 +152,7 @@ private:
     /// @return 成功扣减计数返回 true；否则自动将该任务压入等待队列并返回 false。
     [[nodiscard]] bool _try_acquire(Work* w, std::size_t count);
 
-    /// @brief 框架内部调用：释放指定数量的授权配额并唤醒所有等待者。
-    /// @param count 需要归还的配额数量。
-    /// @param on_wake 唤醒回调闭包，由调用方负责将解封的任务重新排入调度引擎。
-    template <typename F>
-        requires std::invocable<F&, Work*>
-    void _release(F&& on_wake, std::size_t count);
+    void _release(std::size_t count, SmallVector<Work*>& out);
 };
 
 
@@ -158,44 +208,6 @@ inline Semaphore& Semaphore::name(S&& name) {
     return *this;
 }
 
-inline bool Semaphore::_try_acquire(Work* w) {
-    std::lock_guard lk{m_lock};
-
-    if (m_value > 0) {
-        --m_value;
-        return true;
-    }
-
-    // Why: 当配额耗尽时，直接将任务记录在案，随后返回 false。
-    // 这指导底层的 Worker 线程立即放弃此任务并投身于窃取网络，彻底杜绝了并发死锁与 CPU 空转。
-    m_waiters.push_back(w);
-    return false;
-}
-
-template <typename F>
-    requires std::invocable<F&, Work*>
-void Semaphore::_release(F&& on_wake) {
-    std::vector<Work*> batch;
-    {
-        std::lock_guard lk{m_lock};
-        if (m_value < m_max_value) {
-            ++m_value;
-            // Why: 使用 std::vector::swap 是一种经典的锁粒度优化（"惊群"批处理）。
-            // 一次性将挂起的队列移交到局部栈上，使得互斥锁能够被极速释放，防止因唤醒过程过长拖累并发度。
-            if (m_waiters.empty()) {
-                return;
-            }
-            batch.swap(m_waiters);
-        }
-    }
-
-    // Why: 临界区外执行回调机制，将所有积压的饥饿任务重新推回调度池。
-    // 注意：这会导致重新竞争（Re-competition），唯有最先被调度的那个能拿到刚刚释放的名额，其余的将再次失败并挂起。
-    for (auto* w : batch) {
-        std::invoke(on_wake, w);
-    }
-}
-
 inline bool Semaphore::_try_acquire(Work* w, std::size_t count) {
     std::lock_guard lk{m_lock};
 
@@ -211,10 +223,8 @@ inline bool Semaphore::_try_acquire(Work* w, std::size_t count) {
     return false;
 }
 
-template <typename F>
-    requires std::invocable<F&, Work*>
-void Semaphore::_release(F&& on_wake, std::size_t count) {
-    std::vector<Work*> batch;
+inline void Semaphore::_release(std::size_t count, SmallVector<Work*>& out) {
+    SmallVector<Work*> batch;
     {
         std::lock_guard lk{m_lock};
 
@@ -237,11 +247,13 @@ void Semaphore::_release(F&& on_wake, std::size_t count) {
         batch.swap(m_waiters);
     }
 
-    // Why: 临界区外执行回调机制，将所有积压的饥饿任务重新推回调度池。
-    // 注意：这会导致重新竞争（Re-competition），配额充足且最先被调度执行的节点能拿到名额，
-    // 拿不到足够配额的节点会在再次调用 _try_acquire 时重新回到 m_waiters 队列中挂起。
-    for (auto* w : batch) {
-        std::invoke(on_wake, w);
+    // Why: 锁外完成 out 聚合, 即使 out 需要 malloc 扩容也不占临界区
+    // 快路径 (单 sem 场景): out 空, 直接 move 整个 storage, 3 个指针赋值
+    if (out.empty()) {
+        out = std::move(batch);
+    } else {
+        out.reserve(out.size() + batch.size());
+        out.insert(out.end(), batch.begin(), batch.end());
     }
 }
 

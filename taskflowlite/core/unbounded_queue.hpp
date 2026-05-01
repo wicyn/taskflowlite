@@ -1,5 +1,5 @@
 ﻿/// @file unbounded_queue.hpp
-/// @brief 提供可动态增长的无界环形队列，用于任务分发。
+/// @brief 自适应扩容的无锁队列 UnboundedQueue —— 全局共享 buffer 实现
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-03-02
@@ -23,12 +23,27 @@
 
 namespace tfl {
 
-/// @brief 原子环形缓冲区底层容器
+/// @brief 原子环形缓冲区 —— UnboundedQueue 的底层定长存储。
 ///
-/// @details 定长容器，容量为 2 的幂次方。负责存储数据，不管理头尾指针。
-/// 提供在指定位置存取数据的能力，以及数据迁移到更大缓冲区的功能。
+/// @details
+/// `AtomicRingBuffer` 是 UnboundedQueue 的内部组件，单独抽出是为了把"定长存储 +
+/// 索引循环 + 数据迁移" 这件事和"队列协议（top/bottom 移动）" 分离。
 ///
-/// @tparam Tp 元素类型（必须为指针类型）
+/// 容量必须 2 的幂次方（同 BoundedQueue），用 `m_mask` 替代取模。
+/// 元素槽位是 `std::atomic<Tp>`，每次 store / load 都是原子的 —— 这是
+/// UnboundedQueue 在 owner 与 stealer 不同端并发访问时的安全前提。
+///
+/// 关键能力是 `resize(bottom, top)` ——
+/// 队列满时由 owner 调用：分配 2× 大小的新 buffer，把 `[top, bottom)` 区间的
+/// 元素拷贝过去，返回新 buffer。`resize(bottom, top, n)` 接收"额外要塞 n 个"的
+/// 提示，按 `bit_ceil(needed)` 分配，避免 push(iter, n) 触发多次扩容。
+///
+/// **旧 buffer 不能立刻释放** —— stealer 可能还在用旧地址读元素。
+/// UnboundedQueue 把旧 buffer 收进 `m_garbage` 等析构时一并清理（只在 owner 终止
+/// 后释放是安全的）。
+///
+/// @tparam Tp 必须为指针类型
+/// @see UnboundedQueue  使用本类的对方
 template <typename Tp>
     requires std::is_pointer_v<Tp>
 class AtomicRingBuffer : public Immovable<AtomicRingBuffer<Tp>> {
@@ -78,12 +93,43 @@ private:
 };
 
 
-/// @brief 可自动扩容的无锁工作窃取队列
+/// @brief 自适应扩容的无锁工作窃取队列 —— Executor 共享 buffer 的实现。
 ///
-/// @details 与 BoundedQueue 类似：Owner 线程在尾部 push/pop，Stealer 线程在头部 steal。
-/// 区别：当 Owner 发现队列满时，自动扩容创建更大的缓冲区并迁移数据。
+/// @details
+/// 与 `BoundedQueue` 同源，但 owner 在队列满时不调用回调，而是 **就地扩容**
+/// 到 2× 容量的新 buffer。这是为 Executor 的全局共享 buffer 设计的：
 ///
-/// @tparam Tp 元素类型（必须为指针类型）
+/// | 特性          | `BoundedQueue`                | `UnboundedQueue`               |
+/// |---------------|--------------------------------|-------------------------------|
+/// | 容量          | 编译期固定（2^n）              | 运行期自适应扩容（2× 翻倍）    |
+/// | 满处理        | 返回 false / 调溢出回调         | 自动 resize 后继续 push        |
+/// | 适用场景      | Worker 本地队列（容量可控）     | 全局共享 buffer（容量难预估）  |
+/// | 性能          | 无扩容开销，最热路径            | 扩容时一次内存分配 + 拷贝       |
+///
+/// ============================================================================
+///  为什么外部线程入队走 Unbounded 而不是 Bounded？
+/// ============================================================================
+/// 外部线程的提交速率不可预测 —— 一个 main 函数突然 push 几万个任务是合理的。
+/// 用 BoundedQueue 会反复触发"满 → 回退"，破坏批量入队效率。
+/// UnboundedQueue 的扩容代价（一次 alloc + memcpy）摊薄到大量任务上几乎可忽略。
+///
+/// 反过来，Worker 本地队列容量受限于"任务粒度合理时不会失控" 的常理 ——
+/// 用 Bounded 既省内存又避免扩容卡顿。
+///
+/// ============================================================================
+///  与 BoundedQueue 共享的 Chase-Lev 协议
+/// ============================================================================
+/// - 同样的 LIFO push/pop + FIFO steal 双端模型；
+/// - 同样的 acquire/release 配对内存序；
+/// - 同样的 single-element CAS 仲裁；
+/// - 唯一区别：push 满时调用 `m_buffer = m_buffer->resize(b, t)` 替换底层。
+///
+/// 旧 buffer 进 `m_garbage` 列表，析构时统一释放 —— 期间 stealer 仍能安全
+/// 读取（旧 buffer 内存不动）。
+///
+/// @tparam Tp 必须为指针类型
+/// @see BoundedQueue        定长对偶
+/// @see Executor::Buffer    包装成全局 buffer 的容器
 template <typename Tp>
     requires std::is_pointer_v<Tp>
 class UnboundedQueue : public Immovable<UnboundedQueue<Tp>> {

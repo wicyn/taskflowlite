@@ -13,14 +13,18 @@
 #include <ostream>
 #include <format>
 
+#include "core/work_memory.hpp"
+#include "core/runtime.hpp"
+#include "core/branch.hpp"
+#include "core/jump.hpp"
 #include "core/executor.hpp"
 
 // ==============================================================================
 // 编译期版本宏 (Source of Truth：源码即真理，CMake 会自动来读取这里)
 // ==============================================================================
 #define TASKFLOWLITE_VERSION_MAJOR 1
-#define TASKFLOWLITE_VERSION_MINOR 0
-#define TASKFLOWLITE_VERSION_PATCH 1
+#define TASKFLOWLITE_VERSION_MINOR 2
+#define TASKFLOWLITE_VERSION_PATCH 0
 
 namespace tfl {
 
