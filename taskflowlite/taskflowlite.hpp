@@ -13,6 +13,10 @@
 #include <ostream>
 #include <format>
 
+#include "core/work_memory.hpp"
+#include "core/runtime.hpp"
+#include "core/branch.hpp"
+#include "core/jump.hpp"
 #include "core/executor.hpp"
 
 // ==============================================================================
@@ -20,7 +24,7 @@
 // ==============================================================================
 #define TASKFLOWLITE_VERSION_MAJOR 0
 #define TASKFLOWLITE_VERSION_MINOR 1
-#define TASKFLOWLITE_VERSION_PATCH 1
+#define TASKFLOWLITE_VERSION_PATCH 2
 
 namespace tfl {
 

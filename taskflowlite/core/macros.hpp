@@ -10,9 +10,29 @@
 
 #include <cassert>
 
+
 // ============================================================================
 //  内联控制指令
 // ============================================================================
+
+/// @brief 跨编译器封装 `[[no_unique_address]]` / `[[msvc::no_unique_address]]`。
+/// @details
+/// 该属性用于告知编译器：若成员对象为空类型（empty type），则可允许其
+/// 不额外占用对象存储空间，从而尽可能压缩类对象体积。
+/// @note
+/// 该宏只影响对象布局优化机会，不改变语义正确性。
+#if defined(__has_cpp_attribute)
+#if __has_cpp_attribute(msvc::no_unique_address)
+#define TFL_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#elif __has_cpp_attribute(no_unique_address) >= 201803L
+#define TFL_NO_UNIQUE_ADDRESS [[no_unique_address]]
+#else
+#define TFL_NO_UNIQUE_ADDRESS
+#endif
+#else
+#define TFL_NO_UNIQUE_ADDRESS
+#endif
+
 
 /// @brief 强制编译器对目标函数进行内联展开，忽略编译器的常规启发式阈值。
 #if defined(_MSC_VER)

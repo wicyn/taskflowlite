@@ -1,5 +1,5 @@
-/// @file notifier.hpp
-/// @brief 无锁非阻塞通知器 - 消除"丢失唤醒"的条件变量替代方案
+﻿/// @file notifier.hpp
+/// @brief 无锁通知器 Notifier —— 消除"丢失唤醒"的条件变量替代品
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-03-02
@@ -20,38 +20,122 @@
 
 namespace tfl {
 
-/// @brief 无锁非阻塞通知器 - 替代条件变量的高性能同步原语
+/// @brief 无锁高性能通知原语 —— 线程池"无任务时挂起"的实现核心。
 ///
 /// @details
-/// 类似条件变量但采用乐观锁与无锁设计，无需互斥锁保护。
-/// 为彻底消除"丢失唤醒（Lost Wake-up）"的竞态条件，强制要求调用方遵循两阶段等待协议：
-/// 1. prepare_wait(): 登记等待意图（发布状态）
-/// 2. Double-check: 再次校验业务谓词
-/// 3. commit_wait() 或 cancel_wait(): 提交等待或撤销
+/// `Notifier` 解决经典并发难题：**Lost Wake-up（丢失唤醒）**。
+/// 普通条件变量需要 mutex 配合才能避免，而本类用纯原子操作 + 两阶段协议实现，
+/// 不需要任何锁。
 ///
-/// @par 内部状态字布局
-/// 使用单个 64 位原子变量同步所有状态流转：
-/// +----------------+----------------+----------------+
-/// |   32-bit      |   16-bit       |   16-bit       |
-/// |    Epoch      |  Pre-waiters   |  Stack Top     |
-/// | (轮次计数)    | (预等待计数)    |  (等待栈顶)    |
-/// +----------------+----------------+----------------+
-/// 
-/// @par 核心设计
-/// - Epoch 轮次：每次 prepare_wait 递增，区分不同批次的等待者
-/// - Pre-waiters：已调用 prepare_wait 但尚未 commit/cancel 的线程数
-/// - Stack Top：侵入式无锁栈的栈顶索引（k_stack_mask 表示空栈）
+/// ============================================================================
+///  Lost Wake-up 问题与传统方案
+/// ============================================================================
+/// 经典场景：
+/// @code
+///   Thread A:  if (queue.empty()) cv.wait();      // ← 检查与 wait 之间
+///   Thread B:                queue.push(); cv.notify();  // ← 通知发出
+///   Thread A:  cv.wait();                          // ← 永远醒不来！
+/// @endcode
 ///
-/// @invariant
-/// - pre-waiters > 0: 存在已 prepare 但未 commit/cancel 的线程
-/// - stack 为空: stack_top == k_stack_mask && pre_waiters == 0
+/// 标准方案是用 mutex 包裹"检查 + wait"原子化。但在工作池场景下：
+/// - 每次"看队列空 → 准备睡"都加锁太重；
+/// - 唤醒方"push + notify" 也得加锁，与提交热路径冲突。
+///
+/// `Notifier` 用 **两阶段协议** 替代 mutex：
+/// 1. `prepare_wait(wid)` —— 登记"我准备睡了"（发布意图）；
+/// 2. **再次** double-check 业务谓词；
+/// 3. 谓词为真 → `cancel_wait(wid)`；为假 → `commit_wait(wid)` 真正进 OS 等待。
+///
+/// 唤醒方在改业务状态后调 `notify_*`：若 step 1 已发生但 step 3 未发生，会
+/// 直接消耗 prewaiter 计数，根本不让本线程进 OS 挂起 —— 唤醒"先到达"的等待者。
+///
+/// ============================================================================
+///  64 位状态字布局 —— 单原子保护一切
+/// ============================================================================
+/// @code
+///    63                 32 31         16 15           0
+///   +-------------------+-------------+--------------+
+///   |     Epoch (32)    | Pre-Waiters | Stack Top    |
+///   |                   |    (16)     |    (16)      |
+///   +-------------------+-------------+--------------+
+/// @endcode
+/// - **Epoch（32 位）**：轮次计数，每次 prepare 递增。区分不同批次的等待者，
+///   是 commit/cancel 判断"是否已被越过"的依据；
+/// - **Pre-Waiters（16 位）**：已 prepare 但未 commit/cancel 的线程数。
+///   notify 优先消耗这部分（不需要 OS 挂起）；
+/// - **Stack Top（16 位）**：侵入式无锁栈的栈顶 waiter 索引。
+///   `k_stack_mask` 表示空栈。
+///
+/// 三个字段共住一个 64 位原子，所有状态变更通过 CAS 一次完成 —— 这是无锁化的
+/// 关键。容量上限 65535 等待者（16 位空间），对工作池场景绰绰有余。
+///
+/// ============================================================================
+///  Waiter 节点 —— 三态机
+/// ============================================================================
+/// @code
+///   kNotSignaled (0)  ──prepare→  prepare 后挂栈，未挂 OS
+///       │
+///       ↓ commit_wait CAS
+///   kWaiting (1)      ──notify→ kSignaled 并 atomic::notify_one
+///       │
+///       ↓ wait 醒
+///   kSignaled (2)
+/// @endcode
+///
+/// **关键优化（_park）**：commit_wait 把节点挂到栈后调 `_park` 准备 OS 挂起。
+/// `_park` 用 `compare_exchange(NotSignaled → Waiting)`：若 CAS 失败说明
+/// 在"挂栈到挂 OS"的窗口内已经被 notify 抢先把状态设为 Signaled，**直接跳过
+/// OS 挂起返回**。这省下整次 syscall 开销，在高并发下显著。
+///
+/// ============================================================================
+///  notify_one / notify_all / notify_n
+/// ============================================================================
+/// 三种唤醒粒度：
+/// - **`notify_one`** ：唤醒一个等待者（先消耗 pre-waiter，再弹栈）；
+/// - **`notify_all`** ：原子推进 epoch + 清空栈，一次唤醒所有；
+/// - **`notify_n(k)`**：循环消耗 / 弹栈，直到唤醒 k 个或栈空 ——
+///   Executor::_schedule 批量入队后用这个减少唤醒次数。
+///
+/// 所有 notify 入口前都 `atomic_thread_fence(seq_cst)`，建立"业务数据可见 →
+/// 唤醒动作"的全序关系，**这是 Lost Wake-up 防御的最后一道闸**。
+///
+/// ============================================================================
+///  使用示例（来自 Executor::_wait_for_work）
+/// ============================================================================
+/// @code
+///   notifier.prepare_wait(wid);
+///
+///   // double-check：扫描所有队列
+///   for (auto& q : queues) {
+///       if (!q.empty()) {
+///           notifier.cancel_wait(wid);
+///           return q.steal();
+///       }
+///   }
+///
+///   notifier.commit_wait(wid);   // 真正进 OS 挂起
+/// @endcode
+///
+/// @invariant pre-waiters > 0 ⇒ 有线程在 prepare~commit 窗口内
+/// @invariant 栈空 ⇔ stack_top == k_stack_mask && pre_waiters == 0
+/// @see Executor::_wait_for_work / _schedule  使用方
 class Notifier : Immovable<Notifier> {
     friend class Executor;
 
 public:
-    /// @brief 侵入式无锁栈的等待者节点
-    /// @details 每个 Worker 线程对应一个 Waiter，组成等待栈
-    /// @note 按 2 倍缓存行对齐，消除多线程更新状态时的伪共享
+    /// @brief 单个等待者的状态节点 —— 侵入式无锁栈的链表元素。
+    ///
+    /// @details
+    /// 每个 Worker 对应一个 `Waiter`，它同时是：
+    /// - **侵入式链表节点**（`next` 指针指向栈中下一个）；
+    /// - **三态机原子单元**（kNotSignaled / kWaiting / kSignaled）；
+    /// - **epoch 快照容器**（prepare 时记录全局状态，commit 时计算目标 epoch）。
+    ///
+    /// `alignas(2 * cache_line_size)` —— 多个 worker 同时在自己的 Waiter 上写，
+    /// 隔离 cache line 防止伪共享。这种 per-worker 数据的对齐是高并发数据结构的
+    /// 标配。
+    ///
+    /// @see Notifier  本节点的容器
     struct alignas(2 * cache_line_size) Waiter {
         std::atomic<Waiter*> next;  ///< 侵入式链表指针
         std::uint64_t epoch;        ///< prepare_wait 时的全局状态快照

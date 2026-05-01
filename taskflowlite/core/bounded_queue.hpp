@@ -1,6 +1,5 @@
-﻿
-/// @file bounded_queue.hpp
-/// @brief 无锁有界环形队列 - Work-Stealing 调度器的本地任务队列核心
+﻿/// @file bounded_queue.hpp
+/// @brief 无锁有界双端队列 BoundedQueue —— Worker 本地队列实现
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-03-02
@@ -20,23 +19,66 @@
 
 namespace tfl {
 
-/// @brief 无锁双端环形队列 - Work-Stealing 算法的核心数据结构
+/// @brief Chase-Lev 风格的无锁双端队列 —— Work-Stealing 调度的核心数据结构。
 ///
 /// @details
-/// 基于环形缓冲区实现，支持单线程 Owner 操作（push/pop）与多线程 Stealer 操作（steal）。
-/// 采用 2 的幂次方容量设计，利用位运算替代取模，提升热点路径性能。
+/// `BoundedQueue` 是每个 Worker 的本地任务队列实现，同时承担两种访问模式：
+/// - **Owner 端（push / pop）**：单线程独占，LIFO 语义（栈式）；
+/// - **Stealer 端（steal）**  ：多线程竞争，FIFO 语义（队列式）。
 ///
-/// @par 内存模型与同步协议
-/// - Owner 线程：独占 bottom 指针的写入权限，通过 release 语义发布元素
-/// - Stealer 线程：独占 top 指针的写入权限，通过 acquire 语义获取元素
-/// - 两者通过 bottom > top 的偏序关系隐式同步，无需显式锁
+/// 这种"一端 LIFO 一端 FIFO"的双端设计是 Work-Stealing 算法的奠基性贡献
+/// （Chase & Lev, 2005），框架内严格遵循其内存序协议。
 ///
-/// @par ABA 问题防御
-/// - 使用 64 位整数作为指针索引，ABA 发生概率理论上可忽略
-/// - pop() 的 single-element 路径采用 CAS 解决与 steal() 的竞争
+/// ============================================================================
+///  为什么 LIFO + FIFO？—— 缓存与竞争的精准取舍
+/// ============================================================================
 ///
-/// @tparam Tp 队列元素类型（必须为指针类型）
-/// @tparam cap 队列容量（必须为 2 的 n 次方）
+/// **Owner LIFO（pop 后进先出）**：
+/// - 任务派生通常具有数据局部性（child 任务的 working set 与 parent 相邻）；
+/// - LIFO 让 owner 总是先跑最近 push 的任务，最大化 L1 / L2 缓存命中；
+/// - 派生模式下 stack-like 行为最自然。
+///
+/// **Stealer FIFO（steal 先进先出）**：
+/// - 偷走最老的任务 —— 这些任务的 working set 大概率已不在 owner 的缓存里，
+///   "扔掉" 损失最小；
+/// - FIFO 偷一次能拿到一个相对独立的子树（最老 = 最早派生的 = 子树根级）；
+/// - owner 与 stealer 操作不同端，Cache-line 物理分离，**几乎零争用**。
+///
+/// ============================================================================
+///  内存序协议（Chase-Lev）
+/// ============================================================================
+/// - **bottom**  ：owner 独占写，stealer 通过 `acquire load` 读；
+/// - **top**     ：stealer 通过 CAS 修改，owner 通过 `acquire load` 读；
+/// - **buffer**  ：bottom 写入用 `release store`，stealer 用 `acquire load` 读；
+/// - **single-element 竞争**：当 size == 1 时，owner 的 pop 与 stealer 的 steal
+///   可能同时摸最后一个元素 → owner 用 `compare_exchange` 仲裁，输了就让给 stealer。
+///
+/// 通过 `bottom > top` 的偏序关系隐式同步，**无需任何锁、无需 SC**。
+///
+/// ============================================================================
+///  容量约束 —— 必须 2^n
+/// ============================================================================
+/// `cap` 必须是 2 的幂次方（`requires (cap & (cap - 1)) == 0`）。
+/// 收益：取模运算变成位与（`index & k_mask` 替代 `index % cap`）。
+/// 这是热路径上的常数级优化，看似微小，在数十亿次入队 / 出队的场景下显著。
+///
+/// ============================================================================
+///  ABA 防御 —— 64 位索引
+/// ============================================================================
+/// `bottom` / `top` 用 `int64_t`，理论上 ABA 周期 = 2^64 次入队 ——
+/// 即使每秒 10^9 次，也要 500 年才能转回。框架不再额外加 tag 位防 ABA。
+///
+/// ============================================================================
+///  push 溢出回调 —— 优雅降级到全局队列
+/// ============================================================================
+/// `try_push` 在队列满时返回 false。`push(val, on_full)` / `push(iter, n, on_full)`
+/// 在满的时候调用回调（典型实现是把溢出元素推到全局 buffer），让本地队列保持
+/// "满即拒绝"的可预期行为，由调用方决定如何处置溢出。
+///
+/// @tparam Tp 必须为指针类型（`std::is_pointer_v<Tp>`）
+/// @tparam cap 容量，必须 2^n 且 > 1
+/// @see UnboundedQueue  全局共享 buffer 用的对偶版（自动扩容）
+/// @see Executor::_schedule  使用 push(on_full=push_global) 实现溢出
 template <typename Tp, std::size_t cap = TFL_DEFAULT_QUEUE_SIZE>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
 class BoundedQueue : public Immovable<BoundedQueue<Tp, cap>> {

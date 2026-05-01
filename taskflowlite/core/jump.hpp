@@ -1,5 +1,5 @@
 ﻿/// @file jump.hpp
-/// @brief 提供无条件跳转控制器，绕过 DAG 计数器直接将目标置为就绪并调度。
+/// @brief 无条件跳转控制器 Jump / MultiJump —— 绕过 DAG 计数器的强制路由
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-03-02
@@ -17,34 +17,46 @@
 
 namespace tfl {
 
-/// @brief 单目标跳转控制器。
-///
-/// 在 JumpWork 的 callable 内部使用，为用户提供运行时的无条件跳转能力。
-/// 可将执行流直接转移到指定后继，不受常规 DAG 依赖关系的约束。
+/// @brief 单目标跳转控制器 —— DAG 内"无条件 GOTO"权杖。
 ///
 /// @details
-/// **调度原理（与 Branch 的核心区别）**
+/// `Jump` 与 `Branch` 是控制流双子星：同样在 worker 栈上由宿主 Work 构造、传给
+/// 用户闭包决定后继路由，但 **路由协议截然相反**。
 ///
-/// Branch 在现有 DAG 计数器上做差额（边权重 2，选中多减一次），
-/// 未选中的后继仍可被其他前驱触发。
+/// ============================================================================
+///  Jump vs Branch —— 协作式 vs 抢占式
+/// ============================================================================
 ///
-/// Jump 则完全绕过计数器机制——`_tear_down_jump_task` 直接将
-/// target 的 `join_counter` 置 0 并立即调度：
+/// | 维度        | `Branch`                          | `Jump`                            |
+/// |-------------|-----------------------------------|-----------------------------------|
+/// | 边权重      | 2（差额机制）                      | 0（不贡献依赖）                    |
+/// | 路由方式    | join_counter -= 1（差额）         | join_counter = 0（强制清零）       |
+/// | 未被选中    | 仍可被其他前驱触发                  | 完全绕过常规依赖                   |
+/// | 自环        | 禁止                              | 唯一允许自环的节点类型             |
+/// | 拓扑校验    | 严格 DAG 检测                      | jump 节点参与的边不计入环检测      |
+/// | 适用语义    | "条件分支"（if/else）              | "强制跳转"（goto / state-machine） |
 ///
-/// ```
-///   Branch:  join_counter -= 1 (差额)   → 可能仍 > 0 → 等待其他前驱
-///   Jump:    join_counter  = 0 (强制)    → 必定就绪    → 立即调度
-/// ```
+/// 关键差异在 **`_tear_down_jump_task` 直接把 target 的 join_counter 置零并立即
+/// 入队**，绕过了"等所有前驱完成"的协议。这让 Jump 成为状态机循环、错误重试、
+/// 强制覆盖等场景的合适工具 —— 用 Branch 表达这些会非常拐弯抹角。
 ///
-/// **选择语义（Last-write-wins）**
+/// ============================================================================
+///  自环 / 死锁的边界处理
+/// ============================================================================
+/// `Work::_can_precede` 中只对**完全无 jump 节点参与**的环路做严格 DAG 校验：
+/// jump 出/入的边可以构成环（这正是状态机循环的写法）。这一拓扑放宽是 Jump
+/// 类型存在的关键 —— 没有它，循环图无法在编辑期通过校验。
 ///
-/// - 支持按索引、谓词、下标赋值三种选择方式
-/// - 多次 `select()` 或 `operator[]` 赋值以最后一次为准
-/// - 不调用任何 `select()` 则不执行跳转，走常规 tear_down 路径
-/// - `reset()` 可显式取消当前选择
+/// ============================================================================
+///  Last-Write-Wins 选择语义（同 Branch）
+/// ============================================================================
+/// - 多次 select / `operator[]=` 覆盖；不调用即不跳转，走常规 tear_down；
+/// - `select_if(pred)` 首个匹配即停。
 ///
-/// @pre 必须由 JumpWork::invoke 在 Worker 线程的栈上临时构造。
-/// @note 禁止将此对象的引用逃逸到外部线程，其生命周期严格限定在 callable 执行期间。
+/// @pre 由 JumpWork::invoke 构造，传引用给闭包，不可逃逸。
+/// @see Branch     协作式对偶
+/// @see MultiJump  多目标版
+/// @see JumpWork   宿主节点
 class Jump : public Immovable<Jump> {
     friend class Work;
     friend class Flow;
@@ -106,7 +118,7 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
 
 private:
-    Work&  m_work;           ///< 绑定至宿主 JumpWork，借此访问后继列表
+    Work& m_work;           ///< 绑定至宿主 JumpWork，借此访问后继列表
     Work* m_target{nullptr}; ///< 选中的跳转目标；invoke 结束后由 _tear_down_jump_task 直接置 counter=0 并调度
 
     explicit Jump(Work& work) noexcept : m_work{work} {}
@@ -149,37 +161,32 @@ inline std::size_t Jump::size() const noexcept {
     return m_work.m_num_successors;
 }
 
-/// @brief 多目标跳转控制器。
-///
-/// 在 MultiJumpWork 的 callable 内部使用。
-/// 与 Jump 的互斥选择不同，MultiJump 允许同时选中多个后继，
-/// `_tear_down_multi_jump_task` 对每个 target 执行与单目标相同的
-/// 强制置零 + 立即调度逻辑。
+/// @brief 多目标跳转控制器 —— 同时强制激活 N 个后继的"广播 GOTO"。
 ///
 /// @details
-/// **选择语义（Accumulative）**
+/// 与 `Jump` 互斥选择不同，`MultiJump` 允许同时跳转多个后继；
+/// `_tear_down_multi_jump_task` 对每个 target 各执行一次"清零 + 入队"，
+/// 等价于多次 `Jump` 的合并。
 ///
-/// - 所有 `select()` / `operator[]` 调用均为 **累积** 生效，而非覆盖
-/// - 内部自动去重：同一后继不会被重复跳转，避免重复调度
-/// - `select_all()` 实现无条件广播
-/// - `reset()` 清空全部已累积的选择
+/// 与 `MultiBranch` 的关系，正如 `Jump` 与 `Branch`：累积语义、SmallVector 存储、
+/// 单 / 多索引下标 Proxy —— 这部分文档与 `MultiBranch` 完全平行，仅差额机制
+/// 替换为强制清零。
 ///
-/// **下标语法**
+/// ============================================================================
+///  典型用例 —— 状态机的"多分支跳转"
+/// ============================================================================
+/// 一个错误处理节点同时跳到"重试入口"和"日志记录"两个状态：
+/// @code
+///   error_handler.emplace([](MultiJump& mj){
+///       if (transient_error)   mj[retry_state] = true;
+///       if (need_log)          mj[log_state]   = true;
+///   });
+/// @endcode
 ///
-/// ```
-///   mj[5]       = true;                  // 单索引开关
-///   mj[1, 2, 3] = {false, true, false};  // 多索引，编译期强制个数一致
-/// ```
-///
-/// **存储与性能**
-///
-/// 使用 SmallVector 存储选中集合，小数量后继时避免堆分配。
-/// 去重采用线性扫描——DAG 节点的典型扇出数极低（通常 < 10），
-/// 线性扫描优于 hash set 的常数开销。
-///
-/// @pre 必须由 MultiJumpWork::invoke 在 Worker 线程的栈上临时构造。
-/// @post 所有选中的 target 在 invoke 返回后被强制置为就绪并调度。
-/// @note 禁止将此对象的引用逃逸到外部线程，其生命周期严格限定在 callable 执行期间。
+/// @pre 由 MultiJumpWork::invoke 构造，传引用给闭包，不可逃逸。
+/// @see Jump            单目标版
+/// @see MultiBranch     协作式对偶
+/// @see MultiJumpWork   宿主节点
 class MultiJump : public Immovable<MultiJump> {
     friend class Work;
     friend class Flow;
@@ -289,8 +296,8 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
 
 private:
-    Work& m_work;                 ///< 绑定至宿主 MultiJumpWork
-    SmallVector<Work*> m_targets; ///< 去重后的跳转集合；invoke 返回后 Executor 遍历做强制调度
+    Work&               m_work;                 ///< 绑定至宿主 MultiJumpWork
+    SmallVector<Work*>  m_targets; ///< 去重后的跳转集合；invoke 返回后 Executor 遍历做强制调度
 
     explicit MultiJump(Work& work) noexcept : m_work{work} {}
 
