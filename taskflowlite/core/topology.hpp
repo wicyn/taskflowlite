@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <atomic>
+#include <stop_token>
 #include <cstddef>
 #include <cstdint>
 
@@ -45,17 +45,6 @@ namespace tfl {
 /// - notify/wait 通过 `m_state.notify_all` / `wait` 直接生效。
 ///
 /// ============================================================================
-///  父子拓扑链 —— Subflow / Runtime / 嵌套 dep_async
-/// ============================================================================
-/// 嵌套调用产生子拓扑，通过 `m_parent` 链接到外层：
-/// - 停止信号沿父链 **单向向上查询**（child 检查 self + 所有 ancestor）；
-/// - 子层 `stop()` **不影响** 父层 —— 隔离子流程的取消；
-/// - 父子链一旦构造即不可变，无并发修改。
-///
-/// 这种"上行查询 + 单向影响"的设计让取消语义在嵌套场景下行为可预测：
-/// 取消子图不会污染父图，但取消父图会自然传导到所有子图。
-///
-/// ============================================================================
 ///  引用计数 m_use_count —— AsyncTask 内存释放协议
 /// ============================================================================
 /// 每个引用 Topology 的 AsyncTask 在构造 / 拷贝时 `_incref`，析构时 `_decref`。
@@ -89,7 +78,7 @@ class Topology : public Immovable<Topology> {
     TFL_WORK_SUBCLASS_FRIENDS;
 
 public:
-    explicit Topology(Executor& exec, Topology* parent = nullptr) noexcept;
+    explicit Topology(Executor& exec) noexcept;
     ~Topology() = default;
 
 private:
@@ -102,15 +91,12 @@ private:
     };
 
     std::atomic<State> m_state{State::Idle};         ///< 状态机 + 轻量级锁
-    std::atomic_flag   m_stopped = ATOMIC_FLAG_INIT; ///< 本层停止标志（不向上传播）
-    Topology* const    m_parent{nullptr};            ///< 父拓扑，非拥有；构造后不可变
+    std::stop_source   m_stop_source;
     Executor&          m_executor;                   ///< 所属调度器
     std::atomic<std::size_t> m_use_count{0};         ///< 引用计数
 
     // 状态查询与控制
     void _wait() const noexcept;
-    void _stop() noexcept;
-    [[nodiscard]] bool _is_stopped() const noexcept;
     void _incref() noexcept;
     [[nodiscard]] bool _decref() noexcept;
     [[nodiscard]] bool _is_running() const noexcept;
@@ -122,9 +108,8 @@ private:
 // Implementation
 // ============================================================================
 
-inline Topology::Topology(Executor& exec, Topology* parent) noexcept
-    : m_parent{parent}
-    , m_executor{exec} {}
+inline Topology::Topology(Executor& exec) noexcept
+    : m_executor{exec} {}
 
 /// @brief 阻塞等待拓扑完成
 ///
@@ -138,18 +123,6 @@ inline void Topology::_wait() const noexcept {
         m_state.wait(state, std::memory_order_acquire);
         state = m_state.load(std::memory_order_acquire);
     }
-}
-
-/// @brief 请求停止本层执行
-///
-/// @details
-/// **仅设置本层标志，不向父层或子层传播。**
-/// - 本层 stop → `_is_stopped()` 在本层及任意后代查询时均返回 true
-/// - 子层 stop → 不影响父层 `_is_stopped()`
-///
-/// @performance lock-free，单条 relaxed store。
-inline void Topology::_stop() noexcept {
-    m_stopped.test_and_set(std::memory_order_relaxed);
 }
 
 /// @brief 引用计数递增

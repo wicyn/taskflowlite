@@ -69,25 +69,25 @@ template <typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_runtime(const Graph* graph, T&& f, Args&&... args);
 
-template <typename F, typename P>
-    requires (capturable<P> && flow_type<F> && predicate<P>)
-[[nodiscard]] inline Work* make_subflow(const Graph* graph, F&& flow, P&& pred);
+template <typename Gh, typename P>
+    requires (capturable<P> && graph_holder<Gh> && predicate<P>)
+[[nodiscard]] inline Work* make_subflow(const Graph* graph, Gh&& gh, P&& pred);
 
 // ============================================================================
 //  内联实现 — 独立异步任务工厂
 // ============================================================================
 
 template <anchor_tag A, typename T, typename... Args>
-    requires (capturable<T, Args...> && basic_invocable<T, Args...>)
+    requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
 [[nodiscard]] inline Work* make_silent_async_basic(Executor& exec, Work* parent, T&& f, Args&&... args);
 
 template <anchor_tag A, typename T, typename... Args>
-    requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
+    requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
 [[nodiscard]] inline Work* make_silent_async_runtime(Executor& exec, Work* parent, T&& f, Args&&... args);
 
-template <anchor_tag A, typename F, typename P, typename C>
-    requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
-[[nodiscard]] inline Work* make_silent_async_flow(Executor& exec, Work* parent, F&& flow, P&& pred, C&& cb);
+template <anchor_tag A, typename Gh, typename P, typename C>
+    requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
+[[nodiscard]] inline Work* make_silent_async_flow(Executor& exec, Work* parent, Gh&& gh, P&& pred, C&& cb);
 
 template <anchor_tag A, typename T, typename R, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
@@ -97,6 +97,9 @@ template <anchor_tag A, typename T, typename R, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_async_runtime(Executor& exec, Work* parent, T&& f, std::promise<R>&& p, Args&&... args);
 
+template <anchor_tag A, typename Gh, typename P, typename C>
+    requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
+[[nodiscard]] inline Work* make_async_flow(Executor& exec, Work* parent, Gh&& gh, P&& pred, C&& cb, std::promise<void>&& p);
 // ============================================================================
 //  内联实现 — 有依赖的异步任务工厂
 // ============================================================================
@@ -109,9 +112,9 @@ template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_dep_async_runtime(Executor& exec, Work* parent, T&& f, Args&&... args);
 
-template <anchor_tag A, typename F, typename P, typename C>
-    requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
-[[nodiscard]] inline Work* make_dep_async_flow(Executor& exec, Work* parent, F&& flow, P&& pred, C&& cb);
+template <anchor_tag A, typename Gh, typename P, typename C>
+    requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
+[[nodiscard]] inline Work* make_dep_async_flow(Executor& exec, Work* parent, Gh&& gh, P&& pred, C&& cb);
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
@@ -121,9 +124,9 @@ template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_dep_deferred_async_runtime(Executor& exec, Work* parent, T&& f, Args&&... args);
 
-template <anchor_tag A, typename F, typename P, typename C>
-    requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
-[[nodiscard]] inline Work* make_dep_deferred_async_flow(Executor& exec, Work* parent, F&& flow, P&& pred, C&& cb);
+template <anchor_tag A, typename Gh, typename P, typename C>
+    requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
+[[nodiscard]] inline Work* make_dep_deferred_async_flow(Executor& exec, Work* parent, Gh&& gh, P&& pred, C&& cb);
 
 /// @brief 销毁工作节点及其关联的拓扑资源
 inline void destroy(Work* work) noexcept;
