@@ -330,7 +330,6 @@ public:
     /// @param ptr register_observer 返回的观察者指针。
     template <std::derived_from<TaskObserver> Observer>
     void unregister_observer(std::shared_ptr<Observer> ptr) noexcept;
-
 private:
     Work* m_work{nullptr};  ///< 底层 Work 节点指针，非拥有引用。
 
@@ -815,6 +814,17 @@ void TaskView::for_each_release(F&& visitor) const noexcept(
             std::invoke(visitor, *req.sem);
         }
     }
+}
+
+
+// ---- 1) 线性链：a >> b >> c ----
+inline Task& operator>>(Task& lhs, Task& rhs) {
+    return rhs.succeed(lhs);
+}
+
+// ---- 2) 反向线性链：c << b << a ----
+inline Task& operator<<(Task& lhs, Task& rhs) {
+    return rhs.precede(lhs);
 }
 
 inline std::ostream& operator << (std::ostream& os, const Task& task) {
