@@ -58,7 +58,7 @@ namespace tfl {
 /// | `jump_invocable`          | 单跳转                | `Task()` → 强制转到目标             |
 /// | `multi_jump_invocable`    | 多跳转                | 返回若干目标 Task                    |
 /// | `runtime_invocable`       | 运行时任务            | `void(Runtime&)`                    |
-/// | `flow_type`               | 嵌套子流程（Subflow） | 整个 Flow 作为节点                  |
+/// | `graph_holder`               | 嵌套子流程（Subflow） | 整个 Flow 作为节点                  |
 ///
 /// 每个重载内部通过对应的 `make_xxx` 工厂在 `work_memory` 池里构造具体 Work 子类，
 /// 再用 `Graph::_emplace` 接管所有权。这一层"概念 → 工厂"的映射把"用户写什么签名
@@ -142,62 +142,70 @@ class Flow : public MoveOnly<Flow> {
     friend class Runtime;
 
 public:
+    /// @brief 构造空任务图。
     constexpr explicit Flow() = default;
 
-    // =====================================================a===================
+    // ========================================================================
     //  节点插入接口
     // ========================================================================
 
+    /// @brief 插入普通同步任务节点。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && basic_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
+    /// @brief 插入单目标分支任务节点。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && branch_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
+    /// @brief 插入多目标分支任务节点。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && multi_branch_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
+    /// @brief 插入单目标跳转任务节点。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && jump_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
+    /// @brief 插入多目标跳转任务节点。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && multi_jump_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
+    /// @brief 插入运行时任务节点，任务体可接收 Runtime& 动态派发子任务。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
-    // 子流程
-    template <typename F>
-        requires flow_type<F>
-    [[nodiscard]] Task emplace(F&& subflow);
+    /// @brief 插入子流程节点，执行时运行一整张 Flow。
+    template <typename Gh>
+        requires graph_holder<Gh>
+    [[nodiscard]] Task emplace(Gh&& gh);
 
-    template <typename F>
-        requires flow_type<F>
-    [[nodiscard]] Task emplace(F&& subflow, std::uint64_t num);
+    /// @brief 插入固定次数循环执行的子流程节点。
+    template <typename Gh>
+        requires graph_holder<Gh>
+    [[nodiscard]] Task emplace(Gh&& gh, std::uint64_t num);
 
-    template <typename F, typename P>
-        requires (flow_type<F> && capturable<P> && predicate<P>)
-    [[nodiscard]] Task emplace(F&& subflow, P&& pred);
+    /// @brief 插入条件循环执行的子流程节点。
+    template <typename Gh, typename P>
+        requires (graph_holder<Gh> && capturable<P> && predicate<P>)
+    [[nodiscard]] Task emplace(Gh&& gh, P&& pred);
 
     // ========================================================================
     //  批量插入接口
     // ========================================================================
 
-    // 1. 批量插入多个节点 (无参数或已通过 lambda 捕获的闭包)
-    // 返回 tuple 以支持 auto [...] 结构化绑定
-    // 批量插入（无参闭包 / Flow）
+    /// @brief 批量插入多个无参闭包或子流程节点。
+    /// @return Task 元组，支持结构化绑定。
     template <typename... Ts>
-        requires (sizeof...(Ts) > 1) && ((callback<Ts> || flow_type<Ts>) && ...)
+        requires (sizeof...(Ts) > 1) && ((callback<Ts> || graph_holder<Ts>) && ...)
     [[nodiscard]] auto emplace(Ts&&... tasks);
 
-    // 2. 批量插入多个带参数的节点 (通过 std::tuple / std::pair 打包)
-    // 返回 tuple 以支持 auto [...] 结构化绑定
+    /// @brief 批量插入多个已打包参数的任务节点。
+    /// @return Task 元组，支持结构化绑定。
     template <typename... Packs>
         requires (sizeof...(Packs) > 1) && (task_pack<Packs> && ...)
     [[nodiscard]] auto emplace(Packs&&... task_packs);
@@ -205,30 +213,50 @@ public:
     // ========================================================================
     //  图操作接口
     // ========================================================================
+
+    /// @brief 从图中移除一个任务节点。
     void erase(Task t) noexcept;
+
+    /// @brief 从图中批量移除多个任务节点。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     void erase(Ts&&... tasks) noexcept;
 
+    /// @brief 获取当前 Flow 的哈希值，基于内部 Graph 地址。
     [[nodiscard]] std::size_t hash_value() const noexcept;
+
+    /// @brief 清空当前任务图中的所有节点。
     void clear() noexcept;
+
+    /// @brief 判断当前任务图是否为空。
     [[nodiscard]] bool empty() const noexcept;
+
+    /// @brief 获取当前任务图中的节点数量。
     [[nodiscard]] std::size_t size() const noexcept;
 
+    /// @brief 遍历当前任务图中的所有节点。
     template <typename F>
         requires std::invocable<F, Task>
     void for_each(F&& visitor) noexcept(std::is_nothrow_invocable_v<F, Task>);
 
+    /// @brief 将当前任务图导出为 D2 描述字符串。
     [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
+
+    /// @brief 将当前任务图的 D2 描述写入输出流。
     void dump(std::ostream& os, Direction dir = Direction::Default) const;
 
+    /// @brief 设置当前任务图名称，用于调试和可视化。
     template <typename S>
         requires std::constructible_from<std::string, S>
     Flow& name(S&& name);
 
+    /// @brief 获取当前任务图名称。
     [[nodiscard]] std::string_view name() const noexcept;
 
+    /// @brief 获取内部 Graph 引用。
     [[nodiscard]] Graph& graph() noexcept;
+
+    /// @brief 获取内部 Graph 只读引用。
     [[nodiscard]] const Graph& graph() const noexcept;
 protected:
     Graph m_graph;
@@ -279,15 +307,15 @@ inline Task Flow::emplace(T&& task, Args&&... args) {
 //  子流程插入实现
 // ============================================================================
 
-template <typename F>
-    requires flow_type<F>
-inline Task Flow::emplace(F&& subflow) {
-    return emplace(std::forward<F>(subflow), 1ULL);
+template <typename Gh>
+    requires graph_holder<Gh>
+inline Task Flow::emplace(Gh&& gh) {
+    return emplace(std::forward<Gh>(gh), 1ULL);
 }
 
-template <typename F>
-    requires flow_type<F>
-inline Task Flow::emplace(F&& subflow, std::uint64_t num) {
+template <typename Gh>
+    requires graph_holder<Gh>
+inline Task Flow::emplace(Gh&& gh, std::uint64_t num) {
     auto counter = [remaining = num, reset = num]() mutable noexcept -> bool {
         if (remaining-- == 0) {
             remaining = reset;
@@ -295,13 +323,13 @@ inline Task Flow::emplace(F&& subflow, std::uint64_t num) {
         }
         return false;
     };
-    return emplace(std::forward<F>(subflow), std::move(counter));
+    return emplace(std::forward<Gh>(gh), std::move(counter));
 }
 
-template <typename F, typename P>
-    requires (flow_type<F> && capturable<P> && predicate<P>)
-inline Task Flow::emplace(F&& subflow, P&& pred) {
-    return Task{m_graph._emplace(make_subflow(std::addressof(m_graph), std::forward<F>(subflow), std::forward<P>(pred)))};
+template <typename Gh, typename P>
+    requires (graph_holder<Gh> && capturable<P> && predicate<P>)
+inline Task Flow::emplace(Gh&& gh, P&& pred) {
+    return Task{m_graph._emplace(make_subflow(std::addressof(m_graph), std::forward<Gh>(gh), std::forward<P>(pred)))};
 }
 
 // ============================================================================
@@ -310,7 +338,7 @@ inline Task Flow::emplace(F&& subflow, P&& pred) {
 
 // 1. 批量插入多个无参数节点
 template <typename... Ts>
-    requires (sizeof...(Ts) > 1) && ((callback<Ts> || flow_type<Ts>) && ...)
+    requires (sizeof...(Ts) > 1) && ((callback<Ts> || graph_holder<Ts>) && ...)
 inline auto Flow::emplace(Ts&&... tasks) {
     // 直接对每个 task 调用单任务的 emplace，并打包返回
     return std::make_tuple(this->emplace(std::forward<Ts>(tasks))...);

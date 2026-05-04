@@ -168,6 +168,7 @@ template <typename A, typename F, typename... Args>                 class Silent
 template <typename A, typename FlowStore, typename P, typename C>   class SilentAsyncFlowInvoker;
 template <typename A, typename F, typename R, typename... Args>     class AsyncBasicInvoker;
 template <typename A, typename F, typename R, typename... Args>     class AsyncRuntimeInvoker;
+template <typename A, typename FlowStore, typename P, typename C>   class AsyncFlowInvoker;
 template <typename A, typename F, typename... Args>                 class DepAsyncBasicInvoker;
 template <typename A, typename F, typename... Args>                 class DepAsyncRuntimeInvoker;
 template <typename A, typename FlowStore, typename P, typename C>   class DepAsyncFlowInvoker;
@@ -190,6 +191,7 @@ template <typename A>                                               class Anchor
     template <typename, typename, typename, typename>       friend class ::tfl::SilentAsyncFlowInvoker;           \
     template <typename, typename, typename, typename...>    friend class ::tfl::AsyncBasicInvoker;                \
     template <typename, typename, typename, typename...>    friend class ::tfl::AsyncRuntimeInvoker;              \
+    template <typename, typename, typename, typename>       friend class ::tfl::AsyncFlowInvoker;                 \
     template <typename, typename, typename...>              friend class ::tfl::DepAsyncBasicInvoker;             \
     template <typename, typename, typename...>              friend class ::tfl::DepAsyncRuntimeInvoker;           \
     template <typename, typename, typename, typename>       friend class ::tfl::DepAsyncFlowInvoker;              \

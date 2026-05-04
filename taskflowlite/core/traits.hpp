@@ -4,7 +4,7 @@
 /// 本文件汇集所有用户签名约束：
 /// - `basic_invocable` / `runtime_invocable` / `branch_invocable` / ... ：
 ///   按签名形态分类的 invocable 概念，驱动 Flow::emplace 的重载分发；
-/// - `flow_type` / `predicate` / `callback` ：Flow 提交 API 的辅助约束；
+/// - `graph_holder` / `predicate` / `callback` ：Flow 提交 API 的辅助约束；
 /// - `capturable<T...>` ：确保用户传入的所有类型都能被框架安全持久化存储；
 /// - `pack<Ts...>`     ：批量插入用的参数打包器（见下）。
 ///
@@ -19,12 +19,10 @@
 
 #pragma once
 
-#include <array>
+#include <stop_token>
 #include <concepts>
 #include <functional>
 #include <type_traits>
-#include <span>
-#include <string>
 
 #include "forward.hpp"
 
@@ -227,78 +225,142 @@ concept callback = std::invocable<std::decay_t<C>&>;
 /// @brief 检查是否为 Flow 任务图类型
 ///
 ///   1. 必须暴露 `Graph& graph()` 与 `const Graph& graph() const` 接口
-template <typename F>
-concept flow_type = requires(std::remove_cvref_t<F>& f, const std::remove_cvref_t<F>& cf) {
-        { f.graph()  } -> std::same_as<Graph&>;
-        { cf.graph() } -> std::same_as<const Graph&>;
+template <typename Gh>
+concept graph_holder = requires(std::remove_cvref_t<Gh>& g, const std::remove_cvref_t<Gh>& cg) {
+        { g.graph()  } -> std::same_as<Graph&>;
+        { cg.graph() } -> std::same_as<const Graph&>;
     };
+
 
 // ============================================================================
 //  Concepts — 任务节点类型约束
 //
-//  类型参数中的 Args 经过 std::unwrap_ref_decay_t 处理，
-//  与框架实际存储和传递 callable 参数的类型一致。
+//  Args 经 std::unwrap_ref_decay_t 处理，与框架实际存储/传递 callable 参数
+//  的类型一致。
+//
+//  每个 concept 拆为两个独立实现：
+//    _plain     : f(args..., [Tail&])
+//    _stoppable : f(args..., [Tail&], std::stop_token)
+//  顶层 concept = _plain || _stoppable，便于 invoker 用
+//  `if constexpr (xxx_stoppable<...>)` 精确分派。
+//
+//  Why: stop_token 是 shared_ptr 语义；用值接收 + std::move 进 invoke
+//       省一次 atomic ref-count，与 std::jthread 惯例一致。
 // ============================================================================
 
+// ── basic ──────────────────────────────────────────────────────────────────
 template <typename T, typename... Args>
-concept basic_invocable =
-    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>;
+concept basic_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>;
+template <typename T, typename... Args>
+concept basic_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., std::stop_token>;
+template <typename T, typename... Args>
+concept basic_invocable = basic_invocable_plain<T, Args...> || basic_invocable_stoppable<T, Args...>;
 
+// ── branch ─────────────────────────────────────────────────────────────────
 template <typename T, typename... Args>
-concept branch_invocable =
-    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>;
+concept branch_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>;
+template <typename T, typename... Args>
+concept branch_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&, std::stop_token>;
+template <typename T, typename... Args>
+concept branch_invocable = branch_invocable_plain<T, Args...> || branch_invocable_stoppable<T, Args...>;
 
+// ── multi_branch ───────────────────────────────────────────────────────────
 template <typename T, typename... Args>
-concept multi_branch_invocable =
-    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>;
+concept multi_branch_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>;
+template <typename T, typename... Args>
+concept multi_branch_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&, std::stop_token>;
+template <typename T, typename... Args>
+concept multi_branch_invocable = multi_branch_invocable_plain<T, Args...> || multi_branch_invocable_stoppable<T, Args...>;
 
+// ── jump ───────────────────────────────────────────────────────────────────
 template <typename T, typename... Args>
-concept jump_invocable =
-    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>;
+concept jump_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>;
+template <typename T, typename... Args>
+concept jump_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&, std::stop_token>;
+template <typename T, typename... Args>
+concept jump_invocable = jump_invocable_plain<T, Args...> || jump_invocable_stoppable<T, Args...>;
 
+// ── multi_jump ─────────────────────────────────────────────────────────────
 template <typename T, typename... Args>
-concept multi_jump_invocable =
-    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>;
+concept multi_jump_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>;
+template <typename T, typename... Args>
+concept multi_jump_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&, std::stop_token>;
+template <typename T, typename... Args>
+concept multi_jump_invocable = multi_jump_invocable_plain<T, Args...> || multi_jump_invocable_stoppable<T, Args...>;
 
+// ── runtime ────────────────────────────────────────────────────────────────
 template <typename T, typename... Args>
-concept runtime_invocable =
-    std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>;
+concept runtime_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>;
+template <typename T, typename... Args>
+concept runtime_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&, std::stop_token>;
+template <typename T, typename... Args>
+concept runtime_invocable = runtime_invocable_plain<T, Args...> || runtime_invocable_stoppable<T, Args...>;
+
 
 // ============================================================================
 //  返回类型推导
+//
+//  xxx_return_t 选取实际命中的签名：
+//    _stoppable 优先（只有 _stoppable 满足才走带 stop_token 的签名），
+//    否则回退到 _plain。
+//
+//  Why: 与 invoker 端 `if constexpr (xxx_stoppable<...>)` 优先的分派策略
+//       保持一致，避免 return_t 与运行时实际调用的签名不一致导致
+//       Future<T> / Promise<T> 的 T 类型错位。
+//  Why: 用 std::conditional_t 而非偏特化，是因为顶层的两个条件互斥地
+//       挑选 invoke_result_t 实参列表，写一行更直接，编译期成本更低。
 // ============================================================================
 
+// ── basic ──────────────────────────────────────────────────────────────────
 template <typename T, typename... Args>
-using basic_return_t =
-    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>;
-
+using basic_return_plain_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>;
 template <typename T, typename... Args>
-using branch_return_t =
-    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>;
-
+using basic_return_stoppable_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., std::stop_token>;
 template <typename T, typename... Args>
-using multi_branch_return_t =
-    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>;
+using basic_return_t = std::conditional_t<basic_invocable_plain<T, Args...>, basic_return_plain_t<T, Args...>, basic_return_stoppable_t<T, Args...>>;
 
+// ── branch ─────────────────────────────────────────────────────────────────
 template <typename T, typename... Args>
-using jump_return_t =
-    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>;
-
+using branch_return_plain_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>;
 template <typename T, typename... Args>
-using multi_jump_return_t =
-    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>;
-
+using branch_return_stoppable_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&, std::stop_token>;
 template <typename T, typename... Args>
-using runtime_return_t =
-    std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>;
+using branch_return_t = std::conditional_t<branch_invocable_plain<T, Args...>, branch_return_plain_t<T, Args...>, branch_return_stoppable_t<T, Args...>>;
 
+// ── multi_branch ───────────────────────────────────────────────────────────
+template <typename T, typename... Args>
+using multi_branch_return_plain_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>;
+template <typename T, typename... Args>
+using multi_branch_return_stoppable_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&, std::stop_token>;
+template <typename T, typename... Args>
+using multi_branch_return_t = std::conditional_t<multi_branch_invocable_plain<T, Args...>, multi_branch_return_plain_t<T, Args...>, multi_branch_return_stoppable_t<T, Args...>>;
+
+// ── jump ───────────────────────────────────────────────────────────────────
+template <typename T, typename... Args>
+using jump_return_plain_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>;
+template <typename T, typename... Args>
+using jump_return_stoppable_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&, std::stop_token>;
+template <typename T, typename... Args>
+using jump_return_t = std::conditional_t<jump_invocable_plain<T, Args...>, jump_return_plain_t<T, Args...>, jump_return_stoppable_t<T, Args...>>;
+
+// ── multi_jump ─────────────────────────────────────────────────────────────
+template <typename T, typename... Args>
+using multi_jump_return_plain_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>;
+template <typename T, typename... Args>
+using multi_jump_return_stoppable_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&, std::stop_token>;
+template <typename T, typename... Args>
+using multi_jump_return_t = std::conditional_t<multi_jump_invocable_plain<T, Args...>, multi_jump_return_plain_t<T, Args...>, multi_jump_return_stoppable_t<T, Args...>>;
+
+// ── runtime ────────────────────────────────────────────────────────────────
+template <typename T, typename... Args>
+using runtime_return_plain_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>;
+template <typename T, typename... Args>
+using runtime_return_stoppable_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&, std::stop_token>;
+template <typename T, typename... Args>
+using runtime_return_t = std::conditional_t<runtime_invocable_plain<T, Args...>, runtime_return_plain_t<T, Args...>, runtime_return_stoppable_t<T, Args...>>;
 
 template <typename... Ts>
 concept sem_count_sequence = detail::is_sem_count_seq<Ts...>::value;
-
-
-
-
 
 
 /// @brief 带自动 decay 的任务参数包。

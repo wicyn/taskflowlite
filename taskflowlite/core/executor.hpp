@@ -11,6 +11,7 @@
 #include <cassert>
 
 #include "flow.hpp"
+#include "future.hpp"
 #include "worker.hpp"
 #include "unordered_dense.hpp"
 #include "unbounded_queue.hpp"
@@ -73,11 +74,11 @@ namespace tfl {
 /// | API               | 返回值                  | 启动方式        | 语义 |
 /// |-------------------|-------------------------|-----------------|------|
 /// | `silent_async`    | `void`                  | 立即启动        | fire-and-forget |
-/// | `async`           | `std::future<R>`        | 立即启动        | 异步返回值 |
+/// | `async`           | `Future<R>`             | 立即启动        | 异步返回值 |
 /// | `dependent_async` | `AsyncTask`             | 立即启动/等待依赖 | 动态依赖任务 |
 /// | `deferred_async`  | `DeferredAsyncTask`     | 手动 `start()`  | 启动前可配置 |
 ///
-/// 每组 API 都按 `flow_type`、`basic_invocable`、`runtime_invocable` 等概念分发，
+/// 每组 API 都按 `graph_holder`、`basic_invocable`、`runtime_invocable` 等概念分发，
 /// 最终收敛到 Work 工厂、依赖初始化和 `_schedule` 调度入口。
 ///
 /// ============================================================================
@@ -147,34 +148,34 @@ public:
     // ========================================================================
 
     /// @brief 提交任务图执行一次
-    template <typename F>
-        requires flow_type<F>
-    [[nodiscard]] DeferredAsyncTask deferred_async(F&& flow);
+    template <typename Gh>
+        requires graph_holder<Gh>
+    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh);
 
     /// @brief 提交任务图执行一次，完成后执行回调
-    template <typename F, typename C>
-        requires (capturable<C> && flow_type<F> && callback<C>)
-    [[nodiscard]] DeferredAsyncTask deferred_async(F&& flow, C&& callback);
+    template <typename Gh, typename C>
+        requires (capturable<C> && graph_holder<Gh> && callback<C>)
+    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh, C&& cb);
 
     /// @brief 提交任务图执行指定次数
-    template <typename F>
-        requires flow_type<F>
-    [[nodiscard]] DeferredAsyncTask deferred_async(F&& flow, std::uint64_t num);
+    template <typename Gh>
+        requires graph_holder<Gh>
+    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh, std::uint64_t num);
 
     /// @brief 提交任务图循环执行指定次数，完成后执行回调
-    template <typename F, typename C>
-        requires (capturable<C> && flow_type<F> && callback<C>)
-    [[nodiscard]] DeferredAsyncTask deferred_async(F&& flow, std::uint64_t num, C&& callback);
+    template <typename Gh, typename C>
+        requires (capturable<C> && graph_holder<Gh> && callback<C>)
+    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh, std::uint64_t num, C&& cb);
 
     /// @brief 提交任务图条件循环执行
-    template <typename F, typename P>
-        requires (capturable<P> && flow_type<F> && predicate<P>)
-    [[nodiscard]] DeferredAsyncTask deferred_async(F&& flow, P&& pred);
+    template <typename Gh, typename P>
+        requires (capturable<P> && graph_holder<Gh> && predicate<P>)
+    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh, P&& pred);
 
     /// @brief 提交任务图条件循环执行，完成后执行回调
-    template <typename F, typename P, typename C>
-        requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
-    [[nodiscard]] DeferredAsyncTask deferred_async(F&& flow, P&& pred, C&& callback);
+    template <typename Gh, typename P, typename C>
+        requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
+    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh, P&& pred, C&& cb);
 
     /// @brief 提交单个异步任务
     template <typename T, typename... Args>
@@ -186,38 +187,38 @@ public:
         requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
     [[nodiscard]] DeferredAsyncTask deferred_async(T&& task, Args&&... args);
 
-    template <typename F, typename... Deps>
-        requires flow_type<F> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, Deps&&... deps);
+    template <typename Gh, typename... Deps>
+        requires graph_holder<Gh> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, Deps&&... deps);
 
-    template <typename F, typename C, typename... Deps>
-        requires (capturable<C> && flow_type<F> && callback<C> &&
+    template <typename Gh, typename C, typename... Deps>
+        requires (capturable<C> && graph_holder<Gh> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, C&& callback, Deps&&... deps);
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, C&& cb, Deps&&... deps);
 
-    template <typename F, typename... Deps>
-        requires flow_type<F> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, std::uint64_t num, Deps&&... deps);
+    template <typename Gh, typename... Deps>
+        requires graph_holder<Gh> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, std::uint64_t num, Deps&&... deps);
 
-    template <typename F, typename C, typename... Deps>
-        requires (capturable<C> && flow_type<F> && callback<C> &&
+    template <typename Gh, typename C, typename... Deps>
+        requires (capturable<C> && graph_holder<Gh> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, std::uint64_t num, C&& callback, Deps&&... deps);
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps);
 
-    template <typename F, typename P, typename... Deps>
-        requires (capturable<P> && flow_type<F> && predicate<P> &&
+    template <typename Gh, typename P, typename... Deps>
+        requires (capturable<P> && graph_holder<Gh> && predicate<P> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, P&& pred, Deps&&... deps);
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, Deps&&... deps);
 
-    template <typename F, typename P, typename C, typename... Deps>
-        requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C> &&
+    template <typename Gh, typename P, typename C, typename... Deps>
+        requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, P&& pred, C&& callback, Deps&&... deps);
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps);
 
-    template <typename F, typename P, typename C, std::input_iterator I, std::sentinel_for<I> S>
-        requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C> &&
+    template <typename Gh, typename P, typename C, std::input_iterator I, std::sentinel_for<I> S>
+        requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
                  std::derived_from<std::iter_value_t<I>, AsyncTask>)
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, P&& pred, C&& callback, I first, S last);
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, C&& cb, I first, S last);
 
 
     template <typename T, typename... Deps>
@@ -238,54 +239,85 @@ public:
 
 
     /// @brief 提交任务图执行一次
-    template <typename F>
-        requires flow_type<F>
-    void silent_async(F&& flow);
+    template <typename Gh>
+        requires graph_holder<Gh>
+    void silent_async(Gh&& gh);
 
     /// @brief 提交任务图执行一次，完成后执行回调
-    template <typename F, typename C>
-        requires (capturable<C> && flow_type<F> && callback<C>)
-    void silent_async(F&& flow, C&& callback);
+    template <typename Gh, typename C>
+        requires (capturable<C> && graph_holder<Gh> && callback<C>)
+    void silent_async(Gh&& gh, C&& cb);
 
     /// @brief 提交任务图执行指定次数
-    template <typename F>
-        requires flow_type<F>
-    void silent_async(F&& flow, std::uint64_t num);
+    template <typename Gh>
+        requires graph_holder<Gh>
+    void silent_async(Gh&& gh, std::uint64_t num);
 
     /// @brief 提交任务图循环执行指定次数，完成后执行回调
-    template <typename F, typename C>
-        requires (capturable<C> && flow_type<F> && callback<C>)
-    void silent_async(F&& flow, std::uint64_t num, C&& callback);
+    template <typename Gh, typename C>
+        requires (capturable<C> && graph_holder<Gh> && callback<C>)
+    void silent_async(Gh&& gh, std::uint64_t num, C&& cb);
 
     /// @brief 提交任务图条件循环执行
-    template <typename F, typename P>
-        requires (capturable<P> && flow_type<F> && predicate<P>)
-    void silent_async(F&& flow, P&& pred);
+    template <typename Gh, typename P>
+        requires (capturable<P> && graph_holder<Gh> && predicate<P>)
+    void silent_async(Gh&& gh, P&& pred);
 
     /// @brief 提交任务图条件循环执行，完成后执行回调
-    template <typename F, typename P, typename C>
-        requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
-    void silent_async(F&& flow, P&& pred, C&& callback);
+    template <typename Gh, typename P, typename C>
+        requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
+    void silent_async(Gh&& gh, P&& pred, C&& cb);
 
     /// @brief Fire-and-forget 异步执行
     template <typename T, typename... Args>
-        requires (capturable<T, Args...> && basic_invocable<T, Args...>)
+        requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
     void silent_async(T&& task, Args&&... args);
 
     /// @brief Fire-and-forget 运行时任务
     template <typename T, typename... Args>
-        requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
+        requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
     void silent_async(T&& task, Args&&... args);
 
-    /// @brief 异步执行并返回 std::future
+
+    /// @brief 异步执行任务图一次，返回 Future<void>
+    template <graph_holder Gh>
+    [[nodiscard]] Future<void> async(Gh&& gh);
+
+    /// @brief 异步执行任务图一次，完成后执行回调，返回 Future<void>
+    /// @note 回调异常归档到 Future——通过 future.get() 可见
+    template <graph_holder Gh, typename C>
+        requires (capturable<C> && callback<C>)
+    [[nodiscard]] Future<void> async(Gh&& gh, C&& cb);
+
+    /// @brief 异步执行任务图指定次数，返回 Future<void>
+    template <graph_holder Gh>
+    [[nodiscard]] Future<void> async(Gh&& gh, std::uint64_t num);
+
+    /// @brief 异步执行任务图指定次数，完成后执行回调，返回 Future<void>
+    template <graph_holder Gh, typename C>
+        requires (capturable<C> && callback<C>)
+    [[nodiscard]] Future<void> async(Gh&& gh, std::uint64_t num, C&& cb);
+
+    /// @brief 异步执行任务图条件循环，返回 Future<void>
+    template <graph_holder Gh, typename P>
+        requires (capturable<P> && predicate<P>)
+    [[nodiscard]] Future<void> async(Gh&& gh, P&& pred);
+
+    /// @brief 异步执行任务图条件循环，完成后执行回调，返回 Future<void>
+    template <graph_holder Gh, typename P, typename C>
+        requires (capturable<P, C> && predicate<P> && callback<C>)
+    [[nodiscard]] Future<void> async(Gh&& gh, P&& pred, C&& cb);
+
+
+    /// @brief 异步执行并返回 Future
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-    [[nodiscard]] auto async(T&& task, Args&&... args) -> std::future<basic_return_t<T, Args...>>;
+    [[nodiscard]] auto async(T&& task, Args&&... args) -> Future<basic_return_t<T, Args...>>;
 
-    /// @brief 异步执行运行时任务并返回 std::future
+    /// @brief 异步执行运行时任务并返回 Future
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-    [[nodiscard]] auto async(T&& task, Args&&... args) -> std::future<runtime_return_t<T, Args...>>;
+    [[nodiscard]] auto async(T&& task, Args&&... args) -> Future<runtime_return_t<T, Args...>>;
 
 
     /// @brief 阻塞等待所有任务完成

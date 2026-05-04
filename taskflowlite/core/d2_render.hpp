@@ -86,59 +86,69 @@ namespace tfl {
 /// @see Work::dump / Graph::dump  转发入口
 /// @see Flow::dump                顶层用户入口（带 root 容器）
 class D2Renderer {
-
 public:
+    /// @brief 信号量请求只读视图。
     using SemReqs = std::span<const Work::SemaphoreReq>;
 
     //=========================================================================
     //  Palette — HSL → hex，hue 由 semaphore 地址黄金比例旋转得到
     //=========================================================================
 
+    /// @brief D2 渲染时使用的信号量配色。
     struct Palette {
         char bg[8];   ///< pill 暗底色
         char fg[8];   ///< pill 亮字色
         char md[8];   ///< |md 块内文字色
     };
 
+    /// @brief 计算 HSL 转 RGB 过程中的单个颜色通道。
     [[nodiscard]] static std::uint8_t format_hsl_component(float p, float q, float t) noexcept;
-    static void    format_hsl_hex(float h, float s, float l, char* out) noexcept;
+
+    /// @brief 将 HSL 颜色格式化为 `#rrggbb` 十六进制字符串。
+    static void format_hsl_hex(float h, float s, float l, char* out) noexcept;
+
+    /// @brief 根据 Semaphore 地址生成稳定配色。
     [[nodiscard]] static Palette format_palette(const Semaphore* sem) noexcept;
 
     //=========================================================================
     //  Low-level writers
     //=========================================================================
 
-    static void write_html_escaped  (std::ostream& os, std::string_view s);
+    /// @brief 写入 HTML 转义后的字符串，用于 D2 markdown 块。
+    static void write_html_escaped(std::ostream& os, std::string_view s);
+
+    /// @brief 写入双引号字符串转义后的内容，用于 D2 字符串字面量。
     static void write_quoted_escaped(std::ostream& os, std::string_view s);
-    static void format_id      (std::ostream& os, const void* p);
+
+    /// @brief 将指针地址格式化为合法的 D2 节点 ID。
+    static void format_id(std::ostream& os, const void* p);
 
     //=========================================================================
     //  Semaphore pill writers
     //=========================================================================
 
-    /// @brief grid 布局 pill bar (rectangle 外壳专用)
+    /// @brief 写入 grid 布局的信号量 pill bar，供 rectangle 外壳节点使用。
     static void write_sem_pill_grid(std::ostream& os, SemReqs reqs, const char* tag);
 
-    /// @brief |md 块内水平排列的 pill 行 (diamond / hexagon 专用)
-    static void write_sem_pill_row (std::ostream& os, SemReqs reqs, const char* tag);
+    /// @brief 写入 markdown 内联信号量 pill 行，供 diamond / hexagon 等节点使用。
+    static void write_sem_pill_row(std::ostream& os, SemReqs reqs, const char* tag);
 
-    /// @brief 渲染单个 Work 节点
+    /// @brief 渲染单个 Work 节点。
     ///
     /// @details 依据 shape 与信号量存在性走两条路径：
-    ///   - 无信号量 / 非 rectangle → `|md ... |` 块
-    ///   - rectangle + 信号量      → grid pill bar
+    ///   - 无信号量 / 非 rectangle → `|md ... |` 块；
+    ///   - rectangle + 信号量      → grid pill bar。
     static void render_work(std::ostream& os, const Work* w,
                             const char* shape,
                             const char* fill, const char* stroke,
                             const char* font_color, const char* border_radius,
                             const char* stroke_dash = "");
 
-    /// @brief 渲染内嵌 Flow 的容器节点（Subflow / DepFlow 通用）
+    /// @brief 渲染内嵌 Flow 的容器节点，Subflow / DepFlow 通用。
     static void render_graph(std::ostream& os, const Work* w,
                              const char* type_name,
                              const Graph& graph);
 };
-
 //=============================================================================
 //  Implementations
 //=============================================================================

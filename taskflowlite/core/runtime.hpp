@@ -86,7 +86,7 @@ namespace tfl {
 ///      但调用方拿不到句柄。适合"我只关心父任务等到孩子完成、不关心
 ///      孩子结果"的场景。
 ///
-///   3. **async** —— 派生 + `std::future` 结果回收。运行成本比
+///   3. **async** —— 派生 + `Future` 结果回收。运行成本比
 ///      `silent_async` 略高（需要 `promise/future` pair），仅在确实需要
 ///      返回值时使用。
 ///
@@ -127,38 +127,38 @@ class Runtime : public Immovable<Runtime> {
     friend class Worker;
     TFL_WORK_SUBCLASS_FRIENDS;
 public:
-    template <anchor_tag A = anchor::explicit_t, typename F, typename... Deps>
-        requires flow_type<F> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, Deps&&... deps);
+    template <anchor_tag A = anchor::explicit_t, typename Gh, typename... Deps>
+        requires graph_holder<Gh> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, Deps&&... deps);
 
-    template <anchor_tag A = anchor::explicit_t, typename F, typename C, typename... Deps>
-        requires (capturable<C> && flow_type<F> && callback<C> &&
+    template <anchor_tag A = anchor::explicit_t, typename Gh, typename C, typename... Deps>
+        requires (capturable<C> && graph_holder<Gh> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, C&& callback, Deps&&... deps);
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, C&& cb, Deps&&... deps);
 
-    template <anchor_tag A = anchor::explicit_t, typename F, typename... Deps>
-        requires flow_type<F> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, std::uint64_t num, Deps&&... deps);
+    template <anchor_tag A = anchor::explicit_t, typename Gh, typename... Deps>
+        requires graph_holder<Gh> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, std::uint64_t num, Deps&&... deps);
 
-    template <anchor_tag A = anchor::explicit_t, typename F, typename C, typename... Deps>
-        requires (capturable<C> && flow_type<F> && callback<C> &&
+    template <anchor_tag A = anchor::explicit_t, typename Gh, typename C, typename... Deps>
+        requires (capturable<C> && graph_holder<Gh> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, std::uint64_t num, C&& callback, Deps&&... deps);
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps);
 
-    template <anchor_tag A = anchor::explicit_t, typename F, typename P, typename... Deps>
-        requires (capturable<P> && flow_type<F> && predicate<P> &&
+    template <anchor_tag A = anchor::explicit_t, typename Gh, typename P, typename... Deps>
+        requires (capturable<P> && graph_holder<Gh> && predicate<P> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, P&& pred, Deps&&... deps);
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, Deps&&... deps);
 
-    template <anchor_tag A = anchor::explicit_t, typename F, typename P, typename C, typename... Deps>
-        requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C> &&
+    template <anchor_tag A = anchor::explicit_t, typename Gh, typename P, typename C, typename... Deps>
+        requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, P&& pred, C&& callback, Deps&&... deps);
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps);
 
-    template <anchor_tag A = anchor::explicit_t, typename F, typename P, typename C, std::input_iterator I, std::sentinel_for<I> S>
-        requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C> &&
+    template <anchor_tag A = anchor::explicit_t, typename Gh, typename P, typename C, std::input_iterator I, std::sentinel_for<I> S>
+        requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
                  std::derived_from<std::iter_value_t<I>, AsyncTask>)
-    [[nodiscard]] AsyncTask dependent_async(F&& flow, P&& pred, C&& callback, I first, S last);
+    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, C&& cb, I first, S last);
 
 
     template <anchor_tag A = anchor::explicit_t, typename T, typename... Deps>
@@ -180,55 +180,84 @@ public:
 
 
     /// @brief 提交任务图执行一次
-    template <anchor_tag A = anchor::none_t, typename F>
-        requires flow_type<F>
-    void silent_async(F&& flow);
+    template <anchor_tag A = anchor::none_t, typename Gh>
+        requires graph_holder<Gh>
+    void silent_async(Gh&& gh);
 
     /// @brief 提交任务图执行一次，完成后执行回调
-    template <anchor_tag A = anchor::none_t, typename F, typename C>
-        requires (capturable<C> && flow_type<F> && callback<C>)
-    void silent_async(F&& flow, C&& callback);
+    template <anchor_tag A = anchor::none_t, typename Gh, typename C>
+        requires (capturable<C> && graph_holder<Gh> && callback<C>)
+    void silent_async(Gh&& gh, C&& cb);
 
     /// @brief 提交任务图执行指定次数
-    template <anchor_tag A = anchor::none_t, typename F>
-        requires flow_type<F>
-    void silent_async(F&& flow, std::uint64_t num);
+    template <anchor_tag A = anchor::none_t, typename Gh>
+        requires graph_holder<Gh>
+    void silent_async(Gh&& gh, std::uint64_t num);
 
     /// @brief 提交任务图循环执行指定次数，完成后执行回调
-    template <anchor_tag A = anchor::none_t, typename F, typename C>
-        requires (capturable<C> && flow_type<F> && callback<C>)
-    void silent_async(F&& flow, std::uint64_t num, C&& callback);
+    template <anchor_tag A = anchor::none_t, typename Gh, typename C>
+        requires (capturable<C> && graph_holder<Gh> && callback<C>)
+    void silent_async(Gh&& gh, std::uint64_t num, C&& cb);
 
     /// @brief 提交任务图条件循环执行
-    template <anchor_tag A = anchor::none_t, typename F, typename P>
-        requires (capturable<P> && flow_type<F> && predicate<P>)
-    void silent_async(F&& flow, P&& pred);
+    template <anchor_tag A = anchor::none_t, typename Gh, typename P>
+        requires (capturable<P> && graph_holder<Gh> && predicate<P>)
+    void silent_async(Gh&& gh, P&& pred);
 
     /// @brief 提交任务图条件循环执行，完成后执行回调
-    template <anchor_tag A = anchor::none_t, typename F, typename P, typename C>
-        requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
-    void silent_async(F&& flow, P&& pred, C&& callback);
+    template <anchor_tag A = anchor::none_t, typename Gh, typename P, typename C>
+        requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
+    void silent_async(Gh&& gh, P&& pred, C&& cb);
 
 
     /// @brief Fire-and-forget 异步执行
     template <anchor_tag A = anchor::none_t, typename T, typename... Args>
-        requires (capturable<T, Args...> && basic_invocable<T, Args...>)
+        requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
     void silent_async(T&& task, Args&&... args);
 
     /// @brief Fire-and-forget 运行时任务
     template <anchor_tag A = anchor::none_t, typename T, typename... Args>
-        requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
+        requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
     void silent_async(T&& task, Args&&... args);
 
-    /// @brief 异步执行并返回 std::future
+
+    /// @brief 异步执行任务图一次，返回 Future<void>
+    template <anchor_tag A = anchor::explicit_t, graph_holder Gh>
+    [[nodiscard]] Future<void> async(Gh&& gh);
+
+    /// @brief 异步执行任务图一次，完成后执行回调，返回 Future<void>
+    template <anchor_tag A = anchor::explicit_t, graph_holder Gh, typename C>
+        requires (capturable<C> && callback<C>)
+    [[nodiscard]] Future<void> async(Gh&& gh, C&& cb);
+
+    /// @brief 异步执行任务图指定次数，返回 Future<void>
+    template <anchor_tag A = anchor::explicit_t, graph_holder Gh>
+    [[nodiscard]] Future<void> async(Gh&& gh, std::uint64_t num);
+
+    /// @brief 异步执行任务图指定次数，完成后执行回调，返回 Future<void>
+    template <anchor_tag A = anchor::explicit_t, graph_holder Gh, typename C>
+        requires (capturable<C> && callback<C>)
+    [[nodiscard]] Future<void> async(Gh&& gh, std::uint64_t num, C&& cb);
+
+    /// @brief 异步执行任务图条件循环，返回 Future<void>
+    template <anchor_tag A = anchor::explicit_t, graph_holder Gh, typename P>
+        requires (capturable<P> && predicate<P>)
+    [[nodiscard]] Future<void> async(Gh&& gh, P&& pred);
+
+    /// @brief 异步执行任务图条件循环，完成后执行回调，返回 Future<void>
+    template <anchor_tag A = anchor::explicit_t, graph_holder Gh, typename P, typename C>
+        requires (capturable<P, C> && predicate<P> && callback<C>)
+    [[nodiscard]] Future<void> async(Gh&& gh, P&& pred, C&& cb);
+
+    /// @brief 异步执行并返回 Future
     template <anchor_tag A = anchor::explicit_t, typename T, typename... Args>
         requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-    [[nodiscard]] auto async(T&& task, Args&&... args) -> std::future<basic_return_t<T, Args...>>;
+    [[nodiscard]] auto async(T&& task, Args&&... args) -> Future<basic_return_t<T, Args...>>;
 
-    /// @brief 异步执行运行时任务并返回 std::future
+    /// @brief 异步执行运行时任务并返回 Future
     template <anchor_tag A = anchor::explicit_t, typename T, typename... Args>
         requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-    [[nodiscard]] auto async(T&& task, Args&&... args) -> std::future<runtime_return_t<T, Args...>>;
+    [[nodiscard]] auto async(T&& task, Args&&... args) -> Future<runtime_return_t<T, Args...>>;
 
     [[nodiscard]] bool stop_requested() const noexcept;
 
@@ -238,13 +267,13 @@ public:
     // ========================================================================
     void schedule(Task task);
 
-    template <typename F>
-        requires flow_type<F>
-    void schedule(F& flow);
+    template <typename Gh>
+        requires graph_holder<Gh>
+    void schedule(Gh& gh);
 
-    template <typename F>
-        requires flow_type<F>
-    void cowait(F& flow);
+    template <typename Gh>
+        requires graph_holder<Gh>
+    void cowait(Gh& gh);
 
     void cowait();
 
@@ -271,75 +300,75 @@ private:
 // Implementation
 // ============================================================================
 
-template <anchor_tag A, typename F, typename... Deps>
-    requires flow_type<F> &&
+template <anchor_tag A, typename Gh, typename... Deps>
+    requires graph_holder<Gh> &&
              (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
-inline AsyncTask Runtime::dependent_async(F&& flow, Deps&&... deps) {
-    return dependent_async<A>(std::forward<F>(flow), 1ULL, std::forward<Deps>(deps)...);
+inline AsyncTask Runtime::dependent_async(Gh&& gh, Deps&&... deps) {
+    return dependent_async<A>(std::forward<Gh>(gh), 1ULL, std::forward<Deps>(deps)...);
 }
 
-template <anchor_tag A, typename F, typename C, typename... Deps>
-    requires (capturable<C> && flow_type<F> && callback<C> &&
+template <anchor_tag A, typename Gh, typename C, typename... Deps>
+    requires (capturable<C> && graph_holder<Gh> && callback<C> &&
              (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-inline AsyncTask Runtime::dependent_async(F&& flow, C&& callback, Deps&&... deps) {
-    return dependent_async<A>(std::forward<F>(flow), 1ULL, std::forward<C>(callback),
+inline AsyncTask Runtime::dependent_async(Gh&& gh, C&& cb, Deps&&... deps) {
+    return dependent_async<A>(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb),
                               std::forward<Deps>(deps)...);
 }
 
-template <anchor_tag A, typename F, typename... Deps>
-    requires flow_type<F> &&
+template <anchor_tag A, typename Gh, typename... Deps>
+    requires graph_holder<Gh> &&
              (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
-inline AsyncTask Runtime::dependent_async(F&& flow, std::uint64_t num, Deps&&... deps) {
-    return dependent_async<A>(std::forward<F>(flow), num, []() noexcept {},
+inline AsyncTask Runtime::dependent_async(Gh&& gh, std::uint64_t num, Deps&&... deps) {
+    return dependent_async<A>(std::forward<Gh>(gh), num, []() noexcept {},
                               std::forward<Deps>(deps)...);
 }
 
-template <anchor_tag A, typename F, typename C, typename... Deps>
-    requires (capturable<C> && flow_type<F> && callback<C> &&
+template <anchor_tag A, typename Gh, typename C, typename... Deps>
+    requires (capturable<C> && graph_holder<Gh> && callback<C> &&
              (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-inline AsyncTask Runtime::dependent_async(F&& flow, std::uint64_t num, C&& callback,
+inline AsyncTask Runtime::dependent_async(Gh&& gh, std::uint64_t num, C&& cb,
                                           Deps&&... deps) {
     return dependent_async<A>(
-        std::forward<F>(flow),
+        std::forward<Gh>(gh),
         [num]() mutable noexcept { return num-- == 0; },
-        std::forward<C>(callback),
+        std::forward<C>(cb),
         std::forward<Deps>(deps)...);
 }
 
-template <anchor_tag A, typename F, typename P, typename... Deps>
-    requires (capturable<P> && flow_type<F> && predicate<P> &&
+template <anchor_tag A, typename Gh, typename P, typename... Deps>
+    requires (capturable<P> && graph_holder<Gh> && predicate<P> &&
              (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-inline AsyncTask Runtime::dependent_async(F&& flow, P&& pred, Deps&&... deps) {
-    return dependent_async<A>(std::forward<F>(flow),
+inline AsyncTask Runtime::dependent_async(Gh&& gh, P&& pred, Deps&&... deps) {
+    return dependent_async<A>(std::forward<Gh>(gh),
                               std::forward<P>(pred),
                               []() noexcept {},
                               std::forward<Deps>(deps)...);
 }
 
-template <anchor_tag A, typename F, typename P, typename C, typename... Deps>
-    requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C> &&
+template <anchor_tag A, typename Gh, typename P, typename C, typename... Deps>
+    requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
              (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-inline AsyncTask Runtime::dependent_async(F&& flow, P&& pred, C&& callback, Deps&&... deps) {
+inline AsyncTask Runtime::dependent_async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) {
     std::array<AsyncTask, sizeof...(Deps)> arr{
         AsyncTask(static_cast<const AsyncTask&>(deps))...
     };
     return dependent_async<A>(
-        std::forward<F>(flow),
+        std::forward<Gh>(gh),
         std::forward<P>(pred),
-        std::forward<C>(callback),
+        std::forward<C>(cb),
         arr.begin(), arr.end()
         );
 }
 
-template <anchor_tag A, typename F, typename P, typename C, std::input_iterator I, std::sentinel_for<I> S>
-    requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C> &&
+template <anchor_tag A, typename Gh, typename P, typename C, std::input_iterator I, std::sentinel_for<I> S>
+    requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
              std::derived_from<std::iter_value_t<I>, AsyncTask>)
-inline AsyncTask Runtime::dependent_async(F&& flow, P&& pred, C&& callback, I first, S last) {
+inline AsyncTask Runtime::dependent_async(Gh&& gh, P&& pred, C&& cb, I first, S last) {
     Work* work = make_dep_async_flow<A>(
         *this, std::addressof(m_work),
-        std::forward<F>(flow),
+        std::forward<Gh>(gh),
         std::forward<P>(pred),
-        std::forward<C>(callback));
+        std::forward<C>(cb));
 
     m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
     auto* topo = work->m_topology;
@@ -426,55 +455,55 @@ inline AsyncTask Runtime::dependent_async(T&& task, I first, S last) {
     return AsyncTask{work};
 }
 
-template <anchor_tag A, typename F>
-    requires flow_type<F>
-inline void Runtime::silent_async(F&& flow) {
-    return silent_async<A>(std::forward<F>(flow), 1ULL);
+template <anchor_tag A, typename Gh>
+    requires graph_holder<Gh>
+inline void Runtime::silent_async(Gh&& gh) {
+    return silent_async<A>(std::forward<Gh>(gh), 1ULL);
 }
 
-template <anchor_tag A, typename F, typename C>
-    requires (capturable<C> && flow_type<F> && callback<C>)
-inline void Runtime::silent_async(F&& flow, C&& callback) {
-    return silent_async<A>(std::forward<F>(flow), 1ULL, std::forward<C>(callback));
+template <anchor_tag A, typename Gh, typename C>
+    requires (capturable<C> && graph_holder<Gh> && callback<C>)
+inline void Runtime::silent_async(Gh&& gh, C&& cb) {
+    return silent_async<A>(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
 }
 
-template <anchor_tag A, typename F>
-    requires flow_type<F>
-inline void Runtime::silent_async(F&& flow, std::uint64_t num) {
-    return silent_async<A>(std::forward<F>(flow), num, []() noexcept {});
+template <anchor_tag A, typename Gh>
+    requires graph_holder<Gh>
+inline void Runtime::silent_async(Gh&& gh, std::uint64_t num) {
+    return silent_async<A>(std::forward<Gh>(gh), num, []() noexcept {});
 }
 
-template <anchor_tag A, typename F, typename C>
-    requires (capturable<C> && flow_type<F> && callback<C>)
-inline void Runtime::silent_async(F&& flow, std::uint64_t num, C&& callback) {
+template <anchor_tag A, typename Gh, typename C>
+    requires (capturable<C> && graph_holder<Gh> && callback<C>)
+inline void Runtime::silent_async(Gh&& gh, std::uint64_t num, C&& cb) {
     // 将次数转换为谓词
-    return silent_async<A>(std::forward<F>(flow)
+    return silent_async<A>(std::forward<Gh>(gh)
                            ,[num]() mutable noexcept { return num-- == 0; }
-                           ,std::forward<C>(callback));
+                           ,std::forward<C>(cb));
 }
 
-template <anchor_tag A, typename F, typename P>
-    requires (capturable<P> && flow_type<F> && predicate<P>)
-inline void Runtime::silent_async(F&& flow, P&& pred) {
-    return silent_async<A>(std::forward<F>(flow)
+template <anchor_tag A, typename Gh, typename P>
+    requires (capturable<P> && graph_holder<Gh> && predicate<P>)
+inline void Runtime::silent_async(Gh&& gh, P&& pred) {
+    return silent_async<A>(std::forward<Gh>(gh)
                            ,std::forward<P>(pred)
                            ,[]() noexcept {});
 }
 
-template <anchor_tag A, typename F, typename P, typename C>
-    requires (capturable<P, C> && flow_type<F> && predicate<P> && callback<C>)
-inline void Runtime::silent_async(F&& flow, P&& pred, C&& callback) {
+template <anchor_tag A, typename Gh, typename P, typename C>
+    requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
+inline void Runtime::silent_async(Gh&& gh, P&& pred, C&& cb) {
     Work* work = make_silent_async_flow<A>(
         *this, std::addressof(m_work),
-        std::forward<F>(flow),
+        std::forward<Gh>(gh),
         std::forward<P>(pred),
-        std::forward<C>(callback));
+        std::forward<C>(cb));
     m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
     m_executor._schedule(m_worker, work);
 }
 
 template <anchor_tag A, typename T, typename... Args>
-    requires (capturable<T, Args...> && basic_invocable<T, Args...>)
+    requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
 inline void Runtime::silent_async(T&& task, Args&&... args) {
     Work* work = make_silent_async_basic<A>(
         *this, std::addressof(m_work),
@@ -484,7 +513,7 @@ inline void Runtime::silent_async(T&& task, Args&&... args) {
 }
 
 template <anchor_tag A, typename T, typename... Args>
-    requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
+    requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
 inline void Runtime::silent_async(T&& task, Args&&... args) {
     Work* work = make_silent_async_runtime<A>(
         *this, std::addressof(m_work),
@@ -493,35 +522,115 @@ inline void Runtime::silent_async(T&& task, Args&&... args) {
     m_executor._schedule(m_worker, work);
 }
 
+
+template <anchor_tag A, graph_holder Gh>
+inline Future<void> Runtime::async(Gh&& gh) {
+    return async<A>(std::forward<Gh>(gh), 1ULL);
+}
+
+template <anchor_tag A, graph_holder Gh, typename C>
+    requires (capturable<C> && callback<C>)
+inline Future<void> Runtime::async(Gh&& gh, C&& cb) {
+    return async<A>(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
+}
+
+template <anchor_tag A, graph_holder Gh>
+inline Future<void> Runtime::async(Gh&& gh, std::uint64_t num) {
+    return async<A>(std::forward<Gh>(gh), num, []() noexcept {});
+}
+
+template <anchor_tag A, graph_holder Gh, typename C>
+    requires (capturable<C> && callback<C>)
+inline Future<void> Runtime::async(Gh&& gh, std::uint64_t num, C&& cb) {
+    return async<A>(std::forward<Gh>(gh),
+                    [num]() mutable noexcept { return num-- == 0; },
+                    std::forward<C>(cb));
+}
+
+template <anchor_tag A, graph_holder Gh, typename P>
+    requires (capturable<P> && predicate<P>)
+inline Future<void> Runtime::async(Gh&& gh, P&& pred) {
+    return async<A>(std::forward<Gh>(gh),
+                    std::forward<P>(pred),
+                    []() noexcept {});
+}
+
+template <anchor_tag A, graph_holder Gh, typename P, typename C>
+    requires (capturable<P, C> && predicate<P> && callback<C>)
+inline Future<void> Runtime::async(Gh&& gh, P&& pred, C&& cb) {
+    std::promise<void> promise;
+    std::future<void>  std_future = promise.get_future();
+
+    Work* work = make_async_flow<A>(
+        *this, std::addressof(m_work),
+        std::forward<Gh>(gh),
+        std::forward<P>(pred),
+        std::forward<C>(cb),
+        std::move(promise));
+
+    // Why: 派发前抓 stop_source 拷贝——派发后 work 可能被其它 worker 跑完
+    //      并 tear_down，work->m_topology 立即 UAF
+    std::stop_source ss = work->m_topology->m_stop_source;
+
+    // Why: join_counter +1 必须严格先于 _schedule，避免 worker 立即完成时
+    //      触发父 -1 而 +1 尚未到位导致短暂下溢
+    m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
+
+    m_executor._schedule(m_worker, work);
+
+    return Future<void>{std::move(std_future), std::move(ss)};
+}
+
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-inline auto Runtime::async(T&& task, Args&&... args) -> std::future<basic_return_t<T, Args...>> {
+inline auto Runtime::async(T&& task, Args&&... args) -> Future<basic_return_t<T, Args...>> {
     using R = basic_return_t<T, Args...>;
+
     std::promise<R> promise;
-    auto future = promise.get_future();
+    std::future<R> std_future = promise.get_future();
 
     Work* work = make_async_basic<A>(
         *this, std::addressof(m_work),
-        std::forward<T>(task), std::move(promise), std::forward<Args>(args)...);
+        std::forward<T>(task), std::move(promise),
+        std::forward<Args>(args)...);
+
+    // Why: 必须在 _schedule 之前抓拷贝。派发后 work 可能被其它 worker
+    //      立即执行并 tear_down，work->m_topology 变 use-after-free。
+    //      stop_source 是 shared_ptr 语义，拷贝即共享 control block。
+    std::stop_source ss = work->m_topology->m_stop_source;
+
+    // Why: join_counter +1 必须严格先于 _schedule。派发后 worker 可能
+    //      立即跑 work 并 tear_down 触发父 join_counter -1，若 +1 滞后则
+    //      counter 短暂下溢、父 last-arriver 仲裁误判提前完成。
     m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
+
     m_executor._schedule(m_worker, work);
-    return future;
+
+    return Future<R>{std::move(std_future), std::move(ss)};
 }
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-inline auto Runtime::async(T&& task, Args&&... args) -> std::future<runtime_return_t<T, Args...>> {
+inline auto Runtime::async(T&& task, Args&&... args) -> Future<runtime_return_t<T, Args...>> {
     using R = runtime_return_t<T, Args...>;
+
     std::promise<R> promise;
-    auto future = promise.get_future();
+    std::future<R> std_future = promise.get_future();
 
     Work* work = make_async_runtime<A>(
         *this, std::addressof(m_work),
-        std::forward<T>(task), std::move(promise), std::forward<Args>(args)...);
+        std::forward<T>(task), std::move(promise),
+        std::forward<Args>(args)...);
+
+    std::stop_source ss = work->m_topology->m_stop_source;
+
     m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
+
     m_executor._schedule(m_worker, work);
-    return future;
+
+    return Future<R>{std::move(std_future), std::move(ss)};
 }
+
 
 inline bool Runtime::stop_requested() const noexcept {
     return m_work._stop_requested();
@@ -556,10 +665,10 @@ inline void Runtime::schedule(Task task) {
     m_executor._schedule(m_worker, w);
 }
 
-template <typename F>
-    requires flow_type<F>
-inline void Runtime::schedule(F& flow) {
-    auto& graph = detail::unwrap(flow).graph();
+template <typename Gh>
+    requires graph_holder<Gh>
+inline void Runtime::schedule(Gh& gh) {
+    auto& graph = detail::unwrap(gh).graph();
     if (graph.empty()) {
         return;
     }

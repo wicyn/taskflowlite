@@ -96,7 +96,7 @@ consteval std::pair<Work::Implicit::type, Work::Explicit::type> anchor_bits() no
 // 辅助基类，仅负责持有 Topology
 struct TopologyHolder {
     Topology m_local_topology;
-    explicit TopologyHolder(Executor& exec, Topology* parent) : m_local_topology{exec, parent} {}
+    explicit TopologyHolder(Executor& exec) : m_local_topology{exec} {}
 };
 
 // ============================================================================
@@ -192,18 +192,18 @@ protected:
 // ============================================================================
 //  TaskType::Graph (内嵌 Flow 的容器节点)
 // ============================================================================
-template <typename FlowStore>
+template <typename GhStore>
 class GraphWork : public Work {
 protected:
-    FlowStore m_flow_store;
+    GhStore m_gh_store;
 
     template <typename U, typename... Xs>
-    explicit GraphWork(U&& fs, Xs&&... xs) noexcept
+    explicit GraphWork(U&& gh, Xs&&... xs) noexcept
         : Work{TaskType::Graph, std::forward<Xs>(xs)...}
-        , m_flow_store{std::forward<U>(fs)} {}
+        , m_gh_store{std::forward<U>(gh)} {}
 
     void dump(std::ostream& os) const override final {
-        auto& graph = detail::unwrap(m_flow_store).graph();
+        auto& graph = detail::unwrap(m_gh_store).graph();
         D2Renderer::render_graph(os, this, to_string(m_type), graph);
     }
 };
@@ -219,7 +219,7 @@ class BasicInvoker final : public BasicWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit BasicInvoker(const Graph* g, U&& f, Us&&... args)
         : BasicWork{Work::Implicit::WEIGHT_1, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
@@ -244,10 +244,18 @@ public:
 
         try {
             if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func);
+                if constexpr (basic_invocable_plain<F>) {
+                    std::invoke(m_func);
+                } else {
+                    std::invoke(m_func, _stop_token());
+                }
             } else {
-                std::apply([this](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...))) {
-                    std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                std::apply([this](auto&&... a) {
+                    if constexpr (basic_invocable_plain<F, decltype(a)...>) {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                    } else {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., _stop_token());
+                    }
                 }, m_args);
             }
         } catch (...) {
@@ -274,7 +282,7 @@ class BranchInvoker final : public BranchWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit BranchInvoker(const Graph* g, U&& f, Us&&... args)
         : BranchWork{Work::Implicit::WEIGHT_2, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
@@ -300,10 +308,18 @@ public:
         Branch branch(*this);
         try {
             if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func, branch);
+                if constexpr (branch_invocable_plain<F>) {
+                    std::invoke(m_func, branch);
+                } else {
+                    std::invoke(m_func, branch, _stop_token());
+                }
             } else {
-                std::apply([this, &branch](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch))) {
-                    std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
+                std::apply([this, &branch](auto&&... a) {
+                    if constexpr (branch_invocable_plain<F, decltype(a)...>) {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
+                    } else {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch, _stop_token());
+                    }
                 }, m_args);
             }
         } catch (...) {
@@ -333,7 +349,7 @@ class MultiBranchInvoker final : public MultiBranchWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit MultiBranchInvoker(const Graph* g, U&& f, Us&&... args)
         : MultiBranchWork{Work::Implicit::WEIGHT_2, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
@@ -359,10 +375,18 @@ public:
         MultiBranch branch(*this);
         try {
             if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func, branch);
+                if constexpr (multi_branch_invocable_plain<F>) {
+                    std::invoke(m_func, branch);
+                } else {
+                    std::invoke(m_func, branch, _stop_token());
+                }
             } else {
-                std::apply([this, &branch](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch))) {
-                    std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
+                std::apply([this, &branch](auto&&... a) {
+                    if constexpr (multi_branch_invocable_plain<F, decltype(a)...>) {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
+                    } else {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch, _stop_token());
+                    }
                 }, m_args);
             }
         } catch (...) {
@@ -392,7 +416,7 @@ class JumpInvoker final : public JumpWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit JumpInvoker(const Graph* g, U&& f, Us&&... args)
         : JumpWork{Work::Implicit::WEIGHT_0, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
@@ -418,10 +442,18 @@ public:
         Jump jmp{*this};
         try {
             if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func, jmp);
+                if constexpr (jump_invocable_plain<F>) {
+                    std::invoke(m_func, jmp);
+                } else {
+                    std::invoke(m_func, jmp, _stop_token());
+                }
             } else {
-                std::apply([this, &jmp](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp))) {
-                    std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
+                std::apply([this, &jmp](auto&&... a) {
+                    if constexpr (jump_invocable_plain<F, decltype(a)...>) {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
+                    } else {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp, _stop_token());
+                    }
                 }, m_args);
             }
         } catch (...) {
@@ -447,7 +479,7 @@ class MultiJumpInvoker final : public MultiJumpWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit MultiJumpInvoker(const Graph* g, U&& f, Us&&... args)
         : MultiJumpWork{Work::Implicit::WEIGHT_0, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
@@ -473,10 +505,18 @@ public:
         MultiJump jmp{*this};
         try {
             if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func, jmp);
+                if constexpr (multi_jump_invocable_plain<F>) {
+                    std::invoke(m_func, jmp);
+                } else {
+                    std::invoke(m_func, jmp, _stop_token());
+                }
             } else {
-                std::apply([this, &jmp](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp))) {
-                    std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
+                std::apply([this, &jmp](auto&&... a) {
+                    if constexpr (multi_jump_invocable_plain<F, decltype(a)...>) {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
+                    } else {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp, _stop_token());
+                    }
                 }, m_args);
             }
         } catch (...) {
@@ -501,7 +541,7 @@ class RuntimeInvoker final : public RuntimeWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit RuntimeInvoker(const Graph* g, U&& f, Us&&... args)
         : RuntimeWork{Work::Implicit::WEIGHT_1, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
@@ -535,10 +575,18 @@ public:
             Runtime rt(*this, wr, exe);
             try {
                 if constexpr (sizeof...(Args) == 0) {
-                    std::invoke(m_func, rt);
+                    if constexpr (runtime_invocable_plain<F>) {
+                        std::invoke(m_func, rt);
+                    } else {
+                        std::invoke(m_func, rt, _stop_token());
+                    }
                 } else {
-                    std::apply([this, &rt](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt))) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                    std::apply([this, &rt](auto&&... a) {
+                        if constexpr (runtime_invocable_plain<F, decltype(a)...>) {
+                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                        } else {
+                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt, _stop_token());
+                        }
                     }, m_args);
                 }
             } catch (...) {
@@ -571,9 +619,9 @@ public:
     }
 };
 
-template <typename FlowStore, typename P>
-class SubflowInvoker final : public GraphWork<FlowStore> {
-    using GraphWork<FlowStore>::m_flow_store;
+template <typename GhStore, typename P>
+class SubflowInvoker final : public GraphWork<GhStore> {
+    using GraphWork<GhStore>::m_gh_store;
     using Work::m_implicit;
     using Work::m_parent;
     using Work::m_semaphores;
@@ -589,13 +637,13 @@ class SubflowInvoker final : public GraphWork<FlowStore> {
     std::size_t m_num_sources{0};
     P m_pred;
 public:
-    template <typename U, typename V>
-    explicit SubflowInvoker(const Graph* g, U&& flow_store, V&& pred)
-        : GraphWork<FlowStore>{std::forward<U>(flow_store), Work::Implicit::WEIGHT_1, Work::Explicit::NONE, g}
+    template <typename Ghs, typename V>
+    explicit SubflowInvoker(const Graph* g, Ghs&& ghs, V&& pred)
+        : GraphWork<GhStore>{std::forward<Ghs>(ghs), Work::Implicit::WEIGHT_1, Work::Explicit::NONE, g}
         , m_pred{std::forward<V>(pred)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::unwrap(m_flow_store).graph();
+        auto& graph = detail::unwrap(m_gh_store).graph();
 
         // ── 首次进入：准入检查 + 子图初始化 ──────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -655,11 +703,11 @@ class SilentAsyncBasicInvoker final : public BasicWork {
     using Work::m_parent;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
-    explicit SilentAsyncBasicInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    explicit SilentAsyncBasicInvoker(Work* parent, U&& f, Us&&... args)
         : BasicWork{detail::anchor_bits<A>().first,
                     detail::anchor_bits<A>().second,
-                    parent ? parent->m_topology : nullptr,
+                    nullptr,
                     parent}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
@@ -669,11 +717,13 @@ public:
             if constexpr (sizeof...(Args) == 0) {
                 std::invoke(m_func);
             } else {
-                std::apply([this](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...))) {
+                std::apply([this](auto&&... a) {
                     std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
                 }, m_args);
             }
-        } catch (...) { }
+        } catch (...) {
+            _process_exception();
+        }
         exe._tear_down_async_task(this, wr, cache);
     }
 };
@@ -687,11 +737,11 @@ class SilentAsyncRuntimeInvoker final : public RuntimeWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
-    explicit SilentAsyncRuntimeInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    explicit SilentAsyncRuntimeInvoker(Work* parent, U&& f, Us&&... args)
         : RuntimeWork{detail::anchor_bits<A>().first,
                       detail::anchor_bits<A>().second,
-                      parent ? parent->m_topology : nullptr,
+                      nullptr,
                       parent}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
@@ -709,11 +759,13 @@ public:
                 if constexpr (sizeof...(Args) == 0) {
                     std::invoke(m_func, rt);
                 } else {
-                    std::apply([this, &rt](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt))) {
+                    std::apply([this, &rt](auto&&... a) {
                         std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
                     }, m_args);
                 }
-            } catch (...) { }
+            } catch (...) {
+                _process_exception();
+            }
 
             // Last-arriver 仲裁：
             //   fetch_sub 返回 1 → counter 已归 0，无在飞 child，fallthrough 走 tear_down
@@ -732,11 +784,11 @@ public:
 };
 
 
-template <typename A, typename FlowStore, typename P, typename C>
-class SilentAsyncFlowInvoker final : public GraphWork<FlowStore> {
+template <typename A, typename GhStore, typename P, typename C>
+class SilentAsyncFlowInvoker final : public GraphWork<GhStore> {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
-    using GraphWork<FlowStore>::m_flow_store;
+    using GraphWork<GhStore>::m_gh_store;
     using Work::m_implicit;
     using Work::m_topology;
     using Work::m_join_counter;
@@ -746,19 +798,18 @@ class SilentAsyncFlowInvoker final : public GraphWork<FlowStore> {
     P m_pred;
     C m_callback;
 public:
-    template <typename U, typename V, typename W>
-    explicit SilentAsyncFlowInvoker(Executor& exec, Work* parent, U&& flow_store, V&& pred, W&& cb)
-        : TopologyHolder{exec, parent ? parent->m_topology : nullptr}
-        , GraphWork<FlowStore>{std::forward<U>(flow_store),
+    template <typename Ghs, typename V, typename W>
+    explicit SilentAsyncFlowInvoker(Work* parent, Ghs&& ghs, V&& pred, W&& cb)
+        : GraphWork<GhStore>{std::forward<Ghs>(ghs),
                                detail::anchor_bits<A>().first,
                                detail::anchor_bits<A>().second,
-                               parent ? parent->m_topology : nullptr,
+                               nullptr,
                                parent}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(cb)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::unwrap(m_flow_store).graph();
+        auto& graph = detail::unwrap(m_gh_store).graph();
 
         // ── 首次进入：准入检查 + 子图初始化 ──────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -787,7 +838,7 @@ public:
 
 /// @brief 内部熔接了 promise 的 Promise 同步通道基础异步任务。
 template <typename A, typename F, typename R, typename... Args>
-class AsyncBasicInvoker final : public BasicWork {
+class AsyncBasicInvoker final : private TopologyHolder, public BasicWork {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
     F m_func;
@@ -795,11 +846,12 @@ class AsyncBasicInvoker final : public BasicWork {
     std::promise<R> m_promise;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit AsyncBasicInvoker(Executor& exec, Work* parent, U&& f, std::promise<R>&& p, Us&&... args)
-        : BasicWork{detail::anchor_bits<A>().first,
+        : TopologyHolder{exec}
+        , BasicWork{detail::anchor_bits<A>().first,
                     detail::anchor_bits<A>().second,
-                    parent ? parent->m_topology : nullptr,
+                    &m_local_topology,
                     parent}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...}
@@ -809,32 +861,53 @@ public:
         try {
             if constexpr (std::is_void_v<R>) {
                 if constexpr (sizeof...(Args) == 0) {
-                    std::invoke(m_func);
+                    if constexpr (basic_invocable_plain<F>) {
+                        std::invoke(m_func);
+                    } else {
+                        std::invoke(m_func, _stop_token());
+                    }
                 } else {
-                    std::apply([this](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...))) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                    std::apply([this](auto&&... a) {
+                        if constexpr (basic_invocable_plain<F, decltype(a)...>) {
+                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                        } else {
+                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., _stop_token());
+                        }
                     }, m_args);
                 }
                 m_promise.set_value();
             } else {
                 if constexpr (sizeof...(Args) == 0) {
-                    m_promise.set_value(std::invoke(m_func));
+                    if constexpr (basic_invocable_plain<F>) {
+                        m_promise.set_value(std::invoke(m_func));
+                    } else {
+                        m_promise.set_value(std::invoke(m_func, _stop_token()));
+                    }
                 } else {
-                    m_promise.set_value(std::apply([this](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...))) {
-                        return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                    m_promise.set_value(std::apply([this](auto&&... a) {
+                        if constexpr (basic_invocable_plain<F, decltype(a)...>) {
+                            return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                        } else {
+                            return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., _stop_token());
+                        }
                     }, m_args));
                 }
             }
         } catch (...) {
-            m_promise.set_exception(std::current_exception());
+            _process_exception();
         }
+
+        if (m_exception_ptr) {
+            m_promise.set_exception(m_exception_ptr);
+        }
+
         exe._tear_down_async_task(this, wr, cache);
     }
 };
 
 /// @brief 内部熔接了 promise 的 Promise 同步通道扩展异步任务。
 template <typename A, typename F, typename R, typename... Args>
-class AsyncRuntimeInvoker final : public RuntimeWork {
+class AsyncRuntimeInvoker final : private TopologyHolder, public RuntimeWork {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
     F m_func;
@@ -844,11 +917,12 @@ class AsyncRuntimeInvoker final : public RuntimeWork {
     TFL_NO_UNIQUE_ADDRESS std::conditional_t<std::is_void_v<R>, std::monostate, std::optional<R>> m_result;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit AsyncRuntimeInvoker(Executor& exec, Work* parent, U&& f, std::promise<R>&& p, Us&&... args)
-        : RuntimeWork{detail::anchor_bits<A>().first,
+        : TopologyHolder{exec}
+        , RuntimeWork{detail::anchor_bits<A>().first,
                       detail::anchor_bits<A>().second,
-                      parent ? parent->m_topology : nullptr,
+                      &m_local_topology,
                       parent}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...}
@@ -866,18 +940,34 @@ public:
             try {
                 if constexpr (std::is_void_v<R>) {
                     if constexpr (sizeof...(Args) == 0) {
-                        std::invoke(m_func, rt);
+                        if constexpr (runtime_invocable_plain<F>) {
+                            std::invoke(m_func, rt);
+                        } else {
+                            std::invoke(m_func, rt, _stop_token());
+                        }
                     } else {
-                        std::apply([this, &rt](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt))) {
-                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                        std::apply([this, &rt](auto&&... a) {
+                            if constexpr (runtime_invocable_plain<F, decltype(a)...>) {
+                                std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                            } else {
+                                std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt, _stop_token());
+                            }
                         }, m_args);
                     }
                 } else {
                     if constexpr (sizeof...(Args) == 0) {
-                        m_result.emplace(std::invoke(m_func, rt));
+                        if constexpr (runtime_invocable_plain<F>) {
+                            m_result.emplace(std::invoke(m_func, rt));
+                        } else {
+                            m_result.emplace(std::invoke(m_func, rt, _stop_token()));
+                        }
                     } else {
-                        m_result.emplace(std::apply([this, &rt](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt))) {
-                            return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                        m_result.emplace(std::apply([this, &rt](auto&&... a) {
+                            if constexpr (runtime_invocable_plain<F, decltype(a)...>) {
+                                return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                            } else {
+                                return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt, _stop_token());
+                            }
                         }, m_args));
                     }
                 }
@@ -916,6 +1006,69 @@ public:
     }
 };
 
+
+
+/// @brief 能够串接任意 Flow 实体的巨无霸容器节点，并在生命周期落幕时点燃专有回调。
+template <typename A, typename GhStore, typename P, typename C>
+class AsyncFlowInvoker final : private TopologyHolder, public GraphWork<GhStore> {
+    static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
+
+    using GraphWork<GhStore>::m_gh_store;
+    using Work::m_implicit;
+    using Work::m_topology;
+    using Work::m_join_counter;
+    using Work::m_exception_ptr;
+    using Work::_should_abort;
+
+    std::size_t          m_num_sources{0};
+    P                    m_pred;
+    C                    m_callback;
+    std::promise<void>   m_promise;
+
+public:
+    template <typename Ghs, typename V, typename W>
+    explicit AsyncFlowInvoker(Executor& exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb, std::promise<void>&& p)
+        : TopologyHolder{exec}
+        , GraphWork<GhStore>{std::forward<Ghs>(ghs),
+                               detail::anchor_bits<A>().first,
+                               detail::anchor_bits<A>().second,
+                               &m_local_topology,
+                               parent}
+        , m_pred{std::forward<V>(pred)}
+        , m_callback{std::forward<W>(cb)}
+        , m_promise{std::move(p)} {}
+
+    void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
+        auto& graph = detail::unwrap(m_gh_store).graph();
+
+        // ── 首次进入：准入检查 + 子图初始化 ─────────────────────────────
+        if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
+            // Why: _set_up_graph 重置子图各节点 join_counter、清除异常残留位、
+            //      将零入度源节点 swap 到 graph 前端，返回源节点数量
+            m_num_sources = exe._set_up_graph(graph, m_topology, this);
+            // 标记进入抢占窗口（隐式锚点已由 anchor::A 静态决定）
+            m_implicit |= Work::Implicit::PREEMPTED;
+        }
+
+        if (std::invoke_r<bool>(m_pred) || m_num_sources == 0 || _should_abort()) {
+            m_implicit &= ~Work::Implicit::PREEMPTED;
+
+            std::invoke(m_callback);
+
+            if (m_exception_ptr) {
+                m_promise.set_exception(m_exception_ptr);
+            } else {
+                m_promise.set_value();
+            }
+
+            exe._tear_down_async_task(this, wr, cache);
+        } else {
+            m_join_counter.store(m_num_sources, std::memory_order_relaxed); // 倒计时屏障
+            exe._schedule(wr, graph.begin(), m_num_sources);                // 批量投递源节点
+        }
+    }
+};
+
 /// @brief 被高阶外部拓扑锁定的依赖型常规任务，需完成 CAS 抢占才能挂载入依赖树。
 template <typename A, typename F, typename... Args>
 class DepAsyncBasicInvoker final : private TopologyHolder, public BasicWork {
@@ -925,9 +1078,9 @@ class DepAsyncBasicInvoker final : private TopologyHolder, public BasicWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit DepAsyncBasicInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
-        : TopologyHolder{exec, parent ? parent->m_topology : nullptr}
+        : TopologyHolder{exec}
         , BasicWork{detail::anchor_bits<A>().first,
                     detail::anchor_bits<A>().second,
                     &m_local_topology,
@@ -938,10 +1091,18 @@ public:
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
         try {
             if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func);
+                if constexpr (basic_invocable_plain<F>) {
+                    std::invoke(m_func);
+                } else {
+                    std::invoke(m_func, _stop_token());
+                }
             } else {
-                std::apply([this](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...))) {
-                    std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                std::apply([this](auto&&... a) {
+                    if constexpr (basic_invocable_plain<F, decltype(a)...>) {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                    } else {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., _stop_token());
+                    }
                 }, m_args);
             }
         } catch (...) {
@@ -961,9 +1122,9 @@ class DepAsyncRuntimeInvoker final : private TopologyHolder, public RuntimeWork 
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit DepAsyncRuntimeInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
-        : TopologyHolder{exec, parent ? parent->m_topology : nullptr}
+        : TopologyHolder{exec}
         , RuntimeWork{detail::anchor_bits<A>().first,
                       detail::anchor_bits<A>().second,
                       &m_local_topology,
@@ -982,10 +1143,18 @@ public:
             Runtime rt(*this, wr, exe);
             try {
                 if constexpr (sizeof...(Args) == 0) {
-                    std::invoke(m_func, rt);
+                    if constexpr (runtime_invocable_plain<F>) {
+                        std::invoke(m_func, rt);
+                    } else {
+                        std::invoke(m_func, rt, _stop_token());
+                    }
                 } else {
-                    std::apply([this, &rt](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt))) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                    std::apply([this, &rt](auto&&... a) {
+                        if constexpr (runtime_invocable_plain<F, decltype(a)...>) {
+                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                        } else {
+                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt, _stop_token());
+                        }
                     }, m_args);
                 }
             } catch (...) {
@@ -1009,11 +1178,11 @@ public:
 };
 
 /// @brief 能够串接任意 Flow 实体的巨无霸容器节点，并在生命周期落幕时点燃专有回调。
-template <typename A, typename FlowStore, typename P, typename C>
-class DepAsyncFlowInvoker final : private TopologyHolder, public GraphWork<FlowStore> {
+template <typename A, typename GhStore, typename P, typename C>
+class DepAsyncFlowInvoker final : private TopologyHolder, public GraphWork<GhStore> {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
-    using GraphWork<FlowStore>::m_flow_store;
+    using GraphWork<GhStore>::m_gh_store;
     using Work::m_implicit;
     using Work::m_topology;
     using Work::m_join_counter;
@@ -1023,10 +1192,10 @@ class DepAsyncFlowInvoker final : private TopologyHolder, public GraphWork<FlowS
     P m_pred;
     C m_callback;
 public:
-    template <typename U, typename V, typename W>
-    explicit DepAsyncFlowInvoker(Executor& exec, Work* parent, U&& flow_store, V&& pred, W&& cb)
-        : TopologyHolder{exec, parent ? parent->m_topology : nullptr}
-        , GraphWork<FlowStore>{std::forward<U>(flow_store),
+    template <typename Ghs, typename V, typename W>
+    explicit DepAsyncFlowInvoker(Executor& exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb)
+        : TopologyHolder{exec}
+        , GraphWork<GhStore>{std::forward<Ghs>(ghs),
                                detail::anchor_bits<A>().first,
                                detail::anchor_bits<A>().second,
                                &m_local_topology,
@@ -1035,7 +1204,7 @@ public:
         , m_callback{std::forward<W>(cb)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::unwrap(m_flow_store).graph();
+        auto& graph = detail::unwrap(m_gh_store).graph();
 
         // ── 首次进入：准入检查 + 子图初始化 ──────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -1071,9 +1240,9 @@ class DepDeferredAsyncBasicInvoker final : private TopologyHolder, public BasicW
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit DepDeferredAsyncBasicInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
-        : TopologyHolder{exec, parent ? parent->m_topology : nullptr}
+        : TopologyHolder{exec}
         , BasicWork{detail::anchor_bits<A>().first,
                     detail::anchor_bits<A>().second,
                     &m_local_topology,
@@ -1095,10 +1264,18 @@ public:
 
         try {
             if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func);
+                if constexpr (basic_invocable_plain<F>) {
+                    std::invoke(m_func);
+                } else {
+                    std::invoke(m_func, _stop_token());
+                }
             } else {
-                std::apply([this](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...))) {
-                    std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                std::apply([this](auto&&... a) {
+                    if constexpr (basic_invocable_plain<F, decltype(a)...>) {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                    } else {
+                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., _stop_token());
+                    }
                 }, m_args);
             }
         } catch (...) {
@@ -1125,9 +1302,9 @@ class DepDeferredAsyncRuntimeInvoker final : private TopologyHolder, public Runt
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-        // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
     explicit DepDeferredAsyncRuntimeInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
-        : TopologyHolder{exec, parent ? parent->m_topology : nullptr}
+        : TopologyHolder{exec}
         , RuntimeWork{detail::anchor_bits<A>().first,
                       detail::anchor_bits<A>().second,
                       &m_local_topology,
@@ -1158,10 +1335,18 @@ public:
             Runtime rt(*this, wr, exe);
             try {
                 if constexpr (sizeof...(Args) == 0) {
-                    std::invoke(m_func, rt);
+                    if constexpr (runtime_invocable_plain<F>) {
+                        std::invoke(m_func, rt);
+                    } else {
+                        std::invoke(m_func, rt, _stop_token());
+                    }
                 } else {
-                    std::apply([this, &rt](auto&&... a) noexcept(noexcept(std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt))) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                    std::apply([this, &rt](auto&&... a) {
+                        if constexpr (runtime_invocable_plain<F, decltype(a)...>) {
+                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                        } else {
+                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt, _stop_token());
+                        }
                     }, m_args);
                 }
             } catch (...) {
@@ -1195,11 +1380,11 @@ public:
 };
 
 /// @brief 能够串接任意 Flow 实体的巨无霸容器节点，并在生命周期落幕时点燃专有回调。
-template <typename A, typename FlowStore, typename P, typename C>
-class DepDeferredAsyncFlowInvoker final : private TopologyHolder, public GraphWork<FlowStore> {
+template <typename A, typename GhStore, typename P, typename C>
+class DepDeferredAsyncFlowInvoker final : private TopologyHolder, public GraphWork<GhStore> {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
-    using GraphWork<FlowStore>::m_flow_store;
+    using GraphWork<GhStore>::m_gh_store;
     using Work::m_implicit;
     using Work::m_semaphores;
     using Work::m_topology;
@@ -1214,10 +1399,10 @@ class DepDeferredAsyncFlowInvoker final : private TopologyHolder, public GraphWo
     P m_pred;
     C m_callback;
 public:
-    template <typename U, typename V, typename W>
-    explicit DepDeferredAsyncFlowInvoker(Executor& exec, Work* parent, U&& flow_store, V&& pred, W&& cb)
-        : TopologyHolder{exec, parent ? parent->m_topology : nullptr}
-        , GraphWork<FlowStore>{std::forward<U>(flow_store),
+    template <typename Ghs, typename V, typename W>
+    explicit DepDeferredAsyncFlowInvoker(Executor& exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb)
+        : TopologyHolder{exec}
+        , GraphWork<GhStore>{std::forward<Ghs>(ghs),
                                detail::anchor_bits<A>().first,
                                detail::anchor_bits<A>().second,
                                &m_local_topology, parent}
@@ -1225,7 +1410,7 @@ public:
         , m_callback{std::forward<W>(cb)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::unwrap(m_flow_store).graph();
+        auto& graph = detail::unwrap(m_gh_store).graph();
 
         // ── 首次进入：准入检查 + 子图初始化 ──────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -1279,7 +1464,7 @@ class AnchorWork final : private TopologyHolder, public Work {
 
 public:
     explicit AnchorWork(Executor& exec, Work* parent)
-        : TopologyHolder{exec, parent ? parent->m_topology : nullptr}
+        : TopologyHolder{exec}
         , Work{TaskType::None,
                detail::anchor_bits<A>().first,
                detail::anchor_bits<A>().second,
@@ -1291,10 +1476,10 @@ public:
 };
 
 
-template <typename F>
-    requires flow_type<F>
-inline void Runtime::cowait(F& flow) {
-    auto& graph = detail::unwrap(flow).graph();
+template <typename Gh>
+    requires graph_holder<Gh>
+inline void Runtime::cowait(Gh& gh) {
+    auto& graph = detail::unwrap(gh).graph();
     if (graph.empty()) {
         return;
     }

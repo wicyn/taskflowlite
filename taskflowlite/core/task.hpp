@@ -125,106 +125,175 @@ class Task {
     friend class Executor;
 
 public:
+    /// @brief 构造空任务句柄。
     explicit Task() = default;
+
+    /// @brief 构造空任务句柄。
     explicit Task(std::nullptr_t) noexcept;
 
+    /// @brief 拷贝构造，复制底层 Work 指针。
     Task(const Task& rhs) noexcept;
+
+    /// @brief 拷贝赋值，复制底层 Work 指针。
     Task& operator=(const Task& rhs) noexcept;
+
+    /// @brief 移动构造，接管 rhs 的底层 Work 指针。
     Task(Task&& rhs) noexcept;
+
+    /// @brief 移动赋值，接管 rhs 的底层 Work 指针。
     Task& operator=(Task&& rhs) noexcept;
+
+    /// @brief 将当前句柄置空。
     Task& operator=(std::nullptr_t) noexcept;
 
+    /// @brief 判断两个任务句柄是否指向同一个底层节点。
     [[nodiscard]] bool operator==(const Task& rhs) const noexcept;
+
+    /// @brief 判断两个任务句柄是否指向不同底层节点。
     [[nodiscard]] bool operator!=(const Task& rhs) const noexcept;
 
+    /// @brief 将当前任务句柄置空。
     void reset() noexcept;
 
     // ========================================================================
     //  状态查询
     // ========================================================================
+
+    /// @brief 获取当前任务句柄的哈希值，基于底层 Work 指针地址。
     [[nodiscard]] std::size_t hash_value() const noexcept;
+
+    /// @brief 获取任务名称。
     [[nodiscard]] std::string_view name() const noexcept;
+
+    /// @brief 判断当前句柄是否绑定了有效任务节点。
     [[nodiscard]] bool valid() const noexcept;
+
+    /// @brief 获取后继任务数量。
     [[nodiscard]] std::size_t num_successors() const noexcept;
+
+    /// @brief 获取前驱任务数量。
     [[nodiscard]] std::size_t num_predecessors() const noexcept;
+
+    /// @brief 获取执行前需要获取的信号量数量。
     [[nodiscard]] std::size_t num_acquires() const noexcept;
+
+    /// @brief 获取执行后需要释放的信号量数量。
     [[nodiscard]] std::size_t num_releases() const noexcept;
+
+    /// @brief 获取已注册的任务观察者数量。
     [[nodiscard]] std::size_t num_observers() const noexcept;
+
+    /// @brief 判断当前句柄是否绑定了有效任务节点。
     [[nodiscard]] explicit operator bool() const noexcept;
+
+    /// @brief 检测任务执行期间是否已经记录异常。
     [[nodiscard]] bool has_exception() const noexcept;
+
+    /// @brief 获取底层任务节点类型。
     [[nodiscard]] TaskType type() const noexcept;
+
+    /// @brief 获取任务执行期间记录的异常指针。
     std::exception_ptr exception() const noexcept;
 
+    /// @brief 将当前任务节点导出为 D2 描述字符串。
     [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
+
+    /// @brief 将当前任务节点的 D2 描述写入输出流。
     void dump(std::ostream& ostream, Direction dir = Direction::Default) const;
 
     // ========================================================================
     //  拓扑构建
     // ========================================================================
+
+    /// @brief 设置任务名称，用于调试和可视化。
     template <typename S>
         requires std::constructible_from<std::string, S>
     Task& name(S&& name);
 
+    /// @brief 将当前任务设置为一个或多个任务的前驱。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& precede(Ts&&... ts);
 
+    /// @brief 将当前任务设置为一个或多个任务的后继。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& succeed(Ts&&... ts);
 
+    /// @brief 移除当前任务的指定前驱任务。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& remove_predecessor(Ts&&... ts) noexcept;
 
+    /// @brief 移除当前任务的指定后继任务。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& remove_successor(Ts&&... ts) noexcept;
 
+    /// @brief 清空当前任务的所有前驱关系。
     Task& clear_predecessors() noexcept;
+
+    /// @brief 清空当前任务的所有后继关系。
     Task& clear_successors() noexcept;
 
     // ========================================================================
     //  信号量管理
     // ========================================================================
+
+    /// @brief 为任务添加执行前需要获取的信号量，每个信号量默认占用 1 个配额。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& acquire(Ts&&... sems);
 
+    /// @brief 为任务添加执行后需要释放的信号量，每个信号量默认释放 1 个配额。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& release(Ts&&... sems);
 
+    /// @brief 为任务添加执行前需要获取的信号量及对应配额。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     Task& acquire(Ts&&... args);
 
+    /// @brief 为任务添加执行后需要释放的信号量及对应配额。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     Task& release(Ts&&... args);
 
+    /// @brief 移除任务执行前需要获取的指定信号量约束。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& remove_acquire(Ts&&... sems) noexcept;
 
+    /// @brief 移除任务执行后需要释放的指定信号量约束。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& remove_release(Ts&&... sems) noexcept;
 
+    /// @brief 清空所有执行前信号量获取约束。
     Task& clear_acquires() noexcept;
+
+    /// @brief 清空所有执行后信号量释放约束。
     Task& clear_releases() noexcept;
 
     // ========================================================================
     //  迭代访问
     // ========================================================================
+
+    /// @brief 遍历当前任务的所有前驱任务。
     template <std::invocable<Task> F>
     void for_each_predecessor(F&& visitor)
         noexcept(std::is_nothrow_invocable_v<F, Task>);
 
+    /// @brief 遍历当前任务的所有后继任务。
     template <std::invocable<Task> F>
     void for_each_successor(F&& visitor)
         noexcept(std::is_nothrow_invocable_v<F, Task>);
 
+    /// @brief 遍历任务执行前的信号量获取约束。
+    ///
+    /// visitor 可接收 `(Semaphore&, std::size_t&)` 以同时访问并修改配额，
+    /// 也可只接收 `(Semaphore&)`。
     template <typename F>
         requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
     void for_each_acquire(F&& visitor) noexcept(
@@ -233,6 +302,10 @@ public:
             : std::is_nothrow_invocable_v<F, Semaphore&>
         );
 
+    /// @brief 遍历任务执行后的信号量释放约束。
+    ///
+    /// visitor 可接收 `(Semaphore&, std::size_t&)` 以同时访问并修改配额，
+    /// 也可只接收 `(Semaphore&)`。
     template <typename F>
         requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
     void for_each_release(F&& visitor) noexcept(
@@ -244,15 +317,24 @@ public:
     // ========================================================================
     //  观察者管理
     // ========================================================================
+
+    /// @brief 注册任务观察者，在任务执行前后接收回调。
+    /// @tparam Observer TaskObserver 的派生类型。
+    /// @param args 构造 Observer 所需参数。
+    /// @return 已注册观察者的 shared_ptr，可用于后续注销。
     template <std::derived_from<TaskObserver> Observer, typename... Args>
         requires std::constructible_from<Observer, Args...>
     [[nodiscard]] std::shared_ptr<Observer> register_observer(Args&&... args);
 
+    /// @brief 注销指定任务观察者。
+    /// @param ptr register_observer 返回的观察者指针。
     template <std::derived_from<TaskObserver> Observer>
     void unregister_observer(std::shared_ptr<Observer> ptr) noexcept;
 
 private:
-    Work* m_work{nullptr};
+    Work* m_work{nullptr};  ///< 底层 Work 节点指针，非拥有引用。
+
+    /// @brief 从底层 Work 指针构造任务句柄。
     explicit Task(Work* work) noexcept;
 };
 
@@ -554,27 +636,57 @@ class TaskView {
     friend class Task;
 
 public:
+    /// @brief 判断两个只读视图是否引用同一个底层任务节点。
     [[nodiscard]] bool operator==(const TaskView& rhs) const noexcept;
+
+    /// @brief 判断两个只读视图是否引用不同的底层任务节点。
     [[nodiscard]] bool operator!=(const TaskView& rhs) const noexcept;
+
+    /// @brief 获取当前视图的哈希值，基于底层 Work 地址。
     [[nodiscard]] std::size_t hash_value() const noexcept;
+
+    /// @brief 获取任务名称。
     [[nodiscard]] std::string_view name() const noexcept;
+
+    /// @brief 获取后继任务数量。
     [[nodiscard]] std::size_t num_successors() const noexcept;
+
+    /// @brief 获取前驱任务数量。
     [[nodiscard]] std::size_t num_predecessors() const noexcept;
+
+    /// @brief 获取执行前需要获取的信号量数量。
     [[nodiscard]] std::size_t num_acquires() const noexcept;
+
+    /// @brief 获取执行后需要释放的信号量数量。
     [[nodiscard]] std::size_t num_releases() const noexcept;
+
+    /// @brief 获取已注册的观察者数量。
     [[nodiscard]] std::size_t num_observers() const noexcept;
+
+    /// @brief 获取底层任务节点类型。
     [[nodiscard]] TaskType type() const noexcept;
+
+    /// @brief 检测任务执行期间是否已经记录异常。
     [[nodiscard]] bool has_exception() const noexcept;
+
+    /// @brief 获取任务执行期间记录的异常指针。
     [[nodiscard]] std::exception_ptr exception() const noexcept;
+
+    /// @brief 将当前任务节点导出为 D2 描述字符串。
     [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
+
+    /// @brief 将当前任务节点的 D2 描述写入输出流。
     void dump(std::ostream& ostream, Direction dir = Direction::Default) const;
 
+    /// @brief 遍历所有前驱任务。
     template <std::invocable<TaskView> F>
     void for_each_predecessor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F, TaskView>);
 
+    /// @brief 遍历所有后继任务。
     template <std::invocable<TaskView> F>
     void for_each_successor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F, TaskView>);
 
+    /// @brief 遍历执行前的信号量获取约束。
     template <typename F>
         requires std::invocable<F, const Semaphore&, std::size_t> || std::invocable<F, const Semaphore&>
     void for_each_acquire(F&& visitor) const noexcept(
@@ -583,6 +695,7 @@ public:
             : std::is_nothrow_invocable_v<F, const Semaphore&>
         );
 
+    /// @brief 遍历执行后的信号量释放约束。
     template <typename F>
         requires std::invocable<F, const Semaphore&, std::size_t> || std::invocable<F, const Semaphore&>
     void for_each_release(F&& visitor) const noexcept(
@@ -592,8 +705,10 @@ public:
         );
 
 private:
+    /// @brief 从底层 Work 引用构造只读任务视图。
     explicit TaskView(const Work& work) noexcept : m_work{work} {}
-    const Work& m_work;
+
+    const Work& m_work;  ///< 底层 Work 节点只读引用，非拥有。
 };
 
 inline bool TaskView::operator==(const TaskView& rhs) const noexcept {

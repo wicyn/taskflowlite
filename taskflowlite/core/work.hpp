@@ -288,14 +288,17 @@ protected:
         return sum;
     }
 
-    /// @brief 查询节点所属 Topology 或其父链是否已被外部请求停止。
+    // Why: 只取本节点直属 topology 的 stop_source。父链路 stop 通过
+    //      _stop_requested() 的 traversal 在 invoke 入口处判定；
+    //      用户 callable 拿到的 stop_token 是直属 topology 的，
+    //      若需感知父链停止，由 topology 构造时 std::stop_callback 链接。
+    [[nodiscard]] std::stop_token _stop_token() const noexcept {
+        return m_topology ? m_topology->m_stop_source.get_token() : std::stop_token{};   // 无所属 topology：返回空 token，永不 stopped
+    }
+
+    /// @brief 查询节点所属 Topology 是否已被外部请求停止。
     [[nodiscard]] bool _stop_requested() const noexcept {
-        for (auto const* topo = m_topology; topo; topo = topo->m_parent) {
-            if (topo->m_stopped.test(std::memory_order_relaxed)) {
-                return true;
-            }
-        }
-        return false;
+        return m_topology && m_topology->m_stop_source.stop_requested();
     }
 
     [[nodiscard]] bool _has_exception() const noexcept {
@@ -303,17 +306,7 @@ protected:
     }
 
     [[nodiscard]] bool _should_abort() const noexcept {
-        if (m_explicit.load(std::memory_order_relaxed) & Explicit::EXCEPTION) {
-            return true;
-        }
-
-        for (auto const* topo = m_topology; topo; topo = topo->m_parent) {
-            if (topo->m_stopped.test(std::memory_order_relaxed)) {
-                return true;
-            }
-        }
-
-        return false;
+        return (m_explicit.load(std::memory_order_relaxed) & Explicit::EXCEPTION) || (m_topology && m_topology->m_stop_source.stop_requested());
     }
 
     void _rethrow_exception() {
