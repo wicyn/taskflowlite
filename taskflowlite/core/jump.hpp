@@ -129,14 +129,14 @@ private:
 // ============================================================
 template <std::integral I>
     requires (!std::same_as<std::remove_cvref_t<I>, bool>)
-Jump& Jump::select(I index) noexcept {
+inline Jump& Jump::select(I index) noexcept {
     const auto idx = static_cast<std::size_t>(index);
     m_target = (idx < m_work.m_num_successors) ? m_work.m_edges[idx] : nullptr;
     return *this;
 }
 
 template <predicate<TaskView> Pred>
-Jump& Jump::select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
+inline Jump& Jump::select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
     m_target = nullptr;
     const std::size_t sz = m_work.m_num_successors;
     for (std::size_t i = 0; i < sz; ++i) {
@@ -328,14 +328,14 @@ private:
 
 template <std::integral I>
     requires (!std::same_as<std::remove_cvref_t<I>, bool>)
-MultiJump::Proxy MultiJump::operator[](I index) noexcept {
+inline MultiJump::Proxy MultiJump::operator[](I index) noexcept {
     return {*this, static_cast<std::size_t>(index)};
 }
 template <typename... Is>
     requires (sizeof...(Is) > 1)
             && (std::integral<Is> && ...)
             && (!std::same_as<std::remove_cvref_t<Is>, bool> && ...)
-MultiJump::MultiProxy<sizeof...(Is)> MultiJump::operator[](Is... indices) noexcept {
+inline MultiJump::MultiProxy<sizeof...(Is)> MultiJump::operator[](Is... indices) noexcept {
     return {*this, indices...};
 }
 
@@ -343,7 +343,7 @@ template <typename... Is>
     requires (sizeof...(Is) > 0)
             && (std::integral<Is> && ...)
             && (!std::same_as<std::remove_cvref_t<Is>, bool> && ...)
-MultiJump& MultiJump::select(Is... indices) {
+inline MultiJump& MultiJump::select(Is... indices) {
     const std::size_t sz = m_work.m_num_successors;
 
     ([&](std::size_t idx) {

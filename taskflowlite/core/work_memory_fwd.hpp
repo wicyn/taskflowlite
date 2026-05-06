@@ -47,27 +47,27 @@ namespace tfl {
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_basic(const Graph* graph, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_basic(const Graph* graph, T&& t, Args&&... args);
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && branch_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_branch(const Graph* graph, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_branch(const Graph* graph, T&& t, Args&&... args);
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && multi_branch_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_multi_branch(const Graph* graph, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_multi_branch(const Graph* graph, T&& t, Args&&... args);
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && jump_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_jump(const Graph* graph, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_jump(const Graph* graph, T&& t, Args&&... args);
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && multi_jump_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_multi_jump(const Graph* graph, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_multi_jump(const Graph* graph, T&& t, Args&&... args);
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_runtime(const Graph* graph, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_runtime(const Graph* graph, T&& t, Args&&... args);
 
 template <typename Gh, typename P>
     requires (capturable<P> && graph_holder<Gh> && predicate<P>)
@@ -79,23 +79,23 @@ template <typename Gh, typename P>
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
-[[nodiscard]] inline Work* make_silent_async_basic(Executor& exec, Work* parent, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_silent_async_basic(Work* parent, T&& t, Args&&... args);
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
-[[nodiscard]] inline Work* make_silent_async_runtime(Executor& exec, Work* parent, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_silent_async_runtime(Work* parent, T&& t, Args&&... args);
 
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
-[[nodiscard]] inline Work* make_silent_async_flow(Executor& exec, Work* parent, Gh&& gh, P&& pred, C&& cb);
+[[nodiscard]] inline Work* make_silent_async_flow(Work* parent, Gh&& gh, P&& pred, C&& cb);
 
 template <anchor_tag A, typename T, typename R, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_async_basic(Executor& exec, Work* parent, T&& f, std::promise<R>&& p, Args&&... args);
+[[nodiscard]] inline Work* make_async_basic(Executor& exec, Work* parent, T&& t, std::promise<R>&& p, Args&&... args);
 
 template <anchor_tag A, typename T, typename R, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_async_runtime(Executor& exec, Work* parent, T&& f, std::promise<R>&& p, Args&&... args);
+[[nodiscard]] inline Work* make_async_runtime(Executor& exec, Work* parent, T&& t, std::promise<R>&& p, Args&&... args);
 
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
@@ -106,11 +106,11 @@ template <anchor_tag A, typename Gh, typename P, typename C>
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_dep_async_basic(Executor& exec, Work* parent, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_dep_async_basic(Executor& exec, Work* parent, T&& t, Args&&... args);
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_dep_async_runtime(Executor& exec, Work* parent, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_dep_async_runtime(Executor& exec, Work* parent, T&& t, Args&&... args);
 
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
@@ -118,11 +118,11 @@ template <anchor_tag A, typename Gh, typename P, typename C>
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_dep_deferred_async_basic(Executor& exec, Work* parent, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_dep_deferred_async_basic(Executor& exec, Work* parent, T&& t, Args&&... args);
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_dep_deferred_async_runtime(Executor& exec, Work* parent, T&& f, Args&&... args);
+[[nodiscard]] inline Work* make_dep_deferred_async_runtime(Executor& exec, Work* parent, T&& t, Args&&... args);
 
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)

@@ -524,21 +524,24 @@ public:
     /// @brief 清空所有执行后信号量释放约束。
     DeferredAsyncTask& clear_releases() noexcept;
 
-    /// @brief 遍历所有执行前信号量获取约束。
-    template <typename F>
-        requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
-    void for_each_acquire(F&& visitor) noexcept(
-        std::invocable<F, Semaphore&, std::size_t&>
-            ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
-            : std::is_nothrow_invocable_v<F, Semaphore&>);
 
-    /// @brief 遍历所有执行后信号量释放约束。
+    /// @brief 遍历任务执行前的信号量获取约束。
     template <typename F>
-        requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
+        requires std::invocable<F&, Semaphore&, std::size_t&>
+                 || std::invocable<F&, Semaphore&>
+    void for_each_acquire(F&& visitor) noexcept(
+        std::invocable<F&, Semaphore&, std::size_t&>
+            ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+            : std::is_nothrow_invocable_v<F&, Semaphore&>);
+
+    /// @brief 遍历任务执行后的信号量释放约束。
+    template <typename F>
+        requires std::invocable<F&, Semaphore&, std::size_t&>
+                 || std::invocable<F&, Semaphore&>
     void for_each_release(F&& visitor) noexcept(
-        std::invocable<F, Semaphore&, std::size_t&>
-            ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
-            : std::is_nothrow_invocable_v<F, Semaphore&>);
+        std::invocable<F&, Semaphore&, std::size_t&>
+            ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+            : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
     // ==================== 观察者 ====================
 
@@ -661,14 +664,16 @@ inline DeferredAsyncTask& DeferredAsyncTask::clear_releases() noexcept {
     return *this;
 }
 
+
 template <typename F>
-    requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
+    requires std::invocable<F&, Semaphore&, std::size_t&>
+             || std::invocable<F&, Semaphore&>
 inline void DeferredAsyncTask::for_each_acquire(F&& visitor) noexcept(
-    std::invocable<F, Semaphore&, std::size_t&>
-        ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
-        : std::is_nothrow_invocable_v<F, Semaphore&>) {
-    for (const auto& req : m_work->_acquires()) {
-        if constexpr (std::invocable<F, Semaphore&, std::size_t&>) {
+    std::invocable<F&, Semaphore&, std::size_t&>
+        ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+        : std::is_nothrow_invocable_v<F&, Semaphore&>) {
+    for (auto& req : m_work->_acquires()) {
+        if constexpr (std::invocable<F&, Semaphore&, std::size_t&>) {
             std::invoke(visitor, *req.sem, req.count);
         } else {
             std::invoke(visitor, *req.sem);
@@ -677,13 +682,14 @@ inline void DeferredAsyncTask::for_each_acquire(F&& visitor) noexcept(
 }
 
 template <typename F>
-    requires std::invocable<F, Semaphore&, std::size_t&> || std::invocable<F, Semaphore&>
+    requires std::invocable<F&, Semaphore&, std::size_t&>
+             || std::invocable<F&, Semaphore&>
 inline void DeferredAsyncTask::for_each_release(F&& visitor) noexcept(
-    std::invocable<F, Semaphore&, std::size_t&>
-        ? std::is_nothrow_invocable_v<F, Semaphore&, std::size_t&>
-        : std::is_nothrow_invocable_v<F, Semaphore&>) {
-    for (const auto& req : m_work->_releases()) {
-        if constexpr (std::invocable<F, Semaphore&, std::size_t&>) {
+    std::invocable<F&, Semaphore&, std::size_t&>
+        ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+        : std::is_nothrow_invocable_v<F&, Semaphore&>) {
+    for (auto& req : m_work->_releases()) {
+        if constexpr (std::invocable<F&, Semaphore&, std::size_t&>) {
             std::invoke(visitor, *req.sem, req.count);
         } else {
             std::invoke(visitor, *req.sem);
@@ -1052,7 +1058,7 @@ template <typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 inline void Executor::silent_async(Gh&& gh, P&& pred, C&& cb) {
     Work* work = make_silent_async_flow<anchor::explicit_t>(
-        *this, /*parent=*/nullptr,
+        /*parent=*/nullptr,
         std::forward<Gh>(gh),
         std::forward<P>(pred),
         std::forward<C>(cb));
@@ -1072,7 +1078,7 @@ template <typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
 inline void Executor::silent_async(T&& task, Args&&... args) {
     Work* work = make_silent_async_basic<anchor::explicit_t>(
-        *this, /*parent=*/nullptr,
+        /*parent=*/nullptr,
         std::forward<T>(task), std::forward<Args>(args)...);
 
     _increment_topology();
@@ -1089,7 +1095,7 @@ template <typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
 inline void Executor::silent_async(T&& task, Args&&... args) {
     Work* work = make_silent_async_runtime<anchor::explicit_t>(
-        *this, /*parent=*/nullptr,
+        /*parent=*/nullptr,
         std::forward<T>(task), std::forward<Args>(args)...);
 
     _increment_topology();
@@ -1239,14 +1245,14 @@ inline std::ostream& operator << (std::ostream& os, const DeferredAsyncTask& tas
 namespace std {
 template <>
 struct hash<tfl::AsyncTask> {
-    std::size_t operator()(const tfl::AsyncTask& task) const noexcept {
+    inline std::size_t operator()(const tfl::AsyncTask& task) const noexcept {
         return task.hash_value();
     }
 };
 
 template <>
 struct hash<tfl::DeferredAsyncTask> {
-    std::size_t operator()(const tfl::DeferredAsyncTask& task) const noexcept {
+    inline std::size_t operator()(const tfl::DeferredAsyncTask& task) const noexcept {
         return task.hash_value();
     }
 };

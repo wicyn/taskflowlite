@@ -136,8 +136,8 @@ public:
     [[nodiscard]] const std::thread& thread() const noexcept { return m_worker.m_thread; }
 
 private:
-    inline explicit WorkerView(const Worker& wr) noexcept : m_worker{wr} {}
-    inline explicit WorkerView(const WorkerView&) = default;
+    explicit WorkerView(const Worker& wr) noexcept : m_worker{wr} {}
+    explicit WorkerView(const WorkerView&) = default;
 
     const Worker& m_worker;
 };
