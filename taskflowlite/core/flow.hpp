@@ -462,11 +462,11 @@ inline std::string_view Flow::name() const noexcept {
 //  图访问接口
 // ========================================================================
 
-[[nodiscard]] Graph& Flow::graph() noexcept {
+inline Graph& Flow::graph() noexcept {
     return m_graph;
 }
 
-[[nodiscard]] const Graph& Flow::graph() const noexcept {
+inline const Graph& Flow::graph() const noexcept {
     return m_graph;
 }
 

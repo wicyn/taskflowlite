@@ -41,44 +41,44 @@ namespace tfl {
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_basic(const Graph* graph, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_basic(const Graph* graph, T&& t, Args&&... args) {
     return new BasicInvoker<std::decay_t<T>, std::decay_t<Args>...>(
-        graph, std::forward<T>(f), std::forward<Args>(args)...);
+        graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && branch_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_branch(const Graph* graph, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_branch(const Graph* graph, T&& t, Args&&... args) {
     return new BranchInvoker<std::decay_t<T>, std::decay_t<Args>...>(
-        graph, std::forward<T>(f), std::forward<Args>(args)...);
+        graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && multi_branch_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_multi_branch(const Graph* graph, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_multi_branch(const Graph* graph, T&& t, Args&&... args) {
     return new MultiBranchInvoker<std::decay_t<T>, std::decay_t<Args>...>(
-        graph, std::forward<T>(f), std::forward<Args>(args)...);
+        graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && jump_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_jump(const Graph* graph, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_jump(const Graph* graph, T&& t, Args&&... args) {
     return new JumpInvoker<std::decay_t<T>, std::decay_t<Args>...>(
-        graph, std::forward<T>(f), std::forward<Args>(args)...);
+        graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && multi_jump_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_multi_jump(const Graph* graph, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_multi_jump(const Graph* graph, T&& t, Args&&... args) {
     return new MultiJumpInvoker<std::decay_t<T>, std::decay_t<Args>...>(
-        graph, std::forward<T>(f), std::forward<Args>(args)...);
+        graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_runtime(const Graph* graph, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_runtime(const Graph* graph, T&& t, Args&&... args) {
     return new RuntimeInvoker<std::decay_t<T>, std::decay_t<Args>...>(
-        graph, std::forward<T>(f), std::forward<Args>(args)...);
+        graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <typename Gh, typename P>
@@ -94,37 +94,37 @@ template <typename Gh, typename P>
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
-[[nodiscard]] inline Work* make_silent_async_basic(Executor& exec, Work* parent, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_silent_async_basic(Work* parent, T&& t, Args&&... args) {
     return new SilentAsyncBasicInvoker<A, std::decay_t<T>, std::decay_t<Args>...>(
-        exec, parent, std::forward<T>(f), std::forward<Args>(args)...);
+        parent, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
-[[nodiscard]] inline Work* make_silent_async_runtime(Executor& exec, Work* parent, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_silent_async_runtime(Work* parent, T&& t, Args&&... args) {
     return new SilentAsyncRuntimeInvoker<A, std::decay_t<T>, std::decay_t<Args>...>(
-        exec, parent, std::forward<T>(f), std::forward<Args>(args)...);
+        parent, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
-[[nodiscard]] inline Work* make_silent_async_flow(Executor& exec, Work* parent, Gh&& gh, P&& pred, C&& cb) {
+[[nodiscard]] inline Work* make_silent_async_flow(Work* parent, Gh&& gh, P&& pred, C&& cb) {
     return new SilentAsyncFlowInvoker<A, detail::wrap_t<Gh>, std::decay_t<P>, std::decay_t<C>>(
-        exec, parent, detail::wrap(std::forward<Gh>(gh)), std::forward<P>(pred), std::forward<C>(cb));
+        parent, detail::wrap(std::forward<Gh>(gh)), std::forward<P>(pred), std::forward<C>(cb));
 }
 
 template <anchor_tag A, typename T, typename R, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_async_basic(Executor& exec, Work* parent, T&& f, std::promise<R>&& p, Args&&... args) {
+[[nodiscard]] inline Work* make_async_basic(Executor& exec, Work* parent, T&& t, std::promise<R>&& p, Args&&... args) {
     return new AsyncBasicInvoker<A, std::decay_t<T>, R, std::decay_t<Args>...>(
-        exec, parent, std::forward<T>(f), std::move(p), std::forward<Args>(args)...);
+        exec, parent, std::forward<T>(t), std::move(p), std::forward<Args>(args)...);
 }
 
 template <anchor_tag A, typename T, typename R, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_async_runtime(Executor& exec, Work* parent, T&& f, std::promise<R>&& p, Args&&... args) {
+[[nodiscard]] inline Work* make_async_runtime(Executor& exec, Work* parent, T&& t, std::promise<R>&& p, Args&&... args) {
     return new AsyncRuntimeInvoker<A, std::decay_t<T>, R, std::decay_t<Args>...>(
-        exec, parent, std::forward<T>(f), std::move(p), std::forward<Args>(args)...);
+        exec, parent, std::forward<T>(t), std::move(p), std::forward<Args>(args)...);
 }
 
 template <anchor_tag A, typename Gh, typename P, typename C>
@@ -139,16 +139,16 @@ template <anchor_tag A, typename Gh, typename P, typename C>
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_dep_async_basic(Executor& exec, Work* parent, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_dep_async_basic(Executor& exec, Work* parent, T&& t, Args&&... args) {
     return new DepAsyncBasicInvoker<A, std::decay_t<T>, std::decay_t<Args>...>(
-        exec, parent, std::forward<T>(f), std::forward<Args>(args)...);
+        exec, parent, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_dep_async_runtime(Executor& exec, Work* parent, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_dep_async_runtime(Executor& exec, Work* parent, T&& t, Args&&... args) {
     return new DepAsyncRuntimeInvoker<A, std::decay_t<T>, std::decay_t<Args>...>(
-        exec, parent, std::forward<T>(f), std::forward<Args>(args)...);
+        exec, parent, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <anchor_tag A, typename Gh, typename P, typename C>
@@ -162,16 +162,16 @@ template <anchor_tag A, typename Gh, typename P, typename C>
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_dep_deferred_async_basic(Executor& exec, Work* parent, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_dep_deferred_async_basic(Executor& exec, Work* parent, T&& t, Args&&... args) {
     return new DepDeferredAsyncBasicInvoker<A, std::decay_t<T>, std::decay_t<Args>...>(
-        exec, parent, std::forward<T>(f), std::forward<Args>(args)...);
+        exec, parent, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-[[nodiscard]] inline Work* make_dep_deferred_async_runtime(Executor& exec, Work* parent, T&& f, Args&&... args) {
+[[nodiscard]] inline Work* make_dep_deferred_async_runtime(Executor& exec, Work* parent, T&& t, Args&&... args) {
     return new DepDeferredAsyncRuntimeInvoker<A, std::decay_t<T>, std::decay_t<Args>...>(
-        exec, parent, std::forward<T>(f), std::forward<Args>(args)...);
+        exec, parent, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
 template <anchor_tag A, typename Gh, typename P, typename C>

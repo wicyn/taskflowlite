@@ -173,7 +173,7 @@ inline Graph::~Graph() noexcept {
     _clear();
 }
 
-Work* Graph::_emplace(Work* work) {
+inline Work* Graph::_emplace(Work* work) {
     m_works.push_back(work);
     return work;
 }

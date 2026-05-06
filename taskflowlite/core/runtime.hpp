@@ -494,7 +494,7 @@ template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 inline void Runtime::silent_async(Gh&& gh, P&& pred, C&& cb) {
     Work* work = make_silent_async_flow<A>(
-        *this, std::addressof(m_work),
+        std::addressof(m_work),
         std::forward<Gh>(gh),
         std::forward<P>(pred),
         std::forward<C>(cb));
@@ -506,7 +506,7 @@ template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
 inline void Runtime::silent_async(T&& task, Args&&... args) {
     Work* work = make_silent_async_basic<A>(
-        *this, std::addressof(m_work),
+        std::addressof(m_work),
         std::forward<T>(task), std::forward<Args>(args)...);
     m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
     m_executor._schedule(m_worker, work);
@@ -516,7 +516,7 @@ template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
 inline void Runtime::silent_async(T&& task, Args&&... args) {
     Work* work = make_silent_async_runtime<A>(
-        *this, std::addressof(m_work),
+        std::addressof(m_work),
         std::forward<T>(task), std::forward<Args>(args)...);
     m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
     m_executor._schedule(m_worker, work);
@@ -562,7 +562,7 @@ inline Future<void> Runtime::async(Gh&& gh, P&& pred, C&& cb) {
     std::future<void>  std_future = promise.get_future();
 
     Work* work = make_async_flow<A>(
-        *this, std::addressof(m_work),
+        m_executor, std::addressof(m_work),
         std::forward<Gh>(gh),
         std::forward<P>(pred),
         std::forward<C>(cb),
@@ -590,7 +590,7 @@ inline auto Runtime::async(T&& task, Args&&... args) -> Future<basic_return_t<T,
     std::future<R> std_future = promise.get_future();
 
     Work* work = make_async_basic<A>(
-        *this, std::addressof(m_work),
+        m_executor, std::addressof(m_work),
         std::forward<T>(task), std::move(promise),
         std::forward<Args>(args)...);
 
@@ -618,7 +618,7 @@ inline auto Runtime::async(T&& task, Args&&... args) -> Future<runtime_return_t<
     std::future<R> std_future = promise.get_future();
 
     Work* work = make_async_runtime<A>(
-        *this, std::addressof(m_work),
+        m_executor, std::addressof(m_work),
         std::forward<T>(task), std::move(promise),
         std::forward<Args>(args)...);
 
