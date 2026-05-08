@@ -30,7 +30,7 @@ namespace tfl {
 /// ============================================================================
 /// @code
 ///   Flow / AsyncTask / Runtime
-///              │ submit / schedule
+///              │ schedule
 ///              ▼
 ///        ┌────────────┐
 ///        │  Executor  │
@@ -1083,7 +1083,5 @@ TFL_FORCE_INLINE void Executor::_invoke(Worker& wr, Work* w) {
         w = cache;
     } while (w);
 }
-
-
 
 } // namespace tfl

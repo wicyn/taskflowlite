@@ -219,6 +219,5 @@ private:
 
 static_assert(tfl::detail::mulhi64(0xFFFFFFFF'FFFFFFFFULL, 2) == 1);
 // (2^64 - 1) * (2^64 - 1) 的高 64 位应该是 2^64 - 2
-static_assert(tfl::detail::mulhi64(0xFFFFFFFF'FFFFFFFFULL, 0xFFFFFFFF'FFFFFFFFULL)
-              == 0xFFFFFFFF'FFFFFFFEULL);
+static_assert(tfl::detail::mulhi64(0xFFFFFFFF'FFFFFFFFULL, 0xFFFFFFFF'FFFFFFFFULL) == 0xFFFFFFFF'FFFFFFFEULL);
 }  // namespace tfl
