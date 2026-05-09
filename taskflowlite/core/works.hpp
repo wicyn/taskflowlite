@@ -203,7 +203,7 @@ protected:
         , m_gh_store{std::forward<U>(gh)} {}
 
     void dump(std::ostream& os) const override final {
-        auto& graph = detail::unwrap(m_gh_store).graph();
+        const auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
         D2Renderer::render_graph(os, this, to_string(m_type), graph);
     }
 };
@@ -643,7 +643,7 @@ public:
         , m_pred{std::forward<V>(pred)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::unwrap(m_gh_store).graph();
+        auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
 
         // ── 首次进入：准入检查 + 子图初始化 ──────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -809,7 +809,7 @@ public:
         , m_callback{std::forward<W>(cb)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::unwrap(m_gh_store).graph();
+        auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
 
         // ── 首次进入：准入检查 + 子图初始化 ──────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -1039,7 +1039,7 @@ public:
         , m_promise{std::move(p)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::unwrap(m_gh_store).graph();
+        auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
 
         // ── 首次进入：准入检查 + 子图初始化 ─────────────────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -1204,7 +1204,7 @@ public:
         , m_callback{std::forward<W>(cb)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::unwrap(m_gh_store).graph();
+        auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
 
         // ── 首次进入：准入检查 + 子图初始化 ──────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -1410,7 +1410,7 @@ public:
         , m_callback{std::forward<W>(cb)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::unwrap(m_gh_store).graph();
+        auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
 
         // ── 首次进入：准入检查 + 子图初始化 ──────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -1479,7 +1479,7 @@ public:
 template <typename Gh>
     requires graph_holder<Gh>
 inline void Runtime::cowait(Gh& gh) {
-    auto& graph = detail::unwrap(gh).graph();
+    auto& graph = detail::to_graph(detail::unwrap(gh));
     if (graph.empty()) {
         return;
     }

@@ -668,7 +668,7 @@ inline void Runtime::schedule(Task task) {
 template <typename Gh>
     requires graph_holder<Gh>
 inline void Runtime::schedule(Gh& gh) {
-    auto& graph = detail::unwrap(gh).graph();
+    auto& graph = detail::to_graph(detail::unwrap(gh));
     if (graph.empty()) {
         return;
     }

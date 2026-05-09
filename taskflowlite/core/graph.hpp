@@ -126,8 +126,7 @@ public:
 
     /// @brief D2 可视化导出
     void dump(std::ostream& ostream) const;
-private:
-    std::vector<Work*> m_works;
+protected:
 
     // 禁用拷贝：防止双重释放
     Graph(const Graph&) = delete;
@@ -144,6 +143,9 @@ private:
 
     /// @brief 清空所有节点
     void _clear() noexcept;
+
+private:
+    std::vector<Work*> m_works;
 
 };
 
