@@ -222,16 +222,54 @@ template <typename C>
 concept callback = std::invocable<std::decay_t<C>&>;
 
 
-/// @brief 检查是否为 Flow 任务图类型
+/// @brief 检查是否为 Flow 任务图持有者。
 ///
-///   1. 必须暴露 `Graph& graph()` 与 `const Graph& graph() const` 接口
+/// 满足以下任一条件即可：
+///   1. 类型本身是 `Graph`，或公开继承自 `Graph`；
+///   2. 暴露完整的 graph() 访问接口：
+///      - `Graph& graph()`
+///      - `const Graph& graph() const`
 template <typename Gh>
-concept graph_holder = requires(std::remove_cvref_t<Gh>& g, const std::remove_cvref_t<Gh>& cg) {
-        { g.graph()  } -> std::same_as<Graph&>;
-        { cg.graph() } -> std::same_as<const Graph&>;
-    };
+concept graph_holder = std::derived_from<std::remove_cvref_t<Gh>, Graph> || (
+                           requires(std::remove_cvref_t<Gh>& gh) {
+                               { gh.graph() } -> std::convertible_to<Graph&>;
+                           } &&
+                           requires(const std::remove_cvref_t<Gh>& gh) {
+                               { gh.graph() } -> std::convertible_to<const Graph&>;
+                           }
+                           );
 
+namespace detail {
 
+/// @brief 从 graph_holder 中取出底层 `Graph&`。
+template <graph_holder Gh>
+[[nodiscard]] inline auto to_graph(Gh& gh) noexcept -> Graph& {
+    using U = std::remove_cvref_t<Gh>;
+
+    if constexpr (requires(U& x) {
+                      { x.graph() } -> std::convertible_to<Graph&>;
+                  }) {
+        return static_cast<Graph&>(gh.graph());
+    } else {
+        return static_cast<Graph&>(gh);
+    }
+}
+
+/// @brief 从 graph_holder 中取出底层 `const Graph&`。
+template <graph_holder Gh>
+[[nodiscard]] inline auto to_graph(const Gh& gh) noexcept -> const Graph& {
+    using U = std::remove_cvref_t<Gh>;
+
+    if constexpr (requires(const U& x) {
+                      { x.graph() } -> std::convertible_to<const Graph&>;
+                  }) {
+        return static_cast<const Graph&>(gh.graph());
+    } else {
+        return static_cast<const Graph&>(gh);
+    }
+}
+
+}
 // ============================================================================
 //  Concepts — 任务节点类型约束
 //
