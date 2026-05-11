@@ -666,70 +666,154 @@ TFL_FORCE_INLINE std::size_t Executor::_set_up_graph(Graph& g, Topology* topo, W
     return n;
 }
 
-/// @brief 任务完成后的依赖传播
+/// @brief 任务完成后的依赖传播 —— 通过 cache 接力实现零调度开销的串行链。
 ///
-/// @par 核心逻辑
-/// 1. 恢复 join_counter（支持循环图）
-/// 2. 遍历后继，检查依赖是否满足
-/// 3. 链式调度：满足条件的后继直接放入 cache
+/// @par 不变量(slot 守恒)
+/// w 在被调度时已占 parent 的 1 个 slot。本函数退出前必须做到二选一:
+///   1) 把这个 slot 平移给某个就绪后继(令其继承,放入 cache 接力执行);
+///   2) 通过 _schedule_parent 把 slot 归还给 parent。
+/// 二者只能选其一,否则 parent counter 账本会失衡 → topology 永远完不成。
 ///
-/// @memory_order
-/// - fetch_sub(acq_rel): 确保当前任务结果对后继可见
-/// - fetch_add(relaxed): 仅计数，不需跨线程同步
+/// @par 路径分发
+/// - 异常路径:不向后传播,直接归还 slot
+/// - 串行快路径(sz==1 且 suc 入度==1):store(0) 强制就绪 + cache 平移
+/// - 通用 fan-out:逐边 fetch_sub,就绪者轮流占据 cache,最后留在 cache 的
+///   那个继承 w 的 slot,其余被挤出者各自 fetch_add 占新 slot 后推入队列
+/// - 兜底(ready==0,常见于 fan-in 中段):cache 仍为空,归还 slot
+///
 TFL_FORCE_INLINE void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cache) {
+    // 还原 w 自身 counter:供循环子图 / Jump 目标复用,counter 簿记不可省
     w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
     auto* parent = w->m_parent;
-    if (!w->_has_exception()) [[likely]] {
-        const std::size_t sz = w->m_num_successors;
-        for (std::size_t i = 0; i < sz; ++i) {
-            auto* suc = w->m_edges[i];
-            // acq_rel: 确保任务执行结果对后继可见
-            if ((suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1)) {
-                parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
-                if (cache) {
-                    _schedule(wr, cache);
-                }
-                // 零开销接力：满足条件的后继直接放入 cache
-                cache = suc;
-            }
+
+    // 异常路径
+    if (w->_has_exception()) [[unlikely]] {
+        _schedule_parent(parent, wr, cache);
+        return;
+    }
+
+    const std::size_t sz = w->m_num_successors;
+
+    // ── 串行接力快路径(slot 平移 w → suc,0 parent 操作)──
+    // 命中条件:w 只有 1 个后继,且该后继的静态入度也为 1(唯一前驱就是 w)
+    if (sz == 1) [[unlikely]] {
+        Work* const suc = w->m_edges[0];
+        if (suc->_num_predecessors() == 1) [[unlikely]] {
+            // 静态判定:suc 入度为 1 → 这次 fetch_sub 必然让它归零
+            // 改为 store(0, relaxed),省一次 acq_rel
+            // happens-before 由 _invoke 同线程接力提供(program order)
+            suc->m_join_counter.store(0, std::memory_order_relaxed);
+            cache = suc;
+            return;
         }
     }
-    _schedule_parent(parent, wr, cache);
+
+    // ── 通用 fan-out ──
+    // 不变量:最后留在 cache 的 suc 继承 w 的 parent slot;
+    //          其余被挤出 cache 的 suc 走 _schedule,各自占新 slot
+    // 而是让最后一个 ready 的 suc 直接平移 w 的 slot,
+    for (std::size_t i = 0; i < sz; ++i) {
+        auto* suc = w->m_edges[i];
+        // acq_rel: 多前驱并发 fetch_sub,归零者需获取其他前驱的写入可见性
+        if (suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            if (cache) {
+                // 之前的 cache 让位推队列,为它新占一个 parent slot
+                parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
+                _schedule(wr, cache);
+            }
+            cache = suc;
+        }
+    }
+
+    // 兜底:ready == 0,没人接班,w 占的 slot 必须归还
+    if (!cache) [[unlikely]] {
+        _schedule_parent(parent, wr, cache);
+    }
 }
 
-/// @brief Jump 任务的强制跳转处理
+
+/// @brief Jump 任务的强制跳转处理 —— 单目标特权通道。
 ///
 /// @par 设计意图
-/// Jump 任务是"特权通道"，可以无视正常依赖关系直接跳转到目标节点。
-/// 这里通过直接将目标节点的 join_counter 置零来实现"强制执行"。
+/// Jump 是"特权通道",运行期由用户在 invoker body 内通过 `Jump&` 选定 target,
+/// 跳过图的静态依赖直接触发它。通过 store(0, relaxed) 把 target 的 join_counter
+/// 强制清零实现 —— 等价于"所有前驱已到齐",绕开正常的 fetch_sub 计数协议。
+///
+/// @par 路径分发
+/// - 异常路径(运行期偶发):不让 target 接力,与 _tear_down_task 异常语义一致
+/// - 无 target(用户没在 Jump& 上设值):语义等同普通完成
+/// - 上述两条共用慢路径:归还 w 占的 parent slot
+/// - 快路径:store(0) 强制触发 target,slot 平移 w → target
 TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work* w, Worker& wr, Work*& cache, Work* target) {
+    // 还原 w 自身 counter:为下一轮触发(循环子图 / 再调度)做准备
+    w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
+
+    // 异常 或 无 target
+    if (w->_has_exception() || !target) [[unlikely]] {
+        _schedule_parent(w->m_parent, wr, cache);
+        return;
+    }
+
+    // 强制触发:store(0) 等价于"所有前驱都到齐",绕过 fetch_sub 协议
+    // slot 平移 w → target,parent counter 不动,本 worker 通过 cache 接力执行
+    target->m_join_counter.store(0, std::memory_order_relaxed);
+    cache = target;
+}
+
+
+/// @brief MultiJump 任务的多目标强制跳转处理 —— Jump 的 N 路扩展。
+///
+/// @par 路径分发
+/// - n == 0:用户没 push 任何 target,等同普通完成,归还 slot
+/// - 异常:与普通 tear_down 一致,归还 slot
+/// - n == 1:退化为单 Jump,slot 平移,parent counter 不动
+/// - n >= 2:前 n-1 个 target 各占一个新 parent slot,最后一个继承 w 的 slot
+///
+TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work* w, Worker& wr, Work*& cache, const SmallVector<Work*>& targets) {
+    // 还原 w 自身 counter:支持循环图 / Jump 复用
     w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
     auto* parent = w->m_parent;
-    if (!w->_has_exception() && target) [[likely]] {
+    const std::size_t n = targets.size();
+
+    // 无目标(运行期 jump 函数没 push 任何 target):静态/常见的冷情况
+    // 等同普通完成 —— 把 w 占的 slot 还给 parent
+    if (n == 0) [[unlikely]] {
+        _schedule_parent(parent, wr, cache);
+        return;
+    }
+    // 异常路径:运行期偶发
+    if (w->_has_exception()) [[unlikely]] {
+        _schedule_parent(parent, wr, cache);
+        return;
+    }
+
+    // ── 单目标快路径 ──
+    // 与 Jump 同构:slot 平移 w → target,0 parent counter 操作
+    // MultiJump 实际用法中 n==1 比 n>=2 更常见,因此标 [[likely]]
+    if (n == 1) [[likely]] {
+        Work* const target = targets[0];
         target->m_join_counter.store(0, std::memory_order_relaxed);
-        parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
+        cache = target;
+        return;
+    }
+
+    // ── 多目标通用路径 ──
+    // 不变量:最后留在 cache 的 target 继承 w 的 parent slot;
+    //          其余被挤出 cache 的 target 走 _schedule,各自占新 slot
+    // n >= 2 时 parent counter 净增 (n-1),严格变大,不会归零
+    // 因此循环结束后不需要 _schedule_parent
+    for (auto* target : targets) {
+        // 强制触发(等价于 Jump 的清零语义)
+        target->m_join_counter.store(0, std::memory_order_relaxed);
         if (cache) {
+            // 之前的 cache 让位推队列,为它新占一个 parent slot
+            parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
             _schedule(wr, cache);
         }
         cache = target;
     }
-    _schedule_parent(parent, wr, cache);
-}
-
-TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work* w, Worker& wr, Work*& cache, const SmallVector<Work*>& targets) {
-    w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
-    auto* parent = w->m_parent;
-    if (!w->_has_exception()) [[likely]] {
-        for (auto* target : targets) {
-            target->m_join_counter.store(0, std::memory_order_relaxed);
-            parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
-            if (cache) {
-                _schedule(wr, cache);
-            }
-            cache = target;
-        }
-    }
-    _schedule_parent(parent, wr, cache);
+    // n >= 2 时循环至少进 2 次,cache 必非空,slot 已平移
+    // 不需要 _schedule_parent,函数返回让 _invoke 接力 cache
 }
 
 TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work* w, Worker& wr, Work*& cache) {
@@ -977,11 +1061,10 @@ TFL_FORCE_INLINE void Executor::_schedule_parent(Work* parent, Worker& wr, Work*
 ///
 /// 调用后 waiters 内容语义上消费完毕,但不主动 clear,
 /// 由调用方根据生命周期决定是否复用容器
-TFL_FORCE_INLINE void Executor::_schedule_from_semaphore(Worker& w, SmallVector<Work*>& waiters)
-{
+TFL_FORCE_INLINE void Executor::_schedule_from_semaphore(Worker& w, SmallVector<Work*>& waiters) {
     for (Work* t : waiters) {
         auto& target = t->m_topology->m_executor;
-        if (std::addressof(target) == std::addressof(*this)) [[likely]] {
+        if (std::addressof(target) == this) [[likely]] {
             _schedule(w, t);            // 同 executor 走 worker-local 快路径
         } else {
             target._schedule(t);        // 跨 executor 走全局慢路径
