@@ -686,19 +686,19 @@ TFL_FORCE_INLINE void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cach
     w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
     auto* parent = w->m_parent;
 
+    const std::size_t sz = w->m_num_successors;
+
     // 异常路径
-    if (w->_has_exception()) [[unlikely]] {
+    if (sz == 0 || w->_has_exception()) [[unlikely]] {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    const std::size_t sz = w->m_num_successors;
 
     // ── 串行接力快路径(slot 平移 w → suc,0 parent 操作)──
     // 命中条件:w 只有 1 个后继,且该后继的静态入度也为 1(唯一前驱就是 w)
     if (sz == 1) [[unlikely]] {
-        Work* const suc = w->m_edges[0];
-        if (suc->_num_predecessors() == 1) [[unlikely]] {
+        if (Work* const suc = w->m_edges[0]; suc->_num_predecessors() == 1) [[unlikely]] {
             // 静态判定:suc 入度为 1 → 这次 fetch_sub 必然让它归零
             // 改为 store(0, relaxed),省一次 acq_rel
             // happens-before 由 _invoke 同线程接力提供(program order)
@@ -713,15 +713,15 @@ TFL_FORCE_INLINE void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cach
     //          其余被挤出 cache 的 suc 走 _schedule,各自占新 slot
     // 而是让最后一个 ready 的 suc 直接平移 w 的 slot,
     for (std::size_t i = 0; i < sz; ++i) {
-        auto* suc = w->m_edges[i];
         // acq_rel: 多前驱并发 fetch_sub,归零者需获取其他前驱的写入可见性
-        if (suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        if (auto* suc = w->m_edges[i]; suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             if (cache) {
                 // 之前的 cache 让位推队列,为它新占一个 parent slot
                 parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
-                _schedule(wr, cache);
+                _schedule(wr, suc);
+            } else {
+                cache = suc;
             }
-            cache = suc;
         }
     }
 
@@ -770,50 +770,35 @@ TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work* w, Worker& wr, Work*&
 /// - n >= 2:前 n-1 个 target 各占一个新 parent slot,最后一个继承 w 的 slot
 ///
 TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work* w, Worker& wr, Work*& cache, const SmallVector<Work*>& targets) {
-    // 还原 w 自身 counter:支持循环图 / Jump 复用
     w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
     auto* parent = w->m_parent;
-    const std::size_t n = targets.size();
 
-    // 无目标(运行期 jump 函数没 push 任何 target):静态/常见的冷情况
-    // 等同普通完成 —— 把 w 占的 slot 还给 parent
-    if (n == 0) [[unlikely]] {
-        _schedule_parent(parent, wr, cache);
-        return;
-    }
-    // 异常路径:运行期偶发
-    if (w->_has_exception()) [[unlikely]] {
+    // 无目标 或 异常:归还 slot
+    if (targets.empty() || w->_has_exception()) [[unlikely]] {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // ── 单目标快路径 ──
-    // 与 Jump 同构:slot 平移 w → target,0 parent counter 操作
-    // MultiJump 实际用法中 n==1 比 n>=2 更常见,因此标 [[likely]]
-    if (n == 1) [[likely]] {
-        Work* const target = targets[0];
-        target->m_join_counter.store(0, std::memory_order_relaxed);
-        cache = target;
-        return;
-    }
-
-    // ── 多目标通用路径 ──
+    // ── 通用路径(覆盖 n == 1 和 n >= 2)──
     // 不变量:最后留在 cache 的 target 继承 w 的 parent slot;
     //          其余被挤出 cache 的 target 走 _schedule,各自占新 slot
-    // n >= 2 时 parent counter 净增 (n-1),严格变大,不会归零
-    // 因此循环结束后不需要 _schedule_parent
+    // - n == 1: cache 入口为 nullptr,if (cache) 跳过,直接 cache = target
+    //           等价于"slot 平移",parent counter 不动
+    // - n >= 2: 前 n-1 次 fetch_add 占新 slot,最后一次平移 w 的 slot
+    //           parent counter 净增 (n-1),严格变大,不会归零
     for (auto* target : targets) {
-        // 强制触发(等价于 Jump 的清零语义)
         target->m_join_counter.store(0, std::memory_order_relaxed);
         if (cache) {
             // 之前的 cache 让位推队列,为它新占一个 parent slot
             parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
-            _schedule(wr, cache);
+            _schedule(wr, target);
+        } else {
+            cache = target;
         }
-        cache = target;
+
     }
-    // n >= 2 时循环至少进 2 次,cache 必非空,slot 已平移
-    // 不需要 _schedule_parent,函数返回让 _invoke 接力 cache
+    // n >= 1 时循环至少进 1 次,cache 必非空,slot 已平移(n==1)或累计 (n-1) 个新 slot
+    // 不需要 _schedule_parent
 }
 
 TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work* w, Worker& wr, Work*& cache) {
