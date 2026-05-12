@@ -27,6 +27,7 @@
 #include "semaphore.hpp"
 #include "small_vector.hpp"
 #include "unordered_dense.hpp"
+#include "work_pool.hpp"
 
 namespace tfl {
 
@@ -249,6 +250,27 @@ public:
         , m_explicit{et}
         , m_topology{topo}
         , m_parent{parent} {}
+
+
+    // /// @brief 默认对齐对象走统一 WorkPool。
+    // static void* operator new(std::size_t bytes) {
+    //     return detail::pool_alloc(bytes);
+    // }
+
+    // /// @brief sized delete：根据实际对象大小归还到对应 size class。
+    // static void operator delete(void* p, std::size_t bytes) noexcept {
+    //     detail::pool_dealloc(p, bytes);
+    // }
+
+    // /// @brief over-aligned 对象绕过 WorkPool，交给全局 aligned new。
+    // static void* operator new(std::size_t bytes, std::align_val_t al) {
+    //     return ::operator new(bytes, al);
+    // }
+
+    // /// @brief over-aligned 对象使用匹配的全局 aligned delete。
+    // static void operator delete(void* p, std::size_t, std::align_val_t al) noexcept {
+    //     ::operator delete(p, al);
+    // }
 
     virtual ~Work() noexcept = default;
 
@@ -792,5 +814,6 @@ private:
     Work* const m_work;
     bool        m_owned;   ///< 本守卫是否真的"拥有"锚点位的置/清责任
 };
+
 
 }  // namespace tfl

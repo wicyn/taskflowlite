@@ -450,11 +450,21 @@ inline void Executor::wait_for_all() const noexcept {
     }
 }
 
+inline std::size_t Executor::num_workers() const noexcept {
+    return m_workers.size();
+}
 
-inline std::size_t Executor::num_workers() const noexcept { return m_workers.size(); }
-inline std::size_t Executor::num_waiters() const noexcept { return m_notifier.num_waiters(); }
-inline std::size_t Executor::num_queues() const noexcept { return m_workers.size() + m_shared_buffers.size(); }
-inline std::size_t Executor::num_topologies() const noexcept { return m_num_topologies.load(std::memory_order_relaxed); }
+inline std::size_t Executor::num_waiters() const noexcept {
+    return m_notifier.num_waiters();
+}
+
+inline std::size_t Executor::num_queues() const noexcept {
+    return m_workers.size() + m_shared_buffers.size();
+}
+
+inline std::size_t Executor::num_topologies() const noexcept {
+    return m_num_topologies.load(std::memory_order_relaxed);
+}
 
 /// @brief 优雅关闭：等待任务完成 → 设置终止标志 → 唤醒等待线程 → 回收线程资源
 inline void Executor::_shutdown() noexcept {
@@ -749,7 +759,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work* w, Worker& wr, Work*&
     w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
 
     // 异常 或 无 target
-    if (w->_has_exception() || !target) [[unlikely]] {
+    if (target == nullptr || w->_has_exception()) [[unlikely]] {
         _schedule_parent(w->m_parent, wr, cache);
         return;
     }

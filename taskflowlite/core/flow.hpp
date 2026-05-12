@@ -13,7 +13,7 @@
 #include "graph.hpp"
 #include "task.hpp"
 #include "work.hpp"
-#include "work_memory_fwd.hpp"
+#include "work_factory_fwd.hpp"
 #include "d2_render.hpp"
 namespace tfl {
 
@@ -41,7 +41,7 @@ namespace tfl {
 /// 句柄重复 erase / clear。提交给 `Executor` 时传引用 / 右值，`Flow` 本身不被移交，
 /// 这意味着 **同一 Flow 可以被同一个 Executor 反复提交**（典型用法：流水线常驻图）。
 ///
-/// 节点物理内存归 `Graph::m_works` 持有 —— 通过 `work_memory` 池统一分配 / 释放，
+/// 节点物理内存归 `Graph::m_works` 持有 —— 通过 `work_factory` 池统一分配 / 释放，
 /// `Flow` 析构时连带清理。返回给用户的 `Task` 是 **弱引用**（裸 Work*），不参与
 /// 生命周期管理 —— 这点与 `AsyncTask` 的引用计数语义形成关键区分（详见 task.hpp）。
 ///
@@ -60,7 +60,7 @@ namespace tfl {
 /// | `runtime_invocable`       | 运行时任务            | `void(Runtime&)`                    |
 /// | `graph_holder`               | 嵌套子流程（Subflow） | 整个 Flow 作为节点                  |
 ///
-/// 每个重载内部通过对应的 `make_xxx` 工厂在 `work_memory` 池里构造具体 Work 子类，
+/// 每个重载内部通过对应的 `make_xxx` 工厂在 `work_factory` 池里构造具体 Work 子类，
 /// 再用 `Graph::_emplace` 接管所有权。这一层"概念 → 工厂"的映射把"用户写什么签名
 /// 就得到什么节点类型" 这件事完全推到编译期，运行期零成本。
 ///
@@ -145,6 +145,13 @@ public:
     /// @brief 构造空任务图。
     constexpr explicit Flow() = default;
 
+
+    /// @brief 构造带名字的任务图。
+    /// @tparam S 任何可用于构造 std::string 的类型(const char*、string_view、string&& 等)。
+    /// @param name 图的名字,用于调试和可视化输出。
+    template <typename S>
+        requires std::constructible_from<std::string, S>
+    explicit Flow(S&& name);
     // ========================================================================
     //  节点插入接口
     // ========================================================================
@@ -262,6 +269,10 @@ protected:
     Graph m_graph;
     std::string m_name;
 };
+
+template <typename S>
+    requires std::constructible_from<std::string, S>
+inline Flow::Flow(S&& name) : m_name(std::forward<S>(name)) {}
 
 // ============================================================================
 //  节点插入实现

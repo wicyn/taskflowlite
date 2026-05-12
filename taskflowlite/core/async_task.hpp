@@ -9,7 +9,7 @@
 #pragma once
 #include <sstream>
 
-#include "work_memory_fwd.hpp"
+#include "work_factory_fwd.hpp"
 #include "work.hpp"
 #include "executor.hpp"
 #include "semaphore.hpp"
@@ -261,7 +261,7 @@ inline AsyncTask::AsyncTask(const AsyncTask& rhs) noexcept : m_work{rhs.m_work} 
 }
 
 inline AsyncTask& AsyncTask::operator=(const AsyncTask& rhs) noexcept {
-    if (this != &rhs) {
+    if (this != std::addressof(rhs)) {
         _decref();
         m_work = rhs.m_work;
         _incref();
@@ -273,7 +273,7 @@ inline AsyncTask::AsyncTask(AsyncTask&& rhs) noexcept
     : m_work{std::exchange(rhs.m_work, nullptr)} {}
 
 inline AsyncTask& AsyncTask::operator=(AsyncTask&& rhs) noexcept {
-    if (this != &rhs) {
+    if (this != std::addressof(rhs)) {
         _decref();
         m_work = std::exchange(rhs.m_work, nullptr);
     }
@@ -472,8 +472,11 @@ public:
     /// @brief 为任务设置易读的名称，用于调试和可视化。
     template <typename S>
         requires std::constructible_from<std::string, S>
-    DeferredAsyncTask& name(S&& name);
+    DeferredAsyncTask& name(S&& name) &;
 
+    template <typename S>
+        requires std::constructible_from<std::string, S>
+    DeferredAsyncTask name(S&& name) &&;
     /// @brief 暴露基类的任务名称查询接口。
     using AsyncTask::name;
 
@@ -491,38 +494,66 @@ public:
     /// @brief 为任务添加执行前需要获取的信号量，每个信号量默认占用 1 个配额。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-    DeferredAsyncTask& acquire(Ts&&... sems);
+    DeferredAsyncTask& acquire(Ts&&... sems) &;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    DeferredAsyncTask acquire(Ts&&... sems) &&;
 
     /// @brief 为任务添加执行后需要释放的信号量，每个信号量默认释放 1 个配额。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-    DeferredAsyncTask& release(Ts&&... sems);
+    DeferredAsyncTask& release(Ts&&... sems) &;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    DeferredAsyncTask release(Ts&&... sems) &&;
 
     /// @brief 为任务添加执行前需要获取的信号量及对应配额。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
-    DeferredAsyncTask& acquire(Ts&&... args);
+    DeferredAsyncTask& acquire(Ts&&... args) &;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+    DeferredAsyncTask acquire(Ts&&... args) &&;
 
     /// @brief 为任务添加执行后需要释放的信号量及对应配额。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
-    DeferredAsyncTask& release(Ts&&... args);
+    DeferredAsyncTask& release(Ts&&... args) &;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+    DeferredAsyncTask release(Ts&&... args) &&;
 
     /// @brief 移除任务执行前需要获取的指定信号量约束。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-    DeferredAsyncTask& remove_acquire(Ts&&... sems) noexcept;
+    DeferredAsyncTask& remove_acquire(Ts&&... sems) & noexcept;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    DeferredAsyncTask remove_acquire(Ts&&... sems) && noexcept;
 
     /// @brief 移除任务执行后需要释放的指定信号量约束。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-    DeferredAsyncTask& remove_release(Ts&&... sems) noexcept;
+    DeferredAsyncTask& remove_release(Ts&&... sems) & noexcept;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    DeferredAsyncTask remove_release(Ts&&... sems) && noexcept;
 
     /// @brief 清空所有执行前信号量获取约束。
-    DeferredAsyncTask& clear_acquires() noexcept;
+    DeferredAsyncTask& clear_acquires() & noexcept;
+
+    DeferredAsyncTask clear_acquires() && noexcept;
 
     /// @brief 清空所有执行后信号量释放约束。
-    DeferredAsyncTask& clear_releases() noexcept;
+    DeferredAsyncTask& clear_releases() & noexcept;
+
+    DeferredAsyncTask clear_releases() && noexcept;
 
 
     /// @brief 遍历任务执行前的信号量获取约束。
@@ -534,6 +565,14 @@ public:
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
+    template <typename F>
+        requires std::invocable<F&, const Semaphore&, std::size_t>
+                 || std::invocable<F&, const Semaphore&>
+    void for_each_acquire(F&& visitor) const noexcept(
+        std::invocable<F&, const Semaphore&, std::size_t>
+            ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+            : std::is_nothrow_invocable_v<F&, const Semaphore&>);
+
     /// @brief 遍历任务执行后的信号量释放约束。
     template <typename F>
         requires std::invocable<F&, Semaphore&, std::size_t&>
@@ -542,6 +581,14 @@ public:
         std::invocable<F&, Semaphore&, std::size_t&>
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
+
+    template <typename F>
+        requires std::invocable<F&, const Semaphore&, std::size_t>
+                 || std::invocable<F&, const Semaphore&>
+    void for_each_release(F&& visitor) const noexcept(
+        std::invocable<F&, const Semaphore&, std::size_t>
+            ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+            : std::is_nothrow_invocable_v<F&, const Semaphore&>);
 
     // ==================== 观察者 ====================
 
@@ -561,7 +608,11 @@ public:
     /// @pre 任务必须处于 Idle 状态且未被启动过。
     template <typename... Deps>
         requires (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
-    DeferredAsyncTask& start(Deps&&... deps);
+    DeferredAsyncTask& start(Deps&&... deps) &;
+
+    template <typename... Deps>
+        requires (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
+    DeferredAsyncTask start(Deps&&... deps) &&;
 
     /// @brief 手动启动该任务，通过迭代器范围传递依赖。
     /// @tparam I 依赖范围起始迭代器类型。
@@ -569,7 +620,11 @@ public:
     /// @pre 范围内元素必须为 AsyncTask 或其派生类。
     template <std::input_iterator I, std::sentinel_for<I> S>
         requires std::derived_from<std::iter_value_t<I>, AsyncTask>
-    DeferredAsyncTask& start(I first, S last);
+    DeferredAsyncTask& start(I first, S last) &;
+
+    template <std::input_iterator I, std::sentinel_for<I> S>
+        requires std::derived_from<std::iter_value_t<I>, AsyncTask>
+    DeferredAsyncTask start(I first, S last) &&;
 
 protected:
     /// @brief 从底层 Work 指针构造延迟任务句柄，并增加引用计数。
@@ -587,9 +642,16 @@ static_assert(sizeof(DeferredAsyncTask) == sizeof(AsyncTask),
 
 template <typename S>
     requires std::constructible_from<std::string, S>
-inline DeferredAsyncTask& DeferredAsyncTask::name(S&& n) {
+inline DeferredAsyncTask& DeferredAsyncTask::name(S&& n) & {
     m_work->m_name = std::forward<S>(n);
     return *this;
+}
+
+template <typename S>
+    requires std::constructible_from<std::string, S>
+inline DeferredAsyncTask DeferredAsyncTask::name(S&& n) && {
+    m_work->m_name = std::forward<S>(n);
+    return std::move(*this);
 }
 
 inline std::size_t DeferredAsyncTask::num_acquires() const noexcept {
@@ -606,21 +668,35 @@ inline std::size_t DeferredAsyncTask::num_observers() const noexcept {
 
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-inline DeferredAsyncTask& DeferredAsyncTask::acquire(Ts&&... sems) {
+inline DeferredAsyncTask& DeferredAsyncTask::acquire(Ts&&... sems) & {
     (m_work->_acquire(&sems, 1ULL), ...);
     return *this;
 }
 
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-inline DeferredAsyncTask& DeferredAsyncTask::release(Ts&&... sems) {
+inline DeferredAsyncTask DeferredAsyncTask::acquire(Ts&&... sems) && {
+    (m_work->_acquire(&sems, 1ULL), ...);
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline DeferredAsyncTask& DeferredAsyncTask::release(Ts&&... sems) & {
     (m_work->_release(&sems, 1ULL), ...);
     return *this;
 }
 
 template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline DeferredAsyncTask DeferredAsyncTask::release(Ts&&... sems) && {
+    (m_work->_release(&sems, 1ULL), ...);
+    return std::move(*this);
+}
+
+template <typename... Ts>
     requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
-inline DeferredAsyncTask& DeferredAsyncTask::acquire(Ts&&... args) {
+inline DeferredAsyncTask& DeferredAsyncTask::acquire(Ts&&... args) & {
     auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
         (m_work->_acquire(&std::get<Is * 2>(tup),
@@ -631,7 +707,18 @@ inline DeferredAsyncTask& DeferredAsyncTask::acquire(Ts&&... args) {
 
 template <typename... Ts>
     requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
-inline DeferredAsyncTask& DeferredAsyncTask::release(Ts&&... args) {
+inline DeferredAsyncTask DeferredAsyncTask::acquire(Ts&&... args) && {
+    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+        (m_work->_acquire(&std::get<Is * 2>(tup),
+                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
+    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+inline DeferredAsyncTask& DeferredAsyncTask::release(Ts&&... args) & {
     auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
         (m_work->_release(&std::get<Is * 2>(tup),
@@ -641,27 +728,62 @@ inline DeferredAsyncTask& DeferredAsyncTask::release(Ts&&... args) {
 }
 
 template <typename... Ts>
+    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+inline DeferredAsyncTask DeferredAsyncTask::release(Ts&&... args) && {
+    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+        (m_work->_release(&std::get<Is * 2>(tup),
+                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
+    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
+    return std::move(*this);
+}
+
+template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-inline DeferredAsyncTask& DeferredAsyncTask::remove_acquire(Ts&&... sems) noexcept {
+inline DeferredAsyncTask& DeferredAsyncTask::remove_acquire(Ts&&... sems) & noexcept {
     (m_work->_remove_acquire(&sems), ...);
     return *this;
 }
 
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-inline DeferredAsyncTask& DeferredAsyncTask::remove_release(Ts&&... sems) noexcept {
+inline DeferredAsyncTask DeferredAsyncTask::remove_acquire(Ts&&... sems) && noexcept {
+    (m_work->_remove_acquire(&sems), ...);
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline DeferredAsyncTask& DeferredAsyncTask::remove_release(Ts&&... sems) & noexcept {
     (m_work->_remove_release(&sems), ...);
     return *this;
 }
 
-inline DeferredAsyncTask& DeferredAsyncTask::clear_acquires() noexcept {
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline DeferredAsyncTask DeferredAsyncTask::remove_release(Ts&&... sems) && noexcept {
+    (m_work->_remove_release(&sems), ...);
+    return std::move(*this);
+}
+
+inline DeferredAsyncTask& DeferredAsyncTask::clear_acquires() & noexcept {
     m_work->_clear_acquires();
     return *this;
 }
 
-inline DeferredAsyncTask& DeferredAsyncTask::clear_releases() noexcept {
+inline DeferredAsyncTask DeferredAsyncTask::clear_acquires() && noexcept {
+    m_work->_clear_acquires();
+    return std::move(*this);
+}
+
+inline DeferredAsyncTask& DeferredAsyncTask::clear_releases() & noexcept {
     m_work->_clear_releases();
     return *this;
+}
+
+inline DeferredAsyncTask DeferredAsyncTask::clear_releases() && noexcept {
+    m_work->_clear_releases();
+    return std::move(*this);
 }
 
 
@@ -682,6 +804,22 @@ inline void DeferredAsyncTask::for_each_acquire(F&& visitor) noexcept(
 }
 
 template <typename F>
+    requires std::invocable<F&, const Semaphore&, std::size_t>
+             || std::invocable<F&, const Semaphore&>
+inline void DeferredAsyncTask::for_each_acquire(F&& visitor) const noexcept(
+    std::invocable<F&, const Semaphore&, std::size_t>
+        ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+        : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
+    for (const auto& req : m_work->_acquires()) {
+        if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
+    }
+}
+
+template <typename F>
     requires std::invocable<F&, Semaphore&, std::size_t&>
              || std::invocable<F&, Semaphore&>
 inline void DeferredAsyncTask::for_each_release(F&& visitor) noexcept(
@@ -690,6 +828,22 @@ inline void DeferredAsyncTask::for_each_release(F&& visitor) noexcept(
         : std::is_nothrow_invocable_v<F&, Semaphore&>) {
     for (auto& req : m_work->_releases()) {
         if constexpr (std::invocable<F&, Semaphore&, std::size_t&>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
+    }
+}
+
+template <typename F>
+    requires std::invocable<F&, const Semaphore&, std::size_t>
+             || std::invocable<F&, const Semaphore&>
+inline void DeferredAsyncTask::for_each_release(F&& visitor) const noexcept(
+    std::invocable<F&, const Semaphore&, std::size_t>
+        ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+        : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
+    for (const auto& req : m_work->_releases()) {
+        if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
             std::invoke(visitor, *req.sem, req.count);
         } else {
             std::invoke(visitor, *req.sem);
@@ -728,13 +882,21 @@ inline void DeferredAsyncTask::unregister_observer(std::shared_ptr<Observer> ptr
 
 template <typename... Deps>
     requires (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
-inline DeferredAsyncTask& DeferredAsyncTask::start(Deps&&... deps) {
+inline DeferredAsyncTask& DeferredAsyncTask::start(Deps&&... deps) & {
     std::array<AsyncTask, sizeof...(Deps)> arr{
         static_cast<AsyncTask>(std::forward<Deps>(deps))...
     };
     return start(arr.begin(), arr.end());
 }
 
+template <typename... Deps>
+    requires (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
+inline DeferredAsyncTask DeferredAsyncTask::start(Deps&&... deps) && {
+    std::array<AsyncTask, sizeof...(Deps)> arr{
+        static_cast<AsyncTask>(std::forward<Deps>(deps))...
+    };
+    return start(arr.begin(), arr.end());
+}
 
 // ============================================================================
 //  实现部分：AsyncTask 与各类 Work 子类的 Invoke 具体派发机制
@@ -742,7 +904,7 @@ inline DeferredAsyncTask& DeferredAsyncTask::start(Deps&&... deps) {
 
 template <std::input_iterator I, std::sentinel_for<I> S>
     requires std::derived_from<std::iter_value_t<I>, AsyncTask>
-inline DeferredAsyncTask& DeferredAsyncTask::start(I first, S last) {
+inline DeferredAsyncTask& DeferredAsyncTask::start(I first, S last) & {
     auto* topo = m_work->m_topology;
     auto& exec = topo->m_executor;
 
@@ -775,6 +937,41 @@ inline DeferredAsyncTask& DeferredAsyncTask::start(I first, S last) {
     return *this;
 }
 
+
+template <std::input_iterator I, std::sentinel_for<I> S>
+    requires std::derived_from<std::iter_value_t<I>, AsyncTask>
+inline DeferredAsyncTask DeferredAsyncTask::start(I first, S last) && {
+    auto* topo = m_work->m_topology;
+    auto& exec = topo->m_executor;
+
+    if (topo->_is_finished()) {
+        throw Exception("DeferredAsyncTask Error: Cannot start a finished task.");
+    }
+
+    auto expected = Topology::State::Idle;
+    if (!topo->m_state.compare_exchange_strong(expected, Topology::State::Running,
+                                               std::memory_order_acq_rel,
+                                               std::memory_order_acquire)) {
+        throw Exception("DeferredAsyncTask Error: Task is already running.");
+    }
+
+    topo->_incref();
+
+    std::size_t num_predecessors = static_cast<std::size_t>(std::ranges::distance(first, last));
+    m_work->m_join_counter.store(num_predecessors, std::memory_order_relaxed);
+
+    exec._process_dependent_async(m_work, first, last, num_predecessors);
+
+    if (num_predecessors == 0) {
+        if (Worker* wr = exec._this_worker(); wr) {
+            exec._schedule(*wr, m_work);
+        } else {
+            exec._schedule(m_work);
+        }
+    }
+
+    return std::move(*this);
+}
 
 
 // ============================================================================

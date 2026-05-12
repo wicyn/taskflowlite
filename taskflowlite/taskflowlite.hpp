@@ -13,7 +13,7 @@
 #include <ostream>
 #include <format>
 
-#include "core/work_memory.hpp"
+#include "core/work_factory.hpp"
 #include "core/runtime.hpp"
 #include "core/branch.hpp"
 #include "core/jump.hpp"

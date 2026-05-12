@@ -69,6 +69,30 @@ inline constexpr std::size_t cache_line_size = 64;
 /// @brief 每字节的二进制位数，等价于 C 的 CHAR_BIT。
 inline constexpr unsigned char_bits = std::numeric_limits<unsigned char>::digits;
 
+// ============================================================================
+//  ChunkLink —— 在已析构内存上 store/load 链接指针
+// ============================================================================
+
+/// @brief chunk-as-link 工具：在 chunk 的前 sizeof(void*) 字节做指针存取。
+///
+/// 安全前提：
+///   1. chunk 处于"storage available, no object"状态（dtor 已返回 / 未构造）
+///   2. chunk 起始按 alignof(void*) 对齐 —— operator new 默认满足
+///   3. chunk 容量 >= sizeof(void*) —— 由 size class policy 的最小档保证
+///
+/// 用 memcpy 而不是 reinterpret_cast：避开 strict aliasing 顾虑，-O2 下
+/// 编译为单条 mov，零开销。
+struct ChunkLink {
+    TFL_FORCE_INLINE static void store(void* chunk, void* next) noexcept {
+        std::memcpy(chunk, &next, sizeof(void*));
+    }
+
+    [[nodiscard]] TFL_FORCE_INLINE static void* load(const void* chunk) noexcept {
+        void* next;
+        std::memcpy(&next, chunk, sizeof(void*));
+        return next;
+    }
+};
 
 /// @brief CRTP 空基类：禁拷贝 + 禁移动 —— "地址即身份"。
 ///

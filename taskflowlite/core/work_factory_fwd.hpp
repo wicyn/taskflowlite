@@ -1,5 +1,5 @@
-﻿/// @file work_memory_fwd.hpp
-/// @brief Work 节点工厂函数族 —— 仅声明，与 work_memory.hpp 配对
+﻿/// @file work_factory_fwd.hpp
+/// @brief Work 节点工厂函数族 —— 仅声明，与 work_factory.hpp 配对
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-04-20
@@ -29,9 +29,9 @@
 ///
 /// 拆分 fwd 与 impl 的目的：上层头文件只需 include fwd 即可获得签名，
 /// 避免被 `works.hpp` 的全部 Invoker 模板拖累编译时间。完整实现见
-/// `work_memory.hpp`。
+/// `work_factory.hpp`。
 ///
-/// @see work_memory.hpp     全部工厂函数的 inline 实现
+/// @see work_factory.hpp     全部工厂函数的 inline 实现
 /// @see work.hpp            Work 基类与节点状态字段
 /// @see works.hpp           各 Invoker 子类（实际构造目标）
 ///

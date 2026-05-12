@@ -75,7 +75,7 @@ namespace tfl {
 /// 4. 第二次进入：清除 `PREEMPTED`，执行真正的 tear_down。
 ///
 /// @see Work             所有子类的基类
-/// @see work_memory.hpp  本文件类型的 make_xxx 工厂
+/// @see work_factory.hpp  本文件类型的 make_xxx 工厂
 /// @see Executor         调度与 tear_down 协议
 ///
 namespace detail {

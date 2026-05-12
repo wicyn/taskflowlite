@@ -129,7 +129,7 @@
 /// |          | small_vector.hpp       | `SmallVector` (LLVM 移植)                 |
 /// |          | unordered_dense.hpp    | (第三方哈希容器)                           |
 /// |          | macros.hpp             | 跨平台编译器指令封装                        |
-/// |          | work_memory*.hpp       | `make_*` 工厂 + `destroy`                |
+/// |          | work_factory*.hpp       | `make_*` 工厂 + `destroy`                |
 
 
 #pragma once
