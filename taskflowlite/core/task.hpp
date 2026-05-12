@@ -52,7 +52,9 @@ namespace tfl {
 /// ============================================================================
 ///  Fluent API 与依赖建模
 /// ============================================================================
-/// 拓扑构建走 fluent 链式风格，所有 mutator 返回 `Task&`：
+/// 拓扑构建走 fluent 链式风格,mutator 在 lvalue 上返回 `Task&` 零拷贝,
+/// 在 rvalue 上按值返回 `Task` —— 后者从源头堵住"链式调用返回值绑成
+/// 引用"的悬空陷阱(`Task& x = flow.emplace(...).precede(...)` 编译失败)。
 /// @code
 ///   t1.name("load")
 ///     .precede(t2, t3)            // t1 → {t2, t3}
@@ -117,490 +119,6 @@ namespace tfl {
 /// @see Work              Task 包装的内部节点
 /// @see TaskView          只读对偶，给 TaskObserver 用
 /// @see AsyncTask         强引用对偶，参与 topology 引用计数
-
-
-class Task {
-    friend class Flow;
-    friend class Runtime;
-    friend class Executor;
-
-public:
-    /// @brief 构造空任务句柄。
-    explicit Task() = default;
-
-    /// @brief 构造空任务句柄。
-    explicit Task(std::nullptr_t) noexcept;
-
-    /// @brief 拷贝构造，复制底层 Work 指针。
-    Task(const Task& rhs) noexcept;
-
-    /// @brief 拷贝赋值，复制底层 Work 指针。
-    Task& operator=(const Task& rhs) noexcept;
-
-    /// @brief 移动构造，接管 rhs 的底层 Work 指针。
-    Task(Task&& rhs) noexcept;
-
-    /// @brief 移动赋值，接管 rhs 的底层 Work 指针。
-    Task& operator=(Task&& rhs) noexcept;
-
-    /// @brief 将当前句柄置空。
-    Task& operator=(std::nullptr_t) noexcept;
-
-    /// @brief 判断两个任务句柄是否指向同一个底层节点。
-    [[nodiscard]] bool operator==(const Task& rhs) const noexcept;
-
-    /// @brief 判断两个任务句柄是否指向不同底层节点。
-    [[nodiscard]] bool operator!=(const Task& rhs) const noexcept;
-
-    /// @brief 将当前任务句柄置空。
-    void reset() noexcept;
-
-    // ========================================================================
-    //  状态查询
-    // ========================================================================
-
-    /// @brief 获取当前任务句柄的哈希值，基于底层 Work 指针地址。
-    [[nodiscard]] std::size_t hash_value() const noexcept;
-
-    /// @brief 获取任务名称。
-    [[nodiscard]] std::string_view name() const noexcept;
-
-    /// @brief 判断当前句柄是否绑定了有效任务节点。
-    [[nodiscard]] bool valid() const noexcept;
-
-    /// @brief 获取后继任务数量。
-    [[nodiscard]] std::size_t num_successors() const noexcept;
-
-    /// @brief 获取前驱任务数量。
-    [[nodiscard]] std::size_t num_predecessors() const noexcept;
-
-    /// @brief 获取执行前需要获取的信号量数量。
-    [[nodiscard]] std::size_t num_acquires() const noexcept;
-
-    /// @brief 获取执行后需要释放的信号量数量。
-    [[nodiscard]] std::size_t num_releases() const noexcept;
-
-    /// @brief 获取已注册的任务观察者数量。
-    [[nodiscard]] std::size_t num_observers() const noexcept;
-
-    /// @brief 判断当前句柄是否绑定了有效任务节点。
-    [[nodiscard]] explicit operator bool() const noexcept;
-
-    /// @brief 检测任务执行期间是否已经记录异常。
-    [[nodiscard]] bool has_exception() const noexcept;
-
-    /// @brief 获取底层任务节点类型。
-    [[nodiscard]] TaskType type() const noexcept;
-
-    /// @brief 获取任务执行期间记录的异常指针。
-    std::exception_ptr exception() const noexcept;
-
-    /// @brief 将当前任务节点导出为 D2 描述字符串。
-    [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
-
-    /// @brief 将当前任务节点的 D2 描述写入输出流。
-    void dump(std::ostream& ostream, Direction dir = Direction::Default) const;
-
-    // ========================================================================
-    //  拓扑构建
-    // ========================================================================
-
-    /// @brief 设置任务名称，用于调试和可视化。
-    template <typename S>
-        requires std::constructible_from<std::string, S>
-    Task& name(S&& name);
-
-    /// @brief 将当前任务设置为一个或多个任务的前驱。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-    Task& precede(Ts&&... ts);
-
-    /// @brief 将当前任务设置为一个或多个任务的后继。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-    Task& succeed(Ts&&... ts);
-
-    /// @brief 移除当前任务的指定前驱任务。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-    Task& remove_predecessor(Ts&&... ts) noexcept;
-
-    /// @brief 移除当前任务的指定后继任务。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-    Task& remove_successor(Ts&&... ts) noexcept;
-
-    /// @brief 清空当前任务的所有前驱关系。
-    Task& clear_predecessors() noexcept;
-
-    /// @brief 清空当前任务的所有后继关系。
-    Task& clear_successors() noexcept;
-
-    // ========================================================================
-    //  信号量管理
-    // ========================================================================
-
-    /// @brief 为任务添加执行前需要获取的信号量，每个信号量默认占用 1 个配额。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-    Task& acquire(Ts&&... sems);
-
-    /// @brief 为任务添加执行后需要释放的信号量，每个信号量默认释放 1 个配额。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-    Task& release(Ts&&... sems);
-
-    /// @brief 为任务添加执行前需要获取的信号量及对应配额。
-    template <typename... Ts>
-        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
-    Task& acquire(Ts&&... args);
-
-    /// @brief 为任务添加执行后需要释放的信号量及对应配额。
-    template <typename... Ts>
-        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
-    Task& release(Ts&&... args);
-
-    /// @brief 移除任务执行前需要获取的指定信号量约束。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-    Task& remove_acquire(Ts&&... sems) noexcept;
-
-    /// @brief 移除任务执行后需要释放的指定信号量约束。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-    Task& remove_release(Ts&&... sems) noexcept;
-
-    /// @brief 清空所有执行前信号量获取约束。
-    Task& clear_acquires() noexcept;
-
-    /// @brief 清空所有执行后信号量释放约束。
-    Task& clear_releases() noexcept;
-
-    // ========================================================================
-    //  迭代访问
-    // ========================================================================
-
-    /// @brief 遍历当前任务的所有前驱任务。
-    template <std::invocable<Task> F>
-    void for_each_predecessor(F&& visitor)
-        noexcept(std::is_nothrow_invocable_v<F, Task>);
-
-    /// @brief 遍历当前任务的所有后继任务。
-    template <std::invocable<Task> F>
-    void for_each_successor(F&& visitor)
-        noexcept(std::is_nothrow_invocable_v<F, Task>);
-
-    /// @brief 遍历任务执行前的信号量获取约束。
-    template <typename F>
-        requires std::invocable<F&, Semaphore&, std::size_t&>
-                 || std::invocable<F&, Semaphore&>
-    void for_each_acquire(F&& visitor) noexcept(
-        std::invocable<F&, Semaphore&, std::size_t&>
-            ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
-            : std::is_nothrow_invocable_v<F&, Semaphore&>);
-
-    /// @brief 遍历任务执行后的信号量释放约束。
-    template <typename F>
-        requires std::invocable<F&, Semaphore&, std::size_t&>
-                 || std::invocable<F&, Semaphore&>
-    void for_each_release(F&& visitor) noexcept(
-        std::invocable<F&, Semaphore&, std::size_t&>
-            ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
-            : std::is_nothrow_invocable_v<F&, Semaphore&>);
-
-
-    // ========================================================================
-    //  观察者管理
-    // ========================================================================
-
-    /// @brief 注册任务观察者，在任务执行前后接收回调。
-    /// @tparam Observer TaskObserver 的派生类型。
-    /// @param args 构造 Observer 所需参数。
-    /// @return 已注册观察者的 shared_ptr，可用于后续注销。
-    template <std::derived_from<TaskObserver> Observer, typename... Args>
-        requires std::constructible_from<Observer, Args...>
-    [[nodiscard]] std::shared_ptr<Observer> register_observer(Args&&... args);
-
-    /// @brief 注销指定任务观察者。
-    /// @param ptr register_observer 返回的观察者指针。
-    template <std::derived_from<TaskObserver> Observer>
-    void unregister_observer(std::shared_ptr<Observer> ptr) noexcept;
-private:
-    Work* m_work{nullptr};  ///< 底层 Work 节点指针，非拥有引用。
-
-    /// @brief 从底层 Work 指针构造任务句柄。
-    explicit Task(Work* work) noexcept;
-};
-
-// ============================================================================
-// Task Implementation
-// ============================================================================
-
-inline Task::Task(Work* work) noexcept : m_work{work} {}
-inline Task::Task(std::nullptr_t) noexcept : m_work{nullptr} {}
-inline Task::Task(const Task& rhs) noexcept : m_work{rhs.m_work} {}
-
-inline Task& Task::operator=(const Task& rhs) noexcept {
-    m_work = rhs.m_work;
-    return *this;
-}
-
-inline Task::Task(Task&& rhs) noexcept : m_work{rhs.m_work} {
-    rhs.m_work = nullptr;
-}
-
-inline Task& Task::operator=(Task&& rhs) noexcept {
-    if (this != &rhs) {
-        m_work = rhs.m_work;
-        rhs.m_work = nullptr;
-    }
-    return *this;
-}
-
-inline Task& Task::operator=(std::nullptr_t) noexcept {
-    m_work = nullptr;
-    return *this;
-}
-
-inline bool Task::operator==(const Task& rhs) const noexcept {
-    return m_work == rhs.m_work;
-}
-inline bool Task::operator!=(const Task& rhs) const noexcept {
-    return m_work != rhs.m_work;
-}
-inline void Task::reset() noexcept {
-    m_work = nullptr;
-}
-
-inline std::size_t Task::hash_value() const noexcept {
-    return std::hash<const Work*>{}(m_work);
-}
-
-inline std::string_view Task::name() const noexcept {
-    return m_work->m_name;
-}
-
-inline bool Task::valid() const noexcept {
-    return m_work != nullptr;
-}
-
-inline std::size_t Task::num_successors() const noexcept {
-    return m_work->m_num_successors;
-}
-
-inline std::size_t Task::num_predecessors() const noexcept {
-    return m_work->_num_predecessors();
-}
-
-inline std::size_t Task::num_acquires() const noexcept {
-    return m_work->_num_acquires();
-}
-
-inline std::size_t Task::num_releases() const noexcept {
-    return m_work->_num_releases();
-}
-
-inline std::size_t Task::num_observers() const noexcept {
-    return m_work->_num_observers();
-}
-
-inline Task::operator bool() const noexcept {
-    return m_work != nullptr;
-}
-
-inline bool Task::has_exception() const noexcept {
-    return m_work->_has_exception();
-}
-
-inline std::exception_ptr Task::exception() const noexcept {
-    return m_work->m_exception_ptr;
-}
-
-inline TaskType Task::type() const noexcept {
-    return m_work->m_type;
-}
-
-inline std::string Task::dump(Direction dir) const {
-    std::ostringstream oss;
-    dump(oss, dir);
-    return std::move(oss).str();
-}
-
-inline void Task::dump(std::ostream& os, Direction dir) const {
-    os << "direction: " << to_string(dir) << "\n\n";
-    m_work->dump(os);
-    os << "\n";
-}
-
-template <typename S>
-    requires std::constructible_from<std::string, S>
-inline Task& Task::name(S&& name) {
-    m_work->m_name = std::forward<S>(name);
-    return *this;
-}
-
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task& Task::precede(Ts&&... ts) {
-    (m_work->_precede(ts.m_work), ...);
-    return *this;
-}
-
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task& Task::succeed(Ts&&... ts) {
-    (ts.m_work->_precede(m_work), ...);
-    return *this;
-}
-
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task& Task::remove_predecessor(Ts&&... ts) noexcept {
-    (ts.m_work->_remove_successor(m_work), ...);
-    return *this;
-}
-
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task& Task::remove_successor(Ts&&... ts) noexcept {
-    (m_work->_remove_successor(ts.m_work), ...);
-    return *this;
-}
-
-inline Task& Task::clear_predecessors() noexcept {
-    m_work->_clear_predecessors(); return *this;
-}
-
-inline Task& Task::clear_successors() noexcept {
-    m_work->_clear_successors(); return *this;
-}
-
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-inline Task& Task::acquire(Ts&&... sems) {
-    (m_work->_acquire(&sems, 1ULL), ...);
-    return *this;
-}
-
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-inline Task& Task::release(Ts&&... sems) {
-    (m_work->_release(&sems, 1ULL), ...);
-    return *this;
-}
-
-
-template <typename... Ts>
-    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
-inline Task& Task::acquire(Ts&&... args) {
-    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
-    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-        (m_work->_acquire(&std::get<Is * 2>(tup),
-                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
-    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
-    return *this;
-}
-
-template <typename... Ts>
-    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
-inline Task& Task::release(Ts&&... args) {
-    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
-    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-        (m_work->_release(&std::get<Is * 2>(tup),
-                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
-    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
-    return *this;
-}
-
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-inline Task& Task::remove_acquire(Ts&&... sems) noexcept {
-    (m_work->_remove_acquire(&sems), ...);
-    return *this;
-}
-
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
-inline Task& Task::remove_release(Ts&&... sems) noexcept {
-    (m_work->_remove_release(&sems), ...);
-    return *this;
-}
-
-inline Task& Task::clear_acquires() noexcept { m_work->_clear_acquires(); return *this; }
-inline Task& Task::clear_releases() noexcept { m_work->_clear_releases(); return *this; }
-
-template <std::invocable<Task> F>
-inline void Task::for_each_predecessor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F, Task>) {
-    for (Work* pred : m_work->_predecessors()) {
-        std::invoke(visitor, Task{pred});
-    }
-}
-
-template <std::invocable<Task> F>
-inline void Task::for_each_successor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F, Task>) {
-    for (Work* succ : m_work->_successors()) {
-        std::invoke(visitor, Task{succ});
-    }
-}
-
-template <typename F>
-    requires std::invocable<F&, Semaphore&, std::size_t&>
-             || std::invocable<F&, Semaphore&>
-inline void Task::for_each_acquire(F&& visitor) noexcept(
-    std::invocable<F&, Semaphore&, std::size_t&>
-        ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
-        : std::is_nothrow_invocable_v<F&, Semaphore&>) {
-    for (auto& req : m_work->_acquires()) {
-        if constexpr (std::invocable<F&, Semaphore&, std::size_t&>) {
-            std::invoke(visitor, *req.sem, req.count);
-        } else {
-            std::invoke(visitor, *req.sem);
-        }
-    }
-}
-
-template <typename F>
-    requires std::invocable<F&, Semaphore&, std::size_t&>
-             || std::invocable<F&, Semaphore&>
-inline void Task::for_each_release(F&& visitor) noexcept(
-    std::invocable<F&, Semaphore&, std::size_t&>
-        ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
-        : std::is_nothrow_invocable_v<F&, Semaphore&>) {
-    for (auto& req : m_work->_releases()) {
-        if constexpr (std::invocable<F&, Semaphore&, std::size_t&>) {
-            std::invoke(visitor, *req.sem, req.count);
-        } else {
-            std::invoke(visitor, *req.sem);
-        }
-    }
-}
-
-template <std::derived_from<TaskObserver> Observer, typename... Args>
-    requires std::constructible_from<Observer, Args...>
-inline std::shared_ptr<Observer> Task::register_observer(Args&&... args) {
-    auto ptr = std::make_shared<Observer>(std::forward<Args>(args)...);
-    if (!m_work->m_observers) {
-        m_work->m_observers = std::make_unique<Work::ObserverData>();
-    }
-    m_work->m_observers->observers.emplace_back(std::static_pointer_cast<TaskObserver>(ptr));
-    return ptr;
-}
-
-template <std::derived_from<TaskObserver> Observer>
-inline void Task::unregister_observer(std::shared_ptr<Observer> ptr) noexcept {
-    if (!m_work->m_observers) return;
-    auto base = std::static_pointer_cast<TaskObserver>(ptr);
-    auto& observers = m_work->m_observers->observers;
-    for (auto it = observers.begin(); it != observers.end(); ++it) {
-        if (*it == base) {
-            observers.erase(it);
-            break;
-        }
-    }
-    if (m_work->m_observers->empty()) {
-        m_work->m_observers.reset();
-    }
-}
 
 // ============================================================================
 // TaskView - 只读视图
@@ -812,14 +330,740 @@ inline void TaskView::for_each_release(F&& visitor) const noexcept(
 }
 
 
-// ---- 1) 线性链：a >> b >> c ----
-inline Task& operator>>(Task& lhs, Task& rhs) {
-    return rhs.succeed(lhs);
+
+class Task {
+    friend class Flow;
+    friend class Runtime;
+    friend class Executor;
+
+public:
+    /// @brief 构造空任务句柄。
+    explicit Task() = default;
+
+    /// @brief 构造空任务句柄。
+    explicit Task(std::nullptr_t) noexcept;
+
+    /// @brief 拷贝构造，复制底层 Work 指针。
+    Task(const Task& rhs) noexcept;
+
+    /// @brief 拷贝赋值，复制底层 Work 指针。
+    Task& operator=(const Task& rhs) noexcept;
+
+    /// @brief 移动构造，接管 rhs 的底层 Work 指针。
+    Task(Task&& rhs) noexcept;
+
+    /// @brief 移动赋值，接管 rhs 的底层 Work 指针。
+    Task& operator=(Task&& rhs) noexcept;
+
+    /// @brief 将当前句柄置空。
+    Task& operator=(std::nullptr_t) noexcept;
+
+    /// @brief 判断两个任务句柄是否指向同一个底层节点。
+    [[nodiscard]] bool operator==(const Task& rhs) const noexcept;
+
+    /// @brief 判断两个任务句柄是否指向不同底层节点。
+    [[nodiscard]] bool operator!=(const Task& rhs) const noexcept;
+
+    /// @brief 将当前任务句柄置空。
+    void reset() noexcept;
+
+    // ========================================================================
+    //  状态查询
+    // ========================================================================
+
+    /// @brief 获取当前任务句柄的哈希值，基于底层 Work 指针地址。
+    [[nodiscard]] std::size_t hash_value() const noexcept;
+
+    /// @brief 获取任务名称。
+    [[nodiscard]] std::string_view name() const noexcept;
+
+    /// @brief 判断当前句柄是否绑定了有效任务节点。
+    [[nodiscard]] bool valid() const noexcept;
+
+    /// @brief 获取后继任务数量。
+    [[nodiscard]] std::size_t num_successors() const noexcept;
+
+    /// @brief 获取前驱任务数量。
+    [[nodiscard]] std::size_t num_predecessors() const noexcept;
+
+    /// @brief 获取执行前需要获取的信号量数量。
+    [[nodiscard]] std::size_t num_acquires() const noexcept;
+
+    /// @brief 获取执行后需要释放的信号量数量。
+    [[nodiscard]] std::size_t num_releases() const noexcept;
+
+    /// @brief 获取已注册的任务观察者数量。
+    [[nodiscard]] std::size_t num_observers() const noexcept;
+
+    /// @brief 判断当前句柄是否绑定了有效任务节点。
+    [[nodiscard]] explicit operator bool() const noexcept;
+
+    /// @brief 检测任务执行期间是否已经记录异常。
+    [[nodiscard]] bool has_exception() const noexcept;
+
+    /// @brief 获取底层任务节点类型。
+    [[nodiscard]] TaskType type() const noexcept;
+
+    /// @brief 获取任务执行期间记录的异常指针。
+    std::exception_ptr exception() const noexcept;
+
+    /// @brief 将当前任务节点导出为 D2 描述字符串。
+    [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
+
+    /// @brief 将当前任务节点的 D2 描述写入输出流。
+    void dump(std::ostream& ostream, Direction dir = Direction::Default) const;
+
+    // ========================================================================
+    //  拓扑构建
+    // ========================================================================
+
+    /// @brief 设置任务名称，用于调试和可视化。
+    template <typename S>
+        requires std::constructible_from<std::string, S>
+    Task& name(S&& name) &;
+
+    template <typename S>
+        requires std::constructible_from<std::string, S>
+    Task name(S&& name) &&;
+
+    /// @brief 将当前任务设置为一个或多个任务的前驱。
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    Task& precede(Ts&&... ts) &;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    Task precede(Ts&&... ts) &&;
+
+    /// @brief 将当前任务设置为一个或多个任务的后继。
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    Task& succeed(Ts&&... ts) &;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    Task succeed(Ts&&... ts) &&;
+
+    /// @brief 移除当前任务的指定前驱任务。
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    Task& remove_predecessor(Ts&&... ts) & noexcept;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    Task remove_predecessor(Ts&&... ts) && noexcept;
+
+    /// @brief 移除当前任务的指定后继任务。
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    Task& remove_successor(Ts&&... ts) & noexcept;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    Task remove_successor(Ts&&... ts) && noexcept;
+
+    /// @brief 清空当前任务的所有前驱关系。
+    Task& clear_predecessors() & noexcept;
+
+    Task clear_predecessors() && noexcept;
+
+    /// @brief 清空当前任务的所有后继关系。
+    Task& clear_successors() & noexcept;
+
+    Task clear_successors() && noexcept;
+
+    // ========================================================================
+    //  信号量管理
+    // ========================================================================
+
+    /// @brief 为任务添加执行前需要获取的信号量，每个信号量默认占用 1 个配额。
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    Task& acquire(Ts&&... sems) &;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    Task acquire(Ts&&... sems) &&;
+
+    /// @brief 为任务添加执行后需要释放的信号量，每个信号量默认释放 1 个配额。
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    Task& release(Ts&&... sems) &;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    Task release(Ts&&... sems) &&;
+
+    /// @brief 为任务添加执行前需要获取的信号量及对应配额。
+    template <typename... Ts>
+        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+    Task& acquire(Ts&&... args) &;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+    Task acquire(Ts&&... args) &&;
+
+    /// @brief 为任务添加执行后需要释放的信号量及对应配额。
+    template <typename... Ts>
+        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+    Task& release(Ts&&... args) &;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+    Task release(Ts&&... args) &&;
+
+    /// @brief 移除任务执行前需要获取的指定信号量约束。
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    Task& remove_acquire(Ts&&... sems) & noexcept;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    Task remove_acquire(Ts&&... sems) && noexcept;
+
+    /// @brief 移除任务执行后需要释放的指定信号量约束。
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    Task& remove_release(Ts&&... sems) & noexcept;
+
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+    Task remove_release(Ts&&... sems) && noexcept;
+
+    /// @brief 清空所有执行前信号量获取约束。
+    Task& clear_acquires() & noexcept;
+
+    Task clear_acquires() && noexcept;
+
+    /// @brief 清空所有执行后信号量释放约束。
+    Task& clear_releases() & noexcept;
+
+    Task clear_releases() && noexcept;
+
+    // ========================================================================
+    //  迭代访问
+    // ========================================================================
+
+    /// @brief 遍历当前任务的所有前驱任务。
+    template <std::invocable<Task> F>
+    void for_each_predecessor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F&, Task>);
+
+    template <std::invocable<TaskView> F>
+    void for_each_predecessor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>);
+
+    /// @brief 遍历当前任务的所有后继任务。
+    template <std::invocable<Task> F>
+    void for_each_successor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F&, Task>);
+
+    template <std::invocable<TaskView> F>
+    void for_each_successor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>);
+
+    /// @brief 遍历任务执行前的信号量获取约束。
+    template <typename F>
+        requires std::invocable<F&, Semaphore&, std::size_t&>
+                 || std::invocable<F&, Semaphore&>
+    void for_each_acquire(F&& visitor) noexcept(
+        std::invocable<F&, Semaphore&, std::size_t&>
+            ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+            : std::is_nothrow_invocable_v<F&, Semaphore&>);
+
+    template <typename F>
+        requires std::invocable<F&, const Semaphore&, std::size_t>
+                 || std::invocable<F&, const Semaphore&>
+    void for_each_acquire(F&& visitor) const noexcept(
+        std::invocable<F&, const Semaphore&, std::size_t>
+            ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+            : std::is_nothrow_invocable_v<F&, const Semaphore&>);
+
+    /// @brief 遍历任务执行后的信号量释放约束。
+    template <typename F>
+        requires std::invocable<F&, Semaphore&, std::size_t&>
+                 || std::invocable<F&, Semaphore&>
+    void for_each_release(F&& visitor) noexcept(
+        std::invocable<F&, Semaphore&, std::size_t&>
+            ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+            : std::is_nothrow_invocable_v<F&, Semaphore&>);
+
+    template <typename F>
+        requires std::invocable<F&, const Semaphore&, std::size_t>
+                 || std::invocable<F&, const Semaphore&>
+    void for_each_release(F&& visitor) const noexcept(
+        std::invocable<F&, const Semaphore&, std::size_t>
+            ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+            : std::is_nothrow_invocable_v<F&, const Semaphore&>);
+
+
+    // ========================================================================
+    //  观察者管理
+    // ========================================================================
+
+    /// @brief 注册任务观察者，在任务执行前后接收回调。
+    /// @tparam Observer TaskObserver 的派生类型。
+    /// @param args 构造 Observer 所需参数。
+    /// @return 已注册观察者的 shared_ptr，可用于后续注销。
+    template <std::derived_from<TaskObserver> Observer, typename... Args>
+        requires std::constructible_from<Observer, Args...>
+    [[nodiscard]] std::shared_ptr<Observer> register_observer(Args&&... args);
+
+    /// @brief 注销指定任务观察者。
+    /// @param ptr register_observer 返回的观察者指针。
+    template <std::derived_from<TaskObserver> Observer>
+    void unregister_observer(std::shared_ptr<Observer> ptr) noexcept;
+private:
+    Work* m_work{nullptr};  ///< 底层 Work 节点指针，非拥有引用。
+
+    /// @brief 从底层 Work 指针构造任务句柄。
+    explicit Task(Work* work) noexcept;
+};
+
+// ============================================================================
+// Task Implementation
+// ============================================================================
+
+inline Task::Task(Work* work) noexcept : m_work{work} {}
+inline Task::Task(std::nullptr_t) noexcept : m_work{nullptr} {}
+inline Task::Task(const Task& rhs) noexcept : m_work{rhs.m_work} {}
+
+inline Task& Task::operator=(const Task& rhs) noexcept {
+    m_work = rhs.m_work;
+    return *this;
 }
 
-// ---- 2) 反向线性链：c << b << a ----
-inline Task& operator<<(Task& lhs, Task& rhs) {
-    return rhs.precede(lhs);
+inline Task::Task(Task&& rhs) noexcept : m_work{rhs.m_work} {
+    rhs.m_work = nullptr;
+}
+
+inline Task& Task::operator=(Task&& rhs) noexcept {
+    if (this != &rhs) {
+        m_work = rhs.m_work;
+        rhs.m_work = nullptr;
+    }
+    return *this;
+}
+
+inline Task& Task::operator=(std::nullptr_t) noexcept {
+    m_work = nullptr;
+    return *this;
+}
+
+inline bool Task::operator==(const Task& rhs) const noexcept {
+    return m_work == rhs.m_work;
+}
+inline bool Task::operator!=(const Task& rhs) const noexcept {
+    return m_work != rhs.m_work;
+}
+inline void Task::reset() noexcept {
+    m_work = nullptr;
+}
+
+inline std::size_t Task::hash_value() const noexcept {
+    return std::hash<const Work*>{}(m_work);
+}
+
+inline std::string_view Task::name() const noexcept {
+    return m_work->m_name;
+}
+
+inline bool Task::valid() const noexcept {
+    return m_work != nullptr;
+}
+
+inline std::size_t Task::num_successors() const noexcept {
+    return m_work->m_num_successors;
+}
+
+inline std::size_t Task::num_predecessors() const noexcept {
+    return m_work->_num_predecessors();
+}
+
+inline std::size_t Task::num_acquires() const noexcept {
+    return m_work->_num_acquires();
+}
+
+inline std::size_t Task::num_releases() const noexcept {
+    return m_work->_num_releases();
+}
+
+inline std::size_t Task::num_observers() const noexcept {
+    return m_work->_num_observers();
+}
+
+inline Task::operator bool() const noexcept {
+    return m_work != nullptr;
+}
+
+inline bool Task::has_exception() const noexcept {
+    return m_work->_has_exception();
+}
+
+inline std::exception_ptr Task::exception() const noexcept {
+    return m_work->m_exception_ptr;
+}
+
+inline TaskType Task::type() const noexcept {
+    return m_work->m_type;
+}
+
+inline std::string Task::dump(Direction dir) const {
+    std::ostringstream oss;
+    dump(oss, dir);
+    return std::move(oss).str();
+}
+
+inline void Task::dump(std::ostream& os, Direction dir) const {
+    os << "direction: " << to_string(dir) << "\n\n";
+    m_work->dump(os);
+    os << "\n";
+}
+
+template <typename S>
+    requires std::constructible_from<std::string, S>
+inline Task& Task::name(S&& name) & {
+    m_work->m_name = std::forward<S>(name);
+    return *this;
+}
+
+template <typename S>
+    requires std::constructible_from<std::string, S>
+inline Task Task::name(S&& name) && {
+    m_work->m_name = std::forward<S>(name);
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+inline Task& Task::precede(Ts&&... ts) & {
+    (m_work->_precede(ts.m_work), ...);
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+inline Task Task::precede(Ts&&... ts) && {
+    (m_work->_precede(ts.m_work), ...);
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+inline Task& Task::succeed(Ts&&... ts) & {
+    (ts.m_work->_precede(m_work), ...);
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+inline Task Task::succeed(Ts&&... ts) && {
+    (ts.m_work->_precede(m_work), ...);
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+inline Task& Task::remove_predecessor(Ts&&... ts) & noexcept {
+    (ts.m_work->_remove_successor(m_work), ...);
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+inline Task Task::remove_predecessor(Ts&&... ts) && noexcept {
+    (ts.m_work->_remove_successor(m_work), ...);
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+inline Task& Task::remove_successor(Ts&&... ts) & noexcept {
+    (m_work->_remove_successor(ts.m_work), ...);
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+inline Task Task::remove_successor(Ts&&... ts) && noexcept {
+    (m_work->_remove_successor(ts.m_work), ...);
+    return std::move(*this);
+}
+
+inline Task& Task::clear_predecessors() & noexcept {
+    m_work->_clear_predecessors(); return *this;
+}
+
+inline Task Task::clear_predecessors() && noexcept {
+    m_work->_clear_predecessors(); return std::move(*this);
+}
+
+inline Task& Task::clear_successors() & noexcept {
+    m_work->_clear_successors(); return *this;
+}
+
+inline Task Task::clear_successors() && noexcept {
+    m_work->_clear_successors(); return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline Task& Task::acquire(Ts&&... sems) & {
+    (m_work->_acquire(&sems, 1ULL), ...);
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline Task Task::acquire(Ts&&... sems) && {
+    (m_work->_acquire(&sems, 1ULL), ...);
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline Task& Task::release(Ts&&... sems) & {
+    (m_work->_release(&sems, 1ULL), ...);
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline Task Task::release(Ts&&... sems) && {
+    (m_work->_release(&sems, 1ULL), ...);
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+inline Task& Task::acquire(Ts&&... args) & {
+    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+        (m_work->_acquire(&std::get<Is * 2>(tup),
+                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
+    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+inline Task Task::acquire(Ts&&... args) && {
+    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+        (m_work->_acquire(&std::get<Is * 2>(tup),
+                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
+    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+inline Task& Task::release(Ts&&... args) & {
+    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+        (m_work->_release(&std::get<Is * 2>(tup),
+                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
+    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
+inline Task Task::release(Ts&&... args) && {
+    auto tup = std::forward_as_tuple(std::forward<Ts>(args)...);
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+        (m_work->_release(&std::get<Is * 2>(tup),
+                          static_cast<std::size_t>(std::get<Is * 2 + 1>(tup))), ...);
+    }(std::make_index_sequence<sizeof...(Ts) / 2>{});
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline Task& Task::remove_acquire(Ts&&... sems) & noexcept {
+    (m_work->_remove_acquire(&sems), ...);
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline Task Task::remove_acquire(Ts&&... sems) && noexcept {
+    (m_work->_remove_acquire(&sems), ...);
+    return std::move(*this);
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline Task& Task::remove_release(Ts&&... sems) & noexcept {
+    (m_work->_remove_release(&sems), ...);
+    return *this;
+}
+
+template <typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
+inline Task Task::remove_release(Ts&&... sems) && noexcept {
+    (m_work->_remove_release(&sems), ...);
+    return std::move(*this);
+}
+
+inline Task& Task::clear_acquires() & noexcept {
+    m_work->_clear_acquires(); return *this;
+}
+
+inline Task Task::clear_acquires() && noexcept {
+    m_work->_clear_acquires(); return std::move(*this);
+}
+
+inline Task& Task::clear_releases() & noexcept {
+    m_work->_clear_releases(); return *this;
+}
+
+inline Task Task::clear_releases() && noexcept {
+    m_work->_clear_releases(); return std::move(*this);
+}
+
+template <std::invocable<Task> F>
+inline void Task::for_each_predecessor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F&, Task>) {
+    for (Work* pred : m_work->_predecessors()) {
+        std::invoke(visitor, Task{pred});
+    }
+}
+
+template <std::invocable<TaskView> F>
+inline void Task::for_each_predecessor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>) {
+    for (const Work* pred : m_work->_predecessors()) {
+        std::invoke(visitor, TaskView{*pred});
+    }
+}
+
+template <std::invocable<Task> F>
+inline void Task::for_each_successor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F&, Task>) {
+    for (Work* succ : m_work->_successors()) {
+        std::invoke(visitor, Task{succ});
+    }
+}
+
+template <std::invocable<TaskView> F>
+inline void Task::for_each_successor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>) {
+    for (const Work* succ : m_work->_successors()) {
+        std::invoke(visitor, TaskView{*succ});
+    }
+}
+
+template <typename F>
+    requires std::invocable<F&, Semaphore&, std::size_t&>
+             || std::invocable<F&, Semaphore&>
+inline void Task::for_each_acquire(F&& visitor) noexcept(
+    std::invocable<F&, Semaphore&, std::size_t&>
+        ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+        : std::is_nothrow_invocable_v<F&, Semaphore&>) {
+    for (auto& req : m_work->_acquires()) {
+        if constexpr (std::invocable<F&, Semaphore&, std::size_t&>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
+    }
+}
+
+template <typename F>
+    requires std::invocable<F&, const Semaphore&, std::size_t>
+             || std::invocable<F&, const Semaphore&>
+inline void Task::for_each_acquire(F&& visitor) const noexcept(
+    std::invocable<F&, const Semaphore&, std::size_t>
+        ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+        : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
+    for (const auto& req : m_work->_acquires()) {
+        if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
+    }
+}
+
+template <typename F>
+    requires std::invocable<F&, Semaphore&, std::size_t&>
+             || std::invocable<F&, Semaphore&>
+inline void Task::for_each_release(F&& visitor) noexcept(
+    std::invocable<F&, Semaphore&, std::size_t&>
+        ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+        : std::is_nothrow_invocable_v<F&, Semaphore&>) {
+    for (auto& req : m_work->_releases()) {
+        if constexpr (std::invocable<F&, Semaphore&, std::size_t&>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
+    }
+}
+
+template <typename F>
+    requires std::invocable<F&, const Semaphore&, std::size_t>
+             || std::invocable<F&, const Semaphore&>
+inline void Task::for_each_release(F&& visitor) const noexcept(
+    std::invocable<F&, const Semaphore&, std::size_t>
+        ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+        : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
+    for (const auto& req : m_work->_releases()) {
+        if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
+            std::invoke(visitor, *req.sem, req.count);
+        } else {
+            std::invoke(visitor, *req.sem);
+        }
+    }
+}
+
+template <std::derived_from<TaskObserver> Observer, typename... Args>
+    requires std::constructible_from<Observer, Args...>
+inline std::shared_ptr<Observer> Task::register_observer(Args&&... args) {
+    auto ptr = std::make_shared<Observer>(std::forward<Args>(args)...);
+    if (!m_work->m_observers) {
+        m_work->m_observers = std::make_unique<Work::ObserverData>();
+    }
+    m_work->m_observers->observers.emplace_back(std::static_pointer_cast<TaskObserver>(ptr));
+    return ptr;
+}
+
+template <std::derived_from<TaskObserver> Observer>
+inline void Task::unregister_observer(std::shared_ptr<Observer> ptr) noexcept {
+    if (!m_work->m_observers) return;
+    auto base = std::static_pointer_cast<TaskObserver>(ptr);
+    auto& observers = m_work->m_observers->observers;
+    for (auto it = observers.begin(); it != observers.end(); ++it) {
+        if (*it == base) {
+            observers.erase(it);
+            break;
+        }
+    }
+    if (m_work->m_observers->empty()) {
+        m_work->m_observers.reset();
+    }
+}
+
+
+template <typename L>
+    requires std::same_as<std::remove_cvref_t<L>, Task>
+inline Task& operator>>(L&& lhs, Task& rhs) {
+    rhs.succeed(std::forward<L>(lhs));
+    return rhs;
+}
+
+template <typename L>
+    requires std::same_as<std::remove_cvref_t<L>, Task>
+inline Task operator>>(L&& lhs, Task&& rhs) {
+    rhs.succeed(std::forward<L>(lhs));
+    return std::move(rhs);
+}
+
+template <typename L>
+    requires std::same_as<std::remove_cvref_t<L>, Task>
+inline Task& operator<<(L&& lhs, Task& rhs) {
+    rhs.precede(std::forward<L>(lhs));
+    return rhs;
+}
+
+template <typename L>
+    requires std::same_as<std::remove_cvref_t<L>, Task>
+inline Task operator<<(L&& lhs, Task&& rhs) {
+    rhs.precede(std::forward<L>(lhs));
+    return std::move(rhs);
 }
 
 inline std::ostream& operator << (std::ostream& os, const Task& task) {

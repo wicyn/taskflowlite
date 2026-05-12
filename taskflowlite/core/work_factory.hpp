@@ -1,5 +1,5 @@
-﻿/// @file work_memory.hpp
-/// @brief Work 节点工厂函数族 —— inline 实现，与 work_memory_fwd.hpp 配对
+﻿/// @file work_factory.hpp
+/// @brief Work 节点工厂函数族 —— inline 实现，与 work_factory_fwd.hpp 配对
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-04-20
@@ -18,11 +18,11 @@
 ///   - **decay 标准化**：模板参数在用户传入时通常带引用 / cv 限定，本层
 ///     统一用 `std::decay_t` 拍平，避免 Invoker 内部需要重复处理这种类型杂项。
 ///
-/// 函数族结构与 work_memory_fwd.hpp 保持完全一致 —— 修改时务必同步两份。
+/// 函数族结构与 work_factory_fwd.hpp 保持完全一致 —— 修改时务必同步两份。
 /// 节点销毁集中在文件末尾的 `destroy(Work*)`，目前是直接 `delete`，
 /// 将来切换分配器时这是唯一需要改动的释放点。
 ///
-/// @see work_memory_fwd.hpp  对应的前置声明（仅签名，不含实现）
+/// @see work_factory_fwd.hpp  对应的前置声明（仅签名，不含实现）
 /// @see works.hpp            被本文件 new 出的各 Invoker 子类定义
 
 
@@ -31,7 +31,7 @@
 #include <cstring>
 #include "work.hpp"
 #include "works.hpp"
-#include "work_memory_fwd.hpp"
+#include "work_factory_fwd.hpp"
 
 namespace tfl {
 

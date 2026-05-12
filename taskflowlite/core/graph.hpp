@@ -10,7 +10,7 @@
 
 #include <vector>
 #include "work.hpp"
-#include "work_memory_fwd.hpp"
+#include "work_factory_fwd.hpp"
 #include "topology.hpp"
 
 namespace tfl {
@@ -73,7 +73,7 @@ namespace tfl {
 /// @see Flow                语义壳，本类的所有者
 /// @see Work                被持有的节点
 /// @see D2Renderer          可视化代际
-/// @see work_memory.hpp     destroy(Work*) 的实现
+/// @see work_factory.hpp     destroy(Work*) 的实现
 class Graph {
     friend class Executor;
     friend class Flow;
