@@ -171,15 +171,10 @@ public:
         ///        需挂起节点等待 child 完成后恢复。
         static constexpr type PREEMPTED = type{1} << (BITS - 2);
 
-        /// @name Join Weight（2 bits）
-        /// @brief 本节点完成时对每个后继 join_counter 的贡献量。
-        /// @{
-        static constexpr unsigned WEIGHT_SHIFT = BITS - 4;
-        static constexpr type WEIGHT_MASK      = type{0b11} << WEIGHT_SHIFT;
-        static constexpr type WEIGHT_0         = type{0}    << WEIGHT_SHIFT;  ///< Jump / MultiJump
-        static constexpr type WEIGHT_1         = type{1}    << WEIGHT_SHIFT;  ///< 默认
-        static constexpr type WEIGHT_2         = type{2}    << WEIGHT_SHIFT;  ///< Branch / MultiBranch
-        /// @}
+        /// @brief 是否计入后继 join_counter。
+        ///        置位表示本节点作为前驱时，对后继 join_counter 贡献 1；
+        ///        Jump / MultiJump 不置位。
+        static constexpr type JOIN = type{1} << (BITS - 3);
     };
 
     /// @brief 显式状态位域 —— 运行期动态设置，多 Worker 并发读写，必须原子访问。
@@ -296,16 +291,15 @@ protected:
     std::unique_ptr<ObserverData>   m_observers;                ///< 生命周期观察者（按需延迟分配）
 
 
-    // 本节点对后继的贡献权重 (从 Implicit 直接读 2 bits)
-    [[nodiscard]] std::size_t _own_weight() const noexcept {
-        return (m_implicit & Implicit::WEIGHT_MASK) >> Implicit::WEIGHT_SHIFT;
+    [[nodiscard]] bool _join_counted() const noexcept {
+        return (m_implicit & Implicit::JOIN) != 0;
     }
 
     // 本节点的 join 计数 = 所有前驱权重之和
     [[nodiscard]] std::size_t _join_weight() const noexcept {
         std::size_t sum = 0;
         for (std::size_t i = m_num_successors; i < m_edges.size(); ++i) {
-            sum += m_edges[i]->_own_weight();
+            sum += m_edges[i]->_join_counted();
         }
         return sum;
     }

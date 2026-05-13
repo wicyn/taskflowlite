@@ -219,9 +219,9 @@ class BasicInvoker final : public BasicWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit BasicInvoker(const Graph* g, U&& f, Us&&... args)
-        : BasicWork{Work::Implicit::WEIGHT_1, Work::Explicit::NONE, g}
+        : BasicWork{Work::Implicit::JOIN, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
@@ -282,9 +282,9 @@ class BranchInvoker final : public BranchWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit BranchInvoker(const Graph* g, U&& f, Us&&... args)
-        : BranchWork{Work::Implicit::WEIGHT_2, Work::Explicit::NONE, g}
+        : BranchWork{Work::Implicit::JOIN, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
@@ -326,10 +326,6 @@ public:
             _process_exception();
         }
 
-        if (auto target = branch.m_target) {
-            target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
-        }
-
         _notify_after(wr);
         // release 阶段
         if (m_semaphores && !m_semaphores->releases.empty()) {
@@ -337,7 +333,7 @@ public:
             _release_semaphores(waiters);
             exe._schedule_from_semaphore(wr, waiters);
         }
-        exe._tear_down_task(this, wr, cache);
+        exe._tear_down_branch_task(this, wr, cache, branch.m_target);
     }
 
 };
@@ -349,9 +345,9 @@ class MultiBranchInvoker final : public MultiBranchWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit MultiBranchInvoker(const Graph* g, U&& f, Us&&... args)
-        : MultiBranchWork{Work::Implicit::WEIGHT_2, Work::Explicit::NONE, g}
+        : MultiBranchWork{Work::Implicit::JOIN, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
@@ -393,10 +389,6 @@ public:
             _process_exception();
         }
 
-        for (auto* target : branch.m_targets) {
-            target->m_join_counter.fetch_sub(1, std::memory_order_relaxed);
-        }
-
         _notify_after(wr);
         // release 阶段
         if (m_semaphores && !m_semaphores->releases.empty()) {
@@ -404,7 +396,7 @@ public:
             _release_semaphores(waiters);
             exe._schedule_from_semaphore(wr, waiters);
         }
-        exe._tear_down_task(this, wr, cache);
+        exe._tear_down_multi_branch_task(this, wr, cache, branch.m_targets);
     }
 
 };
@@ -416,9 +408,9 @@ class JumpInvoker final : public JumpWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit JumpInvoker(const Graph* g, U&& f, Us&&... args)
-        : JumpWork{Work::Implicit::WEIGHT_0, Work::Explicit::NONE, g}
+        : JumpWork{Work::Implicit::NONE, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
@@ -479,9 +471,9 @@ class MultiJumpInvoker final : public MultiJumpWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit MultiJumpInvoker(const Graph* g, U&& f, Us&&... args)
-        : MultiJumpWork{Work::Implicit::WEIGHT_0, Work::Explicit::NONE, g}
+        : MultiJumpWork{Work::Implicit::NONE, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
@@ -541,9 +533,9 @@ class RuntimeInvoker final : public RuntimeWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit RuntimeInvoker(const Graph* g, U&& f, Us&&... args)
-        : RuntimeWork{Work::Implicit::WEIGHT_1, Work::Explicit::NONE, g}
+        : RuntimeWork{Work::Implicit::JOIN, Work::Explicit::NONE, g}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
 
@@ -639,7 +631,7 @@ class SubflowInvoker final : public GraphWork<GhStore> {
 public:
     template <typename Ghs, typename V>
     explicit SubflowInvoker(const Graph* g, Ghs&& ghs, V&& pred)
-        : GraphWork<GhStore>{std::forward<Ghs>(ghs), Work::Implicit::WEIGHT_1, Work::Explicit::NONE, g}
+        : GraphWork<GhStore>{std::forward<Ghs>(ghs), Work::Implicit::JOIN, Work::Explicit::NONE, g}
         , m_pred{std::forward<V>(pred)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
@@ -703,7 +695,7 @@ class SilentAsyncBasicInvoker final : public BasicWork {
     using Work::m_parent;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit SilentAsyncBasicInvoker(Work* parent, U&& f, Us&&... args)
         : BasicWork{detail::anchor_bits<A>().first,
                     detail::anchor_bits<A>().second,
@@ -737,7 +729,7 @@ class SilentAsyncRuntimeInvoker final : public RuntimeWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit SilentAsyncRuntimeInvoker(Work* parent, U&& f, Us&&... args)
         : RuntimeWork{detail::anchor_bits<A>().first,
                       detail::anchor_bits<A>().second,
@@ -801,10 +793,10 @@ public:
     template <typename Ghs, typename V, typename W>
     explicit SilentAsyncFlowInvoker(Work* parent, Ghs&& ghs, V&& pred, W&& cb)
         : GraphWork<GhStore>{std::forward<Ghs>(ghs),
-                               detail::anchor_bits<A>().first,
-                               detail::anchor_bits<A>().second,
-                               nullptr,
-                               parent}
+                             detail::anchor_bits<A>().first,
+                             detail::anchor_bits<A>().second,
+                             nullptr,
+                             parent}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(cb)} {}
 
@@ -846,7 +838,7 @@ class AsyncBasicInvoker final : private TopologyHolder, public BasicWork {
     std::promise<R> m_promise;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit AsyncBasicInvoker(Executor& exec, Work* parent, U&& f, std::promise<R>&& p, Us&&... args)
         : TopologyHolder{exec}
         , BasicWork{detail::anchor_bits<A>().first,
@@ -917,7 +909,7 @@ class AsyncRuntimeInvoker final : private TopologyHolder, public RuntimeWork {
     TFL_NO_UNIQUE_ADDRESS std::conditional_t<std::is_void_v<R>, std::monostate, std::optional<R>> m_result;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit AsyncRuntimeInvoker(Executor& exec, Work* parent, U&& f, std::promise<R>&& p, Us&&... args)
         : TopologyHolder{exec}
         , RuntimeWork{detail::anchor_bits<A>().first,
@@ -1030,10 +1022,10 @@ public:
     explicit AsyncFlowInvoker(Executor& exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb, std::promise<void>&& p)
         : TopologyHolder{exec}
         , GraphWork<GhStore>{std::forward<Ghs>(ghs),
-                               detail::anchor_bits<A>().first,
-                               detail::anchor_bits<A>().second,
-                               &m_local_topology,
-                               parent}
+                             detail::anchor_bits<A>().first,
+                             detail::anchor_bits<A>().second,
+                             &m_local_topology,
+                             parent}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(cb)}
         , m_promise{std::move(p)} {}
@@ -1078,7 +1070,7 @@ class DepAsyncBasicInvoker final : private TopologyHolder, public BasicWork {
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit DepAsyncBasicInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
         : TopologyHolder{exec}
         , BasicWork{detail::anchor_bits<A>().first,
@@ -1122,7 +1114,7 @@ class DepAsyncRuntimeInvoker final : private TopologyHolder, public RuntimeWork 
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit DepAsyncRuntimeInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
         : TopologyHolder{exec}
         , RuntimeWork{detail::anchor_bits<A>().first,
@@ -1196,10 +1188,10 @@ public:
     explicit DepAsyncFlowInvoker(Executor& exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb)
         : TopologyHolder{exec}
         , GraphWork<GhStore>{std::forward<Ghs>(ghs),
-                               detail::anchor_bits<A>().first,
-                               detail::anchor_bits<A>().second,
-                               &m_local_topology,
-                               parent}
+                             detail::anchor_bits<A>().first,
+                             detail::anchor_bits<A>().second,
+                             &m_local_topology,
+                             parent}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(cb)} {}
 
@@ -1240,7 +1232,7 @@ class DepDeferredAsyncBasicInvoker final : private TopologyHolder, public BasicW
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit DepDeferredAsyncBasicInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
         : TopologyHolder{exec}
         , BasicWork{detail::anchor_bits<A>().first,
@@ -1302,7 +1294,7 @@ class DepDeferredAsyncRuntimeInvoker final : private TopologyHolder, public Runt
     TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 public:
     template <typename U, typename... Us>
-    // requires std::constructible_from<F, U> && (std::constructible_from<Args, Us> && ...)
+        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
     explicit DepDeferredAsyncRuntimeInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
         : TopologyHolder{exec}
         , RuntimeWork{detail::anchor_bits<A>().first,
@@ -1403,9 +1395,9 @@ public:
     explicit DepDeferredAsyncFlowInvoker(Executor& exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb)
         : TopologyHolder{exec}
         , GraphWork<GhStore>{std::forward<Ghs>(ghs),
-                               detail::anchor_bits<A>().first,
-                               detail::anchor_bits<A>().second,
-                               &m_local_topology, parent}
+                             detail::anchor_bits<A>().first,
+                             detail::anchor_bits<A>().second,
+                             &m_local_topology, parent}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(cb)} {}
 
