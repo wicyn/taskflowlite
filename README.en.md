@@ -317,25 +317,25 @@ target_compile_options(your_target PRIVATE -O3 -march=native)
 
 | # | Workload | Taskflow (ms) | TaskflowLite (ms) | Speedup |
 |---|---|---:|---:|---:|
-| 01 | 32 parallel \| 8 threads \| 500k runs   | 1442 | 1106 | **+23.3%** |
-| 02 | 32 serial   \| 1 thread  \| 1M runs    | 1330 | 1007 | **+24.3%** |
-| 03 | diamond DAG \| 2 threads \| 1M runs    |  362 |  296 | **+18.2%** |
-| 04a | 4×2  full   \| 2 threads \| 1M runs   |  602 |  512 | **+15.0%** |
-| 04b | 6×4  full   \| 4 threads \| 500k runs | 1762 | 1689 | **+4.1%**  |
-| 04c | 8×8  full   \| 8 threads \| 100k runs | 1218 | 1043 | **+14.4%** |
-| 04d | 8×16 full   \| 8 threads \| 50k runs  | 1448 | 1154 | **+20.3%** |
-| 04e | 8×32 full   \| 8 threads \| 20k runs  | 1476 | 1151 | **+22.0%** |
-| 04f | 6×100 full  \| 8 threads \| 2k runs   |  675 |  509 | **+24.6%** |
-| 05 | binary tree  \| 8 threads \| 500k runs | 3220 | 2221 | **+31.0%** |
-| 06 | 1→256→1     \| 8 threads \| 100k runs | 4056 | 3452 | **+14.9%** |
-| 07 | 16 pipes     \| 8 threads \| 200k runs | 2468 | 1685 | **+31.7%** |
-| 08 | 16×16 grid   \| 8 threads \| 100k runs | 2731 | 1962 | **+28.2%** |
-| 09 | sparse DAG   \| 8 threads \| 500k runs | 3862 | 2888 | **+25.2%** |
-| 10 | cond / jump retry \| 1 thread \| 1M iter |  54 |   53 | **+1.9%**  |
-| 11 | multi-cond / multi-jump \| 4 threads \| 200k iter | 75 | 60 | **+20.0%** |
-| 12 | subflow ×1   \| 4 threads \| 200k runs |  209 |  148 | **+29.2%** |
-| 13 | subflow loop \| 2 threads \| 500k iter |  158 |  107 | **+32.3%** |
-| **Total** | **18 workloads** | **27148** | **21043** | **+22.5%** |
+| 01 | 32 parallel \| 8 threads \| 500k runs | 1600 | 1320 | **+17.5%** |
+| 02 | 32 serial \| 1 thread \| 1M runs | 1351 | 618 | **+54.3%** |
+| 03 | diamond DAG \| 2 threads \| 1M runs | 387 | 255 | **+34.1%** |
+| 04a | 4×2 full \| 2 threads \| 1M runs | 647 | 477 | **+26.3%** |
+| 04b | 6×4 full \| 4 threads \| 500k runs | 1797 | 1635 | **+9.0%** |
+| 04c | 8×8 full \| 8 threads \| 100k runs | 1185 | 991 | **+16.4%** |
+| 04d | 8×16 full \| 8 threads \| 50k runs | 1355 | 1103 | **+18.6%** |
+| 04e | 8×32 full \| 8 threads \| 20k runs | 1414 | 1105 | **+21.9%** |
+| 04f | 6×100 full \| 8 threads \| 2k runs | 650 | 519 | **+20.2%** |
+| 05 | binary tree \| 8 threads \| 500k runs | 2933 | 1834 | **+37.5%** |
+| 06 | 1→256→1 \| 8 threads \| 100k runs | 4455 | 3241 | **+27.3%** |
+| 07 | 16 pipes \| 8 threads \| 200k runs | 2458 | 818 | **+66.7%** |
+| 08 | 16×16 grid \| 8 threads \| 100k runs | 2682 | 1103 | **+58.9%** |
+| 09 | sparse DAG \| 8 threads \| 500k runs | 3785 | 2114 | **+44.1%** |
+| 10 | jump / cond loop \| 1 thread \| 1M iter | 55 | 29 | **+47.3%** |
+| 11 | multi-jump / multi-cond \| 4 threads \| 200k iter | 73 | 60 | **+17.8%** |
+| 12 | subflow x1 \| 4 threads \| 200k runs | 197 | 159 | **+19.3%** |
+| 13 | subflow loop \| 2 threads \| 500k iter | 176 | 103 | **+41.5%** |
+| **Total** | **18 workloads** | **27200** | **17484** | **+35.7%** |
 
 ### Micro-benchmark: 100 Layers × 100 Tasks
 
