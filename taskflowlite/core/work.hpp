@@ -27,7 +27,7 @@
 #include "semaphore.hpp"
 #include "small_vector.hpp"
 #include "unordered_dense.hpp"
-#include "work_pool.hpp"
+#include "object_pool.hpp"
 
 namespace tfl {
 
@@ -247,25 +247,34 @@ public:
         , m_parent{parent} {}
 
 
-    // /// @brief 默认对齐对象走统一 WorkPool。
-    // static void* operator new(std::size_t bytes) {
-    //     return detail::pool_alloc(bytes);
-    // }
+    /// @brief 默认对齐对象走 Work 对象池。
+    static void* operator new(std::size_t bytes) {
+        return ObjectPool<Work>::allocate(bytes);
+    }
 
-    // /// @brief sized delete：根据实际对象大小归还到对应 size class。
-    // static void operator delete(void* p, std::size_t bytes) noexcept {
-    //     detail::pool_dealloc(p, bytes);
-    // }
+    /// @brief sized delete：根据实际对象大小归还到对应 size class。
+    static void operator delete(void* p, std::size_t bytes) noexcept {
+        ObjectPool<Work>::deallocate(p, bytes);
+    }
 
-    // /// @brief over-aligned 对象绕过 WorkPool，交给全局 aligned new。
-    // static void* operator new(std::size_t bytes, std::align_val_t al) {
-    //     return ::operator new(bytes, al);
-    // }
+    /// @brief over-aligned 对象绕过 WorkPool，避免普通池返回低对齐地址。
+    static void* operator new(std::size_t bytes, std::align_val_t al) {
+        return ::operator new(bytes, al);
+    }
 
-    // /// @brief over-aligned 对象使用匹配的全局 aligned delete。
-    // static void operator delete(void* p, std::size_t, std::align_val_t al) noexcept {
-    //     ::operator delete(p, al);
-    // }
+    /// @brief over-aligned 对象使用匹配的全局 aligned delete。
+    static void operator delete(void* p, std::size_t bytes, std::align_val_t al) noexcept {
+        (void)bytes;
+        ::operator delete(p, al);
+    }
+
+    /// @brief Work 节点不支持数组分配。
+    static void* operator new[](std::size_t) = delete;
+    static void operator delete[](void*) noexcept = delete;
+
+    /// @brief Work 节点不支持 nothrow new。
+    static void* operator new(std::size_t, const std::nothrow_t&) noexcept = delete;
+    static void operator delete(void*, const std::nothrow_t&) noexcept = delete;
 
     virtual ~Work() noexcept = default;
 

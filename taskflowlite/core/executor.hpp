@@ -795,7 +795,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_multi_branch_task(Work* w, Worker& wr
         Work* const target = targets[0];
 
         if (target->_num_predecessors() == 1) [[unlikely]] {
-            // target 入度为 1 → 本次 fetch_sub(WEIGHT_CODE_2) 必然归零
+            // target 入度为 1 → 本次 必然归零
             // 直接 store(0),省一次 acq_rel 原子递减。
             target->m_join_counter.store(0, std::memory_order_relaxed);
             cache = target;
