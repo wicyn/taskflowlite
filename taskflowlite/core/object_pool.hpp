@@ -40,7 +40,6 @@
 #include "size_class.hpp"
 
 namespace tfl {
-#define TFL_ENABLE_WORK_POOL
 /// @brief 类型级静态对象池。
 template <typename T, SizeClassScheme Scheme = SubdividedScheme<sizeof(T), 4096, 4>>
 class ObjectPool {
