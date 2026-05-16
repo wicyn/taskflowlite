@@ -488,14 +488,8 @@ struct explicit_t  { explicit constexpr explicit_t() = default; };
 
 } // namespace anchor
 
-// inline constexpr anchor::none_t     none_v{};
-// inline constexpr anchor::implicit_t implicit_v{};
-// inline constexpr anchor::explicit_t explicit_v{};   // ← 'explicit_v' 不是关键字
-
 template <typename T>
-concept anchor_tag = std::same_as<T, anchor::none_t>
-                     || std::same_as<T, anchor::implicit_t>
-                     || std::same_as<T, anchor::explicit_t>;
+concept anchor_tag = std::same_as<T, anchor::none_t> || std::same_as<T, anchor::implicit_t> || std::same_as<T, anchor::explicit_t>;
 
 } // namespace tfl
 
