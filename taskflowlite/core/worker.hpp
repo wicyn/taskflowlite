@@ -97,8 +97,7 @@ private:
     std::size_t         m_id{0};                 ///< 全局唯一 ID
 
     // ---- 独立 cache line：跨线程终止信号 ----
-    alignas(2 * cache_line_size)
-        std::atomic_flag m_terminate = ATOMIC_FLAG_INIT;
+    alignas(2 * cache_line_size) std::atomic_flag m_terminate = ATOMIC_FLAG_INIT;
 
     std::thread         m_thread;
 };
