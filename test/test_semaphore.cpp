@@ -1,65 +1,69 @@
-﻿/// @file test_semaphore.cpp
-/// @brief Semaphore 模块测试 —— 限流、序列化、事件信号、多配额、reset。
+/// @file test_semaphore.cpp
+/// @brief 信号量模块测试 — 限流、序列化、事件通知、多计数、重置。
 ///
-/// 覆盖接口：
-///   - Semaphore(max_value, name?)             默认构造
-///   - Semaphore(max_value, current_value, name?)  指定初值（可 0）
-///   - Semaphore::value()                       当前剩余可用计数
-///   - Semaphore::max_value()                   最大容量
-///   - Semaphore::reset(max)                    重置（恢复满）
-///   - Semaphore::reset(max, current)           重置（指定可用）
-///   - Semaphore::name() / Semaphore::name(s)   命名
-///   - Task::acquire(sem) / acquire(sem, count) 配置
-///   - Task::release(sem) / release(sem, count) 配置
+/// 覆盖的接口：
+///   - Semaphore(max_value, name?)                 默认构造
+///   - Semaphore(max_value, current_value, name?)  指定初始值（可为 0）
+///   - Semaphore::value()                          当前剩余可用计数
+///   - Semaphore::max_value()                      最大容量
+///   - Semaphore::reset(max)                       重置（恢复至满）
+///   - Semaphore::reset(max, current)              重置（指定可用数）
+///   - Semaphore::name() / Semaphore::name(s)      命名
+///   - Task::acquire(sem) / acquire(sem, count)    配置
+///   - Task::release(sem) / release(sem, count)    配置
 ///
-/// 关键不变量：
-///   1. 任务并发数永不超过 sem.max_value()；
-///   2. acquire 失败的任务被"停车"（不占 worker），release 后唤醒；
-///   3. 等待队列非空时 reset() 抛异常。
+/// 核心不变式：
+///   1. 任务并发数永远不超过 sem.max_value()；
+///   2. 未能获取信号量的任务被"挂起"（不占用工作线程），释放后被唤醒；
+///   3. 等待队列非空时，reset() 抛出异常。
 
 #include "test_common.hpp"
 
 using tfl_test::TestEnv;
 
 // ============================================================================
-// SECTION 1: 基础属性 —— value / max_value / name
+// SECTION 1: 基本属性 — value / max_value / name
 // ============================================================================
 
-/// @test [semaphore][basic] 默认构造的容量与可用计数关系。
-TEST_CASE("Semaphore: 基础属性", "[semaphore][basic]") {
-    SECTION("初值 = 容量") {
+/// @test [semaphore][basic] 默认构造下容量与可用计数之间的关系。
+TEST_CASE("Semaphore: Basic properties", "[semaphore][basic]") {
+    /// @section initial-equals-capacity
+    SECTION("initial value equals capacity") {
         tfl::Semaphore sem{3};
         REQUIRE(sem.max_value() == 3);
         REQUIRE(sem.value() == 3);
         REQUIRE(sem.name().empty());
     }
 
-    SECTION("显式指定 current_value") {
+    /// @section explicit-current-value
+    SECTION("explicit current_value") {
         tfl::Semaphore sem{5, 2};
         REQUIRE(sem.max_value() == 5);
         REQUIRE(sem.value() == 2);
     }
 
-    SECTION("命名信号量") {
+    /// @section named-semaphore
+    SECTION("named semaphore") {
         tfl::Semaphore sem{1, "io_lock"};
         REQUIRE(sem.name() == "io_lock");
     }
 
-    SECTION("current_value 自动裁剪到 max_value 上限") {
-        tfl::Semaphore sem{3, 10};  // 写 10 > 3，自动裁到 3
+    /// @section current-value-clamped
+    SECTION("current_value auto-clamped to max_value") {
+        tfl::Semaphore sem{3, 10};  // 写入 10 > 3，自动钳位至 3
         REQUIRE(sem.max_value() == 3);
         REQUIRE(sem.value() == 3);
     }
 }
 
 // ============================================================================
-// SECTION 2: 限流 —— 并发上限
+// SECTION 2: 限流 — 并发上限
 // ============================================================================
 
-/// @test [semaphore][throttle] 容量 K 时，最大并发不超过 K。
-/// @details 启动 N 个任务 (N >> K)，每个任务 acquire+release 信号量。
-///          worker 里不调 REQUIRE —— 用原子 max 跟踪历史峰值，主线程断言。
-TEST_CASE("Semaphore: 并发上限限流", "[semaphore][throttle]") {
+/// @test [semaphore][throttle] 当容量为 K 时，最大并发数永远不超过 K。
+/// @details 启动 N 个任务（N >> K），每个任务获取并释放信号量。
+///          工作线程内部不调用 REQUIRE — 使用原子变量追踪历史峰值，由主线程断言。
+TEST_CASE("Semaphore: Concurrency cap throttling", "[semaphore][throttle]") {
     TestEnv env(8);
 
     constexpr int K = 2;
@@ -86,11 +90,11 @@ TEST_CASE("Semaphore: 并发上限限流", "[semaphore][throttle]") {
 
     REQUIRE(peak.load() <= K);
     REQUIRE(peak.load() > 0);
-    REQUIRE(sem.value() == K);  // 全部释放后回到满状态
+    REQUIRE(sem.value() == K);  // 全部释放后，恢复至满
 }
 
-/// @test [semaphore][serialize] 容量 1 = 强制串行化。
-TEST_CASE("Semaphore: 容量 1 实现强制串行", "[semaphore][serialize]") {
+/// @test [semaphore][serialize] 容量为 1 = 强制串行化。
+TEST_CASE("Semaphore: Capacity 1 enforces serialization", "[semaphore][serialize]") {
     TestEnv env(4);
     tfl::Semaphore mutex_like{1};
 
@@ -115,11 +119,11 @@ TEST_CASE("Semaphore: 容量 1 实现强制串行", "[semaphore][serialize]") {
 }
 
 // ============================================================================
-// SECTION 3: 事件信号 —— 初值 0 的 Semaphore
+// SECTION 3: 事件通知 — 初始值为 0 的信号量
 // ============================================================================
 
-/// @test [semaphore][event] 初值 0 的信号量充当"事件"，消费者等到 release 才解封。
-TEST_CASE("Semaphore: 事件信号模式 (初值 0)", "[semaphore][event]") {
+/// @test [semaphore][event] 初始值为 0 的信号量扮演"事件"的角色；消费者阻塞直至 release 唤醒它们。
+TEST_CASE("Semaphore: Event signal pattern (initial value 0)", "[semaphore][event]") {
     TestEnv env(4);
     tfl::Semaphore event_sem{3, 0};   // 容量 3，初始可用 0
 
@@ -127,29 +131,29 @@ TEST_CASE("Semaphore: 事件信号模式 (初值 0)", "[semaphore][event]") {
 
     tfl::Flow flow;
 
-    // 3 个消费者：各 acquire 一份配额（初始没有，全被挂起）
+    // 3 个消费者：各获取一个单位（初始无可用，全部挂起）
     for (int i = 0; i < 3; ++i) {
         flow.emplace([&] { consumed.fetch_add(1); }).acquire(event_sem);
     }
 
-    // 1 个生产者：先睡一会再 release 3 份
+    // 1 个生产者：短暂休眠后释放 3 个单位
     auto producer = flow.emplace([] {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     });
     producer.release(event_sem, 3);
 
-    // 注意：消费者和生产者之间没有 precede 边 —— 全靠 sem 同步
+    // 注意：消费者与生产者之间无 precede 边 — 同步完全依赖信号量
     env.executor.deferred_async(flow).start().wait();
 
     REQUIRE(consumed.load() == 3);
 }
 
 // ============================================================================
-// SECTION 4: 多配额 —— 单任务占多份资源
+// SECTION 4: 多计数 — 单个任务占用多个配额
 // ============================================================================
 
-/// @test [semaphore][multi-count] heavy 任务占 N 份配额时，不能与小任务并发。
-TEST_CASE("Semaphore: 多配额 acquire", "[semaphore][multi-count]") {
+/// @test [semaphore][multi-count] 占用 N 个配额的重任务无法与小任务并发运行。
+TEST_CASE("Semaphore: Multi-count acquire", "[semaphore][multi-count]") {
     TestEnv env(4);
     tfl::Semaphore pool{4};
 
@@ -180,20 +184,22 @@ TEST_CASE("Semaphore: 多配额 acquire", "[semaphore][multi-count]") {
 }
 
 // ============================================================================
-// SECTION 5: reset
+// SECTION 5: reset 重置
 // ============================================================================
 
-/// @test [semaphore][reset] 等待队列空时 reset 改容量。
-TEST_CASE("Semaphore: reset 调整容量", "[semaphore][reset]") {
+/// @test [semaphore][reset] 等待队列为空时，reset 可更改容量。
+TEST_CASE("Semaphore: reset adjusts capacity", "[semaphore][reset]") {
     tfl::Semaphore sem{2};
 
-    SECTION("reset(max) 恢复到满") {
+    /// @section reset-max-full
+    SECTION("reset(max) restores to full") {
         sem.reset(5);
         REQUIRE(sem.max_value() == 5);
         REQUIRE(sem.value() == 5);
     }
 
-    SECTION("reset(max, current) 显式指定可用") {
+    /// @section reset-max-current
+    SECTION("reset(max, current) explicit available") {
         sem.reset(5, 2);
         REQUIRE(sem.max_value() == 5);
         REQUIRE(sem.value() == 2);
@@ -201,10 +207,10 @@ TEST_CASE("Semaphore: reset 调整容量", "[semaphore][reset]") {
 }
 
 // ============================================================================
-// SECTION 6: 命名 setter
+// SECTION 6: 名称设置
 // ============================================================================
 
-/// @test [semaphore][name] 运行时改名。
+/// @test [semaphore][name] 运行时重命名。
 TEST_CASE("Semaphore: name setter", "[semaphore][name]") {
     tfl::Semaphore sem{1};
     REQUIRE(sem.name().empty());

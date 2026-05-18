@@ -1020,10 +1020,7 @@ inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cach
 
 inline void Executor::_push_shared(Work* val) {
     std::size_t const size = m_shared_buffers.size();
-    std::size_t const b = detail::mulhi64(
-        reinterpret_cast<std::uintptr_t>(val) * 11400714819323198485ULL,
-        size
-        );
+    std::size_t const b = detail::mulhi64(reinterpret_cast<std::uintptr_t>(val) * 11400714819323198485ULL, size);
 
     // Fast-Path
     for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
@@ -1052,10 +1049,7 @@ template <std::random_access_iterator Iterator>
     requires std::convertible_to<std::iter_reference_t<Iterator>, Work*>
 inline void Executor::_push_shared(Iterator first, std::size_t n) {
     std::size_t const size = m_shared_buffers.size();
-    std::size_t const b = detail::mulhi64(
-        reinterpret_cast<std::uintptr_t>(*first) * 11400714819323198485ULL,
-        size
-        );
+    std::size_t const b = detail::mulhi64(reinterpret_cast<std::uintptr_t>(*first) * 11400714819323198485ULL, size);
 
     // Fast-Path
     for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
