@@ -1,28 +1,28 @@
-﻿/// @file test_subflow.cpp
+/// @file test_subflow.cpp
 /// @brief Subflow 测试 —— 子图嵌套、固定次数循环、谓词驱动循环。
 ///
-/// 覆盖接口：
+/// 覆盖的接口：
 ///   - Flow::emplace(Gh)                       挂载子图（默认 1 次）
-///   - Flow::emplace(Gh, num)                  固定循环 num 次
+///   - Flow::emplace(Gh, num)                  固定次数循环 num 次
 ///   - Flow::emplace(Gh, predicate)            谓词驱动循环
-///   - 子图右值（move）/ 子图左值（reference_wrapper）
+///   - Subgraph 右值（移动）/ 子图左值（reference_wrapper）
 ///
-/// 关键不变量：
+/// 关键不变式：
 ///   1. 子图作为单个节点参与父图依赖；
-///   2. 固定循环：子图执行 num 次后才驱动后继；
-///   3. 谓词循环：predicate 返回 true 表示停止循环；
-///   4. 父图共享 lambda 捕获的状态可与子图共享。
+///   2. 固定次数循环：子图执行 num 次后再驱动后继节点；
+///   3. 谓词循环：谓词返回 true 表示停止循环；
+///   4. 通过 lambda 捕获的父图状态可与子图共享。
 
 #include "test_common.hpp"
 
 using tfl_test::TestEnv;
 
 // ============================================================================
-// SECTION 1: 基本嵌套 —— 子图执行 1 次
+// SECTION 1: 基本嵌套 —— 子图执行一次
 // ============================================================================
 
-/// @test [subflow][basic] 子图作为单个节点嵌入父图，执行 1 次。
-TEST_CASE("Subflow: 基本嵌套执行", "[subflow][basic]") {
+/// @test [subflow][basic] 子图作为单个节点嵌入父图，执行一次。
+TEST_CASE("Subflow: basic nesting execution", "[subflow][basic]") {
     TestEnv env;
     std::atomic<int> outer_count{0};
     std::atomic<int> inner_count{0};
@@ -48,8 +48,8 @@ TEST_CASE("Subflow: 基本嵌套执行", "[subflow][basic]") {
 // SECTION 2: 固定次数循环
 // ============================================================================
 
-/// @test [subflow][repeat] emplace(sub, N) 让子图执行 N 次。
-TEST_CASE("Subflow: 固定次数循环", "[subflow][repeat]") {
+/// @test [subflow][repeat] emplace(sub, N) 使子图执行 N 次。
+TEST_CASE("Subflow: fixed-count loop", "[subflow][repeat]") {
     TestEnv env;
     std::atomic<int> hits{0};
     constexpr int LOOPS = 4;
@@ -68,9 +68,9 @@ TEST_CASE("Subflow: 固定次数循环", "[subflow][repeat]") {
 // SECTION 3: 谓词驱动循环
 // ============================================================================
 
-/// @test [subflow][predicate] 谓词返回 true 时停止循环。
-/// @details 谓词在每次子图完成后调用一次，返回 true 表示"足够了"。
-TEST_CASE("Subflow: 谓词驱动循环", "[subflow][predicate]") {
+/// @test [subflow][predicate] 谓词返回 true 时循环停止。
+/// @details 谓词在每次子图完成后调用一次；返回 true 表示"够了"。
+TEST_CASE("Subflow: predicate-driven loop", "[subflow][predicate]") {
     TestEnv env;
     std::atomic<int> hits{0};
     constexpr int TARGET = 6;
@@ -81,7 +81,7 @@ TEST_CASE("Subflow: 谓词驱动循环", "[subflow][predicate]") {
     tfl::Flow main_flow;
     int loops = 0;
     main_flow.emplace(std::move(inner), [&loops]() mutable noexcept {
-        return loops++ >= TARGET;  // 跑够 TARGET 次后返回 true 停止
+        return loops++ >= TARGET;  // 返回 true 表示 TARGET 次迭代后停止
     });
 
     env.executor.deferred_async(main_flow).start().wait();
@@ -92,8 +92,8 @@ TEST_CASE("Subflow: 谓词驱动循环", "[subflow][predicate]") {
 // SECTION 4: 子图共享外部状态
 // ============================================================================
 
-/// @test [subflow][capture] 主图与子图通过 lambda 捕获共享 atomic 状态。
-TEST_CASE("Subflow: 主子图共享外部 atomic", "[subflow][capture]") {
+/// @test [subflow][capture] 父图和子图通过 lambda 捕获共享外部原子状态。
+TEST_CASE("Subflow: parent and subgraph share external atomic", "[subflow][capture]") {
     TestEnv env;
     std::atomic<int> shared{0};
 
@@ -106,8 +106,8 @@ TEST_CASE("Subflow: 主子图共享外部 atomic", "[subflow][capture]") {
     auto sub = main_flow.emplace(std::move(inner));
     main_flow.emplace([&] { shared.fetch_add(1000); }).succeed(sub);
 
-    // pre 节点和 sub 节点都没显式 precede —— 先把 pre 串前面更稳妥
-    // 这里只验证 shared 累加结果即可
+    // pre 节点与 sub 节点没有显式 precede —— 更安全的做法是将 pre 前置串联
+    // 这里仅验证累积的共享结果
     env.executor.deferred_async(main_flow).start().wait();
     REQUIRE(shared.load() == 1 + 10 + 100 + 1000);
 }
@@ -116,12 +116,12 @@ TEST_CASE("Subflow: 主子图共享外部 atomic", "[subflow][capture]") {
 // SECTION 5: 子图左值（reference_wrapper）
 // ============================================================================
 
-/// @test [subflow][lvalue] 子图传左值 → reference_wrapper，子图生命周期由外部管理。
-TEST_CASE("Subflow: 左值挂载", "[subflow][lvalue]") {
+/// @test [subflow][lvalue] 以左值传入子图 → reference_wrapper，子图生命周期由外部管理。
+TEST_CASE("Subflow: lvalue mounting", "[subflow][lvalue]") {
     TestEnv env;
     std::atomic<int> hits{0};
 
-    tfl::Flow persistent_sub;        // 必须存活到 deferred_async 之后
+    tfl::Flow persistent_sub;        // 必须在 deferred_async 调用后仍然存活
     persistent_sub.emplace([&] { hits.fetch_add(1); });
 
     tfl::Flow main_flow;

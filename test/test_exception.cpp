@@ -1,15 +1,15 @@
-﻿/// @file test_exception.cpp
-/// @brief 异常处理测试 —— ResumeNever 策略 / 异常归档 / get vs wait。
+/// @file test_exception.cpp
+/// @brief 异常处理测试 — ResumeNever 策略 / 异常归档 / get 与 wait 对比。
 ///
 /// TaskflowLite 的异常模型：
-///   - 任务体抛出的异常被 `Topology` 截留为首个异常；
+///   - 任务体内抛出的异常被 `Topology` 捕获为首个异常；
 ///   - `wait()` 静默吞掉异常；
-///   - `get()` = wait + 重抛；
-///   - WorkerHandler 决定 worker 在异常时是否继续工作（ResumeNever 直接停）。
+///   - `get()` = wait + 重新抛出；
+///   - WorkerHandler 决定异常后工作线程是否继续（ResumeNever 立即停止）。
 ///
-/// 覆盖：
-///   - 任务抛异常后，wait() 不抛、get() 抛
-///   - 异常发生时框架仍能正确清理 topology
+/// 覆盖点：
+///   - 任务抛出后，wait() 不抛、get() 抛
+///   - 框架在异常后仍能正确清理拓扑
 ///   - has_exception() 查询
 
 #include "test_common.hpp"
@@ -17,14 +17,15 @@
 using tfl_test::TestEnv;
 
 // ============================================================================
-// SECTION 1: 异常归档 —— wait vs get
+// SECTION 1: 异常归档 — wait 与 get 对比
 // ============================================================================
 
-/// @test [exception][wait-vs-get] wait 不重抛，get 重抛。
-TEST_CASE("Exception: wait 不重抛，get 重抛", "[exception][wait-vs-get]") {
+/// @test [exception][wait-vs-get] wait 不重新抛出，get 重新抛出。
+TEST_CASE("Exception: wait does not rethrow, get does", "[exception][wait-vs-get]") {
     TestEnv env;
 
-    SECTION("wait 静默") {
+    /// @section wait-is-silent
+    SECTION("wait is silent") {
         auto t = env.executor.deferred_async([] {
             throw std::runtime_error("boom");
         });
@@ -32,7 +33,8 @@ TEST_CASE("Exception: wait 不重抛，get 重抛", "[exception][wait-vs-get]") 
         REQUIRE_NOTHROW(t.wait());
     }
 
-    SECTION("get 重抛 runtime_error") {
+    /// @section get-rethrows
+    SECTION("get rethrows runtime_error") {
         auto t = env.executor.deferred_async([] {
             throw std::runtime_error("boom");
         });
@@ -42,7 +44,7 @@ TEST_CASE("Exception: wait 不重抛，get 重抛", "[exception][wait-vs-get]") 
 }
 
 /// @test [exception][has_exception] has_exception 查询异常归档状态。
-TEST_CASE("Exception: has_exception 查询", "[exception][query]") {
+TEST_CASE("Exception: has_exception query", "[exception][query]") {
     TestEnv env;
 
     auto bad = env.executor.deferred_async([] {
@@ -58,11 +60,11 @@ TEST_CASE("Exception: has_exception 查询", "[exception][query]") {
 }
 
 // ============================================================================
-// SECTION 2: 异常发生不会泄漏 topology
+// SECTION 2: 异常不会泄漏拓扑
 // ============================================================================
 
-/// @test [exception][cleanup] 异常发生后再提交新任务仍正常工作。
-TEST_CASE("Exception: 异常后 Executor 仍可用", "[exception][cleanup]") {
+/// @test [exception][cleanup] 异常后提交新任务仍正常工作。
+TEST_CASE("Exception: Executor still usable after exception", "[exception][cleanup]") {
     TestEnv env;
 
     {
@@ -70,7 +72,7 @@ TEST_CASE("Exception: 异常后 Executor 仍可用", "[exception][cleanup]") {
         bad.start().wait();
     }
 
-    // 异常之后 executor 仍然可以接受新任务
+    // 发生异常后，执行器仍能接受新任务
     std::atomic<int> n{0};
     auto good = env.executor.deferred_async([&] { n.store(7); });
     good.start().wait();
@@ -78,11 +80,11 @@ TEST_CASE("Exception: 异常后 Executor 仍可用", "[exception][cleanup]") {
 }
 
 // ============================================================================
-// SECTION 3: Flow 内异常 —— ResumeNever 不再调度后续节点
+// SECTION 3: Flow 中的异常 — ResumeNever 阻止后续节点
 // ============================================================================
 
-/// @test [exception][resume-never] ResumeNever 策略下，前驱抛异常后驱动的节点不会运行。
-TEST_CASE("Exception: ResumeNever 阻止后续节点", "[exception][resume-never]") {
+/// @test [exception][resume-never] 在 ResumeNever 策略下，前驱抛出后依赖节点不会运行。
+TEST_CASE("Exception: ResumeNever prevents subsequent nodes", "[exception][resume-never]") {
     TestEnv env;
     tfl::Flow flow;
     std::atomic<bool> next_run{false};

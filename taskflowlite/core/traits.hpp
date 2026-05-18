@@ -246,9 +246,7 @@ template <graph_holder Gh>
 [[nodiscard]] inline auto to_graph(Gh& gh) noexcept -> Graph& {
     using U = std::remove_cvref_t<Gh>;
 
-    if constexpr (requires(U& x) {
-                      { x.graph() } -> std::convertible_to<Graph&>;
-                  }) {
+    if constexpr (requires(U& x) {{ x.graph() } -> std::convertible_to<Graph&>; }) {
         return static_cast<Graph&>(gh.graph());
     } else {
         return static_cast<Graph&>(gh);
@@ -260,9 +258,7 @@ template <graph_holder Gh>
 [[nodiscard]] inline auto to_graph(const Gh& gh) noexcept -> const Graph& {
     using U = std::remove_cvref_t<Gh>;
 
-    if constexpr (requires(const U& x) {
-                      { x.graph() } -> std::convertible_to<const Graph&>;
-                  }) {
+    if constexpr (requires(const U& x) {{ x.graph() } -> std::convertible_to<const Graph&>; }) {
         return static_cast<const Graph&>(gh.graph());
     } else {
         return static_cast<const Graph&>(gh);

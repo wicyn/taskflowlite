@@ -1,4 +1,4 @@
-﻿#define CATCH_CONFIG_MAIN
+#define CATCH_CONFIG_MAIN
 
 #include "../taskflowlite/taskflowlite.hpp"
 #include "catch_amalgamated.hpp"
@@ -60,7 +60,7 @@ TEST_CASE("Flow: Batch Emplace (Tuple & Args)", "[flow]") {
 
     // Pack 批量插入
     auto [t1, t2] = flow.emplace(
-        tfl::pack{[](int a) { /* 不在 worker 里断言 */ }, 42},
+        tfl::pack{[](int a) { /* don't assert inside worker */ }, 42},
         tfl::pack{[](int& c) { c = 100; }, std::ref(counter)}
         );
 
@@ -74,7 +74,7 @@ TEST_CASE("Flow: Batch Emplace (Tuple & Args)", "[flow]") {
 }
 
 // ============================================================================
-// [DAG] 执行顺序与依赖拓扑严格校验
+// [DAG] 严格执行顺序与依赖拓扑验证
 // ============================================================================
 
 TEST_CASE("DAG: Strict Linear Execution Order", "[dag]") {
@@ -92,7 +92,7 @@ TEST_CASE("DAG: Strict Linear Execution Order", "[dag]") {
     auto t3 = flow.emplace([&] { push(3); });
     auto t4 = flow.emplace([&] { push(4); });
 
-    // 构建链式依赖: t1 -> t2 -> t3 -> t4
+    // 构建链式依赖：t1 -> t2 -> t3 -> t4
     t1.precede(t2);
     t2.precede(t3);
     t3.precede(t4);
@@ -108,7 +108,7 @@ TEST_CASE("DAG: Diamond Topology Synchronization", "[dag]") {
     tfl::Flow flow;
     std::atomic<int> counter{0};
 
-    // Fix: 不在 worker 线程里调用 REQUIRE，改用 atomic flag 收集结果
+    // 修复：不要在 worker 线程内调用 REQUIRE，使用原子标志收集结果
     std::atomic<bool> a_ok{false}, b_ok{false}, c_ok{false}, d_ok{false};
 
     auto A = flow.emplace([&] {
@@ -135,7 +135,7 @@ TEST_CASE("DAG: Diamond Topology Synchronization", "[dag]") {
     tfl::Executor executor(handler, 4);
     executor.deferred_async(flow).start().wait();
 
-    // 所有断言在主线程
+    // 所有断言在主线程上
     REQUIRE(counter.load() == 4);
     REQUIRE(a_ok.load());
     REQUIRE(b_ok.load());
@@ -199,7 +199,7 @@ TEST_CASE("MultiBranch: Concurrent Path Routing", "[branch]") {
 
 
 // ============================================================================
-// [Runtime] 运行时动态拓扑与子图
+// [Runtime] Runtime 动态拓扑与子图
 // ============================================================================
 
 TEST_CASE("Runtime: Dynamic Async & Wait", "[runtime]") {
@@ -251,7 +251,7 @@ TEST_CASE("Subflow: Predicate Condition Loop", "[subflow]") {
 
 TEST_CASE("Semaphore: Real Concurrency Limiting", "[semaphore]") {
     tfl::Flow flow;
-    tfl::Semaphore sem(2); // 最大并发度限制为 2
+    tfl::Semaphore sem(2); // 最大并发限制为 2
 
     std::atomic<int> current_active{0};
     std::atomic<int> max_active_observed{0};
@@ -264,14 +264,14 @@ TEST_CASE("Semaphore: Real Concurrency Limiting", "[semaphore]") {
             int max_val = max_active_observed.load();
             while (max_val < cur && !max_active_observed.compare_exchange_weak(max_val, cur)) {}
 
-            std::this_thread::sleep_for(10ms); // 模拟耗时，促发并发冲突
+            std::this_thread::sleep_for(10ms); // 模拟工作以触发并发争用
             current_active.fetch_sub(1);
         });
         task.acquire(sem).release(sem);
     }
 
     tfl::ResumeNever handler;
-    // 分配 8 个物理线程，但由于信号量限制，实际并发量不应超过 2
+    // 分配 8 个物理线程，但由于信号量限制，实际并发不应超过 2
     tfl::Executor executor(handler, 8);
     executor.deferred_async(flow).start().wait();
 
@@ -285,7 +285,7 @@ TEST_CASE("Executor: AsyncTask Explicit Dependencies", "[executor]") {
 
     std::atomic<int> step{0};
 
-    // Fix: 不在 worker 线程里调用 REQUIRE，用 atomic flag 收集结果
+    // 修复：不要在 worker 线程内调用 REQUIRE，使用原子标志收集结果
     std::atomic<bool> t1_ok{false}, t2_ok{false}, t3_ok{false};
 
     auto t1 = executor.deferred_async([&] {
@@ -309,7 +309,7 @@ TEST_CASE("Executor: AsyncTask Explicit Dependencies", "[executor]") {
     t3.wait();
     executor.wait_for_all();
 
-    // 所有断言在主线程
+    // 所有断言在主线程上
     REQUIRE(step.load() == 3);
     REQUIRE(t1_ok.load());
     REQUIRE(t2_ok.load());
@@ -325,7 +325,7 @@ TEST_CASE("Executor: Flow Callbacks and Submissions", "[executor]") {
 
     flow.emplace([&] { runs.fetch_add(1); });
 
-    // 提交多次执行并附加回调
+    // 提交多次执行并附带回调
     executor.deferred_async(flow, 3ULL, [&] { cb_called.store(true); }).start().wait();
 
     REQUIRE(runs.load() == 3);
@@ -347,7 +347,7 @@ TEST_CASE("Exception: ResumeNever Stops Execution", "[exception]") {
 
     fail.precede(next);
 
-    // 因为抛出异常，next_task 不应该被执行
+    // 由于抛出了异常，next_task 不应执行
     REQUIRE(next_task_run.load() == 0);
 }
 
@@ -362,14 +362,14 @@ TEST_CASE("Exception: ResumeAlways Ignores Failure", "[exception]") {
 
     fail.precede(next);
 
-    // 不应该抛出到用户层
+    // 不应传播到用户层
     REQUIRE_NOTHROW(executor.deferred_async(flow).start().wait());
-    // 后续任务不应该继续执行
+    // 后续任务不应继续执行
     REQUIRE(next_task_run.load() == 0);
 }
 
 // ============================================================================
-// [Stress] 大规模压测与边缘条件
+// [Stress] 大规模压力测试与边界条件
 // ============================================================================
 
 TEST_CASE("Stress: Mass Concurrent Graph Submissions", "[stress]") {
@@ -409,29 +409,31 @@ TEST_CASE("Edge: Disconnected Empty Tasks", "[edge]") {
     tfl::Executor executor(handler, 2);
     tfl::Flow flow;
 
-    // 放入大量完全断开的孤立空任务，测试调度器调度的边缘性能
+    // 提交大量完全断开连接的孤立空任务，测试调度器边界性能
     for(int i=0; i<100; ++i) {
         flow.emplace([]{});
     }
 
-    // 只要不崩溃、能正常退出即通过
+    // 只要不崩溃且正常退出即通过
     REQUIRE_NOTHROW(executor.deferred_async(flow).start().wait());
 }
 
 TEST_CASE("Task Topology Constraints - precede() exception and cycle detection") {
     tfl::Flow flow;
-    auto nop = []{}; // 空闭包用于占位
+    auto nop = []{}; // 空闭包，用作占位符
 
+    /// @section normal-acyclic-precede-succeeds
     SECTION("1. Normal acyclic precede succeeds") {
         tfl::Task A = flow.emplace(nop).name("A");
         tfl::Task B = flow.emplace(nop).name("B");
 
-        // 正常连边不应抛出任何异常
+        // 正常边不应抛出任何异常
         REQUIRE_NOTHROW(A.precede(B));
         CHECK(A.num_successors() == 1);
         CHECK(B.num_predecessors() == 1);
     }
 
+    /// @section self-loop-non-jump-throws
     SECTION("2. Self-loop on non-jump node throws exception") {
         tfl::Task A = flow.emplace(nop).name("A");
 
@@ -446,6 +448,7 @@ TEST_CASE("Task Topology Constraints - precede() exception and cycle detection")
         CHECK(caught == true);
     }
 
+    /// @section self-loop-jump-succeeds
     SECTION("3. Self-loop on jump node succeeds") {
         tfl::Task JumpA = flow.emplace([](tfl::Jump&){}).name("JumpA");
 
@@ -453,6 +456,7 @@ TEST_CASE("Task Topology Constraints - precede() exception and cycle detection")
         CHECK(JumpA.num_successors() == 1);
     }
 
+    /// @section strict-cycle-without-jump-throws
     SECTION("4. Strict cycle without jump node throws exception") {
         tfl::Task A = flow.emplace(nop).name("A");
         tfl::Task B = flow.emplace(nop).name("B");
@@ -475,6 +479,7 @@ TEST_CASE("Task Topology Constraints - precede() exception and cycle detection")
         CHECK(A.num_predecessors() == 0);
     }
 
+    /// @section cycle-with-jump-succeeds
     SECTION("5. Cycle containing a jump node succeeds (O(1) exemption)") {
         tfl::Task A = flow.emplace(nop).name("A");
         tfl::Task B = flow.emplace(nop).name("B");
