@@ -37,8 +37,8 @@ namespace tfl {
 ///    └──────  Locking 自旋 ───────┘
 /// @endcode
 ///
-/// **Running ↔ Locking** 是巧妙之处：动态 `dependent_async` 添加新依赖时需要
-/// 临时锁定状态做原子性的多字段更新。直接用 `std::mutex` 太重，这里用
+/// **Running ↔ Locking** 的设计动机：动态 `dependent_async` 添加新依赖时需要
+/// 临时锁定状态做原子性的多字段更新。`std::mutex` 对此场景过重，这里用
 /// `compare_exchange_weak(Running ↔ Locking)` 实现 **轻量级自旋锁**：
 /// - 只有添加新依赖时才进 Locking，时间极短；
 /// - 状态字段本身就是原子，复用其 CAS 不引入新原语；

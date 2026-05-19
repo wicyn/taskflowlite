@@ -48,7 +48,7 @@ enum class TaskType : std::int32_t
     Graph       = 7    ///< 子图任务：封装了另一个完整的 Taskflow 拓扑
 };
 
-/// @brief 将 TaskType 转换为原始字符串常量。
+/// @brief 返回 TaskType 对应的 C 字符串常量。
 constexpr const char* to_string(TaskType type) noexcept {
     switch (type) {
     case TaskType::None:        return "none";
@@ -63,14 +63,14 @@ constexpr const char* to_string(TaskType type) noexcept {
     }
 }
 
-/// @brief 将 TaskType 转换为 string_view 以支持高效的非拷贝字符串操作。
+/// @brief 返回 TaskType 对应的 string_view（零拷贝）。
 constexpr std::string_view to_string_view(TaskType type) noexcept
 {
     return to_string(type);
 }
 
 namespace impl {
-/// @brief 内部元编程辅助：记录 TaskType 枚举的最大数量。
+/// @brief 内部元编程辅助：TaskType 的枚举器数量。
 template <>
 struct EnumMaxImpl<TaskType>
 {
@@ -78,7 +78,7 @@ struct EnumMaxImpl<TaskType>
 };
 } // namespace impl
 
-/// @brief 支持 std::ostream 标准输出流。
+/// @brief 将 TaskType 写入 ostream（格式同 to_string）。
 inline std::ostream& operator<<(std::ostream& os, TaskType type)
 {
     return os << to_string(type);
@@ -117,7 +117,7 @@ constexpr std::string_view to_string_view(Direction dir) noexcept
 }
 
 namespace impl {
-/// @brief 内部元编程辅助：记录 Direction 枚举的最大数量。
+/// @brief 内部元编程辅助：Direction 的枚举器数量。
 template <>
 struct EnumMaxImpl<Direction>
 {
@@ -125,7 +125,7 @@ struct EnumMaxImpl<Direction>
 };
 } // namespace impl
 
-/// @brief 支持 std::ostream 标准输出流。
+/// @brief 将 Direction 写入 ostream（格式同 to_string）。
 inline std::ostream& operator<<(std::ostream& os, Direction dir)
 {
     return os << to_string(dir);

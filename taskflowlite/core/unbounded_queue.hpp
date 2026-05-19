@@ -43,7 +43,7 @@ namespace tfl {
 /// 后释放是安全的）。
 ///
 /// @tparam Tp 必须为指针类型
-/// @see UnboundedQueue  使用本类的对方
+/// @see UnboundedQueue  基于本类的无锁无界队列
 template <typename Tp>
     requires std::is_pointer_v<Tp>
 class AtomicRingBuffer : public Immovable<AtomicRingBuffer<Tp>> {
@@ -428,8 +428,8 @@ Tp UnboundedQueue<Tp>::steal() noexcept {
         Tp tmp = m_buf.load(std::memory_order_acquire)->load(top);
 
         // 4. 尝试用强 CAS 抢占该元素的归属权
-        // Why: 奉行“打不过就跑”策略。如果失败，说明恰好有其他 Stealer 或 Owner 抢走了它。
-        // 直接返回 nullptr 而不是死循环重试，彻底避免“缓存行风暴（Cache Line Bouncing）”。
+        // Why: CAS 失败即返回 nullptr,不做死循环重试。若竞争丢失,
+        // 说明有其他 Stealer 或 Owner 抢先抢占,继续等待会引发缓存行风暴。
         if (!m_top.compare_exchange_strong(top, top + 1,
                                            std::memory_order_seq_cst,
                                            std::memory_order_relaxed)) [[unlikely]] {

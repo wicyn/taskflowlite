@@ -1,5 +1,5 @@
 ﻿/// @file object_pool.hpp
-/// @brief Typed object pool facade.
+/// @brief 类型级静态对象池门面 —— 与 operator new/delete 对接的统一入口
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-05-15
@@ -20,8 +20,8 @@
 /// 等价于:
 ///
 ///   ObjectPool<T,
-///              SubdividedScheme<sizeof(T), 4096, 4>,
-///              (1u << 23) /* 8 MB */>
+///              SubdividedScheme<sizeof(T), 8192, 4>,
+///              (1u << 26) /* 64 MB */>
 ///
 /// 自定义示例:
 ///
@@ -54,13 +54,12 @@ namespace tfl {
 /// @tparam T              池服务的对象类型,size class 默认从 sizeof(T) 起算
 /// @tparam Scheme         size-class 方案,默认 SubdividedScheme 覆盖
 ///                        [sizeof(T), 4096],每 octave 切 4 份 (内碎片 ≤ 25%)
-/// @tparam MaxCachedBytes 全池缓存字节上限,默认 8 MB。超此值的 deallocate 直接
+/// @tparam MaxCachedBytes 全池缓存字节上限,默认 64 MB。超此值的 deallocate 直接
 ///                        交还 ::operator delete,防止长跑进程无界堆积
 ///
 /// 调参建议 (MaxCachedBytes):
 ///   - 嵌入式/资源受限:  1u << 18  (256 KB)
 ///   - 桌面/中等服务:    1u << 22  (4 MB)
-///   - 任务调度库默认:   1u << 23  (8 MB)
 ///   - 高吞吐服务器:     1u << 26  (64 MB) ← 当前默认
 template <typename T,
          SizeClassScheme Scheme = SubdividedScheme<sizeof(T), 8192, 4>,

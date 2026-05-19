@@ -129,25 +129,21 @@ class AsyncTask {
 
 
 public:
-    /// @brief 构造空句柄，不绑定任何异步任务。
     AsyncTask() noexcept = default;
 
-    /// @brief 析构句柄，并释放当前持有的任务引用。
+    /// @brief 析构句柄，释放当前持有的任务引用。
     ~AsyncTask();
 
-    /// @brief 构造空句柄，不绑定任何异步任务。
     explicit AsyncTask(std::nullptr_t) noexcept;
 
-    /// @brief 拷贝构造，引用同一个异步任务并增加引用计数。
+    /// @brief 拷贝构造，增加上游拓扑的引用计数。
     AsyncTask(const AsyncTask& rhs) noexcept;
 
-    /// @brief 拷贝赋值，释放当前引用后引用 rhs 指向的异步任务。
     AsyncTask& operator=(const AsyncTask& rhs) noexcept;
 
-    /// @brief 移动构造，接管 rhs 的任务引用，并将 rhs 置空。
+    /// @brief 移动构造，接管所有权，rhs 变为空句柄。
     AsyncTask(AsyncTask&& rhs) noexcept;
 
-    /// @brief 移动赋值，释放当前引用后接管 rhs 的任务引用，并将 rhs 置空。
     AsyncTask& operator=(AsyncTask&& rhs) noexcept;
 
     /// @brief 释放当前任务引用，并将句柄置空。

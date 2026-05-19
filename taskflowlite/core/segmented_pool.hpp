@@ -1,5 +1,5 @@
 ﻿/// @file segmented_pool.hpp
-/// @brief Lock-free segmented pool with byte-budget cap.
+/// @brief 无锁分段对象池 —— 按 size class 分片，带全局字节预算硬上限
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-05-15
@@ -8,7 +8,7 @@
 ///
 /// @details
 /// SegmentedPool<Scheme, MaxCachedBytes> 是多 class lock-free freelist 池,
-/// 带全局字节预算限流。
+/// 带全局字节预算限流（硬上限: CAS 循环精确控制）。
 ///
 /// allocate(bytes):
 ///   - bytes ∈ [min_size, max_size]: 经 Scheme::class_index 路由到对应 freelist
@@ -39,18 +39,19 @@
 
 namespace tfl {
 
-/// @brief Lock-free segmented pool with a global byte-budget cap.
+/// @brief 无锁分段对象池 —— 按 size class 分片的 lock-free freelist 集合，带全局字节预算硬上限。
 ///
 /// @tparam Scheme         size-class 方案 (PowerOfTwo / Subdivided / Hybrid / Table)
-/// @tparam MaxCachedBytes 全池缓存字节上限,默认 8 MB。
+/// @tparam MaxCachedBytes 全池缓存字节上限,默认 64 MB。
 ///
 /// 调参建议:
 ///   - 嵌入式:     1u << 18  (256 KB)
 ///   - 桌面/中服:  1u << 22  (4 MB)
 ///   - 服务器:     1u << 26  (64 MB)
 ///
-/// 限流是软上限:允许 ±N×size 漂移 (relaxed 计数 + 无 CAS 检查),
-/// 实测稳态超 cap 不超过 worker_count × max_size 字节,可忽略。
+/// 限流是硬上限: deallocate 路径使用 CAS 循环原子地将"判断容量"与"计数递增"
+/// 合并为单一事务,超 cap 的块直接交还系统。同一时刻至多一个块超限,稳态下
+/// cached_bytes 严格 <= MaxCachedBytes。
 template <SizeClassScheme Scheme, std::size_t MaxCachedBytes = (1u << 26)>  // 64 MB
 class SegmentedPool : public Immovable<SegmentedPool<Scheme, MaxCachedBytes>> {
 public:
@@ -94,11 +95,12 @@ public:
     ///
     /// 顺序: load → 容量检查 → fetch_add (relaxed) → push (release-CAS)。
     /// Why:
-    ///   - load 用 relaxed 即可: 这是软限流读,允许漂移
+    ///   - load 用 relaxed 即可: 读到的值可能滞后,导致瞬时误判超 cap,
+    ///     但 CAS 循环会把最终判断权交给原子比较,误判仅损失一次入池机会
     ///   - fetch_add 必须在 push 之前: release 屏障阻止 add 重排到 push 之后,
     ///     保证 cached_bytes 始终是上界 (≥ 实际池中字节)
-    ///   - 极端情况两线程同时通过容量检查可能瞬时超 cap 一两个块,
-    ///     但绝不下溢,后续 deallocate 会拒绝补位
+    ///   - CAS 循环: 将"判断容量"与"计数递增"合并为单一原子事务,
+    ///     避免竞争窗口内多个线程同时通过检查导致的瞬时超限
     TFL_FORCE_INLINE void deallocate(void* p, std::size_t bytes) noexcept {
         if (!p) [[unlikely]] return;
         if (bytes - min_size > max_size - min_size) [[unlikely]] {
@@ -125,24 +127,6 @@ public:
 
         m_classes[idx].push(p);   // release-CAS,fetch_add 已先于此完成
     }
-
-
-    // TFL_FORCE_INLINE void deallocate(void* p, std::size_t bytes) noexcept {
-    //     if (!p) [[unlikely]] return;
-    //     if (bytes - min_size > max_size - min_size) [[unlikely]] {
-    //         ::operator delete(p, bytes);
-    //         return;
-    //     }
-    //     const auto idx  = traits_type::class_index(bytes);
-    //     const auto size = traits_type::class_size(idx);
-    //     // 容量检查: 允许漂移,精度软上限 (硬上限要 CAS 循环,开销不值)
-    //     if (m_cached_bytes.load(std::memory_order_relaxed) + size > MaxCachedBytes) [[unlikely]] {
-    //         ::operator delete(p, size);
-    //         return;
-    //     }
-    //     m_cached_bytes.fetch_add(size, std::memory_order_relaxed);  // ① 占位
-    //     m_classes[idx].push(p);                                      // ② 入池 (release-CAS)
-    // }
 
     /// @brief 排空所有 freelist,把缓存块全部交还系统。
     /// @warning 调用者必须保证: 无并发 allocate/deallocate; 且无存活对象仍引用池块。

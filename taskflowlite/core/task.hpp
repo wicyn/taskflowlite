@@ -395,7 +395,6 @@ public:
     /// @brief 获取已注册的任务观察者数量。
     [[nodiscard]] std::size_t num_observers() const noexcept;
 
-    /// @brief 判断当前句柄是否绑定了有效任务节点。
     [[nodiscard]] explicit operator bool() const noexcept;
 
     /// @brief 检测任务执行期间是否已经记录异常。

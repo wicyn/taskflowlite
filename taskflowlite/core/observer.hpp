@@ -66,16 +66,17 @@ public:
     /// @param wv 工作线程状态快照
     virtual void on_after(WorkerView wv) = 0;
 
-    /// @brief 虚析构函数，确保你以后继承这个类写的子类，在销毁时能把自己的内存收拾干净。
+    /// @brief 虚析构函数，确保派生类析构时正确释放资源。
     virtual ~TaskObserver() = default;
 
 protected:
 
-    // Why: 为什么要把构造和赋值操作都藏在 protected 里？这可是 C++ Core Guidelines 推荐的老手艺：
-    // 1. 防误伤：这就是个纯虚的接口，根本不该在外面被直接实例化。
-    // 2. 防切片：新手把子类对象当参数直接传值（而不是传指针/引用）时，很容易发生“对象切片（Object Slicing）”，
-    //    把子类特有的数据给无情切丢了。把赋值藏起来，编译器直接就会在编译阶段报错拦住这种危险操作。
-    // 3. 留后门：虽然外面的人不能调，但你的子类自己在家里依然可以正常用编译器生成的默认拷贝和移动。
+    // Why: 构造/赋值操作均为 protected —— 遵循 C++ Core Guidelines 的接口隔离实践:
+    //   1. 禁止外部实例化：本类为纯虚接口，不应直接构造；
+    //   2. 防止对象切片：若按值传递派生类对象，编译器在传参时会发生隐式切片
+    //      （派生类数据被截断），将赋值操作设为 protected 可编译期拦截此误用；
+    //   3. 保留派生类内部使用：子类在自已的成员函数中仍可正常调用编译器生成的
+    //      拷贝/移动默认实现。
     TaskObserver() = default;
     TaskObserver(const TaskObserver&) = default;
     TaskObserver(TaskObserver&&) = default;
