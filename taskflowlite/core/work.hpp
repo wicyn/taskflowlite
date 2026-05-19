@@ -249,12 +249,24 @@ public:
 
     /// @brief 默认对齐对象走 Work 对象池。
     static void* operator new(std::size_t bytes) {
+#if defined(TFL_ENABLE_WORK_POOL)
         return ObjectPool<Work>::allocate(bytes);
+#else
+        return ::operator new(bytes);
+#endif
     }
 
     /// @brief sized delete：根据实际对象大小归还到对应 size class。
-    static void operator delete(void* p, std::size_t bytes) noexcept {
+    static void operator delete(void* p, std::size_t bytes) noexcept { 
+#if defined(TFL_ENABLE_WORK_POOL)
         ObjectPool<Work>::deallocate(p, bytes);
+#else
+        ::operator delete(p, bytes);
+#endif
+    }
+
+    static void operator delete(void* p) noexcept {
+        ::operator delete(p);
     }
 
     /// @brief over-aligned 对象绕过 WorkPool，避免普通池返回低对齐地址。
@@ -264,8 +276,7 @@ public:
 
     /// @brief over-aligned 对象使用匹配的全局 aligned delete。
     static void operator delete(void* p, std::size_t bytes, std::align_val_t al) noexcept {
-        (void)bytes;
-        ::operator delete(p, al);
+        ::operator delete(p, bytes, al);
     }
 
     /// @brief Work 节点不支持数组分配。

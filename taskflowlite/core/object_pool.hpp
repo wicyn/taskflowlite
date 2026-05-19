@@ -78,25 +78,16 @@ public:
     /// @brief 分配 bytes 字节。
     /// @note 启用 TFL_ENABLE_OBJECT_POOL 时走 pool;否则走全局 new (零开销)。
     [[nodiscard]] static TFL_FORCE_INLINE void* allocate(std::size_t bytes) {
-#if defined(TFL_ENABLE_OBJECT_POOL)
         return pool().allocate(bytes);
-#else
-        return ::operator new(bytes);
-#endif
     }
 
     /// @brief 归还 p 到池 (bytes 必须与 allocate 时一致, 一般为 sizeof(T))。
     /// @note 未启用 TFL_ENABLE_OBJECT_POOL 时走 sized delete,bytes 仍传给系统
     ///       分配器以加速反查 (jemalloc/tcmalloc 提速 30-50%)。
     static TFL_FORCE_INLINE void deallocate(void* p, std::size_t bytes) noexcept {
-#if defined(TFL_ENABLE_OBJECT_POOL)
         pool().deallocate(p, bytes);
-#else
-        ::operator delete(p, bytes);
-#endif
     }
 
-#if defined(TFL_ENABLE_OBJECT_POOL)
     /// @brief 获取当前静态池单例。
     ///
     /// Meyers 单例,首次访问时构造,atexit 阶段自动析构。析构时调用 release(),
@@ -137,12 +128,6 @@ public:
     static void release() noexcept {
         pool().release();
     }
-#else
-    /// @brief 未启用池化时的 stub,返回 0,无副作用。
-    [[nodiscard]] static constexpr std::size_t cached_bytes() noexcept { return 0; }
-    /// @brief 未启用池化时的 stub,无副作用。
-    static constexpr void release() noexcept {}
-#endif
 };
 
 }  // namespace tfl
