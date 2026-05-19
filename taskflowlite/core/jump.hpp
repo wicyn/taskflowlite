@@ -28,30 +28,28 @@ namespace tfl {
 /// 的一个语义代理。
 ///
 /// ============================================================================
-///  调度原理 —— 抢占式强制清零(Force-Reset Trick)
+///  调度原理 —— 独立 tear_down 强制清零
 /// ============================================================================
-/// `JumpWork` 出边的初始 `join_weight` 是 **0**(普通边为 1,Branch 为 2),
-/// 这意味着:
+/// `JumpWork` 不走通用的 `_tear_down_task` 路径，而是由 `_tear_down_jump_task`
+/// 单独处理 —— Executor 在 invoke 结束时拿到用户选中的 `m_target`，对其
+/// `join_counter` 执行 `store(0)`，强制将其视为"所有前驱已到齐"，直接进入
+/// 就绪状态。未被 select 命中的后继完全不受触达。
 ///
-/// @code
-///   Jump 出边对后继 join_counter 的常规递减贡献 = 0
-///   → 单靠"常规 tear_down"路径,Jump 的所有后继都无法被激活
-///   → 后继激活的唯一方式:被 select 选中的目标,join_counter 被强制 store(0)
-/// @endcode
+/// 与 `Branch` 的本质区别：
+/// - Jump 用 `store(0)` 绕过计数协议，选中后继无条件就绪，无视其他前驱状态；
+/// - Branch 走正常的 `fetch_sub` 计数协议，选中后继仍需等待所有前驱到齐；
+/// - Jump 的 join_weight 为 0 —— 后继的 join_counter 初始化时不包含 Jump 的贡献，
+///   这意味着 Jump 节点的完成本身不会触发任何后继（必须由 select 显式激活）。
 ///
-/// 这与 `Branch` 的"协作式差额"形成本质对比 —— Branch 的未选中后继仍然可以被
-/// 其他前驱通过常规 join_counter 递减完成;**Jump 的所有后继激活完全由 `select`
-/// 独占控制**,任何未被 select 命中的后继都会在本次分支中被丢弃。
-///
-/// 这种设计的工程意义:**赋予用户在节点内"强行改写控制流"的能力**,典型应用是
-/// retry 循环、状态机回跳、跨层级 goto 等"非线性"控制结构。
+/// 这种设计赋予用户在节点内"强行改写控制流"的能力，典型应用是 retry 循环、
+/// 状态机回跳、跨层级 goto 等非线性控制结构。
 ///
 /// ============================================================================
 ///  关键不变量 —— 不 select 就丢弃
 /// ============================================================================
 /// **必须强调:** 与 Branch 不同,Jump 节点若不调用 `select` / `select_if` 命中,
-/// `target == nullptr`,**所有后继都不会被调度**(源码 `_tear_down_jump_task`
-/// 中 `if (!exception && target)` 直接跳过激活逻辑)。
+/// `target == nullptr`,**所有后继都不会被调度**（`_tear_down_jump_task`
+/// 中 `target == nullptr || has_exception` 时直接归还 slot，跳过激活逻辑）。
 ///
 /// 这意味着:
 /// - "走默认路径"的需求 → 用 `select(idx)` 显式跳过去,**不能依赖"什么都不做"**;
@@ -107,8 +105,9 @@ namespace tfl {
 ///   check.precede(process, success);   // 0=process, 1=success
 /// @endcode
 ///
-/// 注意 `else` 分支必须 `select(1)` ——**不能依赖"什么都不做就走 success"**,
-/// 因为 Jump 的 weight=0 出边没有"默认路径"机制。
+/// 注意 `else` 分支必须 `select(1)` —— **不能依赖"什么都不做就走 success"**，
+/// 因为 Jump 节点只有显式 select 的目标才会被 `_tear_down_jump_task` 的
+/// `store(0)` 激活，未选中的后继永久阻塞。
 ///
 /// ============================================================================
 ///  生命周期约束 —— 严格栈帧绑定
@@ -118,7 +117,7 @@ namespace tfl {
 /// 持有它的 `Work*` 进入 tear_down,行为未定义。这与 `Runtime` 的栈帧约束相同。
 ///
 /// @pre 由 JumpWork::invoke 构造,传引用给闭包,不可逃逸。
-/// @see Branch        协作式差额的"软选择"对偶
+/// @see Branch        fetch_sub 计数协议的"软选择"对偶
 /// @see MultiJump     多目标广播跳转版
 /// @see JumpWork      宿主节点类型
 class Jump : public Immovable<Jump> {
@@ -305,8 +304,9 @@ inline std::size_t Jump::size() const noexcept {
 ///
 /// @details
 /// 与 `Jump` 互斥选择不同,`MultiJump` 允许同时强制激活 N 条下游链路 ——
-/// 每个被选中的后继都被独立 `join_counter.store(0)` 强制清零。底层调度协议复用
-/// 同样的"边权 0 + 强制激活"机制,仅 select 集合从单个变为去重集合。
+/// 走独立的 `_tear_down_multi_jump_task`，遍历 `m_targets` 集合，每个被选中
+/// 的后继各执行一次 `store(0)` 强制清零。调度协议与 `Jump` 完全一致，仅 select
+/// 集合从单个指针变为 `SmallVector<Work*>` 去重集合。
 ///
 /// ============================================================================
 ///  累积语义(Accumulative,与 Jump 的覆盖语义对照)
@@ -322,8 +322,8 @@ inline std::size_t Jump::size() const noexcept {
 ///  关键不变量 —— 不 select 就丢弃
 /// ============================================================================
 /// 与 Jump 一致:`MultiJump` 的所有后继都靠 select 显式激活。源码
-/// `_tear_down_multi_jump_task` 中遍历的就是 `m_targets` 集合 —— 集合为空时
-/// 整个 for 循环空跑,所有后继被静默丢弃。
+/// `_tear_down_multi_jump_task` 中 `targets.empty()` 时直接归还 slot、
+/// 跳过激活逻辑 —— 所有后继被静默丢弃。
 ///
 /// 这意味着:
 /// - 想"广播全部" → 用 `select_all()`,**不能省略**;
@@ -385,7 +385,7 @@ inline std::size_t Jump::size() const noexcept {
 ///
 /// @pre 由 MultiJumpWork::invoke 构造,传引用给闭包,不可逃逸。
 /// @see Jump          单目标互斥版
-/// @see MultiBranch   协作式差额的"软选择"对偶
+/// @see MultiBranch   fetch_sub 计数协议的"软选择"对偶
 /// @see MultiJumpWork 宿主节点类型
 class MultiJump : public Immovable<MultiJump> {
     friend class Work;
