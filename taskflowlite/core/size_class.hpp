@@ -1,5 +1,5 @@
 ﻿/// @file size_class.hpp
-/// @brief Size-class scheme traits and built-in schemes.
+/// @brief Size-class 分档方案 trait 与内置方案（PowerOfTwo / Subdivided / Hybrid / Table）
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-05-15
@@ -83,7 +83,7 @@ concept SizeClassScheme = detail::HasClassSizes<S> || detail::HasFullClassApi<S>
 template <SizeClassScheme S>
 struct SizeClassTraits {
 private:
-    /// @brief Branchless lower_bound: 用算术替代分支,避免分支预测失败。
+    /// @brief 低分支预测干扰的 lower_bound: 通过算术乘法替代 if-else,减少分支预测失败。
     template <typename Arr>
     [[nodiscard]] static constexpr std::size_t lb_pos(const Arr& arr, std::size_t bytes) noexcept {
         std::size_t lo  = 0;

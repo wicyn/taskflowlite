@@ -182,11 +182,11 @@ class WorkerHandler {
 public:
     virtual ~WorkerHandler() = default;
 
-    /// @brief 线程启动前触发
+    /// @brief 线程创建后、调度循环启动前触发
     /// @note 适合 CPU 亲和性绑定、线程重命名、TLS 初始化
     virtual void on_start(Worker& worker) noexcept = 0;
 
-    /// @brief 线程退出前触发
+    /// @brief 调度循环退出后、线程 join 前触发
     /// @note 适合 TLS 资源回收、统计指标输出
     virtual void on_stop(Worker& worker) noexcept = 0;
 
@@ -203,7 +203,7 @@ public:
     void on_stop(Worker&) noexcept override {}
 
     bool on_exception(Worker&, std::exception_ptr) noexcept override final {
-        return true; // 强制吞掉异常，保全整体可用性
+        return true; // 消费异常，继续调度
     }
 };
 
@@ -215,7 +215,7 @@ public:
     void on_stop(Worker&) noexcept override {}
 
     bool on_exception(Worker&, std::exception_ptr) noexcept override final {
-        return false; // 强制终止线程
+        return false; // 异常触发 worker 退出
     }
 };
 

@@ -553,9 +553,8 @@ inline void Work::_precede(Work* const target) {
         throw Exception("cannot precede: {}.", result.error());
     }
 
-    // Why: 构造期单向压入并相互引注。
-    // 在这同步的拓扑描绘阶段，将即将建立的前后级从属关系写入目标节点的前端负重配额（join_count）中。
-    // 这是将运行期判断成本彻底转嫁到构建期的核心秘诀。
+    // Why: 双向压入 —— 后继区间在前、前驱区间在后，统一存入 m_edges。
+    // 构造期静态建立邻接关系，运行期 join_counter 计算直接复用，零额外开销。
     m_edges.push_back(target);
     if (m_num_successors < m_edges.size() - 1) {
         std::swap(m_edges[m_num_successors], m_edges.back());
@@ -597,7 +596,7 @@ inline void Work::_clear_successors() noexcept {
         succ->_erase_predecessor_at(static_cast<std::size_t>(it - pred.begin()));
     }
 
-    // 极致优化：直接擦除前半段的后继节点，利用标准库底层的 memmove 将前驱节点整体前移
+    // 擦除前半段后利用底层 memmove 将前驱节点整体前移
     m_edges.erase(m_edges.begin(), m_edges.begin() + m_num_successors);
     m_num_successors = 0;
 }
@@ -665,11 +664,11 @@ inline bool Work::_has_path_without_jump(const Work* from, const Work* to) const
 
 inline void Work::_acquire(Semaphore* sem, std::size_t count) {
     if (!sem) throw Exception("cannot acquire null semaphore.");
-    if (count == 0) return; // 防御性编程：忽略 0 配额请求
+    if (count == 0) return; // 忽略空请求,避免语义歧义
 
     auto& sd = _ensure_semaphores();
 
-    // 裸循环线性查重，极致利用 L1 缓存
+    // 闭区间线性查重,小 N 下优于哈希
     for (std::size_t i = 0; i < sd.acquires.size(); ++i) {
         if (sd.acquires[i].sem == sem) {
             throw Exception("semaphore already in acquire list.");
@@ -685,7 +684,7 @@ inline void Work::_release(Semaphore* sem, std::size_t count) {
 
     auto& sd = _ensure_semaphores();
 
-    // 裸循环线性查重，极致利用 L1 缓存
+    // 闭区间线性查重,小 N 下优于哈希
     for (std::size_t i = 0; i < sd.releases.size(); ++i) {
         if (sd.releases[i].sem == sem) {
             throw Exception("semaphore already in release list.");

@@ -94,19 +94,19 @@ struct ChunkLink {
     }
 };
 
-/// @brief CRTP 空基类：禁拷贝 + 禁移动 —— "地址即身份"。
+/// @brief CRTP 空基类：禁止拷贝与移动，保证对象地址在构造后不变。
 ///
 /// @details
-/// `Immovable<CRTP>` 是框架内"一旦构造，地址绝不挪窝"类型的统一标记。被它继承
-/// 的对象禁掉了所有四种特殊成员（拷贝构造 / 移动构造 / 拷贝赋值 / 移动赋值）。
+/// `Immovable<CRTP>` 禁掉所有四种特殊成员（拷贝构造 / 移动构造 / 拷贝赋值 / 移动赋值），
+/// 用于 Executor、Semaphore 等"构造后地址不可变"的核心对象。
 ///
 /// ============================================================================
-///  CRTP 的妙用 —— 防误用 + 唯一类型
+///  CRTP 设计动机 —— 防误用 + 每派生类独立类型
 /// ============================================================================
 /// 为什么是 `Immovable<CRTP>` 而不是 `Immovable`（无模板）？
 /// - 多重继承时，多个基类的"非模板 Immovable"会冲突（钻石问题）；
 /// - 模板特化让每个派生类的 Immovable 是独立类型，避免冲突；
-/// - 同时通过 `static_assert(!requires{sizeof(CRTP);})` 检测 CRTP 误用 ——
+/// - 通过 `static_assert(!requires{sizeof(CRTP);})` 检测 CRTP 误用 ——
 ///   基类实例化时派生类必须仍是不完整类型，否则有人写了 `Immovable<int>` 这种
 ///   错用。
 ///
@@ -130,9 +130,9 @@ struct Immovable {
 
 static_assert(std::is_empty_v<Immovable<void>>);
 
-/// @brief 仅可移动的 CRTP 空基类。
+/// @brief CRTP 空基类: 允许移动语义但禁止拷贝。
 ///
-/// 允许移动语义但禁止拷贝，适用于需要转移所有权的对象（如 Flow 或 AsyncTask）。
+/// 适用于需要转移所有权的对象（如 Flow 或 AsyncTask）。
 ///
 /// @tparam CRTP 派生类类型。
 template <typename CRTP>

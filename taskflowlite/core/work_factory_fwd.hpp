@@ -42,7 +42,7 @@
 namespace tfl {
 
 // ============================================================================
-//  内联实现 — Graph 内同步节点工厂
+//  前置声明 — Graph 内同步节点工厂
 // ============================================================================
 
 template <typename T, typename... Args>
@@ -74,7 +74,7 @@ template <typename Gh, typename P>
 [[nodiscard]] inline Work* make_subflow(const Graph* graph, Gh&& gh, P&& pred);
 
 // ============================================================================
-//  内联实现 — 独立异步任务工厂
+//  前置声明 — 独立异步任务工厂
 // ============================================================================
 
 template <anchor_tag A, typename T, typename... Args>
@@ -101,7 +101,7 @@ template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 [[nodiscard]] inline Work* make_async_flow(Executor& exec, Work* parent, Gh&& gh, P&& pred, C&& cb, std::promise<void>&& p);
 // ============================================================================
-//  内联实现 — 有依赖的异步任务工厂
+//  前置声明 — 有依赖的异步任务工厂
 // ============================================================================
 
 template <anchor_tag A, typename T, typename... Args>
@@ -128,6 +128,6 @@ template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 [[nodiscard]] inline Work* make_dep_deferred_async_flow(Executor& exec, Work* parent, Gh&& gh, P&& pred, C&& cb);
 
-/// @brief 销毁工作节点及其关联的拓扑资源
+/// @brief 销毁工作节点，直接 delete
 inline void destroy(Work* work) noexcept;
 }  // namespace tfl
