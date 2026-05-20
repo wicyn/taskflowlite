@@ -96,3 +96,91 @@ TEST_CASE("Exception: ResumeNever prevents subsequent nodes", "[exception][resum
     env.executor.deferred_async(flow).start().wait();
     REQUIRE_FALSE(next_run.load());
 }
+
+// ============================================================================
+// 第 4 节: 兄弟节点异常独立性
+// ============================================================================
+
+/// @test [exception][sibling] A→{B,C}→D, B 异常不影响 C
+TEST_CASE("Exception: sibling branch not blocked by exception in other branch", "[exception][sibling]") {
+    TestEnv env;
+    tfl::Flow flow;
+    std::atomic<bool> c_ran{false}, d_ran{false};
+
+    auto a = flow.emplace([] {});
+    auto b = flow.emplace([] { throw std::runtime_error("b fails"); });
+    auto c = flow.emplace([&] { c_ran.store(true); });
+    auto d = flow.emplace([&] { d_ran.store(true); });
+
+    a.precede(b, c);
+    d.succeed(b, c);
+
+    env.executor.deferred_async(flow).start().wait();
+
+    REQUIRE(c_ran.load());        // 兄弟不受影响
+    REQUIRE_FALSE(d_ran.load());  // D 被 B 的异常阻塞 (ResumeNever)
+}
+
+// ============================================================================
+// 第 5 节: has_exception 查询
+// ============================================================================
+
+/// @test [exception][has_exception] Flow 完成后 has_exception 查询
+TEST_CASE("Exception: has_exception after Flow completes", "[exception][has_exception]") {
+    TestEnv env;
+
+    SECTION("Flow with exception") {
+        tfl::Flow flow;
+        flow.emplace([] { throw std::runtime_error("planned"); });
+        auto task = env.executor.deferred_async(flow);
+        task.start().wait();
+        REQUIRE(task.has_exception());
+    }
+
+    SECTION("Flow without exception") {
+        tfl::Flow flow;
+        flow.emplace([] {});
+        flow.emplace([] {});
+        auto task = env.executor.deferred_async(flow);
+        task.start().wait();
+        REQUIRE_FALSE(task.has_exception());
+    }
+}
+
+// ============================================================================
+// 第 6 节: ResumeAlways 策略
+// ============================================================================
+
+/// @test [exception][resume-always] ResumeAlways 策略下后继节点继续运行
+TEST_CASE("Exception: ResumeAlways allows successors to run", "[exception][resume-always]") {
+    tfl::ResumeAlways handler;
+    tfl::Executor exec(handler, 2);
+    tfl::Flow flow;
+    std::atomic<bool> next_ran{ true };
+
+    auto bad = flow.emplace([] { throw std::runtime_error("ignored"); });
+    auto next = flow.emplace([&] { next_ran.store(false); });
+    bad.precede(next);// 抛出异常后，next不再执行
+
+    REQUIRE_NOTHROW(exec.deferred_async(flow).start().wait());
+    REQUIRE(next_ran.load()); 
+}
+
+// ============================================================================
+// 第 7 节: 多异常仅保留第一个
+// ============================================================================
+
+/// @test [exception][multi] 多个异常仅第一个被归档
+TEST_CASE("Exception: multiple exceptions only first one is captured", "[exception][multi]") {
+    TestEnv env;
+    tfl::Flow flow;
+
+    auto a = flow.emplace([] {});
+    auto b = flow.emplace([] { throw std::runtime_error("first"); });
+    auto c = flow.emplace([] { throw std::runtime_error("second"); });
+    a.precede(b, c);
+
+    auto task = env.executor.deferred_async(flow);
+    task.start().wait();
+    REQUIRE(task.has_exception());
+}

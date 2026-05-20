@@ -1,38 +1,40 @@
-﻿# ============================================================================
-#  TaskflowLite 单元测试 CMake —— Catch2 v3 amalgamated 单二进制汇总
 # ============================================================================
+#  TaskflowLite 单元测试 CMake —— Catch2 v3 amalgamated
+# ============================================================================
+#
+#  两种构建模式：
+#  ----------
+#  1. TaskflowLiteTest（单体）       ：全部 test_*.cpp 编译进一个可执行文件，
+#                                      一键跑全部测试。
+#  2. tfl_test_<name>（单文件）     ：每个 test_*.cpp 编译成独立的可执行文件，
+#                                      可单独生成、调试、运行。
 #
 #  设计要点：
 #  ----------
-#  1. 所有 test_*.cpp 编译进同一可执行文件 TaskflowLiteTest，
-#     Catch2 自动收集 TEST_CASE 注册符号。
-#  2. 通过 GLOB 自动收集 test_*.cpp，新增测试文件无需修改 CMake。
-#  3. 复用上层项目导出的 TaskflowLite::taskflowlite / tfl_internal_flags 目标，
-#     若不存在则自动回退到本地包含路径模式。
-#  4. CTest 默认带 `-s -d yes` 参数，IDE / CI 直接看到详细输出。
-#  5. `run_all_tests` 自定义目标：一键全跑 + 失败时输出。
-#  6. 按 Catch2 标签拆分子测试，可通过 ctest -R 选择性执行。
-#  7. 可选支持 ASan / TSan，调试并发问题更安全。
+#  - catch_amalgamated.cpp 编译为 OBJECT 库，一次编译、多方链接。
+#  - 单文件目标默认 EXCLUDE_FROM_ALL，不增加默认构建时间。
+#  - GLOB + CONFIGURE_DEPENDS 自动发现新增测试文件。
+#  - 复用上层 TaskflowLite::taskflowlite 目标的编译选项。
+#  - CTest 支持标签过滤（ctest -R tfl.flow）和单文件过滤（ctest -R tfl_test.flow）。
+#  - 可选 ASan / TSan 支持。
 #
-#  运行方式：
+#  使用方式：
 #  ----------
-#    ./TaskflowLiteTest                     # 跑全部
-#    ./TaskflowLiteTest "[flow]"            # 仅跑 [flow] 标签
-#    ./TaskflowLiteTest "[runtime]" -s      # 跑 runtime + 显示成功用例
-#    ./TaskflowLiteTest -e "[stress]"       # 排除压力测试
-#    ctest --output-on-failure              # 通过 CTest 统一调度
-#    ctest -R tfl.flow                      # 仅跑 [flow] 子用例
-#    cmake --build . --target run_all_tests # 一键构建+测试
+#    # 单体模式（和以前一样）
+#    ./TaskflowLiteTest                         # 跑全部
+#    ./TaskflowLiteTest "[flow]"                # 仅跑 [flow] 标签
+#    cmake --build . --target run_all_tests     # 一键构建+测试
+#    cmake --build . --target run_flow_tests    # 仅跑 [flow]
 #
-#  目录结构假设：
-#  --------------
-#    project/
-#      taskflowlite/        库头文件
-#      test/
-#        CMakeLists.txt     本文件
-#        catch_amalgamated.hpp / .cpp
-#        test_common.hpp
-#        test_*.cpp
+#    # 单文件模式（新增）
+#    cmake --build . --target tfl_test_queue    # 只编译队列测试
+#    ./build/bin/tfl_test_queue -s              # 只跑队列测试
+#    cmake --build . --target run_test_queue    # 一键编译+跑队列测试
+#
+#    # CTest 过滤
+#    ctest -R "^tfl_test\\."                    # 跑全部单文件测试
+#    ctest -R "^tfl_test\\.queue$"              # 只跑队列单文件测试
+#    ctest -L perfile                           # 跑全部单文件测试（标签过滤）
 # ============================================================================
 
 cmake_minimum_required(VERSION 3.21)
@@ -53,13 +55,20 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Why: 没设过 build type 时给个合理默认（Release），避免 -O0 跑得过慢。
-#      Catch2 + 多线程在 Debug 下能慢一个数量级。
+# ----------------------------------------------------------------------------
+#  Build type 默认值
+# ----------------------------------------------------------------------------
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
                  "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
 endif()
+
+# ----------------------------------------------------------------------------
+#  可选：Sanitizer 支持
+# ----------------------------------------------------------------------------
+option(TFL_TEST_ENABLE_ASAN "Enable AddressSanitizer for tests" OFF)
+option(TFL_TEST_ENABLE_TSAN "Enable ThreadSanitizer for tests" OFF)
 
 # ----------------------------------------------------------------------------
 #  线程库（Catch2 / 测试代码 / TaskflowLite 都需要）
@@ -68,17 +77,14 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
 # ----------------------------------------------------------------------------
-#  自动收集测试源
-#
-#  Why: 用 CONFIGURE_DEPENDS 让 GLOB 在新增/删除文件时触发重配，
-#       新增 test_xxx.cpp 不再需要手动修改 CMake。
+#  自动收集测试源（GLOB + CONFIGURE_DEPENDS 自动发现新增文件）
 # ----------------------------------------------------------------------------
 file(GLOB TFL_TEST_SOURCES
     CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cpp"
 )
 
-# Catch2 amalgamated 单文件实现（提供 main()）
+# Catch2 amalgamated 源文件（提供 main()）
 set(CATCH2_SRC "${CMAKE_CURRENT_SOURCE_DIR}/catch_amalgamated.cpp")
 if(NOT EXISTS "${CATCH2_SRC}")
     message(FATAL_ERROR
@@ -90,126 +96,156 @@ if(NOT TFL_TEST_SOURCES)
         "未找到任何 test_*.cpp 文件于 ${CMAKE_CURRENT_SOURCE_DIR}/")
 endif()
 
-list(APPEND TFL_TEST_SOURCES "${CATCH2_SRC}")
+# ============================================================================
+#  Catch2 amalgamated OBJECT 库 —— 编译一次，多方链接
+#
+#  Why OBJECT: catch_amalgamated.cpp 提供 main() + 全部 Catch2 实现。
+#  编译为 OBJECT 库后，单体外挂二进制和 N 个单文件目标都链接同一份 .obj，
+#  避免对 24 个目标各编译一遍 ~459KB 的 Catch2 源码。
+# ============================================================================
+add_library(tfl_catch2_main OBJECT "${CATCH2_SRC}")
+target_include_directories(tfl_catch2_main PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(tfl_catch2_main PRIVATE cxx_std_23)
 
-# ----------------------------------------------------------------------------
-#  可执行目标
-# ----------------------------------------------------------------------------
+if(MSVC)
+    # /bigobj: catch_amalgamated.cpp 模板展开后 obj 段较大
+    # /W3: 第三方库不需要 /W4 级别警告
+    target_compile_options(tfl_catch2_main PRIVATE /W3 /utf-8 /bigobj)
+else()
+    # 抑制第三方库内的警告
+    target_compile_options(tfl_catch2_main PRIVATE -w)
+endif()
+
+# ============================================================================
+#  辅助函数: tfl_setup_test_target
+#
+#  把编译选项、include 路径、库链接、sanitizer 等所有共享设置封装在此，
+#  单体外挂二进制和单文件目标都调用它，避免配置漂移。
+#
+#  用法:
+#    add_executable(my_target ...)
+#    tfl_setup_test_target(my_target)
+# ============================================================================
+function(tfl_setup_test_target _tgt)
+    # 链接 Catch2 OBJECT 库
+    target_link_libraries(${_tgt} PRIVATE tfl_catch2_main)
+
+    # C++23
+    target_compile_features(${_tgt} PRIVATE cxx_std_23)
+
+    # 本目录 include（test_common.hpp / Catch2 头文件）
+    target_include_directories(${_tgt} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # 链接 TaskflowLite 库（优先复用上层 target，不可用时回退到 include 路径）
+    if(TARGET TaskflowLite::taskflowlite)
+        target_link_libraries(${_tgt} PRIVATE
+            TaskflowLite::taskflowlite
+            Threads::Threads)
+        if(TARGET tfl_internal_flags)
+            target_link_libraries(${_tgt} PRIVATE tfl_internal_flags)
+        endif()
+    else()
+        message(STATUS
+            "TaskflowLite::taskflowlite 不可用，${_tgt} 回退到 include 路径模式")
+        target_include_directories(${_tgt}
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+        target_link_libraries(${_tgt} PRIVATE Threads::Threads)
+    endif()
+
+    # 编译选项
+    if(MSVC)
+        target_compile_options(${_tgt} PRIVATE
+            /W4 /permissive- /Zc:preprocessor /utf-8
+            $<$<CONFIG:Release>:/O2>)
+    else()
+        target_compile_options(${_tgt} PRIVATE
+            -Wall -Wextra -Wpedantic
+            -Wno-unused-parameter
+            $<$<CONFIG:Release>:-O3>
+            $<$<CONFIG:Debug>:-O0 -g>)
+        if(TFL_TEST_ENABLE_ASAN)
+            target_compile_options(${_tgt} PRIVATE
+                -fsanitize=address -fno-omit-frame-pointer)
+            target_link_options(${_tgt} PRIVATE -fsanitize=address)
+        endif()
+        if(TFL_TEST_ENABLE_TSAN)
+            target_compile_options(${_tgt} PRIVATE
+                -fsanitize=thread -fno-omit-frame-pointer)
+            target_link_options(${_tgt} PRIVATE -fsanitize=thread)
+        endif()
+    endif()
+
+    # 输出目录统一到 build/bin
+    set_target_properties(${_tgt} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+endfunction()
+
+# ============================================================================
+#  单体外挂二进制: TaskflowLiteTest —— 全部 test_*.cpp 编译进一个可执行文件
+# ============================================================================
 add_executable(TaskflowLiteTest ${TFL_TEST_SOURCES})
+tfl_setup_test_target(TaskflowLiteTest)
 
-# 让 IDE 把测试源整理到分组下，便于浏览
+# 单体专有: /bigobj（多个 TEST_CASE 注册符号可能导致 obj 段超限）
+if(MSVC)
+    target_compile_options(TaskflowLiteTest PRIVATE /bigobj)
+endif()
+
+# IDE 源码分组
 source_group("Tests" REGULAR_EXPRESSION ".*test_.*\\.cpp$")
 source_group("Catch2" REGULAR_EXPRESSION ".*catch_amalgamated.*")
 
-# C++23 特性显式声明（即使前面 CMAKE_CXX_STANDARD 已设，再 PRIVATE 一遍更稳）
-target_compile_features(TaskflowLiteTest PRIVATE cxx_std_23)
-
-# ----------------------------------------------------------------------------
-#  链接 TaskflowLite 库
+# ============================================================================
+#  单文件目标: tfl_test_<name> —— 每个 test_*.cpp 一个独立可执行文件
 #
-#  优先复用上层项目导出的 imported target；否则回退到 include 路径模式。
-# ----------------------------------------------------------------------------
-if(TARGET TaskflowLite::taskflowlite)
-    # 上层项目模式：直接复用统一编译选项
-    target_link_libraries(TaskflowLiteTest
-        PRIVATE
-            TaskflowLite::taskflowlite
-            Threads::Threads
-    )
-    # tfl_internal_flags 是项目内部统一管理编译选项的 INTERFACE target，
-    # 存在则链接（统一警告/优化级别），不存在则忽略
-    if(TARGET tfl_internal_flags)
-        target_link_libraries(TaskflowLiteTest PRIVATE tfl_internal_flags)
+#  默认 EXCLUDE_FROM_ALL: cmake --build . 不构建它们。
+#  显式构建: cmake --build . --target tfl_test_queue
+#  选项 TFL_TEST_PER_FILE_DEFAULT=ON 可包含在默认构建中。
+# ============================================================================
+option(TFL_TEST_PER_FILE_DEFAULT
+    "Build per-file test executables as part of the default build" OFF)
+
+foreach(_src ${TFL_TEST_SOURCES})
+    get_filename_component(_full_name "${_src}" NAME_WE)       # e.g. test_queue
+    string(REGEX REPLACE "^test_" "" _test_name "${_full_name}") # e.g. queue
+    set(_target "tfl_test_${_test_name}")
+
+    if(TFL_TEST_PER_FILE_DEFAULT)
+        add_executable(${_target} "${_src}")
+    else()
+        add_executable(${_target} EXCLUDE_FROM_ALL "${_src}")
     endif()
-else()
-    # 独立构建模式：靠 include 路径定位 header-only 库
-    message(STATUS
-        "TaskflowLite::taskflowlite target 不可用，回退到 include 路径模式")
-    target_include_directories(TaskflowLiteTest
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/..     # taskflowlite/ 头文件
-    )
-    target_link_libraries(TaskflowLiteTest PRIVATE Threads::Threads)
-endif()
 
-# 始终需要的本目录 include 路径（test_common.hpp / Catch2）
-target_include_directories(TaskflowLiteTest
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
-)
+    tfl_setup_test_target(${_target})
 
-# ----------------------------------------------------------------------------
-#  编译选项 —— 测试目标专属（不污染主库）
-# ----------------------------------------------------------------------------
-if(MSVC)
-    target_compile_options(TaskflowLiteTest PRIVATE
-        /W4
-        /permissive-
-        /Zc:preprocessor       # 标准遵从的预处理器（C++23 必需）
-        /utf-8                 # 统一 UTF-8，避免中文注释乱码
-        /bigobj                # Catch2 + 大量 TEST_CASE 容易超过 obj 段限制
-        $<$<CONFIG:Release>:/O2>
-    )
-else()
-    target_compile_options(TaskflowLiteTest PRIVATE
-        -Wall -Wextra -Wpedantic
-        -Wno-unused-parameter  # 测试中 visitor 经常忽略形参
-        $<$<CONFIG:Release>:-O3>
-        $<$<CONFIG:Debug>:-O0 -g>
-    )
-    # 可选：地址消毒器（调试并发问题特别有用）
-    option(TFL_TEST_ENABLE_ASAN "Enable AddressSanitizer for tests" OFF)
-    option(TFL_TEST_ENABLE_TSAN "Enable ThreadSanitizer for tests" OFF)
-    if(TFL_TEST_ENABLE_ASAN)
-        target_compile_options(TaskflowLiteTest PRIVATE
-            -fsanitize=address -fno-omit-frame-pointer)
-        target_link_options(TaskflowLiteTest PRIVATE -fsanitize=address)
-    endif()
-    if(TFL_TEST_ENABLE_TSAN)
-        target_compile_options(TaskflowLiteTest PRIVATE
-            -fsanitize=thread -fno-omit-frame-pointer)
-        target_link_options(TaskflowLiteTest PRIVATE -fsanitize=thread)
-    endif()
-endif()
+    # VS Solution Explorer 中折叠到 PerFileTests 文件夹
+    set_target_properties(${_target} PROPERTIES FOLDER "PerFileTests")
+endforeach()
 
-# 输出目录统一到 build/bin，便于 IDE 找可执行文件
-set_target_properties(TaskflowLiteTest PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-)
-
-# ----------------------------------------------------------------------------
+# ============================================================================
 #  CTest 注册
-#
-#  -s     : 显示成功用例（默认只显示失败）
-#  -d yes : 显示每个用例的执行时长，便于发现慢测试
-#
-#  VS 用户提示：
-#    右键项目 -> 属性 -> 调试 -> 命令参数 -> 填入 "-s -d yes"
-# ----------------------------------------------------------------------------
+# ============================================================================
 include(CTest)
 enable_testing()
 
+# --- 单体主测试（不变） ---
 add_test(
     NAME TaskflowLiteTest
     COMMAND TaskflowLiteTest -s -d yes
     WORKING_DIRECTORY $<TARGET_FILE_DIR:TaskflowLiteTest>
 )
-
-# 给慢测试足够余量（默认 1500s，stress 用例预计远低于此）
 set_tests_properties(TaskflowLiteTest PROPERTIES
     TIMEOUT 1500
     LABELS "unit;taskflowlite"
 )
 
-# ----------------------------------------------------------------------------
-#  按 Catch2 标签拆分子测试 —— 便于 ctest -R 选择性执行
-#
-#  示例：
-#    ctest -R tfl.flow      # 仅跑 [flow] 用例
-#    ctest -R tfl.runtime   # 仅跑 [runtime] 用例
-# ----------------------------------------------------------------------------
+# --- 标签过滤子测试（不变） ---
 set(TFL_TEST_TAGS
     flow task executor runtime async semaphore
     branch jump subflow observer exception
+    queue bounded unbounded notifier allocator
+    pool freestack concepts future container
+    integration lifecycle stress
 )
 foreach(tag ${TFL_TEST_TAGS})
     add_test(
@@ -223,25 +259,40 @@ foreach(tag ${TFL_TEST_TAGS})
     )
 endforeach()
 
-# ----------------------------------------------------------------------------
-#  自定义构建目标 —— 一键 build + 跑测试
-#
-#  使用：
-#    cmake --build . --target run_all_tests
-#    cmake --build . --target run_flow_tests   (仅跑 [flow])
-# ----------------------------------------------------------------------------
+# --- 单文件测试（新增） ---
+foreach(_src ${TFL_TEST_SOURCES})
+    get_filename_component(_full_name "${_src}" NAME_WE)
+    string(REGEX REPLACE "^test_" "" _test_name "${_full_name}")
+    set(_target "tfl_test_${_test_name}")
+
+    add_test(
+        NAME tfl_test.${_test_name}
+        COMMAND ${_target} -s -d yes
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:${_target}>
+    )
+    set_tests_properties(tfl_test.${_test_name} PROPERTIES
+        TIMEOUT 300
+        LABELS "unit;perfile;perfile-${_test_name}"
+    )
+endforeach()
+
+# ============================================================================
+#  自定义构建目标: run_all_tests / run_<tag>_tests / run_test_<name>
+# ============================================================================
+
+# --- 一键全跑（不变） ---
 add_custom_target(run_all_tests
     COMMAND ${CMAKE_CTEST_COMMAND}
             --output-on-failure
             -C $<CONFIG>
-            -R "^TaskflowLiteTest$"   # 只跑总用例（避免标签子用例重复跑）
+            -R "^TaskflowLiteTest$"
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DEPENDS TaskflowLiteTest
     USES_TERMINAL
     COMMENT "运行所有 TaskflowLite 单元测试..."
 )
 
-# 每个标签也提供一个快捷目标
+# --- 标签一键跑（不变） ---
 foreach(tag ${TFL_TEST_TAGS})
     add_custom_target(run_${tag}_tests
         COMMAND ${CMAKE_CTEST_COMMAND}
@@ -255,18 +306,35 @@ foreach(tag ${TFL_TEST_TAGS})
     )
 endforeach()
 
-# ----------------------------------------------------------------------------
-#  状态摘要 —— 配置完成时打印关键信息
-# ----------------------------------------------------------------------------
+# --- 单文件一键跑（新增） ---
+foreach(_src ${TFL_TEST_SOURCES})
+    get_filename_component(_full_name "${_src}" NAME_WE)
+    string(REGEX REPLACE "^test_" "" _test_name "${_full_name}")
+    set(_target "tfl_test_${_test_name}")
+
+    add_custom_target(run_test_${_test_name}
+        COMMAND ${_target} -s -d yes
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:${_target}>
+        DEPENDS ${_target}
+        USES_TERMINAL
+        COMMENT "Running standalone test: ${_test_name}"
+    )
+endforeach()
+
+# ============================================================================
+#  状态摘要
+# ============================================================================
 list(LENGTH TFL_TEST_SOURCES _nfiles)
-math(EXPR _nfiles "${_nfiles} - 1")  # 减去 catch_amalgamated.cpp
 message(STATUS "================ TaskflowLite Tests ================")
 message(STATUS "  测试源文件数      : ${_nfiles}")
+message(STATUS "  单体二进制        : TaskflowLiteTest")
+message(STATUS "  单文件目标        : ${_nfiles} 个 (tfl_test_*)")
+message(STATUS "  单文件默认构建    : ${TFL_TEST_PER_FILE_DEFAULT}")
 message(STATUS "  C++ 标准         : C++${CMAKE_CXX_STANDARD}")
 message(STATUS "  Build Type       : ${CMAKE_BUILD_TYPE}")
 if(NOT MSVC)
     message(STATUS "  ASan             : ${TFL_TEST_ENABLE_ASAN}")
     message(STATUS "  TSan             : ${TFL_TEST_ENABLE_TSAN}")
 endif()
-message(STATUS "  可执行输出       : ${CMAKE_BINARY_DIR}/bin/TaskflowLiteTest")
+message(STATUS "  可执行输出       : ${CMAKE_BINARY_DIR}/bin/")
 message(STATUS "====================================================")
