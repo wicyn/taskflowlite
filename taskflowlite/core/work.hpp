@@ -246,7 +246,6 @@ public:
         , m_topology{topo}
         , m_parent{parent} {}
 
-
     /// @brief 默认对齐对象走 Work 对象池。
     static void* operator new(std::size_t bytes) {
 #if defined(TFL_ENABLE_WORK_POOL)
@@ -263,10 +262,6 @@ public:
 #else
         ::operator delete(p, bytes);
 #endif
-    }
-
-    static void operator delete(void* p) noexcept {
-        ::operator delete(p);
     }
 
     /// @brief over-aligned 对象绕过 WorkPool，避免普通池返回低对齐地址。

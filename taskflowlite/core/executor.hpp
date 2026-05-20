@@ -994,9 +994,10 @@ inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cach
             auto& suc_exec = suc->m_topology->m_executor;
             if (std::addressof(suc_exec) == this) {
                 if (cache) {
-                    _schedule(wr, cache);
+                    _schedule(wr, suc);
+                } else {
+                    cache = suc;
                 }
-                cache = suc;
             } else {
                 // 跨调度器调度
                 suc_exec._schedule(suc);
