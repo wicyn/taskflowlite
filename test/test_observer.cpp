@@ -137,3 +137,116 @@ TEST_CASE("Observer: DeferredAsyncTask registration", "[observer][async]") {
     REQUIRE(obs->before.load() == 1);
     REQUIRE(obs->after.load() == 1);
 }
+
+// ============================================================================
+// 第 5 节: Observer + Subflow 交互
+// ============================================================================
+
+/// @test [observer][subflow] Subflow 内任务触发 observer
+TEST_CASE("Observer: observer on Subflow tasks fires correctly", "[observer][subflow]") {
+    TestEnv env;
+
+    tfl::Flow inner;
+    auto inner_task = inner.emplace([] {});
+    auto obs = inner_task.register_observer<CountingObserver>();
+
+    tfl::Flow outer;
+    outer.emplace(std::move(inner));
+
+    env.executor.deferred_async(outer).start().wait();
+
+    // Subflow 默认执行一次
+    REQUIRE(obs->before.load() == 1);
+    REQUIRE(obs->after.load() == 1);
+}
+
+/// @test [observer][subflow][repeat] Subflow repeat 触发 observer N 次
+TEST_CASE("Observer: Subflow repeat triggers observer N times", "[observer][subflow][repeat]") {
+    TestEnv env;
+    constexpr int kRepeats = 5;
+
+    tfl::Flow inner;
+    auto inner_task = inner.emplace([] {});
+    auto obs = inner_task.register_observer<CountingObserver>();
+
+    tfl::Flow outer;
+    outer.emplace(std::move(inner), static_cast<std::uint64_t>(kRepeats));
+
+    env.executor.deferred_async(outer).start().wait();
+
+    REQUIRE(obs->before.load() == kRepeats);
+    REQUIRE(obs->after.load() == kRepeats);
+}
+
+// ============================================================================
+// 第 6 节: 并发 observer / 生命周期
+// ============================================================================
+
+/// @test [observer][concurrent] 100 个任务各自 observer 并发回调
+TEST_CASE("Observer: concurrent tasks each with own observer", "[observer][concurrent]") {
+    TestEnv env(8);
+    tfl::Flow flow;
+    constexpr int N = 100;
+
+    std::vector<std::shared_ptr<CountingObserver>> observers;
+    observers.reserve(N);
+
+    for (int i = 0; i < N; ++i) {
+        auto t = flow.emplace([] {
+            for (volatile int k = 0; k < 10; ++k) {}
+        });
+        observers.push_back(t.register_observer<CountingObserver>());
+    }
+
+    env.executor.deferred_async(flow).start().wait();
+
+    int total_before = 0, total_after = 0;
+    for (auto& obs : observers) {
+        total_before += obs->before.load();
+        total_after  += obs->after.load();
+    }
+    REQUIRE(total_before == N);
+    REQUIRE(total_after == N);
+}
+
+/// @test [observer][lifecycle] observer 通过 shared_ptr 存活长于 Flow
+TEST_CASE("Observer: observer outlives Flow via shared_ptr", "[observer][lifecycle]") {
+    std::shared_ptr<CountingObserver> obs;
+
+    {
+        TestEnv env;
+        tfl::Flow flow;
+        auto t = flow.emplace([] {});
+        obs = t.register_observer<CountingObserver>();
+        env.executor.deferred_async(flow).start().wait();
+    }
+
+    // Flow 和 Executor 已析构，observer 仍有效
+    REQUIRE(obs->before.load() == 1);
+    REQUIRE(obs->after.load() == 1);
+}
+
+/// @test [observer][custom] 自定义 observer 携带状态
+TEST_CASE("Observer: custom observer with state", "[observer][custom]") {
+    TestEnv env;
+    tfl::Flow flow;
+
+    struct StatefulObserver : tfl::TaskObserver {
+        std::atomic<int> sum{0};
+
+        void on_before(tfl::WorkerView) override {
+            sum.fetch_add(10, std::memory_order_relaxed);
+        }
+        void on_after(tfl::WorkerView) override {
+            sum.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    auto t = flow.emplace([] {});
+    auto obs = t.register_observer<StatefulObserver>();
+
+    env.executor.deferred_async(flow).start().wait();
+
+    // 每次执行: before +10, after +1 = 11
+    REQUIRE(obs->sum.load() == 11);
+}

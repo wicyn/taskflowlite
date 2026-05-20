@@ -217,3 +217,248 @@ TEST_CASE("Semaphore: name setter", "[semaphore][name]") {
     sem.name("db_pool");
     REQUIRE(sem.name() == "db_pool");
 }
+
+// ============================================================================
+// SECTION 7: 并发 stress —— 多 Flow 竞争同一信号量 (A9 扩展)
+// ============================================================================
+
+/// @test [semaphore][stress][mt] 多个 Flow 同时竞争同一信号量
+/// @details 4 个独立 Flow 各有 100 个任务，共享 2 个信号量配额。
+///          验证全局峰值并发不超过 2，所有任务完成。
+TEST_CASE("Semaphore: multi-Flow contention stress", "[semaphore][stress][mt]") {
+    TestEnv env(8);
+    tfl::Semaphore gate{2};
+
+    constexpr int kFlows = 4;
+    constexpr int kTasksPerFlow = 100;
+    std::atomic<int> active{0};
+    std::atomic<int> peak{0};
+    std::atomic<int> total_done{0};
+
+    auto make_flow = [&]() {
+        tfl::Flow f;
+        for (int i = 0; i < kTasksPerFlow; ++i) {
+            auto t = f.emplace([&] {
+                int now = active.fetch_add(1) + 1;
+                int prev = peak.load();
+                while (now > prev && !peak.compare_exchange_weak(prev, now)) {}
+                // Brief "work" to encourage interleaving
+                for (volatile int k = 0; k < 50; ++k) {}
+                active.fetch_sub(1);
+                total_done.fetch_add(1, std::memory_order_relaxed);
+            });
+            t.acquire(gate).release(gate);
+        }
+        return f;
+    };
+
+    // Submit all flows concurrently
+    std::vector<tfl::Flow> flows;
+    for (int i = 0; i < kFlows; ++i) {
+        flows.push_back(make_flow());
+    }
+
+    // Start all in parallel
+    std::vector<tfl::DeferredAsyncTask> tasks;
+    for (auto& f : flows) {
+        tasks.push_back(env.executor.deferred_async(f));
+    }
+    for (auto& t : tasks) t.start();
+    for (auto& t : tasks) t.wait();
+
+    REQUIRE(total_done.load() == kFlows * kTasksPerFlow);
+    REQUIRE(peak.load() <= 2);
+    REQUIRE(peak.load() > 0);
+    REQUIRE(gate.value() == 2);
+}
+
+/// @test [semaphore][stress][mt] 大量任务竞争 1 配额 = 严格串行化
+/// @details 256 tasks, 1 permit → must serialize; verify no task overlaps.
+TEST_CASE("Semaphore: heavy serialization with 1 permit", "[semaphore][stress][mt]") {
+    TestEnv env(8);
+    tfl::Semaphore mutex{1};
+
+    constexpr int N = 256;
+    std::atomic<int> active{0};
+    std::atomic<int> peak{0};
+    std::atomic<int> violations{0};
+
+    tfl::Flow flow;
+    for (int i = 0; i < N; ++i) {
+        auto t = flow.emplace([&] {
+            int now = active.fetch_add(1) + 1;
+            if (now > 1) violations.fetch_add(1);  // should never happen
+            int prev = peak.load();
+            while (now > prev && !peak.compare_exchange_weak(prev, now)) {}
+            for (volatile int k = 0; k < 20; ++k) {}
+            active.fetch_sub(1);
+        });
+        t.acquire(mutex).release(mutex);
+    }
+
+    env.executor.deferred_async(flow).start().wait();
+
+    REQUIRE(violations.load() == 0);
+    REQUIRE(peak.load() == 1);
+    REQUIRE(mutex.value() == 1);
+}
+
+/// @test [semaphore][stress][mt] 多计数获取 + 释放大规模验证
+/// @details 混合重任务(3 permits)和轻任务(1 permit)，pool=6。
+///          验证配额和始终 ≤ 6 且所有任务完成。
+TEST_CASE("Semaphore: mixed heavy/light tasks under pool cap", "[semaphore][stress][mt]") {
+    TestEnv env(8);
+    tfl::Semaphore pool{6};
+
+    constexpr int kHeavy = 30;
+    constexpr int kLight = 90;
+    std::atomic<int> active_quota{0};
+    std::atomic<int> peak_quota{0};
+    std::atomic<int> done{0};
+
+    tfl::Flow flow;
+
+    // Heavy tasks (3 permits each)
+    for (int i = 0; i < kHeavy; ++i) {
+        auto t = flow.emplace([&] {
+            int now = active_quota.fetch_add(3) + 3;
+            int prev = peak_quota.load();
+            while (now > prev && !peak_quota.compare_exchange_weak(prev, now)) {}
+            for (volatile int k = 0; k < 30; ++k) {}
+            active_quota.fetch_sub(3);
+            done.fetch_add(1, std::memory_order_relaxed);
+        });
+        t.acquire(pool, 3).release(pool, 3);
+    }
+
+    // Light tasks (1 permit each)
+    for (int i = 0; i < kLight; ++i) {
+        auto t = flow.emplace([&] {
+            int now = active_quota.fetch_add(1) + 1;
+            int prev = peak_quota.load();
+            while (now > prev && !peak_quota.compare_exchange_weak(prev, now)) {}
+            for (volatile int k = 0; k < 10; ++k) {}
+            active_quota.fetch_sub(1);
+            done.fetch_add(1, std::memory_order_relaxed);
+        });
+        t.acquire(pool).release(pool);
+    }
+
+    env.executor.deferred_async(flow).start().wait();
+
+    REQUIRE(done.load() == kHeavy + kLight);
+    REQUIRE(peak_quota.load() <= 6);
+    REQUIRE(pool.value() == 6);
+}
+
+// ============================================================================
+// SECTION 8: 错误路径 —— reset with waiters / acquire > max
+// ============================================================================
+
+/// @test [semaphore][error] reset 在 waiters 非空时抛异常
+/// @details Semaphore::reset 要求等待队列为空，否则抛 tfl::Exception。
+///          用"初始值=0 的信号量 + 被 acquire 阻塞的任务"构造等待者，
+///          验证 reset 抛异常后，通过 release 任务唤醒被阻塞的任务完成清理。
+TEST_CASE("Semaphore: reset with pending waiters throws", "[semaphore][error]") {
+    TestEnv env(2);
+    tfl::Semaphore gate{1, 0};  // max=1, current=0 —— 初始无配额
+
+    std::atomic<bool> waiter_ran{false};
+
+    tfl::Flow flow;
+    auto waiter = flow.emplace([&] {
+        waiter_ran.store(true);  // acquire 成功后才会执行
+    });
+    waiter.acquire(gate);  // 阻塞：current=0，无法获取
+
+    auto task = env.executor.deferred_async(flow);
+    task.start();
+
+    // 给调度器时间把任务放入信号量等待队列
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    // 核心断言：等待队列非空时 reset 必须抛异常
+    REQUIRE_THROWS_AS(gate.reset(2), tfl::Exception);
+    REQUIRE_THROWS_AS(gate.reset(2, 1), tfl::Exception);
+
+    // 清理：提交新 Flow 释放 1 配额以唤醒被阻塞的任务
+    tfl::Flow release_flow;
+    auto releaser = release_flow.emplace([] {});
+    releaser.release(gate);  // 释放 1 配额 → 唤醒 waiter
+    env.executor.deferred_async(release_flow).start().wait();
+
+    // waiter 现在应已完成
+    task.wait();
+    REQUIRE(waiter_ran.load());
+}
+
+/// @test [semaphore][boundary] 初始值为 0 时 value() 与 max_value() 独立
+TEST_CASE("Semaphore: zero initial value boundaries", "[semaphore][boundary]") {
+    SECTION("value=0, max=5") {
+        tfl::Semaphore sem{5, 0};
+        REQUIRE(sem.max_value() == 5);
+        REQUIRE(sem.value() == 0);
+    }
+
+    SECTION("value=5, max=5") {
+        tfl::Semaphore sem{5, 5};
+        REQUIRE(sem.value() == 5);
+    }
+
+    SECTION("value clipped to max") {
+        tfl::Semaphore sem{3, 10};
+        REQUIRE(sem.max_value() == 3);
+        REQUIRE(sem.value() == 3);
+    }
+}
+
+/// @test [semaphore][boundary] acquire(0) / release(0) 边界
+/// @details 不占用配额的 acquire/release 不应影响可用配额
+TEST_CASE("Semaphore: zero-count acquire/release", "[semaphore][boundary]") {
+    TestEnv env(2);
+    tfl::Semaphore sem{3};
+
+    // A task that acquires 0 should pass immediately and not change value
+    std::atomic<int> hit{0};
+    tfl::Flow flow;
+    auto t = flow.emplace([&] { hit.store(1); });
+    t.acquire(sem, 0).release(sem, 0);
+
+    env.executor.deferred_async(flow).start().wait();
+    REQUIRE(hit.load() == 1);
+    REQUIRE(sem.value() == 3);  // unchanged
+}
+
+// ============================================================================
+// SECTION 9: 并发 reset 安全
+// ============================================================================
+
+/// @test [semaphore][concurrent] 并发 release 不丢 wakeup
+/// @details 信号量初始值=0（事件模式），所有消费者阻塞在 acquire 上。
+///          生产者一次性 release N 个配额后，全部消费者被唤醒执行。
+///          关键：必须用 Semaphore{max, initial} 双参数构造——max 决定容量上限，
+///          release 时 value 钳位到 max。单参数 Semaphore{0} 会使 max=0 导致
+///          release 的配额全部被钳掉，消费者永远无法获取。
+TEST_CASE("Semaphore: concurrent release wakeup stress", "[semaphore][concurrent][stress]") {
+    TestEnv env(8);
+    tfl::Semaphore sem{ 200, 0 };  // max=200, current=0 —— 事件模式
+
+    constexpr int N = 200;
+    std::atomic<int> consumers_done{ 0 };
+
+    tfl::Flow flow;
+    for (int i = 0; i < N; ++i) {
+        flow.emplace([&] {
+            consumers_done.fetch_add(1, std::memory_order_relaxed);
+            }).acquire(sem);
+    }
+
+    // 生产者一次性释放 N 个配额，唤醒全部消费者
+    auto producer = flow.emplace([] {});
+    producer.release(sem, static_cast<std::size_t>(N));
+
+    env.executor.deferred_async(flow).start().wait();
+
+    REQUIRE(consumers_done.load() == N);
+    REQUIRE(sem.value() == 0);  // 全部消费完毕
+}
