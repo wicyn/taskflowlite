@@ -629,8 +629,7 @@ protected:
 
 // Why: 派生类必须保持与基类相同的二进制布局,
 //      否则切片传递(start() 内部依赖收集)将破坏值语义安全。
-static_assert(sizeof(DeferredAsyncTask) == sizeof(AsyncTask),
-              "DeferredAsyncTask must remain layout-compatible with AsyncTask");
+static_assert(sizeof(DeferredAsyncTask) == sizeof(AsyncTask), "DeferredAsyncTask must remain layout-compatible with AsyncTask");
 
 // ============================================================
 // DeferredAsyncTask 内联实现
