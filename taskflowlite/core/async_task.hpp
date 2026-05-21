@@ -164,27 +164,34 @@ public:
     // ==================== 状态查询 ====================
 
     /// @brief 获取当前句柄的哈希值，基于底层 Work 指针地址。
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] std::size_t hash_value() const noexcept;
 
     /// @brief 获取当前异步任务所属 Topology 的引用计数。
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] std::size_t use_count() const noexcept;
 
     /// @brief 判断当前句柄是否绑定了底层任务节点。
     [[nodiscard]] bool valid() const noexcept;
 
     /// @brief 检测任务是否正处于运行或锁定状态。
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] bool running() const noexcept;
 
     /// @brief 检测任务是否已经完全执行结束。
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] bool done() const noexcept;
 
     /// @brief 获取该异步任务对应的底层节点类型。
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] TaskType type() const noexcept;
 
     /// @brief 获取任务名称。
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] std::string_view name() const noexcept;
 
     /// @brief 检测任务执行期间是否已经记录异常。
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] bool has_exception() const noexcept;
 
     // ==================== 可视化 ====================
@@ -192,27 +199,35 @@ public:
     /// @brief 将当前异步任务导出为 D2 描述字符串。
     /// @param dir 图布局方向。
     /// @return D2 文本。
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
 
     /// @brief 将当前异步任务的 D2 描述写入输出流。
     /// @param os 输出流。
     /// @param dir 图布局方向。
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     void dump(std::ostream& os, Direction dir = Direction::Default) const;
 
     // ==================== 控制接口 ====================
 
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] std::stop_token stop_token() const noexcept;
 
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] bool stop_requested() const noexcept ;
 
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] bool stop_possible() const noexcept;
 
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     bool request_stop() noexcept;
 
     /// @brief 阻塞当前线程，直到该异步任务完全执行完毕。
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     void wait() const noexcept;
 
     /// @brief 同步等待并重新抛出任务执行期间捕获到的首个异常。
+    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     void get();
 
 protected:

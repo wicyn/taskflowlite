@@ -89,9 +89,9 @@ namespace tfl {
 ///  Join Weight / Join Counter
 /// ============================================================================
 /// 每个节点的入度不是简单边数，而是所有前驱 `_own_weight()` 的和：
-/// - 普通任务权重为 1；
-/// - Branch / MultiBranch 权重为 2，用差额表达“选中/未选中”；
-/// - Jump / MultiJump 权重为 0，因为它们不参与常规依赖计数，而是强制触发目标。
+/// - 普通任务权重为 1（Implicit::JOIN 位设为 1）；
+/// - Branch / MultiBranch 权重为 1（与普通任务相同），择路由 tear_down 路径的 fetch_sub 协议实现；
+/// - Jump / MultiJump 权重为 0，不参与常规依赖计数，通过 store(0) 强制触发目标。
 ///
 /// `_set_up_graph()` 会在每轮执行前重新计算 `m_join_weight` 并初始化
 /// `m_join_counter`。前驱完成时递减后继计数，计数归零则后继进入就绪队列。

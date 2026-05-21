@@ -43,7 +43,7 @@ namespace tfl {
 /// @endcode
 ///
 /// ============================================================================
-///  Work-Stealing 三阶段
+///  工作窃取三阶段
 /// ============================================================================
 /// 1. 本地队列优先：worker 从自己的 `BoundedQueue` 尾部 LIFO pop，缓存友好；
 /// 2. 随机窃取：空闲 worker 从其他 worker 或 shared buffer 头部 FIFO steal；
@@ -73,7 +73,7 @@ namespace tfl {
 /// ============================================================================
 /// | API               | 返回值                  | 启动方式        | 语义 |
 /// |-------------------|-------------------------|-----------------|------|
-/// | `silent_async`    | `void`                  | 立即启动        | fire-and-forget |
+/// | `silent_async`    | `void`                  | 立即启动        | 即发即弃 |
 /// | `async`           | `Future<R>`             | 立即启动        | 异步返回值 |
 /// | `dependent_async` | `AsyncTask`             | 立即启动/等待依赖 | 动态依赖任务 |
 /// | `deferred_async`  | `DeferredAsyncTask`     | 手动 `start()`  | 启动前可配置 |
@@ -268,12 +268,12 @@ public:
         requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
     void silent_async(Gh&& gh, P&& pred, C&& cb);
 
-    /// @brief Fire-and-forget 异步执行
+    /// @brief 即发即弃异步执行
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
     void silent_async(T&& task, Args&&... args);
 
-    /// @brief Fire-and-forget 运行时任务
+    /// @brief 即发即弃运行时任务
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
     void silent_async(T&& task, Args&&... args);
@@ -352,9 +352,9 @@ private:
 
     /// @brief 等待并获取可执行任务
     /// @algorithm 三阶段策略：
-    ///   1. Spin & Steal：本地队列空，尝试从其他队列窃取
-    ///   2. Yield Backoff：多次窃取失败，自适应退让
-    ///   3. Park & Wait：无可用任务，阻塞等待唤醒
+    ///   1. 自旋与窃取：本地队列空，尝试从其他队列窃取
+    ///   2. 退避让出：多次窃取失败，自适应退让
+    ///   3. 阻塞等待：无可用任务，阻塞等待唤醒
     [[nodiscard]] Work* _wait_for_work(Worker& wr) noexcept;
 
     [[nodiscard]] std::size_t _set_up_graph(Graph& g, Topology* topo, Work* parent) noexcept;
@@ -431,7 +431,7 @@ inline Executor::Executor(WorkerHandler& handler, std::size_t num_workers)
     , m_notifier{num_workers}
     , m_handler{handler} {
     if (num_workers == 0) {
-        TFL_THROW("Executor must define at least one worker.");
+        throw Exception("Executor must define at least one worker.");
     }
     _spawn(num_workers);
 }
@@ -475,7 +475,9 @@ inline void Executor::_shutdown() noexcept {
     wait_for_all();
 
     for (auto& wr : m_workers) {
-        wr.m_terminate.test_and_set(std::memory_order_relaxed);
+        // Why: release 保证 worker 端的 acquire/relaxed load 能看到 terminate flag，
+        // 避免 ARM/PowerPC 等弱一致性架构上 worker 无限期看不到终止信号。
+        wr.m_terminate.test_and_set(std::memory_order_release);
     }
 
     m_notifier.notify_all();
@@ -489,7 +491,7 @@ inline void Executor::_shutdown() noexcept {
 
 
 // ============================================================================
-//  Work-Stealing 调度核心
+//  工作窃取调度核心
 // ============================================================================
 
 /// @brief 工作线程启动入口
@@ -526,7 +528,7 @@ inline void Executor::_spawn(std::size_t num_workers) {
                 // 窃取阶段
                 w = _wait_for_work(wr);
 
-                if (wr.m_terminate.test(std::memory_order_relaxed)) [[unlikely]] {
+                if (wr.m_terminate.test(std::memory_order_acquire)) [[unlikely]] {
                     break;
                 }
             }
@@ -541,9 +543,9 @@ inline void Executor::_spawn(std::size_t num_workers) {
 /// @brief 工作窃取与阻塞等待
 ///
 /// @par 三阶段策略
-/// 1. Spin & Steal: 随机选择 victim 队列尝试窃取
-/// 2. Yield Backoff: 连续失败后让出 CPU
-/// 3. Park & Wait: 彻底无任务时阻塞等待
+/// 1. 自旋与窃取: 随机选择 victim 队列尝试窃取
+/// 2. 退避让出: 连续失败后让出 CPU
+/// 3. 阻塞等待: 彻底无任务时阻塞等待
 ///
 /// @memory_order
 /// - steal(): acquire 读取队列状态
@@ -557,7 +559,7 @@ explore:
     std::size_t num_steals = 0;
     std::size_t const yield_limit = nw * wr.m_adaptive_factor + wr.m_max_steals;
 
-    // Phase 1: 窃取
+    // 阶段一：窃取
     for (;;) {
         Work* w = (vtm < nw)
         ? m_workers[vtm].m_wslq.steal()
@@ -569,7 +571,7 @@ explore:
             return w;
         }
 
-        // Phase 2: 退让
+        // 阶段二：退让
         if (++num_steals > wr.m_max_steals) {
             std::this_thread::yield();
             if (num_steals > yield_limit) {
@@ -578,17 +580,17 @@ explore:
             }
         }
 
-        if (wr.m_terminate.test(std::memory_order_relaxed)) [[unlikely]] {
+        if (wr.m_terminate.test(std::memory_order_acquire)) [[unlikely]] {
             return nullptr;
         }
 
         vtm = wr.m_rng();
     }
 
-    // Phase 3: 阻塞等待
+    // 阶段三：阻塞等待
     m_notifier.prepare_wait(wr.m_id);
 
-    // Double-check: 唤醒后再次检查队列
+    // 二次确认：唤醒后再次检查队列
     for (std::size_t i = 0; i < nb; ++i) {
         if (!m_shared_buffers[i].queue.empty()) {
             m_notifier.cancel_wait(wr.m_id);
@@ -613,7 +615,7 @@ explore:
         }
     }
 
-    if (wr.m_terminate.test(std::memory_order_relaxed)) [[unlikely]] {
+    if (wr.m_terminate.test(std::memory_order_acquire)) [[unlikely]] {
         m_notifier.cancel_wait(wr.m_id);
         return nullptr;
     }
@@ -781,7 +783,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_multi_branch_task(Work* w, Worker& wr
     w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
     auto* parent = w->m_parent;
 
-     const std::size_t n = targets.size();
+    const std::size_t n = targets.size();
     // 无目标 或 异常:归还 slot
     if (n == 0 || w->_has_exception()) [[unlikely]] {
         _schedule_parent(parent, wr, cache);
@@ -927,7 +929,7 @@ template <typename I, typename S>
 inline void Executor::_process_dependent_async(Work* w, I first, S last, std::size_t& num_predecessors) {
 
     if (w->m_parent == nullptr) {
-       _increment_topology();
+        _increment_topology();
     }
 
     for (; first != last; ++first) {
@@ -1023,7 +1025,7 @@ inline void Executor::_push_shared(Work* val) {
     std::size_t const size = m_shared_buffers.size();
     std::size_t const b = detail::mulhi64(reinterpret_cast<std::uintptr_t>(val) * 11400714819323198485ULL, size);
 
-    // Fast-Path
+    // 快路径
     for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
         auto& buf = m_shared_buffers[curr_b];
         if (buf.mutex.try_lock()) {
@@ -1052,7 +1054,7 @@ inline void Executor::_push_shared(Iterator first, std::size_t n) {
     std::size_t const size = m_shared_buffers.size();
     std::size_t const b = detail::mulhi64(reinterpret_cast<std::uintptr_t>(*first) * 11400714819323198485ULL, size);
 
-    // Fast-Path
+    // 快路径
     for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
         auto& buf = m_shared_buffers[curr_b];
         if (buf.mutex.try_lock()) {

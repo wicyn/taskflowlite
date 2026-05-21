@@ -188,6 +188,7 @@ inline Work* Graph::_emplace(Work* work) {
 /// 3. pop_back
 ///
 /// @note 节点顺序无关性：DAG 中节点遍历顺序不影响语义
+/// @warning 调用方必须确保目标节点未处于执行状态（构建期单线程调用），否则直接 destroy 运行中的节点导致 UAF
 inline void Graph::_erase(Work* const work) noexcept {
     if (!work || work->m_graph != this) return;
 
