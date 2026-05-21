@@ -321,7 +321,6 @@ template <std::size_t MinSize = 16, std::size_t MaxSize = 4096, std::size_t Subd
             && (std::has_single_bit(Subdivisions))
 struct SubdividedScheme {
 private:
-private:
     static constexpr std::size_t k_min       = std::bit_floor(MinSize);
     static constexpr std::size_t k_max       = std::bit_ceil(MaxSize);
     static constexpr std::size_t k_min_shift = static_cast<std::size_t>(std::countr_zero(k_min));

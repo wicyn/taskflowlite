@@ -16,7 +16,7 @@
 namespace tfl {
 
 // ============================================================================
-//  Branch —— 单目标分支选择器(互斥 / Last-Write-Wins)
+//  Branch —— 单目标分支选择器(互斥 / 末次写入胜出)
 // ============================================================================
 
 /// @brief 单目标分支选择器 —— DAG 节点内的"if/else 路由权杖"。
@@ -271,7 +271,7 @@ inline std::size_t Branch::size() const noexcept {
 /// 集合从单个指针变为 `SmallVector<Work*>` 去重集合。
 ///
 /// ============================================================================
-///  累积语义(Accumulative,与 Branch 的覆盖语义对照)
+///  累积语义(累积式,与 Branch 的覆盖语义对照)
 /// ============================================================================
 /// - 多次 `select(...)` / `mb(i, j, k)` / `mb[i] = true` **累积** 生效;
 /// - 内部用 `SmallVector<Work*>` 存放选中集,`_insert` 线性查重;
@@ -287,7 +287,7 @@ inline std::size_t Branch::size() const noexcept {
 /// 在这个规模上:
 /// - hash set 的常数开销(哈希计算 + 桶访问 + 链表跳转)远大于 4 次 ptr 比较;
 /// - SmallVector 内置小缓冲区避免堆分配;
-/// - 删除走 swap-with-last,O(1) 且不碰内存分配器。
+/// - 删除走与末尾交换删除,O(1) 且不碰内存分配器。
 ///
 /// 这是典型的"小集合优化":**不要为渐近复杂度妥协常数因子**。
 ///
@@ -459,7 +459,7 @@ private:
         m_targets.push_back(w);
     }
 
-    /// @brief 线性查找移除(swap-and-pop,O(1) 删除,顺序无关)。
+    /// @brief 线性查找移除(交换弹出,O(1) 删除,顺序无关)。
     void _erase(Work* w) noexcept {
         for (auto it = m_targets.begin(); it != m_targets.end(); ++it) {
             if (*it == w) {
@@ -543,5 +543,4 @@ inline std::size_t MultiBranch::size() const noexcept {
 }
 
 }  // namespace tfl
-
 

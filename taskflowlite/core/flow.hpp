@@ -86,8 +86,8 @@ namespace tfl {
 ///  图操作语义
 /// ============================================================================
 /// - `erase(Task)`              ：O(1)，靠 `Graph::_erase` 的 swap-with-last。
-///                               注意 erase 不会断开邻边连接 —— 调用方必须先
-///                               `clear_predecessors()` / `clear_successors()`。
+///                               `Graph::_erase` 内部已调用 `_clear_predecessors()` 和
+///                               `_clear_successors()` 断开所有邻边，调用方无需手动清理。
 /// - `clear()`                  ：清空整个图，内部节点全部归还内存池。
 /// - `for_each(F)`              ：遍历当前节点，访问者收 `Task` 句柄。
 /// - `dump(Direction)`          ：导出 D2 图形描述，可视化到 SVG / PNG。

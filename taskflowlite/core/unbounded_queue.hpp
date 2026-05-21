@@ -243,7 +243,7 @@ template <typename Tp>
     requires std::is_pointer_v<Tp>
 TFL_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize(
     std::int64_t bottom, std::int64_t top) const {
-    auto* ptr = new (std::nothrow) AtomicRingBuffer{2 * m_cap};
+    auto* ptr = new AtomicRingBuffer{2 * m_cap};
     for (std::int64_t i = top; i != bottom; ++i) {
         ptr->store(i, load(i));
     }

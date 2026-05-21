@@ -66,7 +66,7 @@ namespace tfl {
 /// 远（金分布），用户能一眼看出"这几个节点占用同一资源"。
 ///
 /// ============================================================================
-///  Low-level Writers
+///  底层写入器
 /// ============================================================================
 /// - `write_html_escaped`  ：转义 `<>&"` 等字符（节点名出现在 markdown 块里时安全）；
 /// - `write_quoted_escaped`：转义 `"` 和 `\`（用作 D2 字符串字面量时）；
@@ -111,7 +111,7 @@ public:
     [[nodiscard]] static Palette format_palette(const Semaphore* sem) noexcept;
 
     //=========================================================================
-    //  Low-level writers
+    //  底层写入器
     //=========================================================================
 
     /// @brief 写入 HTML 转义后的字符串，用于 D2 markdown 块。
@@ -124,7 +124,7 @@ public:
     static void format_id(std::ostream& os, const void* p);
 
     //=========================================================================
-    //  Semaphore pill writers
+    //  信号量药丸写入器
     //=========================================================================
 
     /// @brief 写入 grid 布局的信号量 pill bar，供 rectangle 外壳节点使用。
@@ -150,10 +150,10 @@ public:
                              const Graph& graph);
 };
 //=============================================================================
-//  Implementations
+//  实现
 //=============================================================================
 
-// ---- Palette ---------------------------------------------------------------
+// ---- 调色板 ---------------------------------------------------------------
 
 inline std::uint8_t D2Renderer::format_hsl_component(float p, float q, float t) noexcept {
     if (t < 0.f) t += 1.f;
@@ -188,7 +188,7 @@ inline D2Renderer::Palette D2Renderer::format_palette(const Semaphore* sem) noex
     return p;
 }
 
-// ---- Low-level writers ------------------------------------------------------
+// ---- 底层写入器 ------------------------------------------------------
 
 inline void D2Renderer::write_html_escaped(std::ostream& os, std::string_view s) {
     for (char c : s) {
@@ -220,7 +220,7 @@ inline void D2Renderer::format_id(std::ostream& os, const void* p) {
     os.write(buf, n);
 }
 
-// ---- Semaphore pill writers -------------------------------------------------
+// ---- 信号量药丸写入器 -------------------------------------------------
 
 inline void D2Renderer::write_sem_pill_grid(std::ostream& os, SemReqs reqs, const char* tag) {
     os << "  " << tag[0] << "_bar: \"\" {\n"
@@ -275,7 +275,7 @@ inline void D2Renderer::write_sem_pill_row(std::ostream& os, SemReqs reqs, const
     os << "<br/>\n";
 }
 
-// ---- Public renderers -------------------------------------------------------
+// ---- 公开渲染器 -------------------------------------------------------
 
 inline void D2Renderer::render_work(std::ostream& os, const Work* w,
                                     const char* shape,
@@ -349,8 +349,8 @@ inline void D2Renderer::render_work(std::ostream& os, const Work* w,
 }
 
 inline void D2Renderer::render_graph(std::ostream& os, const Work* w,
-                                    const char* type_name,
-                                    const Graph& graph)
+                                     const char* type_name,
+                                     const Graph& graph)
 {
     if (graph.empty()) {
         render_work(os, w, "rectangle", "#e8f5e9", "#10b981", "#065f46", "8");
