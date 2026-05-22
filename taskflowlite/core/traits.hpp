@@ -27,97 +27,22 @@
 #include "forward.hpp"
 
 namespace tfl {
-/*
- * ======================================================================================
- *
- * std::unwrap_ref_decay_t<T> 行为速查表
- *
- * 这是理解本文件所有 concept 约束的基础。框架中存储的 callable 类型都是
- * unwrap_ref_decay_t<T>，即经过 decay + unwrap 后的最终存储类型。
- *
- * 逻辑流程 / Logic flow:
- * 1. 先 Decay (退化): 移除引用、cv限定符，数组/函数转指针 (类似于值传递)。
- * 2. 后 Unwrap (解包): 如果结果是 std::reference_wrapper，则还原为原始引用 (T&)。
- *
- * ======================================================================================
- */
 
-// -----------------------------------------------------------
-// 场景 1: 针对 std::ref / std::cref (还原为引用)
-// -----------------------------------------------------------
-// int x;
-// 1. std::ref(x)  -> std::reference_wrapper<int>
-// 2. Decay        -> std::reference_wrapper<int> (保持不变 / unchanged)
-// 3. Unwrap       -> int& (提取引用 / extract reference)
-// using A = std::unwrap_ref_decay_t<decltype(std::ref(x))>;  // A == int&
+// ── std::unwrap_ref_decay_t<T> 行为速查 ──────────────────────────────
+// 框架内存储的 callable 类型均经 unwrap_ref_decay_t 处理:
+// 1. Decay: 去引用/cv、数组/函数→指针(等价于值传递)
+// 2. Unwrap: 若结果为 reference_wrapper<T> → T&
+//
+// 速查表:
+// | 输入                     | 结果         |
+// |--------------------------|-------------|
+// | std::ref(x)             | int&        |
+// | std::cref(x)            | const int&  |
+// | int& / const int&       | int         |
+// | int*                    | int*        |
+// | int[3]                  | int*        |
+// | void()                  | void(*)()   |
 
-// 1. std::cref(x) -> std::reference_wrapper<const int>
-// 2. Decay        -> std::reference_wrapper<const int>
-// 3. Unwrap       -> const int&
-// using B = std::unwrap_ref_decay_t<decltype(std::cref(x))>; // B == const int&
-
-// -----------------------------------------------------------
-// 场景 2: 针对 普通引用 / 指针 / 值 (退化为裸类型)
-// -----------------------------------------------------------
-// using C = std::unwrap_ref_decay_t<int&>;        // C == int (引用被剥离 / ref stripped)
-// using D = std::unwrap_ref_decay_t<const int&>;  // D == int (const & 都被剥离 / both stripped)
-// using E = std::unwrap_ref_decay_t<int>;         // E == int
-// using F = std::unwrap_ref_decay_t<int*>;        // F == int* (指针不变 / pointer unchanged)
-
-// -----------------------------------------------------------
-// 场景 3: 针对 数组 / 函数 (退化为指针)
-// -----------------------------------------------------------
-// using G = std::unwrap_ref_decay_t<int[3]>;      // G == int*
-// using H = std::unwrap_ref_decay_t<void()>;      // H == void(*)()
-
-// -----------------------------------------------------------
-// 典型应用场景示例: 自定义 Invoke
-// -----------------------------------------------------------
-// 目的: 允许参数通过 std::ref 传递以避免拷贝，但在内部处理时还原为引用使用
-/*
-template<class F, class... Args>
-void invoke_like(F&& f, Args&&... args) {
-    std::invoke(
-        std::forward<F>(f),
-        // 如果 args 是 std::ref(obj)，这里会被还原为 obj& 传递给函数
-        // 如果 args 是 int&，这里会被退化为 int (值拷贝) 传递 (取决于 forward 的行为)
-        std::forward<std::unwrap_ref_decay_t<Args>>(args)...
-    );
-}
-
-# 如果传入的是 std::ref，detail::unwrap_t<Args>& 最终得到的是 左值引用 (T&)。
-这里发生了 引用折叠 (Reference Collapsing)。
-
-详细推导过程 / Detailed derivation:
-让我们一步步拆解 detail::unwrap_t<Args>& 在传入 std::ref 时的类型变化。
-
-假设我们有一个类型 int，我们传入 std::ref(x)。
-
-1. 类型推导 / Type deduction:
-   Args 被推导为 std::reference_wrapper<int>。
-
-2. unwrap_t (即 std::unwrap_ref_decay_t) 的作用:
-   std::unwrap_ref_decay_t 的定义是：如果类型是 std::reference_wrapper<T>，则结果为 T&。
-
-   输入 / Input:  std::reference_wrapper<int>
-   输出 / Output: int& (注意：这里已经是引用了 / note: already a reference)
-
-3. Concept 中的 & 修饰符 / The & qualifier in concepts:
-   代码中写的是 detail::unwrap_t<Args>&（末尾有一个 &）。
-
-   代入后 / After substitution: int& + & -> int& &
-
-4. 引用折叠 (Reference Collapsing):
-   C++ 有明确的引用折叠规则:
-
-   T& &   -> T&
-   T& &&  -> T&
-   T&& &  -> T&
-   T&& && -> T&&
-
-   结果 / Result: int& & 折叠为 int&。
-
-*/
 namespace detail {
 
 // 1. 基础模板 (默认匹配失败)
@@ -190,14 +115,22 @@ template <typename T>
 } // namespace detail
 
 
-/// @brief 核心捕获约束：确保给定的所有类型均能被框架安全地持久化存储。
+/// @brief 可安全持久化存储的参数包约束。
 ///
-/// @details
-/// **满足以下任一条件即视为可捕获：**
+/// 包中每个 T 满足以下任一条件:
+///   1. 已被 std::ref/std::cref 显式包装(引用捕获)
+///   2. 是右值且 decay 后可移动构造(接管临时对象所有权)
+///   3. 是左值引用且 decay 后可拷贝构造(拷贝活对象)
 ///
-/// 1. 已被 std::ref 或 std::cref 显式包装。
-/// 2. 是右值且具备移动构造能力（接管临时对象的所有权）。
-/// 3. 是左值引用且具备拷贝构造能力。
+/// @par 为什么需要
+/// 异步代码中,把引用以值方式捕获到闭包里是常见的悬空 bug。
+/// 本 concept 强制用户说清意图:用 std::ref 显式包裹、传右值、或传可拷贝左值。
+///
+/// @par Models / Non-models
+/// - `capturable<int>`                  → true  (情形 3)
+/// - `capturable<std::string&&>`        → true  (情形 2)
+/// - `capturable<std::ref_wrapper<int>>`→ true  (情形 1)
+/// - `capturable<std::unique_ptr<int>&>`→ false (不可拷贝构造)
 template <typename... Ts>
 concept capturable = ((
                           detail::is_reference_wrapper_after_decay_v<Ts> ||

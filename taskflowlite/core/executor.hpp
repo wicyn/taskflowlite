@@ -18,111 +18,76 @@
 
 namespace tfl {
 
-/// @brief 任务调度器 —— Work-Stealing 并行执行引擎。
+/// @brief 任务调度器——Work-Stealing 并行执行引擎,框架唯一的 OS 线程持有者。
 ///
 /// @details
-/// `Executor` 是框架的运行时执行核心：管理 worker 线程、本地工作窃取队列、
-/// 共享提交队列、任务唤醒器以及顶层 Topology 生命周期计数。`Flow`、`Task`、
-/// `Runtime`、`AsyncTask` 等用户层对象最终都通过 `Executor` 落地执行。
+/// `Executor` 拥有 worker 线程池、共享提交队列和 Notifier。`Flow`、`Task`、
+/// `Runtime`、`AsyncTask` 等所有用户层对象最终都通过 `Executor` 落地执行。
+/// 不可拷贝/不可移动——析构函数会阻塞等待所有在飞任务完成,实例应长寿命。
 ///
 /// ============================================================================
-///  调度结构
+///  调度拓扑
 /// ============================================================================
 /// @code
-///   Flow / AsyncTask / Runtime
-///              │ schedule
-///              ▼
-///        ┌────────────┐
-///        │  Executor  │
-///        └─────┬──────┘
-///              │
-///     ┌────────┴────────┐
-///     ▼                 ▼
-///  Worker local queues   Shared buffers
-///  BoundedQueue          UnboundedQueue
+///   Flow / AsyncTask / Runtime ──submit──► Executor ──dispatch──► Worker×N
+///                                                            │   BoundedQueue (LIFO)
+///                                                            └── 溢出 ──► SharedBuffer (UnboundedQueue)
 /// @endcode
 ///
 /// ============================================================================
 ///  工作窃取三阶段
 /// ============================================================================
-/// 1. 本地队列优先：worker 从自己的 `BoundedQueue` 尾部 LIFO pop，缓存友好；
-/// 2. 随机窃取：空闲 worker 从其他 worker 或 shared buffer 头部 FIFO steal；
-/// 3. 阻塞等待：多轮失败后通过 `Notifier` 进入两阶段 park，避免 lost wake-up。
+/// 1. 本地队列优先：owner 从自己的 `BoundedQueue` 尾部 LIFO pop,缓存友好；
+/// 2. 随机窃取：空闲 worker 用 `SplitMix64` 选 victim,从头部 FIFO steal；
+/// 3. 阻塞等待：多轮失败后通过 `Notifier` 两阶段 park,防止 lost wake-up。
 ///
-/// `m_shared_buffers` 是对数级分片的共享队列集合，用于外部线程提交或本地队列溢出。
-/// `_push_shared` 通过任务地址哈希选择 buffer，优先 try_lock，失败后线性探测，
-/// 最后才阻塞锁定目标 buffer。
-///
-/// ============================================================================
-///  Topology 生命周期计数
-/// ============================================================================
-/// `m_num_topologies` 只统计顶层执行实例：
-/// - 顶层任务提交时 +1；
-/// - 顶层任务完成时 -1；
-/// - 归零时唤醒 `wait_for_all()`。
-///
-/// 嵌套任务或 Runtime 派生任务不重复计入全局计数，而是由父节点的
-/// `m_join_counter` 管理完成关系。这样 `wait_for_all()` 等待的是用户提交的根任务，
-/// 而不是内部执行过程中临时派生出的每个子任务。
-///
-/// `~Executor()` 会先等待所有顶层任务完成，再设置 worker 终止标志，唤醒全部
-/// 等待线程并 join worker。
+/// `m_shared_buffers` 是对数级分片的共享队列集合。`_push_shared` 用任务地址
+/// 哈希选 buffer,try_lock 失败后线性探测,最后才阻塞锁。
 ///
 /// ============================================================================
 ///  提交 API
 /// ============================================================================
-/// | API               | 返回值                  | 启动方式        | 语义 |
-/// |-------------------|-------------------------|-----------------|------|
-/// | `silent_async`    | `void`                  | 立即启动        | 即发即弃 |
-/// | `async`           | `Future<R>`             | 立即启动        | 异步返回值 |
-/// | `dependent_async` | `AsyncTask`             | 立即启动/等待依赖 | 动态依赖任务 |
-/// | `deferred_async`  | `DeferredAsyncTask`     | 手动 `start()`  | 启动前可配置 |
+/// | API               | 返回值                | 启动方式        | 语义           |
+/// |-------------------|-----------------------|-----------------|----------------|
+/// | `silent_async`    | `void`                | 立即            | 即发即弃       |
+/// | `async`           | `Future<R>`           | 立即            | 异步返回值     |
+/// | `dependent_async` | `AsyncTask`           | 立即/等待依赖   | 动态依赖       |
+/// | `deferred_async`  | `DeferredAsyncTask`   | 手动 `start()`  | 启动前可配置   |
 ///
-/// 每组 API 都按 `graph_holder`、`basic_invocable`、`runtime_invocable` 等概念分发，
-/// 最终收敛到 Work 工厂、依赖初始化和 `_schedule` 调度入口。
+/// 每组 API 按 `graph_holder`、`basic_invocable`、`runtime_invocable` 等 concept
+/// 分发,最终收敛到 Work 工厂、依赖初始化和 `_schedule` 调度入口。
 ///
 /// ============================================================================
 ///  上下文感知调度
 /// ============================================================================
-/// - 当前线程是 worker：优先推入该 worker 的本地队列；
-/// - 当前线程不是 worker：推入 shared buffer；
-/// - 本地队列满：溢出到 shared buffer。
-///
-/// 这让任务体内递归派生任务走最快路径，同时保证外部线程提交也不会争抢单个
-/// 全局队列。
+/// - 当前线程是 worker → 推入该 worker 本地队列(最快路径)
+/// - 当前线程非 worker → 推入 shared buffer
+/// - 本地队列满 → 溢出到 shared buffer
 ///
 /// ============================================================================
-///  内部协议接口
+///  Topology 生命周期
 /// ============================================================================
-/// `_set_up_graph` / `_process_dependent_async` / `_tear_down_*` /
-/// `_schedule_parent` / `_cowait_until` 等函数是 `Executor` 与 `Work`、`Runtime`、
-/// `Topology` 之间的内部调度协议，不属于用户 API。
+/// `m_num_topologies` 仅统计顶层提交实例——嵌套任务由父节点 `m_join_counter` 管理。
+/// `wait_for_all()` 等待的是用户提交的根任务,而非内部派生的每个子任务。
 ///
 /// ============================================================================
 ///  内存序约定
 /// ============================================================================
-/// - `m_num_topologies`：用于 `wait_for_all()` 的 acquire/wait/notify 同步；
-/// - `m_join_counter`：后继就绪判断使用 acq_rel，保证前驱结果对后继可见；
-/// - `m_terminate`：终止轮询使用 relaxed；
-/// - `Topology::m_state`：动态依赖边插入使用 CAS 进入 Locking 状态。
+/// | 变量                  | 内存序           | 用途                         |
+/// |-----------------------|------------------|------------------------------|
+/// | `m_num_topologies`    | acquire / notify | `wait_for_all()` 同步        |
+/// | `m_join_counter`      | acq_rel          | 后继就绪判断,前驱结果可见性   |
+/// | `m_terminate`         | relaxed          | 终止轮询                     |
+/// | `Topology::m_state`   | CAS (acq_rel)    | 动态依赖边插入的 Locking 协议 |
 ///
-/// 调度路径只需要局部 happens-before，不需要全局 `seq_cst` 总序。
+/// @par 线程安全
+/// 构造完成后,所有 public API 可从任意线程并发调用。内部由原子变量、work-stealing
+/// 队列、`Notifier` 和分片 mutex 保护。正在执行的 `Flow` 不能并发 emplace/erase/clear。
 ///
-/// ============================================================================
-///  线程安全
-/// ============================================================================
-/// `Executor` 的 public API 可被多个线程并发调用。内部共享状态由原子变量、
-/// work-stealing 队列、`Notifier` 和分片 mutex 保护。
-///
-/// 用户 callable 和正在执行中的 `Flow` 结构修改不由 Executor 保护：
-/// - callable 内部共享数据需用户自行同步；
-/// - `Flow` 提交执行后应视为只读，不能并发 emplace / erase / clear。
-///
-/// @see Worker     实际执行任务的工作线程对象
-/// @see Notifier   worker 空闲时的无锁等待/唤醒机制
-/// @see Topology   单次执行实例与动态任务生命周期
-/// @see Runtime    任务体内的动态调度上下文
-/// @see AsyncTask  动态任务强引用句柄
+/// @see Worker      工作线程实体
+/// @see Notifier    两阶段 park 唤醒机制
+/// @see Topology    执行实例与引用计数
+/// @see Flow        用户侧 DAG 构建器
 
 class Executor : public Immovable<Executor> {
     friend class Work;
@@ -626,28 +591,14 @@ explore:
 
 /// @brief 重置子图所有节点到下一轮执行的初始状态。
 ///
-/// @par 执行步骤（每个节点）
-///   -# 注入运行时上下文（topology / parent）
-///   -# 清空异常路径标记（@c EXCEPTION + @c CAUGHT），保留其他位（如 @c ANCHORED）
-///   -# 仅在该节点上轮归档过异常时（@c CAUGHT 位为 1）清空 @c m_exception_ptr
-///   -# 重新计算入度并写入 @c m_join_counter（屏障值）
-///   -# 零入度节点 swap 到 @c data 前段，便于调用方批量调度
+/// 对每个节点:注入 topology/parent 上下文 → 清除 EXCEPTION+CAUGHT 标记位
+/// (仅 CAUGHT==1 时释放 m_exception_ptr) → 重算 join_length 并初始化
+/// join_counter → 零入度节点 swap 到 data 前段。
 ///
-/// @par 异常位清理策略
-/// 使用单次 @c fetch_and 同时完成"清位"和"读旧 CAUGHT 位"两件事——
-/// 比 @c load + @c fetch_and 两次原子操作省一次 RMW，但代价是
-/// **每个节点都会触发一次原子写**，可能让该 cache line 在多核间反弹。
+/// 使用单次 fetch_and 同时清位+读旧值,比 load+fetch_and 省一次 RMW。
+/// set_up 在 owner 线程独占阶段执行,cache line 反弹概率低。
 ///
-/// 当前选择 @c fetch_and 是因为：
-///   - 节点 set_up 通常发生在 owner 线程独占阶段（图重置时无并发执行），
-///     cache line 反弹概率低；
-///   - 异常归档是冷路径，避免传播路径节点的残留 @c EXCEPTION 位污染下轮
-///     状态判断（如 @c _should_abort）必须无条件清位。
-///
-/// @param g       目标子图
-/// @param topo    本轮归属的拓扑上下文
-/// @param parent  父节点指针（嵌套图内部子节点指向外层抢占节点）
-/// @return        零入度源节点数量；调用方通常按此数量批量 schedule data 前段
+/// @return 零入度源节点数量,调用方按此值批量调度 data 前段
 TFL_FORCE_INLINE std::size_t Executor::_set_up_graph(Graph& g, Topology* topo, Work* parent) noexcept {
     Work** const data = g.m_works.data();
     std::size_t const size = g.m_works.size();
@@ -834,18 +785,11 @@ TFL_FORCE_INLINE void Executor::_tear_down_multi_branch_task(Work* w, Worker& wr
     }
 }
 
-/// @brief Jump 任务的强制跳转处理 —— 单目标特权通道。
+/// @brief Jump 任务完成:store(0) 强制清零 target 的 join_counter,绕过正常计数协议。
 ///
-/// @par 设计意图
-/// Jump 是"特权通道",运行期由用户在 invoker body 内通过 `Jump&` 选定 target,
-/// 跳过图的静态依赖直接触发它。通过 store(0, relaxed) 把 target 的 join_counter
-/// 强制清零实现 —— 等价于"所有前驱已到齐",绕开正常的 fetch_sub 计数协议。
-///
-/// @par 路径分发
-/// - 异常路径(运行期偶发):不让 target 接力,与 _tear_down_task 异常语义一致
-/// - 无 target(用户没在 Jump& 上设值):语义等同普通完成
-/// - 上述两条共用慢路径:归还 w 占的 parent slot
-/// - 快路径:store(0) 强制触发 target,slot 平移 w → target
+/// @par 路径
+/// - 异常/无 target:归还 parent slot
+/// - 正常:store(0) 强制触发 target,slot 平移 w→target,cache 接力执行
 TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work* w, Worker& wr, Work*& cache, Work* target) {
     // 还原 w 自身 counter:为下一轮触发(循环子图 / 再调度)做准备
     w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
@@ -863,14 +807,10 @@ TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work* w, Worker& wr, Work*&
 }
 
 
-/// @brief MultiJump 任务的多目标强制跳转处理 —— Jump 的 N 路扩展。
+/// @brief MultiJump 任务完成:对每个 target store(0) 强制触发。
 ///
-/// @par 路径分发
-/// - n == 0:用户没 push 任何 target,等同普通完成,归还 slot
-/// - 异常:与普通 tear_down 一致,归还 slot
-/// - n == 1:退化为单 Jump,slot 平移,parent counter 不动
-/// - n >= 2:前 n-1 个 target 各占一个新 parent slot,最后一个继承 w 的 slot
-///
+/// 不变量:最后一个留在 cache 的 target 继承 w 的 parent slot,
+/// 其余被挤出者各自 fetch_add 占新 slot 后入队。n==1 时等价于单 Jump 的 slot 平移。
 TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work* w, Worker& wr, Work*& cache, const SmallVector<Work*>& targets) {
     w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
     auto* parent = w->m_parent;
