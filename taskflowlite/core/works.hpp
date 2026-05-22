@@ -80,6 +80,16 @@ namespace tfl {
 ///
 namespace detail {
 
+/// @brief 将锚点标签 `A` 映射为对应的 Implicit/Explicit 位掩码对。
+///
+/// 本函数为 `consteval` —— 所有锚点位均在编译期解析为常量，
+/// 运行时零开销。映射规则：
+///   - `none_t`     → `{NONE, NONE}`
+///   - `implicit_t` → `{ANCHORED, NONE}`
+///   - `explicit_t` → `{NONE, ANCHORED}`
+///
+/// @tparam A  锚点标签类型，必须为 `anchor::none_t`、`anchor::implicit_t`
+///            或 `anchor::explicit_t` 之一。
 template <typename A>
 consteval std::pair<Work::Implicit::type, Work::Explicit::type> anchor_bits() noexcept {
     if constexpr (std::same_as<A, anchor::none_t>) {
@@ -93,7 +103,15 @@ consteval std::pair<Work::Implicit::type, Work::Explicit::type> anchor_bits() no
 
 } // namespace detail
 
-// 辅助基类，仅负责持有 Topology
+/// @brief 持有局部 `Topology` 实例的辅助基类。
+///
+/// @details
+/// 用于需要独立执行上下文的动态任务（异步任务、延迟任务）。
+/// 通过 `private TopologyHolder + public XxxWork` 的继承顺序，
+/// 确保 `m_local_topology` 先于 `Work` 基类构造，从而 `Work`
+/// 可以安全地持有指向该 Topology 的指针。
+///
+/// @see Topology  运行时生命周期状态机
 struct TopologyHolder {
     Topology m_local_topology;
     explicit TopologyHolder(Executor& exec) : m_local_topology{exec} {}
@@ -102,6 +120,14 @@ struct TopologyHolder {
 // ============================================================================
 //  TaskType::Basic 家族
 // ============================================================================
+
+/// @brief 普通同步任务的 `Work` 基类 —— `TaskType::Basic`。
+///
+/// @details
+/// 本类不包含用户 callable 或参数；它仅固化节点类型与 D2 可视化样式。
+/// 用户逻辑由派生类 `BasicInvoker` 持有并通过 `invoke()` 执行。
+///
+/// @see BasicInvoker  持有 `void()` 闭包的静态图节点
 class BasicWork : public Work {
 protected:
     template <typename... Xs>
@@ -117,6 +143,16 @@ protected:
 // ============================================================================
 //  TaskType::Runtime 家族
 // ============================================================================
+
+/// @brief 注入 `Runtime&` 的运行时任务基类 —— `TaskType::Runtime`。
+///
+/// @details
+/// 与 `BasicWork` 的区别仅在于节点类型标签和 D2 渲染配色。
+/// 派生类 `RuntimeInvoker` 在 `invoke()` 中构造 `Runtime` 句柄，
+/// 授予用户在工作线程上动态创建子任务的能力。
+///
+/// @see RuntimeInvoker  持有 `void(Runtime&)` 闭包的静态图节点
+/// @see Runtime          动态任务调度上下文
 class RuntimeWork : public Work {
 protected:
     template <typename... Xs>
@@ -132,6 +168,15 @@ protected:
 // ============================================================================
 //  TaskType::Branch (diamond)
 // ============================================================================
+
+/// @brief 单目标条件分支任务基类 —— `TaskType::Branch`。
+///
+/// @details
+/// 分支节点通过 `Branch` 句柄选择一个后继；未选中的出边在 tear_down
+/// 阶段被跳过（依赖计数不传播）。D2 渲染为菱形。
+///
+/// @see BranchInvoker  持有 `void(Branch&)` 闭包的静态图分支节点
+/// @see Branch          单一通道挑选权杖
 class BranchWork : public Work {
 protected:
     template <typename... Xs>
@@ -147,6 +192,16 @@ protected:
 // ============================================================================
 //  TaskType::MultiBranch (hexagon)
 // ============================================================================
+
+/// @brief 多目标广播分支任务基类 —— `TaskType::MultiBranch`。
+///
+/// @details
+/// 与 `BranchWork` 不同，`MultiBranchWork` 允许同时激活**多个**后继。
+/// 用户通过 `MultiBranch` 句柄的 `activate()` 逐个挑选目标；
+/// tear_down 阶段对每个激活目标独立传播依赖计数。D2 渲染为六边形。
+///
+/// @see MultiBranchInvoker  持有 `void(MultiBranch&)` 闭包的多分支节点
+/// @see MultiBranch          多线广播挑选权杖
 class MultiBranchWork : public Work {
 protected:
     template <typename... Xs>
@@ -162,6 +217,17 @@ protected:
 // ============================================================================
 //  TaskType::Jump (dashed diamond)
 // ============================================================================
+
+/// @brief 单目标强制跳转任务基类 —— `TaskType::Jump`。
+///
+/// @details
+/// 跳转节点**不传**依赖计数给未选中的后继；它直接"跃迁"到指定目标，
+/// 断开与原 DAG 拓扑的局部连接。与 `BranchWork` 的关键区别：
+/// `JumpWork` 的 `Implicit` 位为 `NONE`（无需 join 汇合），
+/// 而 `BranchWork` 默认携带 `JOIN` 位。D2 渲染为虚线菱形。
+///
+/// @see JumpInvoker  持有 `void(Jump&)` 闭包的静态图跳转节点
+/// @see Jump          物理传送跃迁指令权杖
 class JumpWork : public Work {
 protected:
     template <typename... Xs>
@@ -177,6 +243,16 @@ protected:
 // ============================================================================
 //  TaskType::MultiJump (dashed hexagon)
 // ============================================================================
+
+/// @brief 多目标广播跳转任务基类 —— `TaskType::MultiJump`。
+///
+/// @details
+/// 结合 `MultiBranchWork` 的多目标激活能力和 `JumpWork` 的无 join 语义。
+/// 用户通过 `MultiJump` 句柄激活一组目标节点，未被激活的后继
+/// 在 tear_down 阶段被跳过。D2 渲染为虚线六边形。
+///
+/// @see MultiJumpInvoker  持有 `void(MultiJump&)` 闭包的多跳转节点
+/// @see MultiJump          多目标摧毁重置权杖
 class MultiJumpWork : public Work {
 protected:
     template <typename... Xs>
@@ -192,6 +268,22 @@ protected:
 // ============================================================================
 //  TaskType::Graph (内嵌 Flow 的容器节点)
 // ============================================================================
+
+/// @brief 内嵌 Flow 子图的容器节点基类 —— `TaskType::Graph`。
+///
+/// @tparam GhStore  Graph holder 类型，决定子图的所有权语义：
+///                  - `Graph&`      —— 引用外部 Graph（静态图节点）
+///                  - `Graph`       —— 持有 Graph 副本（异步任务节点）
+///                  - `std::unique_ptr<Graph>` —— 独占所有权
+///
+/// @details
+/// `GraphWork` 不直接执行用户逻辑；它包装一个完整的子图并在 `invoke()`
+/// 中委托给 `Executor` 的子图调度协议。派生类负责在合适的生命周期阶段
+/// 调用 `Executor::_set_up_graph()` 初始化子图拓扑。
+///
+/// @see SubflowInvoker  静态图中的循环/条件子图节点
+/// @see SilentAsyncFlowInvoker  fire-and-forget 异步子图
+/// @see Graph            节点向量与边集合
 template <typename GhStore>
 class GraphWork : public Work {
 protected:
@@ -611,6 +703,24 @@ public:
     }
 };
 
+/// @brief 静态图中的循环/条件子图执行器。
+///
+/// @tparam GhStore  Graph holder 类型（通常为 `Graph&`）。
+/// @tparam P        终止谓词类型 —— `bool()` 可调用对象。
+///
+/// @details
+/// `SubflowInvoker` 是 `Runtime::cowait()` 的底层实现载体。
+/// 它使用 PREEMPTED 两阶段协议循环执行内嵌子图：
+/// 首次进入时初始化拓扑、设置抢占标记；每次迭代后检查终止谓词；
+/// 谓词返回 `true` 或子图无可调度源节点时退出循环并 tear_down。
+///
+/// 终止判定三条件（任一成立即停止）：
+///   - `pred() == true`      用户谓词决定停止
+///   - `num_sources == 0`    子图为空或所有节点均有未满足的前驱
+///   - `_should_abort()`     拓扑层面已被异常终止
+///
+/// @see GraphWork       容器节点基类
+/// @see Runtime::cowait 用户面 API
 template <typename GhStore, typename P>
 class SubflowInvoker final : public GraphWork<GhStore> {
     using GraphWork<GhStore>::m_gh_store;
@@ -776,6 +886,21 @@ public:
 };
 
 
+/// @brief fire-and-forget 异步子图执行器 —— 无 promise 通道。
+///
+/// @tparam A        锚点标签，控制异常归档目标。
+/// @tparam GhStore  Graph holder 类型。
+/// @tparam P        终止谓词类型 —— `bool()` 可调用对象。
+/// @tparam C        终止回调类型 —— `void()` 可调用对象。
+///
+/// @details
+/// 与 `SubflowInvoker` 共享相同的子图循环执行协议，但运行在
+/// 独立的 `Topology` 上（继承自 `GraphWork` 的内部 holder），
+/// 完成后通过 `_tear_down_async_task` 拆除异步依赖链。
+/// 终止时调用 `m_callback` 通知调用方生命周期落幕。
+///
+/// @see AsyncFlowInvoker  带 `std::promise` 的异步子图
+/// @see SubflowInvoker    静态图内嵌子图
 template <typename A, typename GhStore, typename P, typename C>
 class SilentAsyncFlowInvoker final : public GraphWork<GhStore> {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
@@ -1468,6 +1593,23 @@ public:
 };
 
 
+/// @brief 协作式等待子图完成 —— 在当前 `Runtime` 上下文中执行 `gh`。
+///
+/// @tparam Gh  满足 `graph_holder` 的 Graph 持有者类型。
+/// @param gh   待执行的子图。必须存活到本调用返回。
+///
+/// @par Effects
+/// 构造一个临时的显式锚点节点，将 `gh` 的源节点批量入队，
+/// 然后阻塞当前 worker 直到子图所有节点完成。子图执行期间，
+/// 当前 worker 不参与工作窃取（它被锚点的 join 计数钉住）。
+///
+/// @par Remarks
+/// 子图异常通过锚点的 `_rethrow_exception()` 向上传播。
+/// 本函数仅在 `Runtime` 上下文内有效 —— 即仅可在
+/// `RuntimeWork` 或 `RuntimeInvoker` 的 body 中调用。
+///
+/// @see SubflowInvoker  底层子图执行器
+/// @see AnchorWork       临时锚点节点
 template <typename Gh>
     requires graph_holder<Gh>
 inline void Runtime::cowait(Gh& gh) {

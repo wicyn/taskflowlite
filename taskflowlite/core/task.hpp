@@ -395,6 +395,7 @@ public:
     /// @brief 获取已注册的任务观察者数量。
     [[nodiscard]] std::size_t num_observers() const noexcept;
 
+    /// @brief 检测当前任务句柄是否有效（非空）。
     [[nodiscard]] explicit operator bool() const noexcept;
 
     /// @brief 检测任务执行期间是否已经记录异常。
@@ -421,6 +422,7 @@ public:
         requires std::constructible_from<std::string, S>
     Task& name(S&& name) &;
 
+    /// @brief 右值限定重载 —— 返回 `Task` 值以支持临时对象链式调用。
     template <typename S>
         requires std::constructible_from<std::string, S>
     Task name(S&& name) &&;
@@ -430,6 +432,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& precede(Ts&&... ts) &;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task precede(Ts&&... ts) &&;
@@ -439,6 +442,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& succeed(Ts&&... ts) &;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task succeed(Ts&&... ts) &&;
@@ -448,6 +452,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& remove_predecessor(Ts&&... ts) & noexcept;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task remove_predecessor(Ts&&... ts) && noexcept;
@@ -457,6 +462,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& remove_successor(Ts&&... ts) & noexcept;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task remove_successor(Ts&&... ts) && noexcept;
@@ -464,11 +470,13 @@ public:
     /// @brief 清空当前任务的所有前驱关系。
     Task& clear_predecessors() & noexcept;
 
+    /// @brief 右值限定重载。
     Task clear_predecessors() && noexcept;
 
     /// @brief 清空当前任务的所有后继关系。
     Task& clear_successors() & noexcept;
 
+    /// @brief 右值限定重载。
     Task clear_successors() && noexcept;
 
     // ========================================================================
@@ -480,6 +488,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& acquire(Ts&&... sems) &;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task acquire(Ts&&... sems) &&;
@@ -489,6 +498,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& release(Ts&&... sems) &;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task release(Ts&&... sems) &&;
@@ -498,6 +508,7 @@ public:
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     Task& acquire(Ts&&... args) &;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     Task acquire(Ts&&... args) &&;
@@ -507,6 +518,7 @@ public:
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     Task& release(Ts&&... args) &;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     Task release(Ts&&... args) &&;
@@ -516,6 +528,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& remove_acquire(Ts&&... sems) & noexcept;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task remove_acquire(Ts&&... sems) && noexcept;
@@ -525,6 +538,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& remove_release(Ts&&... sems) & noexcept;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task remove_release(Ts&&... sems) && noexcept;
@@ -532,11 +546,13 @@ public:
     /// @brief 清空所有执行前信号量获取约束。
     Task& clear_acquires() & noexcept;
 
+    /// @brief 右值限定重载。
     Task clear_acquires() && noexcept;
 
     /// @brief 清空所有执行后信号量释放约束。
     Task& clear_releases() & noexcept;
 
+    /// @brief 右值限定重载。
     Task clear_releases() && noexcept;
 
     // ========================================================================
@@ -547,6 +563,7 @@ public:
     template <std::invocable<Task> F>
     void for_each_predecessor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F&, Task>);
 
+    /// @brief const 重载 —— 遍历时提供 `TaskView` 只读句柄。
     template <std::invocable<TaskView> F>
     void for_each_predecessor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>);
 
@@ -554,6 +571,7 @@ public:
     template <std::invocable<Task> F>
     void for_each_successor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F&, Task>);
 
+    /// @brief const 重载 —— 遍历时提供 `TaskView` 只读句柄。
     template <std::invocable<TaskView> F>
     void for_each_successor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>);
 
@@ -566,6 +584,7 @@ public:
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
+    /// @brief const 重载 —— 遍历时提供只读信号量与配额。
     template <typename F>
         requires std::invocable<F&, const Semaphore&, std::size_t>
                  || std::invocable<F&, const Semaphore&>
@@ -583,6 +602,7 @@ public:
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
+    /// @brief const 重载 —— 遍历时提供只读信号量与配额。
     template <typename F>
         requires std::invocable<F&, const Semaphore&, std::size_t>
                  || std::invocable<F&, const Semaphore&>
@@ -1037,6 +1057,7 @@ inline void Task::unregister_observer(std::shared_ptr<Observer> ptr) noexcept {
 }
 
 
+/// @brief 拓扑连线运算符：`a >> b` 等价于 `b.succeed(a)`，建立 a → b 依赖。
 template <typename L>
     requires std::same_as<std::remove_cvref_t<L>, Task>
 inline Task& operator>>(L&& lhs, Task& rhs) {
@@ -1044,6 +1065,7 @@ inline Task& operator>>(L&& lhs, Task& rhs) {
     return rhs;
 }
 
+/// @brief 右值限定重载。
 template <typename L>
     requires std::same_as<std::remove_cvref_t<L>, Task>
 inline Task operator>>(L&& lhs, Task&& rhs) {
@@ -1051,6 +1073,7 @@ inline Task operator>>(L&& lhs, Task&& rhs) {
     return std::move(rhs);
 }
 
+/// @brief 拓扑连线运算符：`a << b` 等价于 `b.precede(a)`，建立 a → b 依赖。
 template <typename L>
     requires std::same_as<std::remove_cvref_t<L>, Task>
 inline Task& operator<<(L&& lhs, Task& rhs) {
@@ -1058,6 +1081,7 @@ inline Task& operator<<(L&& lhs, Task& rhs) {
     return rhs;
 }
 
+/// @brief 右值限定重载。
 template <typename L>
     requires std::same_as<std::remove_cvref_t<L>, Task>
 inline Task operator<<(L&& lhs, Task&& rhs) {
@@ -1065,11 +1089,13 @@ inline Task operator<<(L&& lhs, Task&& rhs) {
     return std::move(rhs);
 }
 
+/// @brief 将 `Task` 的 D2 描述写入输出流。
 inline std::ostream& operator << (std::ostream& os, const Task& task) {
     task.dump(os);
     return os;
 }
 
+/// @brief 将 `TaskView` 的 D2 描述写入输出流。
 inline std::ostream& operator << (std::ostream& os, const TaskView& task) {
     task.dump(os);
     return os;
@@ -1079,11 +1105,13 @@ inline std::ostream& operator << (std::ostream& os, const TaskView& task) {
 
 
 namespace std {
+/// @brief `tfl::Task` 的哈希支持，委托给 `Task::hash_value()`。
 template <>
 struct hash<tfl::Task> {
     inline auto operator()(const tfl::Task& t) const noexcept { return t.hash_value(); }
 };
 
+/// @brief `tfl::TaskView` 的哈希支持，委托给 `TaskView::hash_value()`。
 template <>
 struct hash<tfl::TaskView> {
     inline auto operator()(const tfl::TaskView& tv) const noexcept { return tv.hash_value(); }

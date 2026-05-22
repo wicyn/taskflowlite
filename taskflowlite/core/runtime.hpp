@@ -127,52 +127,62 @@ class Runtime : public Immovable<Runtime> {
     friend class Worker;
     TFL_WORK_SUBCLASS_FRIENDS;
 public:
+    /// @brief 提交带依赖的子图任务 —— 在前驱 Deps 全部完成后启动 `gh`。
     template <anchor_tag A = anchor::explicit_t, typename Gh, typename... Deps>
         requires graph_holder<Gh> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, Deps&&... deps);
 
+    /// @brief 提交带依赖和完成回调的子图任务。
     template <anchor_tag A = anchor::explicit_t, typename Gh, typename C, typename... Deps>
         requires (capturable<C> && graph_holder<Gh> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, C&& cb, Deps&&... deps);
 
+    /// @brief 提交带依赖的子图任务 —— 循环执行 `num` 次。
     template <anchor_tag A = anchor::explicit_t, typename Gh, typename... Deps>
         requires graph_holder<Gh> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, std::uint64_t num, Deps&&... deps);
 
+    /// @brief 提交带依赖和完成回调的子图任务 —— 循环执行 `num` 次。
     template <anchor_tag A = anchor::explicit_t, typename Gh, typename C, typename... Deps>
         requires (capturable<C> && graph_holder<Gh> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps);
 
+    /// @brief 提交带依赖和终止谓词的子图任务 —— 谓词返回 `true` 时停止循环。
     template <anchor_tag A = anchor::explicit_t, typename Gh, typename P, typename... Deps>
         requires (capturable<P> && graph_holder<Gh> && predicate<P> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, Deps&&... deps);
 
+    /// @brief 提交带依赖、终止谓词和完成回调的子图任务。
     template <anchor_tag A = anchor::explicit_t, typename Gh, typename P, typename C, typename... Deps>
         requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps);
 
+    /// @brief 提交带依赖的子图任务 —— 通过迭代器范围指定前驱。
     template <anchor_tag A = anchor::explicit_t, typename Gh, typename P, typename C, std::input_iterator I, std::sentinel_for<I> S>
         requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
                  std::derived_from<std::iter_value_t<I>, AsyncTask>)
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, C&& cb, I first, S last);
 
-
+    /// @brief 提交带依赖的普通任务 —— 在前驱 Deps 全部完成后执行。
     template <anchor_tag A = anchor::explicit_t, typename T, typename... Deps>
         requires (basic_invocable<T> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(T&& task, Deps&&... deps);
 
+    /// @brief 提交带依赖的普通任务 —— 通过迭代器范围指定前驱。
     template <anchor_tag A = anchor::explicit_t, typename T, std::input_iterator I, std::sentinel_for<I> S>
         requires (basic_invocable<T> && std::derived_from<std::iter_value_t<I>, AsyncTask>)
     [[nodiscard]] AsyncTask dependent_async(T&& task, I first, S last);
 
+    /// @brief 提交带依赖的运行时任务 —— 注入 `Runtime&` 上下文。
     template <anchor_tag A = anchor::explicit_t, typename T, typename... Deps>
         requires (runtime_invocable<T> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(T&& task, Deps&&... deps);
 
+    /// @brief 提交带依赖的运行时任务 —— 通过迭代器范围指定前驱。
     template <anchor_tag A = anchor::explicit_t, typename T, std::input_iterator I, std::sentinel_for<I> S>
         requires (runtime_invocable<T> && std::derived_from<std::iter_value_t<I>, AsyncTask>)
     [[nodiscard]] AsyncTask dependent_async(T&& task, I first, S last);
@@ -259,33 +269,43 @@ public:
         requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
     [[nodiscard]] auto async(T&& task, Args&&... args) -> Future<runtime_return_t<T, Args...>>;
 
+    /// @brief 检测当前 Runtime 上下文是否已收到停止请求。
     [[nodiscard]] bool stop_requested() const noexcept;
 
+    /// @brief 检测当前 Runtime 上下文是否已记录异常。
     [[nodiscard]] bool has_exception() const noexcept;
     // ========================================================================
     //  同步执行 / 协作式等待
     // ========================================================================
+    /// @brief 立即调度一个兄弟任务到当前 worker 的本地队列。
     void schedule(Task task);
 
+    /// @brief 立即调度一个子图到当前 worker 的本地队列。
     template <typename Gh>
         requires graph_holder<Gh>
     void schedule(Gh& gh);
 
+    /// @brief 协作式等待子图完成 —— 阻塞当前 worker 直到 `gh` 所有节点执行完毕。
     template <typename Gh>
         requires graph_holder<Gh>
     void cowait(Gh& gh);
 
+    /// @brief 协作式等待 —— 阻塞当前 worker 直到所有已调度的子任务完成。
     void cowait();
 
+    /// @brief 协作式等待 —— 阻塞直到 `pred()` 返回 `true`。
     template <predicate Pred>
     void cowait_until(Pred&& pred);
 
     // ========================================================================
     //  Worker 访问
     // ========================================================================
+    /// @brief 获取当前 worker 的只读视图。
     [[nodiscard]] WorkerView worker() const noexcept;
 
+    /// @brief 获取所属 Executor 的可变引用。
     [[nodiscard]] Executor& executor() noexcept;
+    /// @brief 获取所属 Executor 的只读引用。
     [[nodiscard]] const Executor& executor() const noexcept;
 private:
     Work&       m_work;

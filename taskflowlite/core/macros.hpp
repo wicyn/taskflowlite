@@ -203,8 +203,8 @@ do {                            \
 #   define TFL_ASSERT(expr) TFL_ASSUME(expr)
 #endif
 
-/// @brief 复合断言:同时要求表达式在编译期 (noexcept) 与运行期均合法。
-// Note: 内部 assert 实现透传 noexcept 检查后,再做运行期检测。
+/// @brief 复合断言：同时要求表达式在编译期（noexcept）与运行期均合法。
+// Note: 内部 assert 实现透传 noexcept 检查后，再做运行期检测。
 #define STATIC_ASSERT(_XP)              \
     do {                                \
         static_assert(noexcept(_XP));   \

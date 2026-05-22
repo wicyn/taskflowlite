@@ -129,21 +129,25 @@ class AsyncTask {
 
 
 public:
+    /// @brief 默认构造空句柄。
     AsyncTask() noexcept = default;
 
     /// @brief 析构句柄，释放当前持有的任务引用。
     ~AsyncTask();
 
+    /// @brief 构造空句柄（与默认构造等价）。
     explicit AsyncTask(std::nullptr_t) noexcept;
 
     /// @brief 拷贝构造，增加上游拓扑的引用计数。
     AsyncTask(const AsyncTask& rhs) noexcept;
 
+    /// @brief 拷贝赋值，释放旧引用并增加新引用的计数。
     AsyncTask& operator=(const AsyncTask& rhs) noexcept;
 
     /// @brief 移动构造，接管所有权，rhs 变为空句柄。
     AsyncTask(AsyncTask&& rhs) noexcept;
 
+    /// @brief 移动赋值，释放旧引用并接管 rhs 的所有权。
     AsyncTask& operator=(AsyncTask&& rhs) noexcept;
 
     /// @brief 释放当前任务引用，并将句柄置空。
@@ -210,15 +214,19 @@ public:
 
     // ==================== 控制接口 ====================
 
+    /// @brief 获取与该异步任务关联的停止令牌。
     /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] std::stop_token stop_token() const noexcept;
 
+    /// @brief 检测是否已收到停止请求。
     /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] bool stop_requested() const noexcept ;
 
+    /// @brief 检测停止是否可能（即是否有关联的停止状态）。
     /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] bool stop_possible() const noexcept;
 
+    /// @brief 向关联的停止源发出停止请求。
     /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
     bool request_stop() noexcept;
 
@@ -485,6 +493,7 @@ public:
         requires std::constructible_from<std::string, S>
     DeferredAsyncTask& name(S&& name) &;
 
+    /// @brief 右值限定重载 —— 返回 `DeferredAsyncTask` 值以支持链式调用。
     template <typename S>
         requires std::constructible_from<std::string, S>
     DeferredAsyncTask name(S&& name) &&;
@@ -507,6 +516,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     DeferredAsyncTask& acquire(Ts&&... sems) &;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     DeferredAsyncTask acquire(Ts&&... sems) &&;
@@ -516,6 +526,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     DeferredAsyncTask& release(Ts&&... sems) &;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     DeferredAsyncTask release(Ts&&... sems) &&;
@@ -525,6 +536,7 @@ public:
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     DeferredAsyncTask& acquire(Ts&&... args) &;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     DeferredAsyncTask acquire(Ts&&... args) &&;
@@ -534,6 +546,7 @@ public:
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     DeferredAsyncTask& release(Ts&&... args) &;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     DeferredAsyncTask release(Ts&&... args) &&;
@@ -543,6 +556,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     DeferredAsyncTask& remove_acquire(Ts&&... sems) & noexcept;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     DeferredAsyncTask remove_acquire(Ts&&... sems) && noexcept;
@@ -552,6 +566,7 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     DeferredAsyncTask& remove_release(Ts&&... sems) & noexcept;
 
+    /// @brief 右值限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     DeferredAsyncTask remove_release(Ts&&... sems) && noexcept;
@@ -559,11 +574,13 @@ public:
     /// @brief 清空所有执行前信号量获取约束。
     DeferredAsyncTask& clear_acquires() & noexcept;
 
+    /// @brief 右值限定重载。
     DeferredAsyncTask clear_acquires() && noexcept;
 
     /// @brief 清空所有执行后信号量释放约束。
     DeferredAsyncTask& clear_releases() & noexcept;
 
+    /// @brief 右值限定重载。
     DeferredAsyncTask clear_releases() && noexcept;
 
 
@@ -576,6 +593,7 @@ public:
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
+    /// @brief const 重载 —— 遍历时提供只读信号量与配额。
     template <typename F>
         requires std::invocable<F&, const Semaphore&, std::size_t>
                  || std::invocable<F&, const Semaphore&>
@@ -593,6 +611,7 @@ public:
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
+    /// @brief const 重载 —— 遍历时提供只读信号量与配额。
     template <typename F>
         requires std::invocable<F&, const Semaphore&, std::size_t>
                  || std::invocable<F&, const Semaphore&>
@@ -621,6 +640,7 @@ public:
         requires (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
     DeferredAsyncTask& start(Deps&&... deps) &;
 
+    /// @brief 右值限定重载。
     template <typename... Deps>
         requires (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
     DeferredAsyncTask start(Deps&&... deps) &&;
@@ -633,6 +653,7 @@ public:
         requires std::derived_from<std::iter_value_t<I>, AsyncTask>
     DeferredAsyncTask& start(I first, S last) &;
 
+    /// @brief 右值限定重载。
     template <std::input_iterator I, std::sentinel_for<I> S>
         requires std::derived_from<std::iter_value_t<I>, AsyncTask>
     DeferredAsyncTask start(I first, S last) &&;
@@ -1435,11 +1456,13 @@ inline auto Executor::async(T&& task, Args&&... args) -> Future<runtime_return_t
     return Future<R>{std::move(std_future), std::move(ss)};
 }
 
+/// @brief 将 `AsyncTask` 的 D2 描述写入输出流。
 inline std::ostream& operator << (std::ostream& os, const AsyncTask& task) {
     task.dump(os);
     return os;
 }
 
+/// @brief 将 `DeferredAsyncTask` 的 D2 描述写入输出流。
 inline std::ostream& operator << (std::ostream& os, const DeferredAsyncTask& task) {
     task.dump(os);
     return os;
@@ -1450,6 +1473,7 @@ inline std::ostream& operator << (std::ostream& os, const DeferredAsyncTask& tas
 // ==================== 标准库扩展 ====================
 
 namespace std {
+/// @brief `tfl::AsyncTask` 的哈希支持，委托给 `AsyncTask::hash_value()`。
 template <>
 struct hash<tfl::AsyncTask> {
     inline std::size_t operator()(const tfl::AsyncTask& task) const noexcept {
@@ -1457,6 +1481,7 @@ struct hash<tfl::AsyncTask> {
     }
 };
 
+/// @brief `tfl::DeferredAsyncTask` 的哈希支持，委托给 `DeferredAsyncTask::hash_value()`。
 template <>
 struct hash<tfl::DeferredAsyncTask> {
     inline std::size_t operator()(const tfl::DeferredAsyncTask& task) const noexcept {
