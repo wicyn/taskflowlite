@@ -28,30 +28,40 @@
 
 namespace tfl {
 
-/// @brief 语义化版本号存储结构。
+/// @brief 语义化版本三元组 `{major, minor, patch}`,支持 `<=>` 字典序比较。
+///
+/// @details
+/// 可平凡拷贝的值类型。三路比较按字典序进行,因此 `1.2.3 < 1.10.0` 自然成立。
+///
+/// @code
+/// constexpr Version v{1, 2, 0};
+/// static_assert(v < Version{1, 10, 0});
+/// std::cout << std::format("{}", v);  // "1.2.0"
+/// @endcode
 struct Version {
-    std::uint32_t major; ///< 主版本号
-    std::uint32_t minor; ///< 次版本号
-    std::uint32_t patch; ///< 修订号
+    std::uint32_t major; ///< 主版本号——发生破坏性 API/ABI 变更时递增
+    std::uint32_t minor; ///< 次版本号——向后兼容的新增功能时递增
+    std::uint32_t patch; ///< 修订号——仅向后兼容的 bug 修复时递增
 
     constexpr Version(std::uint32_t maj, std::uint32_t min, std::uint32_t pat) noexcept
         : major{maj}, minor{min}, patch{pat} {}
 
-    /// @brief C++20 三路比较运算符
     constexpr std::strong_ordering operator<=>(const Version&) const = default;
 
-    /// @brief 将版本信息格式化为标准字符串
+    /// @brief 格式化为 `"major.minor.patch"` 字符串。
     [[nodiscard]] std::string to_string() const {
         return std::format("{}.{}.{}", major, minor, patch);
     }
 
-    /// @brief 支持 std::ostream 流式输出版本号
     friend std::ostream& operator<<(std::ostream& stream, const Version& ver) {
         return stream << ver.major << '.' << ver.minor << '.' << ver.patch;
     }
 };
 
-/// @brief 框架全局版本实例 (inline constexpr 保证 ODR 安全且零开销)
+/// @brief 框架全局版本实例。
+///
+/// 标注 `inline constexpr`——在所有翻译单元中共享同一定义,ODR 安全。
+/// @par 线程安全 编译期即确定的只读常量,无任何同步开销。
 inline constexpr Version version(
     TASKFLOWLITE_VERSION_MAJOR,
     TASKFLOWLITE_VERSION_MINOR,

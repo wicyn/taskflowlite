@@ -62,15 +62,15 @@ namespace tfl {
 /// ============================================================================
 ///  状态字段：Implicit + Explicit
 /// ============================================================================
-/// `Implicit` 是构造期确定的节点属性，运行期普通读写：
-/// - `ANCHORED`：该节点天然可作为异常归档点；
-/// - `PREEMPTED`：节点已进入抢占/挂起阶段，等待子任务或子图完成后重入；
-/// - `WEIGHT_0/1/2`：本节点完成时对后继 join_counter 的贡献权重。
+/// `Implicit` 是构造期确定的节点属性,运行期非原子读写：
+/// - `ANCHORED`：节点自带异常归档能力(如 Subflow/Runtime 在构造期置位)；
+/// - `PREEMPTED`：节点已挂起,等待子任务完成后由 `_schedule_parent` 重入；
+/// - `JOIN`：本节点作为前驱时对后继 join_counter 贡献 1;Jump/MultiJump 不置位。
 ///
-/// `Explicit` 是运行期原子状态：
-/// - `ANCHORED`：由 `ExplicitAnchorGuard` 临时开启的显式异常归档点；
-/// - `EXCEPTION`：该节点或其子链路发生异常；
-/// - `CAUGHT`：异常已在某个锚点成功归档，防止并发重复写入 `exception_ptr`。
+/// `Explicit` 是运行期原子状态(多 Worker 并发读写)：
+/// - `ANCHORED`：`ExplicitAnchorGuard`/`corun` 在运行期动态开启的异常归档会话；
+/// - `EXCEPTION`：本节点或其子链路发生异常,用于 tear_down 识别异常路径；
+/// - `CAUGHT`：首个成功 fetch_or 该位的线程获胜,负责写入 `m_exception_ptr`。
 ///
 /// ============================================================================
 ///  统一边表 m_edges + m_num_successors
@@ -88,10 +88,9 @@ namespace tfl {
 /// ============================================================================
 ///  Join Weight / Join Counter
 /// ============================================================================
-/// 每个节点的入度不是简单边数，而是所有前驱 `_own_weight()` 的和：
-/// - 普通任务权重为 1（Implicit::JOIN 位设为 1）；
-/// - Branch / MultiBranch 权重为 1（与普通任务相同），择路由 tear_down 路径的 fetch_sub 协议实现；
-/// - Jump / MultiJump 权重为 0，不参与常规依赖计数，通过 store(0) 强制触发目标。
+/// 每个节点的入度是前驱 `_join_counted()` 的权重和(非简单边数)：
+/// - 普通/Branch/MultiBranch 任务:JOIN 位置 1,权重 = 1,走 fetch_sub 计数协议；
+/// - Jump/MultiJump:JOIN 位为 0,权重 = 0,不走计数协议,通过 store(0) 强制触发目标。
 ///
 /// `_set_up_graph()` 会在每轮执行前重新计算 `m_join_weight` 并初始化
 /// `m_join_counter`。前驱完成时递减后继计数，计数归零则后继进入就绪队列。
@@ -349,42 +348,15 @@ protected:
         }
     }
 
-    /// @brief 异常传播与归档
+    /// @brief 异常传播与归档。
     ///
-    /// @par 传播阶段
-    /// 自当前节点沿父链向上遍历，对路径上每个非显式锚点节点打上
-    /// @c Explicit::EXCEPTION 标记（便于下游 tear_down 识别异常路径、
-    /// 跳过后继任务调度以实现级联取消），直到遇到显式锚点
-    /// （@c Explicit::ANCHORED）或抵达根部。遍历中记录沿途首个
-    /// （最内层）隐式锚点作为次优归档目标。
+    /// 沿 m_parent 链向上:对中间节点标记 EXCEPTION(供 tear_down 级联取消),
+    /// 遇到 Explicit::ANCHORED 或 Implicit::ANCHORED 时停止,将 exception_ptr
+    /// 写入该锚点。首个通过 fetch_or 将 CAUGHT 位从 0 翻至 1 的线程获胜,
+    /// 其余并发异常的 exception_ptr 被丢弃(与 std::async 的单异常语义一致)。
     ///
-    /// @par 归档优先级
-    ///   -# 显式锚点（@c Explicit::ANCHORED）：由 @c corun / @c AnchorGuard
-    ///      等阻塞调用点在运行期动态开启，语义上最贴近"用户正在此处等待"，
-    ///      异常应最优先归档至此。
-    ///   -# 隐式锚点（@c Implicit::ANCHORED）：节点类型自带的异常汇聚点
-    ///      （如 Runtime / Subflow 等抢占式节点），作为显式锚点缺失时的
-    ///      运行时兜底接收者。
-    ///   -# 当前节点自身：上述两级均不可用时（如 @c silent_async 顶级任务
-    ///      无任何父锚点），异常仅留在本节点 @c m_exception_ptr，
-    ///      调用方无法直接取回。
-    ///
-    /// @par 多抛竞争
-    /// 同一锚点会话内多个任务可能并发抛出异常，目标位域的 @c CAUGHT 位
-    /// 作为归档胜出标志：首个通过 @c fetch_or 将其从 0 翻至 1 的线程
-    /// 负责写入 @c m_exception_ptr，其余并发抛出的异常被丢弃
-    /// （与 @c std::async 的单异常语义一致）。
-    ///
-    /// @par 内存序
-    /// 全程使用 @c memory_order_relaxed：
-    ///   - 传播路径的 @c EXCEPTION 标记仅用于状态查询，不携带跨线程同步
-    ///     职责；
-    ///   - 归档点的 @c CAUGHT 位 + @c m_exception_ptr 的可见性由读取端
-    ///     （如 @c future::get 或 tear_down 路径）在读取 @c CAUGHT 前的
-    ///     acquire 操作保证。
-    ///
-    /// @note 本函数声明为 @c noexcept：内部不新抛异常，调用链末端至多
-    ///       原地存储 @c exception_ptr。
+    /// 全程使用 relaxed 内存序:EXCEPTION 标记仅作状态查询,CAUGHT+m_exception_ptr
+    /// 的可见性由读取端(future::get/tear_down)的 acquire 操作保证。
     void _process_exception() noexcept {
         // ── 阶段 1：沿父链向上传播 EXCEPTION，寻找锚点 ─────────────
         // 循环不变式：
