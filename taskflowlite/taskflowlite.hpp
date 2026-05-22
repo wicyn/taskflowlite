@@ -39,9 +39,9 @@ namespace tfl {
 /// std::cout << std::format("{}", v);  // "1.2.0"
 /// @endcode
 struct Version {
-    std::uint32_t major; ///< 主版本号——发生破坏性 API/ABI 变更时递增
-    std::uint32_t minor; ///< 次版本号——向后兼容的新增功能时递增
-    std::uint32_t patch; ///< 修订号——仅向后兼容的 bug 修复时递增
+    std::uint32_t major; ///< 主版本号
+    std::uint32_t minor; ///< 次版本号
+    std::uint32_t patch; ///< 修订号
 
     constexpr Version(std::uint32_t maj, std::uint32_t min, std::uint32_t pat) noexcept
         : major{maj}, minor{min}, patch{pat} {}

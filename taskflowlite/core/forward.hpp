@@ -162,19 +162,19 @@ template <typename F, typename... Args>                             class MultiB
 template <typename F, typename... Args>                             class JumpInvoker;
 template <typename F, typename... Args>                             class MultiJumpInvoker;
 template <typename F, typename... Args>                             class RuntimeInvoker;
-template <typename FlowStore, typename P>                           class SubflowInvoker;
+template <typename GhStore, typename P>                             class SubflowInvoker;
 template <typename A, typename F, typename... Args>                 class SilentAsyncBasicInvoker;
 template <typename A, typename F, typename... Args>                 class SilentAsyncRuntimeInvoker;
-template <typename A, typename FlowStore, typename P, typename C>   class SilentAsyncFlowInvoker;
+template <typename A, typename GhStore, typename P, typename C>     class SilentAsyncFlowInvoker;
 template <typename A, typename F, typename R, typename... Args>     class AsyncBasicInvoker;
 template <typename A, typename F, typename R, typename... Args>     class AsyncRuntimeInvoker;
-template <typename A, typename FlowStore, typename P, typename C>   class AsyncFlowInvoker;
+template <typename A, typename GhStore, typename P, typename C>     class AsyncFlowInvoker;
 template <typename A, typename F, typename... Args>                 class DepAsyncBasicInvoker;
 template <typename A, typename F, typename... Args>                 class DepAsyncRuntimeInvoker;
-template <typename A, typename FlowStore, typename P, typename C>   class DepAsyncFlowInvoker;
+template <typename A, typename GhStore, typename P, typename C>     class DepAsyncFlowInvoker;
 template <typename A, typename F, typename... Args>                 class DepDeferredAsyncBasicInvoker;
 template <typename A, typename F, typename... Args>                 class DepDeferredAsyncRuntimeInvoker;
-template <typename A, typename FlowStore, typename P, typename C>   class DepDeferredAsyncFlowInvoker;
+template <typename A, typename GhStore, typename P, typename C>     class DepDeferredAsyncFlowInvoker;
 template <typename A>                                               class AnchorWork;
 
 
@@ -198,7 +198,7 @@ template <typename A>                                               class Anchor
     template <typename, typename, typename...>              friend class ::tfl::DepDeferredAsyncBasicInvoker;     \
     template <typename, typename, typename...>              friend class ::tfl::DepDeferredAsyncRuntimeInvoker;   \
     template <typename, typename, typename, typename>       friend class ::tfl::DepDeferredAsyncFlowInvoker;      \
-    template <typename A>                                   friend class ::tfl::AnchorWork;
+    template <typename>                                     friend class ::tfl::AnchorWork;
 
 
 } // namespace tfl

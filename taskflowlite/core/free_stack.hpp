@@ -282,27 +282,35 @@ private:
     /// @brief 把 (ptr, tag) 压成 64-bit,绕过 16-byte DWCAS 的 ABI 依赖。
     ///
     /// 全部为 static 纯函数,Tagged 本身无状态 —— 仅作命名空间用,无运行时开销。
+
     struct Tagged {
-        static constexpr std::uint64_t PTR_MASK  = (1ULL << 48) - 1;
-        static constexpr unsigned      TAG_SHIFT = 48;
+        // 容器总位宽 —— uint64_t 标准保证 64 位,此处显式表达意图
+        static constexpr unsigned TOTAL_BITS = sizeof(std::uint64_t) * char_bits;
+        // 平台契约: x86_64 / AArch64 用户态规范地址,有效虚地址 ≤ 48 位
+        // 若未来需支持 LA57 / 52-bit AArch64,改此处即可,TAG_BITS 自动收缩
+        static constexpr unsigned PTR_BITS = 48;
+        static constexpr unsigned TAG_BITS = TOTAL_BITS - PTR_BITS;
+
+        static constexpr unsigned      TAG_SHIFT = PTR_BITS;
+        static constexpr std::uint64_t PTR_MASK  = (std::uint64_t{1} << PTR_BITS) - 1;
+        static constexpr std::uint64_t TAG_MASK  = ((std::uint64_t{1} << TAG_BITS) - 1) << TAG_SHIFT;
+
+        static_assert(TOTAL_BITS == 64, "Tagged depends on 64-bit uint64_t");
+        static_assert(PTR_BITS + TAG_BITS == TOTAL_BITS);
+        static_assert(PTR_BITS > 0 && TAG_BITS > 0);
 
         static void* ptr_of(std::uint64_t v) noexcept {
-            // tag 在高 16 位,逻辑与自动剥离,无需符号扩展处理
             return reinterpret_cast<void*>(v & PTR_MASK);
         }
-
         static std::uint64_t tag_of(std::uint64_t v) noexcept {
-            // 无符号右移,高位自动清零
             return v >> TAG_SHIFT;
         }
-
         static std::uint64_t pack(void* p, std::uint64_t tag) noexcept {
             const auto pi = reinterpret_cast<std::uintptr_t>(p);
-            // 契约:指针高 16 位必须全 0。
-            assert((pi & ~PTR_MASK) == 0);
+            assert((pi & ~PTR_MASK) == 0);                          // 指针契约
+            assert(tag < (std::uint64_t{1} << TAG_BITS));           // tag 越界对称检查
             return (tag << TAG_SHIFT) | pi;
         }
-
         static bool is_canonical(void* p) noexcept {
             return (reinterpret_cast<std::uintptr_t>(p) & ~PTR_MASK) == 0;
         }
