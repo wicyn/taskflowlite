@@ -152,52 +152,62 @@ public:
         requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
     [[nodiscard]] DeferredAsyncTask deferred_async(T&& task, Args&&... args);
 
+    /// @brief 提交带依赖的子图任务 —— 在前驱 Deps 全部完成后启动 `gh`。
     template <typename Gh, typename... Deps>
         requires graph_holder<Gh> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, Deps&&... deps);
 
+    /// @brief 提交带依赖和完成回调的子图任务。
     template <typename Gh, typename C, typename... Deps>
         requires (capturable<C> && graph_holder<Gh> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, C&& cb, Deps&&... deps);
 
+    /// @brief 提交带依赖的子图任务 —— 循环执行 `num` 次。
     template <typename Gh, typename... Deps>
         requires graph_holder<Gh> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, std::uint64_t num, Deps&&... deps);
 
+    /// @brief 提交带依赖和完成回调的子图任务 —— 循环执行 `num` 次。
     template <typename Gh, typename C, typename... Deps>
         requires (capturable<C> && graph_holder<Gh> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps);
 
+    /// @brief 提交带依赖和终止谓词的子图任务 —— 谓词返回 `true` 时停止循环。
     template <typename Gh, typename P, typename... Deps>
         requires (capturable<P> && graph_holder<Gh> && predicate<P> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, Deps&&... deps);
 
+    /// @brief 提交带依赖、终止谓词和完成回调的子图任务。
     template <typename Gh, typename P, typename C, typename... Deps>
         requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
                  (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps);
 
+    /// @brief 提交带依赖的子图任务 —— 通过迭代器范围指定前驱。
     template <typename Gh, typename P, typename C, std::input_iterator I, std::sentinel_for<I> S>
         requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
                  std::derived_from<std::iter_value_t<I>, AsyncTask>)
     [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, C&& cb, I first, S last);
 
-
+    /// @brief 提交带依赖的普通任务 —— 在前驱 Deps 全部完成后执行。
     template <typename T, typename... Deps>
         requires (basic_invocable<T> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(T&& task, Deps&&... deps);
 
+    /// @brief 提交带依赖的普通任务 —— 通过迭代器范围指定前驱。
     template <typename T, std::input_iterator I, std::sentinel_for<I> S>
         requires (basic_invocable<T> && std::derived_from<std::iter_value_t<I>, AsyncTask>)
     [[nodiscard]] AsyncTask dependent_async(T&& task, I first, S last);
 
+    /// @brief 提交带依赖的运行时任务 —— 注入 `Runtime&` 上下文。
     template <typename T, typename... Deps>
         requires (runtime_invocable<T> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
     [[nodiscard]] AsyncTask dependent_async(T&& task, Deps&&... deps);
 
+    /// @brief 提交带依赖的运行时任务 —— 通过迭代器范围指定前驱。
     template <typename T, std::input_iterator I, std::sentinel_for<I> S>
         requires (runtime_invocable<T> && std::derived_from<std::iter_value_t<I>, AsyncTask>)
     [[nodiscard]] AsyncTask dependent_async(T&& task, I first, S last);
@@ -291,12 +301,17 @@ public:
     // ========================================================================
     //  状态查询接口
     // ========================================================================
+    /// @brief 返回当前活跃的 worker 线程数。
     [[nodiscard]] std::size_t num_workers() const noexcept;
+    /// @brief 返回当前正在等待的 worker 线程数。
     [[nodiscard]] std::size_t num_waiters() const noexcept;
+    /// @brief 返回共享队列分片数。
     [[nodiscard]] std::size_t num_queues() const noexcept;
+    /// @brief 返回当前活跃的拓扑实例数。
     [[nodiscard]] std::size_t num_topologies() const noexcept;
 
 private:
+    /// @brief 共享队列分片 —— 互斥锁 + 无界队列，按 2×cache line 对齐防伪共享。
     struct alignas(2 * cache_line_size) Buffer {
         std::mutex mutex;
         UnboundedQueue<Work*> queue{2 * TFL_DEFAULT_QUEUE_SIZE};

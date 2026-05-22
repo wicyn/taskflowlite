@@ -167,6 +167,7 @@ static_assert(std::is_trivially_copyable_v<Tagged128>);
 /// 实例化本类。
 class alignas(cache_line_size * 2) FreeStack128 : public Immovable<FreeStack128> {
 public:
+    /// @brief 构造空栈 —— 头指针置为 `{nullptr, 0}`。
     FreeStack128() noexcept {
         m_head.store(Tagged{nullptr, 0}, std::memory_order_relaxed);
     }
@@ -229,6 +230,7 @@ private:
 ///      已由顶层选择逻辑在编译期排除)。
 class alignas(cache_line_size * 2) FreeStack48 : public Immovable<FreeStack48> {
 public:
+    /// @brief 构造空栈 —— 头指针置为 0（48-bit packed 表示）。
     FreeStack48() noexcept {
         m_head.store(0, std::memory_order_relaxed);
     }
@@ -355,6 +357,7 @@ using FreeStack = FreeStack48;
         "Platform requires FreeStack128 (high pointer bits used) "
         "but lock-free 128-bit CAS is unavailable on this target");
 
+    /// @brief 平台最优 FreeStack 别名 —— 128-bit CAS 可用时选 `FreeStack128`，否则回退 `FreeStack48`。
     using FreeStack = std::conditional_t<
         detail::kRequires128 || detail::kHasLockFree128,
         FreeStack128,

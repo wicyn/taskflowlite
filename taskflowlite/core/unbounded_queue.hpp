@@ -52,6 +52,7 @@ public:
     /// @param cap 初始容量
     explicit AtomicRingBuffer(std::int64_t cap);
 
+    /// @brief 析构时释放内部环形缓冲区内存。
     ~AtomicRingBuffer();
 
     AtomicRingBuffer(const AtomicRingBuffer&) = delete;

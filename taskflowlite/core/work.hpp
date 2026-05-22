@@ -281,10 +281,16 @@ public:
     static void* operator new(std::size_t, const std::nothrow_t&) noexcept = delete;
     static void operator delete(void*, const std::nothrow_t&) noexcept = delete;
 
+    /// @brief 虚析构 —— 允许通过基类指针安全删除派生 Invoker。
     virtual ~Work() noexcept = default;
 
+    /// @brief 任务执行入口 —— 由 Executor 在工作线程上调用。
+    /// @param exec   所属 Executor。
+    /// @param wr     执行当前任务的 Worker。
+    /// @param cache  本地缓存指针，用于批量调度优化。
     virtual void invoke(Executor& exec, Worker& wr, Work*& cache) = 0;
 
+    /// @brief 将当前节点导出为 D2 可视化描述。
     virtual void dump(std::ostream& ostream) const = 0;
 
 protected:

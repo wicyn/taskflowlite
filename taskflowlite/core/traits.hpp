@@ -215,51 +215,63 @@ template <graph_holder Gh>
 //       省一次 atomic ref-count，与 std::jthread 惯例一致。
 // ============================================================================
 
-// ── basic ──────────────────────────────────────────────────────────────────
+/// @brief `f(args...)` 可调用 —— 普通同步任务签名。
 template <typename T, typename... Args>
 concept basic_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>;
+/// @brief `f(args..., stop_token)` 可调用 —— 普通同步任务（带停止令牌）。
 template <typename T, typename... Args>
 concept basic_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., std::stop_token>;
+/// @brief 普通同步任务：plain 或 stoppable 至少满足其一。
 template <typename T, typename... Args>
 concept basic_invocable = basic_invocable_plain<T, Args...> || basic_invocable_stoppable<T, Args...>;
 
-// ── branch ─────────────────────────────────────────────────────────────────
+/// @brief `f(args..., Branch&)` 可调用 —— 单目标条件分支任务签名。
 template <typename T, typename... Args>
 concept branch_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>;
+/// @brief `f(args..., Branch&, stop_token)` 可调用 —— 条件分支任务（带停止令牌）。
 template <typename T, typename... Args>
 concept branch_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&, std::stop_token>;
+/// @brief 条件分支任务：plain 或 stoppable 至少满足其一。
 template <typename T, typename... Args>
 concept branch_invocable = branch_invocable_plain<T, Args...> || branch_invocable_stoppable<T, Args...>;
 
-// ── multi_branch ───────────────────────────────────────────────────────────
+/// @brief `f(args..., MultiBranch&)` 可调用 —— 多目标广播分支任务签名。
 template <typename T, typename... Args>
 concept multi_branch_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>;
+/// @brief `f(args..., MultiBranch&, stop_token)` 可调用 —— 多分支任务（带停止令牌）。
 template <typename T, typename... Args>
 concept multi_branch_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&, std::stop_token>;
+/// @brief 多目标广播分支任务：plain 或 stoppable 至少满足其一。
 template <typename T, typename... Args>
 concept multi_branch_invocable = multi_branch_invocable_plain<T, Args...> || multi_branch_invocable_stoppable<T, Args...>;
 
-// ── jump ───────────────────────────────────────────────────────────────────
+/// @brief `f(args..., Jump&)` 可调用 —— 单目标强制跳转任务签名。
 template <typename T, typename... Args>
 concept jump_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>;
+/// @brief `f(args..., Jump&, stop_token)` 可调用 —— 跳转任务（带停止令牌）。
 template <typename T, typename... Args>
 concept jump_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&, std::stop_token>;
+/// @brief 强制跳转任务：plain 或 stoppable 至少满足其一。
 template <typename T, typename... Args>
 concept jump_invocable = jump_invocable_plain<T, Args...> || jump_invocable_stoppable<T, Args...>;
 
-// ── multi_jump ─────────────────────────────────────────────────────────────
+/// @brief `f(args..., MultiJump&)` 可调用 —— 多目标广播跳转任务签名。
 template <typename T, typename... Args>
 concept multi_jump_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>;
+/// @brief `f(args..., MultiJump&, stop_token)` 可调用 —— 多跳转任务（带停止令牌）。
 template <typename T, typename... Args>
 concept multi_jump_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&, std::stop_token>;
+/// @brief 多目标广播跳转任务：plain 或 stoppable 至少满足其一。
 template <typename T, typename... Args>
 concept multi_jump_invocable = multi_jump_invocable_plain<T, Args...> || multi_jump_invocable_stoppable<T, Args...>;
 
-// ── runtime ────────────────────────────────────────────────────────────────
+/// @brief `f(args..., Runtime&)` 可调用 —— 运行时动态调度任务签名。
 template <typename T, typename... Args>
 concept runtime_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>;
+/// @brief `f(args..., Runtime&, stop_token)` 可调用 —— 运行时任务（带停止令牌）。
 template <typename T, typename... Args>
 concept runtime_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&, std::stop_token>;
+/// @brief 运行时动态调度任务：plain 或 stoppable 至少满足其一。
 template <typename T, typename... Args>
 concept runtime_invocable = runtime_invocable_plain<T, Args...> || runtime_invocable_stoppable<T, Args...>;
 
@@ -315,20 +327,26 @@ struct invocable_return<T, tail_pack<Tail...>, Args...> {
 
 } // namespace detail
 
+/// @brief `basic_invocable<T, Args...>` 的返回类型 —— `f(args...)` 或 `f(args..., stop_token)`。
 template <typename T, typename... Args>
 using basic_return_t        = typename detail::invocable_return<T, detail::tail_pack<>,            Args...>::type;
+/// @brief `branch_invocable<T, Args...>` 的返回类型。
 template <typename T, typename... Args>
 using branch_return_t       = typename detail::invocable_return<T, detail::tail_pack<Branch&>,     Args...>::type;
+/// @brief `multi_branch_invocable<T, Args...>` 的返回类型。
 template <typename T, typename... Args>
 using multi_branch_return_t = typename detail::invocable_return<T, detail::tail_pack<MultiBranch&>,Args...>::type;
+/// @brief `jump_invocable<T, Args...>` 的返回类型。
 template <typename T, typename... Args>
 using jump_return_t         = typename detail::invocable_return<T, detail::tail_pack<Jump&>,       Args...>::type;
+/// @brief `multi_jump_invocable<T, Args...>` 的返回类型。
 template <typename T, typename... Args>
 using multi_jump_return_t   = typename detail::invocable_return<T, detail::tail_pack<MultiJump&>,  Args...>::type;
+/// @brief `runtime_invocable<T, Args...>` 的返回类型。
 template <typename T, typename... Args>
 using runtime_return_t      = typename detail::invocable_return<T, detail::tail_pack<Runtime&>,    Args...>::type;
 
-
+/// @brief 约束 `Ts...` 为 `{Semaphore, count, Semaphore, count, ...}` 交替序列。
 template <typename... Ts>
 concept sem_count_sequence = detail::is_sem_count_seq<Ts...>::value;
 
@@ -417,6 +435,7 @@ struct explicit_t  { explicit constexpr explicit_t() = default; };
 
 } // namespace anchor
 
+/// @brief 约束 `T` 为 `anchor::none_t`、`anchor::implicit_t` 或 `anchor::explicit_t` 之一。
 template <typename T>
 concept anchor_tag = std::same_as<T, anchor::none_t> || std::same_as<T, anchor::implicit_t> || std::same_as<T, anchor::explicit_t>;
 

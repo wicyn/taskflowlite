@@ -22,12 +22,14 @@ namespace detail {
 //  type traits
 // ============================================================================
 
+/// @brief 检测 `T` 是否为 `std::array<std::size_t, N>` 特化。
 template <typename T>
 struct is_size_array : std::false_type {};
 
 template <std::size_t N>
 struct is_size_array<std::array<std::size_t, N>> : std::true_type {};
 
+/// @brief `is_size_array` 的变量模板别名。
 template <typename T>
 inline constexpr bool is_size_array_v = is_size_array<std::remove_cvref_t<T>>::value;
 
@@ -35,27 +37,32 @@ inline constexpr bool is_size_array_v = is_size_array<std::remove_cvref_t<T>>::v
 // ============================================================================
 //  concepts
 // ============================================================================
+
+/// @brief Scheme 通过 `class_sizes()` 静态成员返回 `std::array<std::size_t, N>`。
 template <typename S>
 concept HasClassSizes = requires {
     requires is_size_array_v<decltype(S::class_sizes())>;
 };
 
+/// @brief Scheme 提供 `class_count()` → `std::size_t` 编译期查询。
 template <typename S>
 concept HasClassCount = requires {
     { S::class_count() } noexcept -> std::same_as<std::size_t>;
 };
 
+/// @brief Scheme 提供 `class_size(idx)` → `std::size_t` 按索引查大小。
 template <typename S>
 concept HasClassSize = requires(std::size_t idx) {
     { S::class_size(idx) } noexcept -> std::same_as<std::size_t>;
 };
 
+/// @brief Scheme 提供 `class_index(bytes)` → `std::size_t` 按字节数查档位。
 template <typename S>
 concept HasClassIndex = requires(std::size_t bytes) {
     { S::class_index(bytes) } noexcept -> std::same_as<std::size_t>;
 };
 
-
+/// @brief Scheme 同时提供 `class_count`、`class_size`、`class_index` 完整 API。
 template <typename S>
 concept HasFullClassApi = HasClassCount<S> && HasClassSize<S> && HasClassIndex<S>;
 

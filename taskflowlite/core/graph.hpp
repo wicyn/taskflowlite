@@ -96,6 +96,7 @@ public:
     using const_reverse_iterator = std::vector<Work*>::const_reverse_iterator;
 
     Graph() = default;
+    /// @brief 析构时释放所有节点并清空边集合。
     ~Graph() noexcept;
 
     [[nodiscard]] iterator begin() noexcept { return m_works.begin(); }
