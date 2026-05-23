@@ -317,8 +317,7 @@ do {                            \
 
         // Why: 强制队列尺寸为 2 的次幂 —— 无锁编程的常用技巧。
         //      允许将取模 (index % size) 替换为位与 (index & (size - 1)),极大提升吞吐量。
-        static_assert((TFL_DEFAULT_QUEUE_SIZE & (TFL_DEFAULT_QUEUE_SIZE - 1)) == 0,
-                      "TFL_DEFAULT_QUEUE_SIZE must be power of 2");
+        static_assert((TFL_DEFAULT_QUEUE_SIZE & (TFL_DEFAULT_QUEUE_SIZE - 1)) == 0, "TFL_DEFAULT_QUEUE_SIZE must be power of 2");
 
 
 // ============================================================================

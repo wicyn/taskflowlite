@@ -184,10 +184,7 @@ public:
         for (;;) {
             ChunkLink::store(p, curr.ptr);
             const Tagged next{p, curr.tag + 1};
-            if (m_head.compare_exchange_weak(
-                    curr, next,
-                    std::memory_order_release,
-                    std::memory_order_relaxed)) {
+            if (m_head.compare_exchange_weak(curr, next, std::memory_order_release, std::memory_order_relaxed)) {
                 return;
             }
             // CAS 失败:curr 已自动重载到最新值,下轮重新链接重试
@@ -200,10 +197,7 @@ public:
         while (curr.ptr != nullptr) {
             void* link = ChunkLink::load(curr.ptr);
             const Tagged next{link, curr.tag + 1};
-            if (m_head.compare_exchange_weak(
-                    curr, next,
-                    std::memory_order_release,
-                    std::memory_order_acquire)) {
+            if (m_head.compare_exchange_weak(curr, next, std::memory_order_release, std::memory_order_acquire)) {
                 return curr.ptr;
             }
         }
@@ -247,10 +241,7 @@ public:
         for (;;) {
             ChunkLink::store(p, Tagged::ptr_of(curr));
             const std::uint64_t next = Tagged::pack(p, Tagged::tag_of(curr) + 1);
-            if (m_head.compare_exchange_weak(
-                    curr, next,
-                    std::memory_order_release,
-                    std::memory_order_relaxed)) {
+            if (m_head.compare_exchange_weak(curr, next, std::memory_order_release, std::memory_order_relaxed)) {
                 return;
             }
             // CAS 失败:curr 已自动重载到最新值,下轮重新链接重试
@@ -268,10 +259,7 @@ public:
             // 旧 link 不会污染 head —— ABA 由 tag 兜底。
             void* link = ChunkLink::load(top);
             const std::uint64_t next = Tagged::pack(link, Tagged::tag_of(curr) + 1);
-            if (m_head.compare_exchange_weak(
-                    curr, next,
-                    std::memory_order_release,
-                    std::memory_order_acquire)) {
+            if (m_head.compare_exchange_weak(curr, next, std::memory_order_release, std::memory_order_acquire)) {
                 return top;
             }
         }
@@ -318,10 +306,8 @@ private:
         }
     };
 
-    static_assert(sizeof(void*) == 8,
-                  "FreeStack48 assumes 64-bit pointer (x86-64 / ARM64)");
-    static_assert(std::atomic<std::uint64_t>::is_always_lock_free,
-                  "FreeStack48 requires lock-free 8-byte atomics");
+    static_assert(sizeof(void*) == 8, "FreeStack48 assumes 64-bit pointer (x86-64 / ARM64)");
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free, "FreeStack48 requires lock-free 8-byte atomics");
 
     /// @brief head 单独占一个 cache line,避免与外部字段伪共享。
     alignas(cache_line_size) std::atomic<std::uint64_t> m_head;
@@ -352,16 +338,12 @@ using FreeStack = FreeStack48;
 
 #else
 
-    static_assert(
-        !(detail::kRequires128 && !detail::kHasLockFree128),
+    static_assert(!(detail::kRequires128 && !detail::kHasLockFree128),
         "Platform requires FreeStack128 (high pointer bits used) "
         "but lock-free 128-bit CAS is unavailable on this target");
 
     /// @brief 平台最优 FreeStack 别名 —— 128-bit CAS 可用时选 `FreeStack128`，否则回退 `FreeStack48`。
-    using FreeStack = std::conditional_t<
-        detail::kRequires128 || detail::kHasLockFree128,
-        FreeStack128,
-        FreeStack48>;
+    using FreeStack = std::conditional_t<detail::kRequires128 || detail::kHasLockFree128, FreeStack128, FreeStack48>;
 
 #endif
 

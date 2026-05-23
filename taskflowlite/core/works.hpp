@@ -704,23 +704,6 @@ public:
 };
 
 /// @brief 静态图中的循环/条件子图执行器。
-///
-/// @tparam GhStore  Graph holder 类型（通常为 `Graph&`）。
-/// @tparam P        终止谓词类型 —— `bool()` 可调用对象。
-///
-/// @details
-/// `SubflowInvoker` 是 `Runtime::cowait()` 的底层实现载体。
-/// 它使用 PREEMPTED 两阶段协议循环执行内嵌子图：
-/// 首次进入时初始化拓扑、设置抢占标记；每次迭代后检查终止谓词；
-/// 谓词返回 `true` 或子图无可调度源节点时退出循环并 tear_down。
-///
-/// 终止判定三条件（任一成立即停止）：
-///   - `pred() == true`      用户谓词决定停止
-///   - `num_sources == 0`    子图为空或所有节点均有未满足的前驱
-///   - `_should_abort()`     拓扑层面已被异常终止
-///
-/// @see GraphWork       容器节点基类
-/// @see Runtime::cowait 用户面 API
 template <typename GhStore, typename P>
 class SubflowInvoker final : public GraphWork<GhStore> {
     using GraphWork<GhStore>::m_gh_store;
@@ -887,20 +870,6 @@ public:
 
 
 /// @brief fire-and-forget 异步子图执行器 —— 无 promise 通道。
-///
-/// @tparam A        锚点标签，控制异常归档目标。
-/// @tparam GhStore  Graph holder 类型。
-/// @tparam P        终止谓词类型 —— `bool()` 可调用对象。
-/// @tparam C        终止回调类型 —— `void()` 可调用对象。
-///
-/// @details
-/// 与 `SubflowInvoker` 共享相同的子图循环执行协议，但运行在
-/// 独立的 `Topology` 上（继承自 `GraphWork` 的内部 holder），
-/// 完成后通过 `_tear_down_async_task` 拆除异步依赖链。
-/// 终止时调用 `m_callback` 通知调用方生命周期落幕。
-///
-/// @see AsyncFlowInvoker  带 `std::promise` 的异步子图
-/// @see SubflowInvoker    静态图内嵌子图
 template <typename A, typename GhStore, typename P, typename C>
 class SilentAsyncFlowInvoker final : public GraphWork<GhStore> {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
@@ -1101,7 +1070,6 @@ public:
             if (m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
                 return;   // 抢占退出：不做 tear_down，由最后到达的 child 触发重入
             }
-            // Fallthrough：没有在飞 child，继续走到 tear_down
         }
 
         // ── 第二次进入（或首次即完成）：根据 m_exception_ptr 决定 promise ─
@@ -1597,19 +1565,6 @@ public:
 ///
 /// @tparam Gh  满足 `graph_holder` 的 Graph 持有者类型。
 /// @param gh   待执行的子图。必须存活到本调用返回。
-///
-/// @par Effects
-/// 构造一个临时的显式锚点节点，将 `gh` 的源节点批量入队，
-/// 然后阻塞当前 worker 直到子图所有节点完成。子图执行期间，
-/// 当前 worker 不参与工作窃取（它被锚点的 join 计数钉住）。
-///
-/// @par Remarks
-/// 子图异常通过锚点的 `_rethrow_exception()` 向上传播。
-/// 本函数仅在 `Runtime` 上下文内有效 —— 即仅可在
-/// `RuntimeWork` 或 `RuntimeInvoker` 的 body 中调用。
-///
-/// @see SubflowInvoker  底层子图执行器
-/// @see AnchorWork       临时锚点节点
 template <typename Gh>
     requires graph_holder<Gh>
 inline void Runtime::cowait(Gh& gh) {

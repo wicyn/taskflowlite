@@ -1107,8 +1107,7 @@ inline AsyncTask Executor::dependent_async(Gh&& gh, std::uint64_t num, Deps&&...
 template <typename Gh, typename C, typename... Deps>
     requires (capturable<C> && graph_holder<Gh> && callback<C> &&
              (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-inline AsyncTask Executor::dependent_async(Gh&& gh, std::uint64_t num, C&& cb,
-                                           Deps&&... deps) {
+inline AsyncTask Executor::dependent_async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) {
     return dependent_async(
         std::forward<Gh>(gh),
         [num]() mutable noexcept { return num-- == 0; },

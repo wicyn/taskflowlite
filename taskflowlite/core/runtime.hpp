@@ -300,8 +300,10 @@ public:
     // ========================================================================
     //  Worker 访问
     // ========================================================================
-    /// @brief 获取当前 worker 的只读视图。
-    [[nodiscard]] WorkerView worker() const noexcept;
+    /// @brief 获取所属 Worker 的可变引用。
+    [[nodiscard]] Worker& worker() noexcept;
+    /// @brief 获取所属 Worker 的只读引用。
+    [[nodiscard]] const Worker& worker() const noexcept;
 
     /// @brief 获取所属 Executor 的可变引用。
     [[nodiscard]] Executor& executor() noexcept;
@@ -715,7 +717,8 @@ inline void Runtime::cowait_until(Pred&& pred) {
     m_executor._cowait_until(m_worker, std::forward<Pred>(pred));
 }
 
-inline WorkerView Runtime::worker() const noexcept { return WorkerView{m_worker}; }
+inline Worker& Runtime::worker() noexcept { return m_worker; }
+inline const Worker& Runtime::worker() const noexcept { return m_worker; }
 
 inline Executor& Runtime::executor() noexcept { return m_executor; }
 inline const Executor& Runtime::executor() const noexcept { return m_executor; }
