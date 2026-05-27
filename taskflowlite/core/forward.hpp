@@ -18,7 +18,7 @@
 ///   - 两侧通过 `Executor` 这个唯一执行引擎落地。
 ///
 /// **线索 2：抽象 vs 实现的纵向分层**
-///   - 用户层：`Flow` / `Task` / `AsyncTask` / `DeferredAsyncTask` / `Runtime`（视图与句柄）
+///   - 用户层：`Flow` / `Task` / `AsyncTask` / `Runtime`（视图与句柄）
 ///   - 中间层：`Work` / `Topology` / `Graph`（核心数据结构）
 ///   - 实现层：`Worker` / `BoundedQueue` / `Notifier` / `SplitMix64`（并发原语）
 ///
@@ -42,7 +42,7 @@
 ///                                      │ 持有
 ///                                      ▼
 ///    Task / TaskView ─────引用─────► Work（基类）
-///    AsyncTask / DeferredAsyncTask              ▲
+///    AsyncTask                                  ▲
 ///                                               │ 派生
 ///                               ┌───────────────┼──────────────┐
 ///                               │  BasicWork    │   AnchorWork │
@@ -105,7 +105,7 @@
 /// |----------|------------------------|------------------------------------------|
 /// | 用户 API | flow.hpp               | `Flow`                                   |
 /// |          | task.hpp               | `Task` / `TaskView`                      |
-/// |          | async_task.hpp         | `AsyncTask` / `DeferredAsyncTask`        |
+/// |          | async_task.hpp         | `AsyncTask`                              |
 /// |          | runtime.hpp            | `Runtime`                                |
 /// |          | executor.hpp           | `Executor`                               |
 /// | 节点能力 | branch.hpp             | `Branch` / `MultiBranch`                 |
@@ -139,8 +139,6 @@ namespace tfl {
 class Flow;
 class Task;
 class TaskView;
-class AsyncTask;
-class DeferredAsyncTask;
 class Runtime;
 class Executor;
 class Branch;
@@ -153,9 +151,13 @@ class Work;
 class Graph;
 class Worker;
 class WorkerView;
+class WorkerHandler;
+
+template <typename>     class AsyncTask;
 
 
 // Work 子类前向声明
+                                                                    class NoopInvoker;
 template <typename F, typename... Args>                             class BasicInvoker;
 template <typename F, typename... Args>                             class BranchInvoker;
 template <typename F, typename... Args>                             class MultiBranchInvoker;
@@ -163,22 +165,20 @@ template <typename F, typename... Args>                             class JumpIn
 template <typename F, typename... Args>                             class MultiJumpInvoker;
 template <typename F, typename... Args>                             class RuntimeInvoker;
 template <typename GhStore, typename P>                             class SubflowInvoker;
-template <typename A, typename F, typename... Args>                 class SilentAsyncBasicInvoker;
-template <typename A, typename F, typename... Args>                 class SilentAsyncRuntimeInvoker;
-template <typename A, typename GhStore, typename P, typename C>     class SilentAsyncFlowInvoker;
-template <typename A, typename F, typename R, typename... Args>     class AsyncBasicInvoker;
-template <typename A, typename F, typename R, typename... Args>     class AsyncRuntimeInvoker;
-template <typename A, typename GhStore, typename P, typename C>     class AsyncFlowInvoker;
-template <typename A, typename F, typename... Args>                 class DepAsyncBasicInvoker;
-template <typename A, typename F, typename... Args>                 class DepAsyncRuntimeInvoker;
-template <typename A, typename GhStore, typename P, typename C>     class DepAsyncFlowInvoker;
-template <typename A, typename F, typename... Args>                 class DepDeferredAsyncBasicInvoker;
-template <typename A, typename F, typename... Args>                 class DepDeferredAsyncRuntimeInvoker;
-template <typename A, typename GhStore, typename P, typename C>     class DepDeferredAsyncFlowInvoker;
+template <typename A, typename F, typename... Args>                 class DetachedBasicInvoker;
+template <typename A, typename F, typename... Args>                 class DetachedRuntimeInvoker;
+template <typename A, typename GhStore, typename P, typename C>     class DetachedFlowInvoker;
+template <typename A, typename F, typename R, typename... Args>     class PromisedBasicInvoker;
+template <typename A, typename F, typename R, typename... Args>     class PromisedRuntimeInvoker;
+template <typename A, typename GhStore, typename P, typename C>     class PromisedFlowInvoker;
+template <typename A, typename F, typename... Args>                 class AttachedBasicInvoker;
+template <typename A, typename F, typename... Args>                 class AttachedRuntimeInvoker;
+template <typename A, typename GhStore, typename P, typename C>     class AttachedFlowInvoker;
 template <typename A>                                               class AnchorWork;
 
 
 #define TFL_WORK_SUBCLASS_FRIENDS                                                                                 \
+                                                            friend class ::tfl::NoopInvoker;               \
     template <typename, typename...>                        friend class ::tfl::BasicInvoker;                     \
     template <typename, typename...>                        friend class ::tfl::BranchInvoker;                    \
     template <typename, typename...>                        friend class ::tfl::MultiBranchInvoker;               \
@@ -186,18 +186,15 @@ template <typename A>                                               class Anchor
     template <typename, typename...>                        friend class ::tfl::MultiJumpInvoker;                 \
     template <typename, typename...>                        friend class ::tfl::RuntimeInvoker;                   \
     template <typename, typename>                           friend class ::tfl::SubflowInvoker;                   \
-    template <typename, typename, typename...>              friend class ::tfl::SilentAsyncBasicInvoker;          \
-    template <typename, typename, typename...>              friend class ::tfl::SilentAsyncRuntimeInvoker;        \
-    template <typename, typename, typename, typename>       friend class ::tfl::SilentAsyncFlowInvoker;           \
-    template <typename, typename, typename, typename...>    friend class ::tfl::AsyncBasicInvoker;                \
-    template <typename, typename, typename, typename...>    friend class ::tfl::AsyncRuntimeInvoker;              \
-    template <typename, typename, typename, typename>       friend class ::tfl::AsyncFlowInvoker;                 \
-    template <typename, typename, typename...>              friend class ::tfl::DepAsyncBasicInvoker;             \
-    template <typename, typename, typename...>              friend class ::tfl::DepAsyncRuntimeInvoker;           \
-    template <typename, typename, typename, typename>       friend class ::tfl::DepAsyncFlowInvoker;              \
-    template <typename, typename, typename...>              friend class ::tfl::DepDeferredAsyncBasicInvoker;     \
-    template <typename, typename, typename...>              friend class ::tfl::DepDeferredAsyncRuntimeInvoker;   \
-    template <typename, typename, typename, typename>       friend class ::tfl::DepDeferredAsyncFlowInvoker;      \
+    template <typename, typename, typename...>              friend class ::tfl::DetachedBasicInvoker;          \
+    template <typename, typename, typename...>              friend class ::tfl::DetachedRuntimeInvoker;        \
+    template <typename, typename, typename, typename>       friend class ::tfl::DetachedFlowInvoker;           \
+    template <typename, typename, typename, typename...>    friend class ::tfl::PromisedBasicInvoker;                \
+    template <typename, typename, typename, typename...>    friend class ::tfl::PromisedRuntimeInvoker;              \
+    template <typename, typename, typename, typename>       friend class ::tfl::PromisedFlowInvoker;                 \
+    template <typename, typename, typename...>              friend class ::tfl::AttachedBasicInvoker;             \
+    template <typename, typename, typename...>              friend class ::tfl::AttachedRuntimeInvoker;           \
+    template <typename, typename, typename, typename>       friend class ::tfl::AttachedFlowInvoker;              \
     template <typename>                                     friend class ::tfl::AnchorWork;
 
 

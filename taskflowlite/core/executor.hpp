@@ -49,10 +49,9 @@ namespace tfl {
 /// ============================================================================
 /// | API               | 返回值                | 启动方式        | 语义           |
 /// |-------------------|-----------------------|-----------------|----------------|
-/// | `silent_async`    | `void`                | 立即            | 即发即弃       |
+/// | `detach`    | `void`                | 立即            | 即发即弃       |
 /// | `async`           | `Future<R>`           | 立即            | 异步返回值     |
-/// | `dependent_async` | `AsyncTask`           | 立即/等待依赖   | 动态依赖       |
-/// | `deferred_async`  | `DeferredAsyncTask`   | 手动 `start()`  | 启动前可配置   |
+/// | `lazy_async`  | `AsyncTask        `   | 手动 `start()`  | 启动前可配置   |
 ///
 /// 每组 API 按 `graph_holder`、`basic_invocable`、`runtime_invocable` 等 concept
 /// 分发,最终收敛到 Work 工厂、依赖初始化和 `_schedule` 调度入口。
@@ -88,26 +87,45 @@ namespace tfl {
 /// @see Notifier    两阶段 park 唤醒机制
 /// @see Topology    执行实例与引用计数
 /// @see Flow        用户侧 DAG 构建器
-
 class Executor : public Immovable<Executor> {
-    friend class Work;
-    friend class Flow;
-    friend class AsyncTask;
-    friend class DeferredAsyncTask;
     friend class Runtime;
-
+    template <typename> friend class AsyncTask;
     TFL_WORK_SUBCLASS_FRIENDS;
 
 public:
-    /// @brief 创建调度器并启动工作线程
-    /// @param handler 异常处理策略（WorkerHandler）
-    /// @param num_workers 工作线程数量（默认 CPU 核心数）
-    explicit Executor(WorkerHandler& handler, std::size_t num_workers = std::thread::hardware_concurrency());
+    /// @brief 创建调度器并启动工作线程（使用默认 handler）
+    /// @param num_workers 工作线程数量(默认 CPU 核心数)
+    explicit Executor(std::size_t num_workers = std::thread::hardware_concurrency());
 
-    /// @brief 销毁调度器
-    /// @post 等待所有已提交任务执行完成，停止所有工作线程并释放资源
+    /// @brief 创建调度器并启动工作线程
+    /// @tparam H 见 worker_handle concept,支持以下形态:
+    ///         - 值/右值: `MyHandler{...}` / `std::move(h)`  → 拷贝/移动到堆,Executor 拥有
+    ///         - std::ref(h) / std::cref(h)                 → 借用,调用方保证 h 生命周期
+    /// @param handler 用户自定义的 WorkerHandler 派生对象
+    /// @param num_workers 工作线程数量(默认 CPU 核心数)
+    template <worker_handle H>
+    explicit Executor(H&& handler, std::size_t num_workers = std::thread::hardware_concurrency());
+
+    /// @brief 等待所有已提交任务完成、停止工作线程并释放资源
     ~Executor() noexcept;
 
+    /// ====================================================================
+    // 任务派发 API —— 接受游离态的 AsyncTask,在本执行器内启动
+    // ====================================================================
+    /// @brief 派发任务到本执行器(节点必须 Idle)。
+    /// @tparam Deps 必须为 AsyncTask<nonrepeat_t> 或其引用。
+    /// @param task 待派发的任务句柄,内部 Work 节点必须处于 Idle 状态。
+    /// @param deps 上游依赖列表,task 将在所有 deps 完成后调度。
+    /// @return task 的引用,支持链式。
+    /// @throw Exception 若 task 为空、已 submitted、或处于非 Idle 状态。
+    /// @note 派发后 topology->m_executor 被填入 *this,任务由本执行器独占调度。
+    template <typename T, typename... Deps>
+        requires (any_async_task<T> && (nonrepeat_async_task<Deps> && ...))
+    auto submit(T&& task, Deps&&... deps) -> std::conditional_t<std::is_lvalue_reference_v<T>, std::remove_reference_t<T>&, std::remove_cvref_t<T>>;
+
+    template <typename T, std::input_iterator I, std::sentinel_for<I> S>
+        requires (any_async_task<T> && nonrepeat_async_task<std::iter_value_t<I>>)
+    auto submit(T&& task, I first, S last) -> std::conditional_t<std::is_lvalue_reference_v<T>, std::remove_reference_t<T>&, std::remove_cvref_t<T>>;
     // ========================================================================
     //  任务提交 API
     // ========================================================================
@@ -115,143 +133,42 @@ public:
     /// @brief 提交任务图执行一次
     template <typename Gh>
         requires graph_holder<Gh>
-    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh);
+    void detach(Gh&& gh);
 
     /// @brief 提交任务图执行一次，完成后执行回调
     template <typename Gh, typename C>
         requires (capturable<C> && graph_holder<Gh> && callback<C>)
-    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh, C&& cb);
+    void detach(Gh&& gh, C&& cb);
 
     /// @brief 提交任务图执行指定次数
     template <typename Gh>
         requires graph_holder<Gh>
-    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh, std::uint64_t num);
+    void detach(Gh&& gh, std::uint64_t num);
 
     /// @brief 提交任务图循环执行指定次数，完成后执行回调
     template <typename Gh, typename C>
         requires (capturable<C> && graph_holder<Gh> && callback<C>)
-    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh, std::uint64_t num, C&& cb);
+    void detach(Gh&& gh, std::uint64_t num, C&& cb);
 
     /// @brief 提交任务图条件循环执行
     template <typename Gh, typename P>
         requires (capturable<P> && graph_holder<Gh> && predicate<P>)
-    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh, P&& pred);
+    void detach(Gh&& gh, P&& pred);
 
     /// @brief 提交任务图条件循环执行，完成后执行回调
     template <typename Gh, typename P, typename C>
         requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
-    [[nodiscard]] DeferredAsyncTask deferred_async(Gh&& gh, P&& pred, C&& cb);
-
-    /// @brief 提交单个异步任务
-    template <typename T, typename... Args>
-        requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-    [[nodiscard]] DeferredAsyncTask deferred_async(T&& task, Args&&... args);
-
-    /// @brief 提交单个运行时任务（可动态操纵图结构）
-    template <typename T, typename... Args>
-        requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-    [[nodiscard]] DeferredAsyncTask deferred_async(T&& task, Args&&... args);
-
-    /// @brief 提交带依赖的子图任务 —— 在前驱 Deps 全部完成后启动 `gh`。
-    template <typename Gh, typename... Deps>
-        requires graph_holder<Gh> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
-    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, Deps&&... deps);
-
-    /// @brief 提交带依赖和完成回调的子图任务。
-    template <typename Gh, typename C, typename... Deps>
-        requires (capturable<C> && graph_holder<Gh> && callback<C> &&
-                 (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, C&& cb, Deps&&... deps);
-
-    /// @brief 提交带依赖的子图任务 —— 循环执行 `num` 次。
-    template <typename Gh, typename... Deps>
-        requires graph_holder<Gh> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...)
-    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, std::uint64_t num, Deps&&... deps);
-
-    /// @brief 提交带依赖和完成回调的子图任务 —— 循环执行 `num` 次。
-    template <typename Gh, typename C, typename... Deps>
-        requires (capturable<C> && graph_holder<Gh> && callback<C> &&
-                 (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps);
-
-    /// @brief 提交带依赖和终止谓词的子图任务 —— 谓词返回 `true` 时停止循环。
-    template <typename Gh, typename P, typename... Deps>
-        requires (capturable<P> && graph_holder<Gh> && predicate<P> &&
-                 (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, Deps&&... deps);
-
-    /// @brief 提交带依赖、终止谓词和完成回调的子图任务。
-    template <typename Gh, typename P, typename C, typename... Deps>
-        requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
-                 (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps);
-
-    /// @brief 提交带依赖的子图任务 —— 通过迭代器范围指定前驱。
-    template <typename Gh, typename P, typename C, std::input_iterator I, std::sentinel_for<I> S>
-        requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C> &&
-                 std::derived_from<std::iter_value_t<I>, AsyncTask>)
-    [[nodiscard]] AsyncTask dependent_async(Gh&& gh, P&& pred, C&& cb, I first, S last);
-
-    /// @brief 提交带依赖的普通任务 —— 在前驱 Deps 全部完成后执行。
-    template <typename T, typename... Deps>
-        requires (basic_invocable<T> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(T&& task, Deps&&... deps);
-
-    /// @brief 提交带依赖的普通任务 —— 通过迭代器范围指定前驱。
-    template <typename T, std::input_iterator I, std::sentinel_for<I> S>
-        requires (basic_invocable<T> && std::derived_from<std::iter_value_t<I>, AsyncTask>)
-    [[nodiscard]] AsyncTask dependent_async(T&& task, I first, S last);
-
-    /// @brief 提交带依赖的运行时任务 —— 注入 `Runtime&` 上下文。
-    template <typename T, typename... Deps>
-        requires (runtime_invocable<T> && (std::derived_from<std::remove_cvref_t<Deps>, AsyncTask> && ...))
-    [[nodiscard]] AsyncTask dependent_async(T&& task, Deps&&... deps);
-
-    /// @brief 提交带依赖的运行时任务 —— 通过迭代器范围指定前驱。
-    template <typename T, std::input_iterator I, std::sentinel_for<I> S>
-        requires (runtime_invocable<T> && std::derived_from<std::iter_value_t<I>, AsyncTask>)
-    [[nodiscard]] AsyncTask dependent_async(T&& task, I first, S last);
-
-
-    /// @brief 提交任务图执行一次
-    template <typename Gh>
-        requires graph_holder<Gh>
-    void silent_async(Gh&& gh);
-
-    /// @brief 提交任务图执行一次，完成后执行回调
-    template <typename Gh, typename C>
-        requires (capturable<C> && graph_holder<Gh> && callback<C>)
-    void silent_async(Gh&& gh, C&& cb);
-
-    /// @brief 提交任务图执行指定次数
-    template <typename Gh>
-        requires graph_holder<Gh>
-    void silent_async(Gh&& gh, std::uint64_t num);
-
-    /// @brief 提交任务图循环执行指定次数，完成后执行回调
-    template <typename Gh, typename C>
-        requires (capturable<C> && graph_holder<Gh> && callback<C>)
-    void silent_async(Gh&& gh, std::uint64_t num, C&& cb);
-
-    /// @brief 提交任务图条件循环执行
-    template <typename Gh, typename P>
-        requires (capturable<P> && graph_holder<Gh> && predicate<P>)
-    void silent_async(Gh&& gh, P&& pred);
-
-    /// @brief 提交任务图条件循环执行，完成后执行回调
-    template <typename Gh, typename P, typename C>
-        requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
-    void silent_async(Gh&& gh, P&& pred, C&& cb);
+    void detach(Gh&& gh, P&& pred, C&& cb);
 
     /// @brief 即发即弃异步执行
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
-    void silent_async(T&& task, Args&&... args);
+    void detach(T&& task, Args&&... args);
 
     /// @brief 即发即弃运行时任务
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
-    void silent_async(T&& task, Args&&... args);
+    void detach(T&& task, Args&&... args);
 
 
     /// @brief 异步执行任务图一次，返回 Future<void>
@@ -311,6 +228,9 @@ public:
     [[nodiscard]] std::size_t num_topologies() const noexcept;
 
 private:
+    /// @brief 单字段 handler 存储:函数指针 deleter 编码"借用 vs 拥有"语义
+    using WorkerHandlerPtr = std::unique_ptr<WorkerHandler, void(*)(WorkerHandler*)>;
+
     /// @brief 共享队列分片 —— 互斥锁 + 无界队列，按 2×cache line 对齐防伪共享。
     struct alignas(2 * cache_line_size) Buffer {
         std::mutex mutex;
@@ -323,8 +243,16 @@ private:
     std::vector<Worker>                             m_workers;
     std::vector<Buffer>                             m_shared_buffers; ///< 队列缓冲区数组
     Notifier                                        m_notifier;
-    WorkerHandler&                                  m_handler;
-    unordered_dense::map<std::thread::id, Worker*>  m_thread_worker_map;
+    WorkerHandlerPtr                                m_handler;
+    unordered_dense::map<std::thread::id, Worker*>  m_worker_by_tid;
+
+
+    /// @brief 真实初始化入口 —— 两个 public 构造均委托至此
+    explicit Executor(WorkerHandlerPtr handler, std::size_t num_workers);
+
+    /// @brief 根据 H 的形态构造 WorkerHandlerPtr(借用/拥有 二选一)
+    template <worker_handle H>
+    static auto _make_handler_ptr(H&& handler) -> WorkerHandlerPtr;
 
     void _spawn(std::size_t num_workers);
     void _shutdown() noexcept;
@@ -362,7 +290,7 @@ private:
     /// @brief 动态任务依赖设置
     template <typename I, typename S>
         requires std::sentinel_for<S, I>
-    void _process_dependent_async(Work* w, I first, S last, std::size_t& num_predecessors);
+    void _process_dependent(Work* w, I first, S last, std::size_t& num_predecessors);
 
     /// @brief 动态依赖任务完成处理
     void _tear_down_dep_async_task(Work* w, Worker& wr, Work*& cache);
@@ -400,16 +328,46 @@ private:
     [[nodiscard]] Worker* _this_worker();
 
 };
+/// @brief 默认 handler 构造 —— 委托到核心构造,借用进程级单例
+inline Executor::Executor(std::size_t num_workers)
+    : Executor(DefaultWorkerHandler{}, num_workers) {}
 
-// ============================================================================
-// Executor 生命周期与查询
-// ============================================================================
+/// @brief 用户 handler 构造 —— 委托到核心构造,handler 形态由 helper 编码
+template <worker_handle H>
+inline Executor::Executor(H&& handler, std::size_t num_workers)
+    : Executor(_make_handler_ptr(std::forward<H>(handler)), num_workers) {}
 
-inline Executor::Executor(WorkerHandler& handler, std::size_t num_workers)
+/// @brief Helper:按 H 的值类别构造 WorkerHandlerPtr
+///        - lvalue → 借用,noop deleter
+///        - rvalue → 拥有,按真实类型 delete
+template <worker_handle H>
+inline auto Executor::_make_handler_ptr(H&& handler) -> WorkerHandlerPtr {
+    using Raw = std::remove_cvref_t<H>;
+
+    if constexpr (std::is_lvalue_reference_v<H>) {
+        // ─── 借用语义:lvalue,调用方保证生命周期 ───
+        return WorkerHandlerPtr{
+            std::addressof(handler),
+            +[](WorkerHandler*) noexcept {}
+        };
+    } else {
+        // ─── 拥有语义:rvalue,拷贝/移动到堆,按真实类型 delete ───
+        return WorkerHandlerPtr{
+            new Raw(std::forward<H>(handler)),
+            +[](WorkerHandler* p) noexcept {
+                delete static_cast<Raw*>(p);
+            }
+        };
+    }
+}
+
+/// @brief 真实构造体 —— 字段初始化 + 启动 worker
+inline Executor::Executor(WorkerHandlerPtr handler, std::size_t num_workers)
     : m_workers{num_workers}
     , m_shared_buffers{static_cast<std::size_t>(std::bit_width(num_workers))}
     , m_notifier{num_workers}
-    , m_handler{handler} {
+    , m_handler{std::move(handler)}
+{
     if (num_workers == 0) {
         throw Exception("Executor must define at least one worker.");
     }
@@ -489,16 +447,16 @@ inline void Executor::_spawn(std::size_t num_workers) {
         wr.m_max_steals = static_cast<std::uint32_t>(num_queues() * 2);
         wr.m_thread = std::thread([this, &wr]() noexcept {
             wr.m_rng.seed(std::hash<std::thread::id>{}(std::this_thread::get_id()), static_cast<std::uint32_t>(num_queues()));
-            m_handler.on_start(wr);
+            m_handler->on_start(wr);
 
             Work* w = nullptr;
-            for (;;) {
+            while (true) {
                 // 本地队列优先：LIFO 顺序，缓存命中率最高
                 while (w) {
                     try {
                         _invoke(wr, w);
                     } catch (...) {
-                        if (!m_handler.on_exception(wr, std::current_exception())) {
+                        if (!m_handler->on_exception(wr, std::current_exception())) {
                             goto exit;
                         }
                     }
@@ -513,10 +471,10 @@ inline void Executor::_spawn(std::size_t num_workers) {
                 }
             }
         exit:
-            m_handler.on_stop(wr);
+            m_handler->on_stop(wr);
         });
 
-        m_thread_worker_map.emplace(wr.m_thread.get_id(), std::addressof(wr));
+        m_worker_by_tid.emplace(wr.m_thread.get_id(), std::addressof(wr));
     }
 }
 
@@ -540,7 +498,7 @@ explore:
     std::size_t const yield_limit = nw * wr.m_adaptive_factor + wr.m_max_steals;
 
     // 阶段一：窃取
-    for (;;) {
+    while (true) {
         Work* w = (vtm < nw)
         ? m_workers[vtm].m_wslq.steal()
         : m_shared_buffers[vtm - nw].queue.steal();
@@ -624,7 +582,6 @@ TFL_FORCE_INLINE std::size_t Executor::_set_up_graph(Graph& g, Topology* topo, W
         Work* w = data[i];
         w->m_topology = topo;
         w->m_parent = parent;
-
 
         // 清异常位 + 探测是否为上轮归档点
         // 单次 fetch_and 同时承担"清位"和"读旧值判断"两个职责
@@ -881,7 +838,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work* w, Worker& wr, Work*
 /// - Finished: 目标已完，无需添加依赖
 template <typename I, typename S>
     requires std::sentinel_for<S, I>
-inline void Executor::_process_dependent_async(Work* w, I first, S last, std::size_t& num_predecessors) {
+inline void Executor::_process_dependent(Work* w, I first, S last, std::size_t& num_predecessors) {
 
     if (w->m_parent == nullptr) {
         _increment_topology();
@@ -889,14 +846,14 @@ inline void Executor::_process_dependent_async(Work* w, I first, S last, std::si
 
     for (; first != last; ++first) {
         auto* work = first->m_work;
-        if (!work) {
+        if (!work || w == work) {
             num_predecessors = w->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) - 1;
             continue;
         }
 
         auto& state = work->m_topology->m_state;
 
-        for (;;) {
+        while (true) {
             // 1. 每次循环开头，直接获取内存中的最新状态
             auto target = state.load(std::memory_order_acquire);
 
@@ -914,7 +871,7 @@ inline void Executor::_process_dependent_async(Work* w, I first, S last, std::si
             // 4. 此时 target 必然是 Idle 或 Running，尝试原子加锁
             if (state.compare_exchange_weak(target, Topology::State::Locking,
                                             std::memory_order_acq_rel,
-                                            std::memory_order_acquire)) {
+                                            std::memory_order_acquire)) [[likely]] {
                 // 加锁成功！当前线程独占修改权限
                 work->m_edges.push_back(w);
                 ++work->m_num_successors;
@@ -937,7 +894,7 @@ inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cach
     // 状态转移：Running → Finished
     while (!topo->m_state.compare_exchange_weak(target, Topology::State::Finished,
                                                 std::memory_order_acq_rel,
-                                                std::memory_order_relaxed)) {
+                                                std::memory_order_relaxed)) [[unlikely]] {
         target = Topology::State::Running;
     }
 
@@ -948,8 +905,8 @@ inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cach
     for (std::size_t i = 0; i < sz; ++i) {
         auto* suc = w->m_edges[i];
         if ((suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1)) {
-            auto& suc_exec = suc->m_topology->m_executor;
-            if (std::addressof(suc_exec) == this) {
+            auto suc_exec = suc->m_topology->m_executor;
+            if (suc_exec == this) {
                 if (cache) {
                     _schedule(wr, suc);
                 } else {
@@ -957,7 +914,7 @@ inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cach
                 }
             } else {
                 // 跨调度器调度
-                suc_exec._schedule(suc);
+                suc_exec->_schedule(suc);
             }
         }
     }
@@ -1100,11 +1057,11 @@ TFL_FORCE_INLINE void Executor::_schedule_parent(Work* parent, Worker& wr, Work*
 /// 由调用方根据生命周期决定是否复用容器
 TFL_FORCE_INLINE void Executor::_schedule_from_semaphore(Worker& w, SmallVector<Work*>& waiters) {
     for (Work* t : waiters) {
-        auto& target = t->m_topology->m_executor;
-        if (std::addressof(target) == this) [[likely]] {
+        auto target = t->m_topology->m_executor;
+        if (target == this) [[likely]] {
             _schedule(w, t);            // 同 executor 走 worker-local 快路径
         } else {
-            target._schedule(t);        // 跨 executor 走全局慢路径
+            target->_schedule(t);        // 跨 executor 走全局慢路径
         }
     }
 }
@@ -1187,8 +1144,8 @@ inline void Executor::_decrement_topology() noexcept {
 }
 
 inline Worker* Executor::_this_worker() {
-    auto itr = m_thread_worker_map.find(std::this_thread::get_id());
-    return itr == m_thread_worker_map.end() ? nullptr : itr->second;
+    auto itr = m_worker_by_tid.find(std::this_thread::get_id());
+    return itr == m_worker_by_tid.end() ? nullptr : itr->second;
 }
 
 /// @brief 任务执行入口（链式执行优化）
@@ -1202,6 +1159,229 @@ TFL_FORCE_INLINE void Executor::_invoke(Worker& wr, Work* w) {
         w->invoke(*this, wr, cache);
         w = cache;
     } while (w);
+}
+
+
+
+
+template <typename Gh>
+    requires graph_holder<Gh>
+inline void Executor::detach(Gh&& gh) {
+    return detach(std::forward<Gh>(gh), 1ULL);
+}
+
+template <typename Gh, typename C>
+    requires (capturable<C> && graph_holder<Gh> && callback<C>)
+inline void Executor::detach(Gh&& gh, C&& cb) {
+    return detach(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
+}
+
+template <typename Gh>
+    requires graph_holder<Gh>
+inline void Executor::detach(Gh&& gh, std::uint64_t num) {
+    return detach(std::forward<Gh>(gh), num, []() noexcept {});
+}
+
+template <typename Gh, typename C>
+    requires (capturable<C> && graph_holder<Gh> && callback<C>)
+inline void Executor::detach(Gh&& gh, std::uint64_t num, C&& cb) {
+    // 将次数转换为谓词
+    return detach(std::forward<Gh>(gh)
+                        ,[num]() mutable noexcept { return num-- == 0; }
+                        ,std::forward<C>(cb));
+}
+
+template <typename Gh, typename P>
+    requires (capturable<P> && graph_holder<Gh> && predicate<P>)
+inline void Executor::detach(Gh&& gh, P&& pred) {
+    return detach(std::forward<Gh>(gh)
+                        ,std::forward<P>(pred)
+                        ,[]() noexcept {});
+}
+
+template <typename Gh, typename P, typename C>
+    requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
+inline void Executor::detach(Gh&& gh, P&& pred, C&& cb) {
+    Work* work = make_detached_flow<anchor::explicit_t>(
+        /*parent=*/nullptr,
+        std::forward<Gh>(gh),
+        std::forward<P>(pred),
+        std::forward<C>(cb));
+
+    work->m_topology->m_executor = this;
+    _increment_topology();
+
+    // 线程本地提交：直接放入本地队列（零队列操作）
+    if (Worker* wr = _this_worker(); wr) {
+        _schedule(*wr, work);
+    } else {
+        _schedule(work);
+    }
+}
+
+
+template <typename T, typename... Args>
+    requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
+inline void Executor::detach(T&& task, Args&&... args) {
+    Work* work = make_detached_basic<anchor::explicit_t>(
+        this,
+        /*parent=*/nullptr,
+        std::forward<T>(task),
+        std::forward<Args>(args)...);
+
+    _increment_topology();
+
+    // 线程本地提交：直接放入本地队列（零队列操作）
+    if (Worker* wr = _this_worker(); wr) {
+        _schedule(*wr, work);
+    } else {
+        _schedule(work);
+    }
+}
+
+template <typename T, typename... Args>
+    requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
+inline void Executor::detach(T&& task, Args&&... args) {
+    Work* work = make_detached_runtime<anchor::explicit_t>(
+        this,
+        /*parent=*/nullptr,
+        std::forward<T>(task),
+        std::forward<Args>(args)...);
+
+    _increment_topology();
+
+    if (Worker* wr = _this_worker(); wr) {
+        _schedule(*wr, work);
+    } else {
+        _schedule(work);
+    }
+}
+
+
+
+// ============================================================================
+//  Executor::async ── 任务图提交，返回 Future<void>
+// ============================================================================
+
+template <graph_holder Gh>
+inline Future<void> Executor::async(Gh&& gh) {
+    return async(std::forward<Gh>(gh), 1ULL);
+}
+
+template <graph_holder Gh, typename C>
+    requires (capturable<C> && callback<C>)
+inline Future<void> Executor::async(Gh&& gh, C&& cb) {
+    return async(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
+}
+
+template <graph_holder Gh>
+inline Future<void> Executor::async(Gh&& gh, std::uint64_t num) {
+    return async(std::forward<Gh>(gh), num, []() noexcept {});
+}
+
+template <graph_holder Gh, typename C>
+    requires (capturable<C> && callback<C>)
+inline Future<void> Executor::async(Gh&& gh, std::uint64_t num, C&& cb) {
+    return async(std::forward<Gh>(gh),
+                 [num]() mutable noexcept { return num-- == 0; },
+                 std::forward<C>(cb));
+}
+
+template <graph_holder Gh, typename P>
+    requires (capturable<P> && predicate<P>)
+inline Future<void> Executor::async(Gh&& gh, P&& pred) {
+    return async(std::forward<Gh>(gh),
+                 std::forward<P>(pred),
+                 []() noexcept {});
+}
+
+template <graph_holder Gh, typename P, typename C>
+    requires (capturable<P, C> && predicate<P> && callback<C>)
+inline Future<void> Executor::async(Gh&& gh, P&& pred, C&& cb) {
+    std::promise<void> promise;
+    std::future<void>  std_future = promise.get_future();
+
+    Work* work = make_promised_flow<anchor::explicit_t>(
+        this,
+        /*parent=*/nullptr,
+        std::forward<Gh>(gh),
+        std::forward<P>(pred),
+        std::forward<C>(cb),
+        std::move(promise));
+
+    // Why: 必须在 _schedule 之前抓拷贝。派发后 work 可能被其它 worker
+    //      立即执行并 tear_down，work->m_topology 变 use-after-free。
+    //      stop_source 是 shared_ptr 语义，拷贝即共享 control block。
+    std::stop_source ss = work->m_topology->m_stop_source;
+
+    _increment_topology();
+
+    // 线程本地提交：worker 内调用走本地队列（零队列操作）
+    if (Worker* wr = _this_worker(); wr) {
+        _schedule(*wr, work);
+    } else {
+        _schedule(work);
+    }
+
+    return Future<void>{std::move(std_future), std::move(ss)};
+}
+
+template <typename T, typename... Args>
+    requires (capturable<T, Args...> && basic_invocable<T, Args...>)
+inline auto Executor::async(T&& task, Args&&... args) -> Future<basic_return_t<T, Args...>> {
+    using R = basic_return_t<T, Args...>;
+
+    std::promise<R> promise;
+    std::future<R> std_future = promise.get_future();
+
+    Work* work = make_promised_basic<anchor::explicit_t>(
+        this,
+        /*parent=*/nullptr,
+        std::forward<T>(task),
+        std::move(promise),
+        std::forward<Args>(args)...);
+
+    // Why: 必须在 _schedule 之前抓拷贝。派发后 work 可能被其它 worker
+    //      立即执行并 tear_down，work->m_topology 变 use-after-free。
+    //      stop_source 是 shared_ptr 语义，拷贝即共享 control block；
+    //      Future 端持有令其在 topology 析构后仍可安全调用 request_stop。
+    std::stop_source ss = work->m_topology->m_stop_source;
+
+    _increment_topology();
+    if (Worker* wr = _this_worker(); wr) {
+        _schedule(*wr, work);
+    } else {
+        _schedule(work);
+    }
+
+    return Future<R>{std::move(std_future), std::move(ss)};
+}
+
+template <typename T, typename... Args>
+    requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
+inline auto Executor::async(T&& task, Args&&... args) -> Future<runtime_return_t<T, Args...>> {
+    using R = runtime_return_t<T, Args...>;
+
+    std::promise<R> promise;
+    std::future<R> std_future = promise.get_future();
+
+    Work* work = make_promised_runtime<anchor::explicit_t>(
+        this,
+        /*parent=*/nullptr,
+        std::forward<T>(task),
+        std::move(promise),
+        std::forward<Args>(args)...);
+
+    std::stop_source ss = work->m_topology->m_stop_source;
+
+    _increment_topology();
+    if (Worker* wr = _this_worker(); wr) {
+        _schedule(*wr, work);
+    } else {
+        _schedule(work);
+    }
+
+    return Future<R>{std::move(std_future), std::move(ss)};
 }
 
 } // namespace tfl

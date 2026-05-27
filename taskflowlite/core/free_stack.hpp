@@ -181,7 +181,7 @@ public:
     /// @param p 待推入 chunk 起始地址;必须满足 ChunkLink 的安全前提。
     TFL_FORCE_INLINE void push(void* p) noexcept {
         Tagged curr = m_head.load(std::memory_order_relaxed);
-        for (;;) {
+        while (true) {
             ChunkLink::store(p, curr.ptr);
             const Tagged next{p, curr.tag + 1};
             if (m_head.compare_exchange_weak(curr, next, std::memory_order_release, std::memory_order_relaxed)) {
@@ -238,7 +238,7 @@ public:
     /// @param p 待推入 chunk 起始地址;必须满足前提且地址 < 2^48。
     TFL_FORCE_INLINE void push(void* p) noexcept {
         std::uint64_t curr = m_head.load(std::memory_order_relaxed);
-        for (;;) {
+        while (true) {
             ChunkLink::store(p, Tagged::ptr_of(curr));
             const std::uint64_t next = Tagged::pack(p, Tagged::tag_of(curr) + 1);
             if (m_head.compare_exchange_weak(curr, next, std::memory_order_release, std::memory_order_relaxed)) {
@@ -251,7 +251,7 @@ public:
     /// @brief 从栈顶弹出一个 chunk;空则返回 nullptr。
     [[nodiscard]] TFL_FORCE_INLINE void* pop() noexcept {
         std::uint64_t curr = m_head.load(std::memory_order_acquire);
-        for (;;) {
+        while (true) {
             void* top = Tagged::ptr_of(curr);
             if (top == nullptr) return nullptr;
             // Why: top 可能已被别的线程 pop 后再 push 回来,ChunkLink::load

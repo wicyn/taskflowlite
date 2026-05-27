@@ -430,7 +430,7 @@ struct implicit_t  { explicit constexpr implicit_t() = default; };
 
 /// @brief 显式锚 —— 构造期置 Explicit::ANCHORED（原子位）。
 ///        语义：本节点是运行期可被 AnchorGuard / corun 动态翻转的会话锚。
-///        与 DepAsync* / corun 同档,适合需要"把 child 异常截在我这里"的场景。
+///        与 AsyncHandle* / corun 同档,适合需要"把 child 异常截在我这里"的场景。
 struct explicit_t  { explicit constexpr explicit_t() = default; };
 
 } // namespace anchor
@@ -438,6 +438,98 @@ struct explicit_t  { explicit constexpr explicit_t() = default; };
 /// @brief 约束 `T` 为 `anchor::none_t`、`anchor::implicit_t` 或 `anchor::explicit_t` 之一。
 template <typename T>
 concept anchor_tag = std::same_as<T, anchor::none_t> || std::same_as<T, anchor::implicit_t> || std::same_as<T, anchor::explicit_t>;
+
+
+// ============================================================
+// AsyncTask —— mode tag 与概念家族
+// ============================================================
+
+/// @namespace task_mode
+/// @brief AsyncTask 的执行模式标签 —— 描述任务在状态机上的允许行为。
+///
+/// AsyncTask 通过模板参数 `Mode` 在编译期区分"单次执行"和"可重复执行"两种语义。
+/// 模式标签作为类型 tag 参与重载解析与 concept 约束,确保依赖图的拓扑安全性
+/// (例如:可重复任务在编译期就被禁止作为其它任务的依赖)。
+namespace task_mode {
+
+/// @brief 不可重复任务模式 —— 状态机单调走完:Idle → Running → Finished。
+///        启动一次后即耗尽,不允许 resubmit。
+///        典型用途:作为他人依赖、组成静态 DAG 的叶节点。
+struct nonrepeat_t { explicit constexpr nonrepeat_t() = default; };
+
+/// @brief 可重复任务模式 —— 完成后可经 `Executor::resubmit` 反复启动,
+///        每轮独立携带异常 / 信号量配额 / join_counter。
+///        不允许作为其它任务的依赖,避免依赖图被多轮回放污染。
+struct repeat_t    { explicit constexpr repeat_t()    = default; };
+
+}  // namespace task_mode
+
+
+// ============================================================
+// mode tag 约束 concept
+// ============================================================
+
+/// @brief 约束 `T` 为合法的任务模式标签 —— 必须是 `task_mode::nonrepeat_t`
+///        或 `task_mode::repeat_t` 之一。
+///        用于 AsyncTask 的模板参数 SFINAE 守卫(配合类内 static_assert)。
+template <typename T>
+concept task_mode_tag = std::same_as<T, task_mode::nonrepeat_t> || std::same_as<T, task_mode::repeat_t>;
+
+
+// ============================================================
+// AsyncTask 类型别名
+// ============================================================
+
+/// @brief 不可重复异步任务句柄 —— `AsyncTask<task_mode::nonrepeat_t>` 简称。
+///        默认句柄类型;可作为 submit 依赖。
+using NonrepeatAsyncTask = AsyncTask<task_mode::nonrepeat_t>;
+
+/// @brief 可重复异步任务句柄 —— `AsyncTask<task_mode::repeat_t>` 简称。
+///        支持 resubmit;不可作为其它任务的依赖。
+using RepeatAsyncTask    = AsyncTask<task_mode::repeat_t>;
+
+
+// ============================================================
+// AsyncTask 能力探测 concept(用于 Executor / Runtime 接口守卫)
+// ============================================================
+
+/// @brief 检测 `T` 是否为不可重复异步任务句柄(忽略 cv / 引用)。
+///        Executor::submit 的依赖参数靠它约束:只有不可重复任务可作依赖。
+template <typename T>
+concept nonrepeat_async_task = std::same_as<std::remove_cvref_t<T>, NonrepeatAsyncTask>;
+
+/// @brief 检测 `T` 是否为可重复异步任务句柄(忽略 cv / 引用)。
+///        Executor::resubmit 靠它约束:只有可重复任务能被重启。
+template <typename T>
+concept repeat_async_task = std::same_as<std::remove_cvref_t<T>, RepeatAsyncTask>;
+
+/// @brief 检测 `T` 是否为任意一种异步任务句柄(忽略 cv / 引用)。
+///        Executor::submit 的首参靠它约束:两种 mode 都允许首次启动。
+template <typename T>
+concept any_async_task = nonrepeat_async_task<T> || repeat_async_task<T>;
+
+
+// ─── 主 concept ────────────────────────────────────────────────────────
+//
+// 合法形态(H 是模板参数推导得到的类型,保留值类别):
+//
+//   ┌────────────────────────────────┬───────────────────┬──────────┐
+//   │ 用户写法                       │ H 推导结果        │ 语义     │
+//   ├────────────────────────────────┼───────────────────┼──────────┤
+//   │ Executor e(h)         (lvalue) │ MyHandler&        │ 借用     │
+//   │ Executor e(ch)  (const lvalue) │ const MyHandler&  │ 借用     │
+//   │ Executor e(std::move(h))       │ MyHandler         │ 拥有(move) │
+//   │ Executor e(MyHandler{...})     │ MyHandler         │ 拥有(move) │
+//   └────────────────────────────────┴───────────────────┴──────────┘
+//
+// 约束:
+//   1. remove_cvref_t<H> 必须派生自 WorkerHandler
+//   2. WorkerHandler 是抽象类,无法构造,自动防御切片
+//   3. lvalue 形态总是合法(借用,无需构造);
+//      rvalue 形态必须能从 H 构造(拷贝/移动到堆)
+template <class H>
+concept worker_handle = std::derived_from<std::remove_cvref_t<H>, WorkerHandler> &&
+                        (std::is_lvalue_reference_v<H> || std::constructible_from<std::remove_cvref_t<H>, H>);
 
 } // namespace tfl
 

@@ -12,6 +12,7 @@
 #include <future>
 #include <stop_token>
 
+#include "utility.hpp"
 namespace tfl {
 
 /// @brief 任务返回值句柄 ── 组合 std::future 并附加 stop_source 协作停止能力。
@@ -44,7 +45,7 @@ namespace tfl {
 /// 最后一次状态），`request_stop()` 也是安全的（无副作用）。
 
 template <typename R>
-class Future {
+class Future : public MoveOnly<Future<R>> {
     friend class Executor;
     friend class Runtime;
 public:

@@ -37,7 +37,7 @@ namespace tfl {
 ///    └──────  Locking 自旋 ───────┘
 /// @endcode
 ///
-/// **Running ↔ Locking** 的设计动机：动态 `dependent_async` 添加新依赖时需要
+/// **Running ↔ Locking** 的设计动机：动态 `lazy_async` 添加新依赖时需要
 /// 临时锁定状态做原子性的多字段更新。`std::mutex` 对此场景过重，这里用
 /// `compare_exchange_weak(Running ↔ Locking)` 实现 **轻量级自旋锁**：
 /// - 只有添加新依赖时才进 Locking，时间极短；
@@ -69,16 +69,14 @@ class Topology : public Immovable<Topology> {
 
     friend class Work;
     friend class Task;
-    friend class AsyncTask;
-    friend class DeferredAsyncTask;
-    friend class Graph;
     friend class Runtime;
     friend class Executor;
+    template <typename> friend class AsyncTask;
 
     TFL_WORK_SUBCLASS_FRIENDS;
 
 public:
-    explicit Topology(Executor& exec) noexcept;
+    explicit Topology(Executor* exec) noexcept;
     ~Topology() = default;
 
 private:
@@ -90,10 +88,10 @@ private:
         Finished = 3  ///< 执行完成
     };
 
-    std::atomic<State> m_state{State::Idle};         ///< 状态机 + 轻量级锁
-    std::stop_source   m_stop_source;
-    Executor&          m_executor;                   ///< 所属调度器
-    std::atomic<std::size_t> m_use_count{0};         ///< 引用计数
+    std::atomic<State>       m_state{State::Idle};            ///< 状态机 + 轻量级锁
+    std::stop_source         m_stop_source{};                 ///< 停止源
+    Executor*                m_executor{nullptr};             ///< 执行器
+    std::atomic<std::size_t> m_use_count{0};                  ///< 引用计数
 
     // 状态查询与控制
     void _wait() const noexcept;
@@ -108,9 +106,8 @@ private:
 // Implementation
 // ============================================================================
 
-inline Topology::Topology(Executor& exec) noexcept
+inline Topology::Topology(Executor* exec) noexcept
     : m_executor{exec} {}
-
 /// @brief 阻塞等待拓扑完成
 ///
 /// @memory_order
