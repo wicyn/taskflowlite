@@ -24,7 +24,7 @@ namespace tfl {
 /// 再把 `Flow` 整体提交给 `Executor` 反复执行。它本质上是一层薄薄的语义壳，
 /// 内部托管一个 `Graph`（节点指针数组）和一个 `std::string` 名字。
 ///
-/// 在框架的"静态 vs 动态" 维度上，`Flow` 站在静态侧；`Executor::dependent_async` /
+/// 在框架的"静态 vs 动态" 维度上，`Flow` 站在静态侧；`Executor::lazy_async` /
 /// `Executor::deferred_async` 与 `Runtime` 站在动态侧，分别表达图外提交和任务体内派生：
 ///
 /// | 维度          | `Flow`              | `Executor` 动态任务        | `Runtime`            |
@@ -117,13 +117,13 @@ namespace tfl {
 ///   tfl::Flow flow;
 ///   auto [a, b, c] = flow.emplace(
 ///       []{ load(); },
-///       [](Runtime& rt){ rt.silent_async([]{ extra(); }); },   // 自适应分支
+///       [](Runtime& rt){ rt.detach([]{ extra(); }); },   // 自适应分支
 ///       []{ save(); }
 ///   );
 ///   a.precede(b); b.precede(c);
 ///
 ///   // 反复执行同一图
-///   executor.silent_async(flow, /*num=*/1000);
+///   executor.detach(flow, /*num=*/1000);
 ///
 ///   // 嵌套：把整张 flow 作为另一图的一个节点
 ///   tfl::Flow outer;
@@ -143,7 +143,7 @@ class Flow : public MoveOnly<Flow> {
 
 public:
     /// @brief 构造空任务图。
-    constexpr explicit Flow() = default;
+    Flow() = default;
 
 
     /// @brief 构造带名字的任务图。
@@ -155,6 +155,17 @@ public:
     // ========================================================================
     //  节点插入接口
     // ========================================================================
+
+    /// @brief 插入占位任务节点。
+    ///
+    /// @details 占位节点存在于图中,正常参与依赖计数与边遍历,但执行时不调用
+    /// 任何用户逻辑、不触发观察者、不参与信号量与异常归档。常用于:
+    ///   - 图构建期先声明占位、后续 `emplace` 重赋(尚未实现);
+    ///   - 显式插入的同步汇聚点(命名清晰的 join point);
+    ///   - 测试与基准里需要"空节点"占位拓扑结构。
+    ///
+    /// @return 指向占位节点的 Task 句柄。
+    [[nodiscard]] Task noop();
 
     /// @brief 插入普通同步任务节点。
     template <typename T, typename... Args>
@@ -278,6 +289,10 @@ inline Flow::Flow(S&& name) : m_name(std::forward<S>(name)) {}
 //  节点插入实现
 // ============================================================================
 
+inline Task Flow::noop() {
+    return Task{m_graph._emplace(make_noop(std::addressof(m_graph)))};
+}
+
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
 inline Task Flow::emplace(T&& task, Args&&... args) {
@@ -327,9 +342,9 @@ inline Task Flow::emplace(Gh&& gh) {
 template <typename Gh>
     requires graph_holder<Gh>
 inline Task Flow::emplace(Gh&& gh, std::uint64_t num) {
-    auto counter = [remaining = num, reset = num]() mutable noexcept -> bool {
-        if (remaining-- == 0) {
-            remaining = reset;
+    auto counter = [num, remaining = num]() mutable noexcept -> bool {
+        if (remaining-- == 0) [[unlikely]] {
+            remaining = num;
             return true;
         }
         return false;

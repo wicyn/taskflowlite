@@ -36,8 +36,7 @@ namespace detail {
 ///
 /// @details 作为 constexpr 可用的 fallback，同时也是编译期求值的唯一路径。
 ///   无平台扩展依赖，可在任意 C++23 编译器上常量求值。
-[[nodiscard]] constexpr auto
-mulhi64_soft(std::uint64_t a, std::uint64_t b) noexcept -> std::uint64_t {
+[[nodiscard]] constexpr auto mulhi64_soft(std::uint64_t a, std::uint64_t b) noexcept -> std::uint64_t {
 
     auto const a_lo = static_cast<std::uint64_t>(static_cast<std::uint32_t>(a));
     auto const a_hi = a >> 32;
@@ -66,8 +65,7 @@ mulhi64_soft(std::uint64_t a, std::uint64_t b) noexcept -> std::uint64_t {
 /// @param a 乘数（通常是 SplitMix64 输出）。
 /// @param b 乘数（通常是目标范围上界）。
 /// @return (a * b) >> 64，即 128 位乘积的高 64 位。
-[[nodiscard]] constexpr auto
-mulhi64(std::uint64_t a, std::uint64_t b) noexcept -> std::uint64_t {
+[[nodiscard]] constexpr auto mulhi64(std::uint64_t a, std::uint64_t b) noexcept -> std::uint64_t {
 
     // C++23 if consteval：编译器保证编译期只走 true 分支，
     // false 分支仅在运行时执行，可安全使用非 constexpr 的 intrinsic。
@@ -182,17 +180,17 @@ public:
     ///
     /// Work-Stealing 受害者选择的主调用。编译为：
     ///   SplitMix64 混淆 → mulq → movl %edx → ret
-    [[nodiscard]] constexpr auto operator()() noexcept -> std::uint32_t {
+    [[nodiscard]] constexpr std::uint32_t operator()() noexcept {
         return static_cast<std::uint32_t>(detail::mulhi64(next(), m_bound));
     }
 
     /// @brief 生成 [0, n) 的随机数（临时指定范围）。
-    [[nodiscard]] constexpr auto operator()(std::uint32_t n) noexcept -> std::uint32_t {
+    [[nodiscard]] constexpr std::uint32_t operator()(std::uint32_t n) noexcept {
         return static_cast<std::uint32_t>(detail::mulhi64(next(), n));
     }
 
     /// @brief 生成 [lo, hi] 闭区间随机数。
-    [[nodiscard]] constexpr auto operator()(std::uint32_t lo, std::uint32_t hi) noexcept -> std::uint32_t {
+    [[nodiscard]] constexpr std::uint32_t operator()(std::uint32_t lo, std::uint32_t hi) noexcept {
         auto const range = hi - lo + 1;
         if (range == 0) [[unlikely]] {
             // hi == UINT32_MAX && lo == 0 → 全范围，直接截断
@@ -202,7 +200,7 @@ public:
     }
 
     /// @brief 生成原始 64 位随机数 [0, UINT64_MAX]。
-    [[nodiscard]] constexpr auto next() noexcept -> std::uint64_t {
+    [[nodiscard]] constexpr std::uint64_t next() noexcept {
         // SplitMix64: Guy L. Steele Jr., Doug Lea, Christine H. Flood (2014)
         // 单状态、全周期 2^64、通过 BigCrush/PractRand 全项
         m_state += 0x9E3779B97F4A7C15ULL;          // 黄金比例常数

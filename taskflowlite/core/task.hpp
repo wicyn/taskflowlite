@@ -38,7 +38,6 @@ namespace tfl {
 /// | `Task`              | **弱引用**     | 单指针拷贝 | 归属的 `Flow` / `Graph`        |
 /// | `TaskView`          | **弱 const**   | 单引用拷贝 | 同 Task，编译期禁止 mutate    |
 /// | `AsyncTask`         | **强引用**     | refcount  | `Topology` 引用计数            |
-/// | `DeferredAsyncTask` | 同 AsyncTask   | refcount  | 同 AsyncTask，但提供启动期可写 |
 ///
 /// 关键约束：**`Task` 不参与生命周期管理**。Flow 析构后所有 Task 句柄立即悬挂，
 /// 这是有意为之 —— 用户在图编辑期持有 Task，编辑结束后自然丢弃；如果需要在
@@ -338,7 +337,7 @@ class Task {
 
 public:
     /// @brief 构造空任务句柄。
-    explicit Task() = default;
+    Task() = default;
 
     /// @brief 构造空任务句柄。
     explicit Task(std::nullptr_t) noexcept;

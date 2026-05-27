@@ -18,6 +18,11 @@
 #include "core/branch.hpp"
 #include "core/jump.hpp"
 #include "core/executor.hpp"
+#include "core/async_task.hpp"
+#include "core/task.hpp"
+#include "core/flow.hpp"
+#include "core/future.hpp"
+
 
 // ==============================================================================
 // 编译期版本宏 (Source of Truth：源码即真理，CMake 会自动来读取这里)

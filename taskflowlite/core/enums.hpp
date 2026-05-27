@@ -38,20 +38,23 @@ constexpr std::int32_t EnumMax() noexcept {
 /// 以及如何激活后续的依赖节点。
 enum class TaskType : std::int32_t
 {
-    None        = 0,   ///< 未定义或空任务
-    Basic       = 1,   ///< 标准任务：执行完成后自动激活所有后续节点
-    Runtime     = 2,   ///< 运行时任务：允许在执行期间通过 Runtime 接口动态派发新任务
-    Branch      = 3,   ///< 分支任务：根据返回值（int）激活特定索引的后续节点
-    MultiBranch = 4,   ///< 多路分支：根据返回值（vector<int>）同时激活多个特定后续节点
-    Jump        = 5,   ///< 跳转任务：跳转至图中指定的绝对索引节点执行
-    MultiJump   = 6,   ///< 多路跳转：同时跳转至多个指定的绝对索引节点
-    Graph       = 7    ///< 子图任务：封装了另一个完整的 Taskflow 拓扑
+    None        = 0,   ///< 未定义
+    Noop        = 1,   ///< 空操作任务:无用户逻辑,仅做后继分发(AnchorWork/NoopInvoker)
+    Basic       = 2,   ///< 标准任务：执行完成后自动激活所有后续节点
+    Runtime     = 3,   ///< 运行时任务：允许在执行期间通过 Runtime 接口动态派发新任务
+    Branch      = 4,   ///< 分支任务：根据返回值（int）激活特定索引的后续节点
+    MultiBranch = 5,   ///< 多路分支：根据返回值（vector<int>）同时激活多个特定后续节点
+    Jump        = 6,   ///< 跳转任务：跳转至图中指定的绝对索引节点执行
+    MultiJump   = 7,   ///< 多路跳转：同时跳转至多个指定的绝对索引节点
+    Graph       = 8    ///< 子图任务：封装了另一个完整的 Taskflow 拓扑
+
 };
 
 /// @brief 返回 TaskType 对应的 C 字符串常量。
 constexpr const char* to_string(TaskType type) noexcept {
     switch (type) {
     case TaskType::None:        return "none";
+    case TaskType::Noop:        return "noop";
     case TaskType::Basic:       return "basic";
     case TaskType::Runtime:     return "runtime";
     case TaskType::Branch:      return "branch";

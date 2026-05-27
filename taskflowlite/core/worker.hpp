@@ -219,4 +219,7 @@ public:
     }
 };
 
+/// @brief 默认 worker handler —— 所有 hook 空实现，异常发生时让 worker 终止
+using DefaultWorkerHandler = ResumeNever;
+
 }  // namespace tfl

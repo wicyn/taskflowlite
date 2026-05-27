@@ -37,8 +37,8 @@ namespace tfl {
 ///   - 静态图节点                `*Invoker`
 ///   - fire-and-forget           `SilentAsync*Invoker`
 ///   - future 异步任务            `Async*Invoker`
-///   - 动态依赖任务              `DepAsync*Invoker`
-///   - 延迟启动动态依赖任务       `DepDeferredAsync*Invoker`
+///   - 动态依赖任务              `AsyncHandle*Invoker`
+///   - 延迟启动动态依赖任务       `AsyncHandle*Invoker`
 ///
 /// 维度 C —— 调用签名：
 ///   - basic
@@ -78,30 +78,6 @@ namespace tfl {
 /// @see work_factory.hpp  本文件类型的 make_xxx 工厂
 /// @see Executor         调度与 tear_down 协议
 ///
-namespace detail {
-
-/// @brief 将锚点标签 `A` 映射为对应的 Implicit/Explicit 位掩码对。
-///
-/// 本函数为 `consteval` —— 所有锚点位均在编译期解析为常量，
-/// 运行时零开销。映射规则：
-///   - `none_t`     → `{NONE, NONE}`
-///   - `implicit_t` → `{ANCHORED, NONE}`
-///   - `explicit_t` → `{NONE, ANCHORED}`
-///
-/// @tparam A  锚点标签类型，必须为 `anchor::none_t`、`anchor::implicit_t`
-///            或 `anchor::explicit_t` 之一。
-template <typename A>
-consteval std::pair<Work::Implicit::type, Work::Explicit::type> anchor_bits() noexcept {
-    if constexpr (std::same_as<A, anchor::none_t>) {
-        return {Work::Implicit::NONE,     Work::Explicit::NONE};
-    } else if constexpr (std::same_as<A, anchor::implicit_t>) {
-        return {Work::Implicit::ANCHORED, Work::Explicit::NONE};
-    } else /* anchor::explicit_t */ {
-        return {Work::Implicit::NONE,     Work::Explicit::ANCHORED};
-    }
-}
-
-} // namespace detail
 
 /// @brief 持有局部 `Topology` 实例的辅助基类。
 ///
@@ -114,7 +90,22 @@ consteval std::pair<Work::Implicit::type, Work::Explicit::type> anchor_bits() no
 /// @see Topology  运行时生命周期状态机
 struct TopologyHolder {
     Topology m_local_topology;
-    explicit TopologyHolder(Executor& exec) : m_local_topology{exec} {}
+    explicit TopologyHolder(Executor* exec) : m_local_topology{exec} {}
+};
+
+// ============================================================================
+//  TaskType::Noop (dotted circle —— 占位节点)
+// ============================================================================
+class NoopWork : public Work {
+protected:
+    template <typename... Xs>
+    explicit NoopWork(Xs&&... xs) noexcept
+        : Work{TaskType::Noop, std::forward<Xs>(xs)...} {}
+
+    void dump(std::ostream& os) const override final {
+        D2Renderer::render_work(os, this, "circle",
+                                "#e5e7eb", "#9ca3af", "#374151", "8", "3");
+    }
 };
 
 // ============================================================================
@@ -282,7 +273,7 @@ protected:
 /// 调用 `Executor::_set_up_graph()` 初始化子图拓扑。
 ///
 /// @see SubflowInvoker  静态图中的循环/条件子图节点
-/// @see SilentAsyncFlowInvoker  fire-and-forget 异步子图
+/// @see DetachedFlowInvoker  fire-and-forget 异步子图
 /// @see Graph            节点向量与边集合
 template <typename GhStore>
 class GraphWork : public Work {
@@ -303,6 +294,21 @@ protected:
 // ============================================================================
 //  衍生功能组件定义 (Derived Components)
 // ============================================================================
+
+
+/// @brief 占位工作元 —— 无 body，仅执行后继分发。
+///
+/// 用于 noop task：节点存在于图中、参与依赖计数与边遍历，
+/// 但不携带用户逻辑、不触发观察者、不参与信号量与异常归档协议。
+class NoopInvoker final : public NoopWork {
+public:
+    explicit NoopInvoker(const Graph* g)
+        : NoopWork{Work::Implicit::JOIN, Work::Explicit::NONE, g} {}
+
+    void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
+        exe._tear_down_task(this, wr, cache);
+    }
+};
 
 /// @brief 承载 `void()` 标准闭包的基础同步工作元。
 template <typename F, typename... Args>
@@ -779,7 +785,7 @@ public:
 
 /// @brief 与独立 Topology 锁死的顶级基础异步任务，触发后自我燃烧并销毁。
 template <typename A, typename F, typename... Args>
-class SilentAsyncBasicInvoker final : public BasicWork {
+class DetachedBasicInvoker final : private TopologyHolder, public BasicWork {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
     F m_func;
@@ -789,10 +795,11 @@ class SilentAsyncBasicInvoker final : public BasicWork {
 public:
     template <typename U, typename... Us>
         requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit SilentAsyncBasicInvoker(Work* parent, U&& f, Us&&... args)
-        : BasicWork{detail::anchor_bits<A>().first,
-                    detail::anchor_bits<A>().second,
-                    nullptr,
+    explicit DetachedBasicInvoker(Executor* exec, Work* parent, U&& f, Us&&... args)
+        : TopologyHolder{exec}
+        , BasicWork{detail::anchor_implicit<A>(),
+                    detail::anchor_explicit<A>(),
+                    &m_local_topology,
                     parent}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
@@ -815,7 +822,7 @@ public:
 
 /// @brief 与独立 Topology 锁死的顶级扩展异步任务。
 template <typename A, typename F, typename... Args>
-class SilentAsyncRuntimeInvoker final : public RuntimeWork {
+class DetachedRuntimeInvoker final : private TopologyHolder, public RuntimeWork {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
     F m_func;
@@ -823,10 +830,11 @@ class SilentAsyncRuntimeInvoker final : public RuntimeWork {
 public:
     template <typename U, typename... Us>
         requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit SilentAsyncRuntimeInvoker(Work* parent, U&& f, Us&&... args)
-        : RuntimeWork{detail::anchor_bits<A>().first,
-                      detail::anchor_bits<A>().second,
-                      nullptr,
+    explicit DetachedRuntimeInvoker(Executor* exec, Work* parent, U&& f, Us&&... args)
+        : TopologyHolder{exec}
+        , RuntimeWork{detail::anchor_implicit<A>(),
+                      detail::anchor_explicit<A>(),
+                      &m_local_topology,
                       parent}
         , m_func{std::forward<U>(f)}
         , m_args{std::forward<Us>(args)...} {}
@@ -871,7 +879,7 @@ public:
 
 /// @brief fire-and-forget 异步子图执行器 —— 无 promise 通道。
 template <typename A, typename GhStore, typename P, typename C>
-class SilentAsyncFlowInvoker final : public GraphWork<GhStore> {
+class DetachedFlowInvoker final : private TopologyHolder, public GraphWork<GhStore> {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
     using GraphWork<GhStore>::m_gh_store;
@@ -885,11 +893,12 @@ class SilentAsyncFlowInvoker final : public GraphWork<GhStore> {
     C m_callback;
 public:
     template <typename Ghs, typename V, typename W>
-    explicit SilentAsyncFlowInvoker(Work* parent, Ghs&& ghs, V&& pred, W&& cb)
-        : GraphWork<GhStore>{std::forward<Ghs>(ghs),
-                             detail::anchor_bits<A>().first,
-                             detail::anchor_bits<A>().second,
-                             nullptr,
+    explicit DetachedFlowInvoker(Executor* exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb)
+        : TopologyHolder{exec}
+        , GraphWork<GhStore>{std::forward<Ghs>(ghs),
+                             detail::anchor_implicit<A>(),
+                             detail::anchor_explicit<A>(),
+                             &m_local_topology,
                              parent}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(cb)} {}
@@ -924,7 +933,7 @@ public:
 
 /// @brief 内部熔接了 promise 的 Promise 同步通道基础异步任务。
 template <typename A, typename F, typename R, typename... Args>
-class AsyncBasicInvoker final : private TopologyHolder, public BasicWork {
+class PromisedBasicInvoker final : private TopologyHolder, public BasicWork {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
     F m_func;
@@ -933,10 +942,10 @@ class AsyncBasicInvoker final : private TopologyHolder, public BasicWork {
 public:
     template <typename U, typename... Us>
         requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit AsyncBasicInvoker(Executor& exec, Work* parent, U&& f, std::promise<R>&& p, Us&&... args)
+    explicit PromisedBasicInvoker(Executor* exec, Work* parent, U&& f, std::promise<R>&& p, Us&&... args)
         : TopologyHolder{exec}
-        , BasicWork{detail::anchor_bits<A>().first,
-                    detail::anchor_bits<A>().second,
+        , BasicWork{detail::anchor_implicit<A>(),
+                    detail::anchor_explicit<A>(),
                     &m_local_topology,
                     parent}
         , m_func{std::forward<U>(f)}
@@ -993,7 +1002,7 @@ public:
 
 /// @brief 内部熔接了 promise 的 Promise 同步通道扩展异步任务。
 template <typename A, typename F, typename R, typename... Args>
-class AsyncRuntimeInvoker final : private TopologyHolder, public RuntimeWork {
+class PromisedRuntimeInvoker final : private TopologyHolder, public RuntimeWork {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
     F m_func;
@@ -1004,10 +1013,10 @@ class AsyncRuntimeInvoker final : private TopologyHolder, public RuntimeWork {
 public:
     template <typename U, typename... Us>
         requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit AsyncRuntimeInvoker(Executor& exec, Work* parent, U&& f, std::promise<R>&& p, Us&&... args)
+    explicit PromisedRuntimeInvoker(Executor* exec, Work* parent, U&& f, std::promise<R>&& p, Us&&... args)
         : TopologyHolder{exec}
-        , RuntimeWork{detail::anchor_bits<A>().first,
-                      detail::anchor_bits<A>().second,
+        , RuntimeWork{detail::anchor_implicit<A>(),
+                      detail::anchor_explicit<A>(),
                       &m_local_topology,
                       parent}
         , m_func{std::forward<U>(f)}
@@ -1095,7 +1104,7 @@ public:
 
 /// @brief 能够串接任意 Flow 实体的巨无霸容器节点，并在生命周期落幕时点燃专有回调。
 template <typename A, typename GhStore, typename P, typename C>
-class AsyncFlowInvoker final : private TopologyHolder, public GraphWork<GhStore> {
+class PromisedFlowInvoker final : private TopologyHolder, public GraphWork<GhStore> {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
     using GraphWork<GhStore>::m_gh_store;
@@ -1112,11 +1121,11 @@ class AsyncFlowInvoker final : private TopologyHolder, public GraphWork<GhStore>
 
 public:
     template <typename Ghs, typename V, typename W>
-    explicit AsyncFlowInvoker(Executor& exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb, std::promise<void>&& p)
+    explicit PromisedFlowInvoker(Executor* exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb, std::promise<void>&& p)
         : TopologyHolder{exec}
         , GraphWork<GhStore>{std::forward<Ghs>(ghs),
-                             detail::anchor_bits<A>().first,
-                             detail::anchor_bits<A>().second,
+                             detail::anchor_implicit<A>(),
+                             detail::anchor_explicit<A>(),
                              &m_local_topology,
                              parent}
         , m_pred{std::forward<V>(pred)}
@@ -1156,7 +1165,7 @@ public:
 
 /// @brief 被高阶外部拓扑锁定的依赖型常规任务，需完成 CAS 抢占才能挂载入依赖树。
 template <typename A, typename F, typename... Args>
-class DepAsyncBasicInvoker final : private TopologyHolder, public BasicWork {
+class AttachedBasicInvoker final : private TopologyHolder, public BasicWork {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
     F m_func;
@@ -1164,172 +1173,10 @@ class DepAsyncBasicInvoker final : private TopologyHolder, public BasicWork {
 public:
     template <typename U, typename... Us>
         requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit DepAsyncBasicInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
+    explicit AttachedBasicInvoker(Executor* exec, Work* parent, U&& f, Us&&... args)
         : TopologyHolder{exec}
-        , BasicWork{detail::anchor_bits<A>().first,
-                    detail::anchor_bits<A>().second,
-                    &m_local_topology,
-                    parent}
-        , m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
-
-    void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        try {
-            if constexpr (sizeof...(Args) == 0) {
-                if constexpr (basic_invocable_plain<F>) {
-                    std::invoke(m_func);
-                } else {
-                    std::invoke(m_func, _stop_token());
-                }
-            } else {
-                std::apply([this](auto&&... a) {
-                    if constexpr (basic_invocable_plain<F, decltype(a)...>) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
-                    } else {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., _stop_token());
-                    }
-                }, m_args);
-            }
-        } catch (...) {
-            _process_exception();
-        }
-
-        exe._tear_down_dep_async_task(this, wr, cache);
-    }
-};
-
-/// @brief 被高阶外部拓扑锁定的依赖型动态挂载任务。
-template <typename A, typename F, typename... Args>
-class DepAsyncRuntimeInvoker final : private TopologyHolder, public RuntimeWork {
-    static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
-
-    F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
-public:
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit DepAsyncRuntimeInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
-        : TopologyHolder{exec}
-        , RuntimeWork{detail::anchor_bits<A>().first,
-                      detail::anchor_bits<A>().second,
-                      &m_local_topology,
-                      parent}
-        , m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
-
-    void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        // ── 首次进入
-        if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
-
-            // 进入抢占窗口：置抢占 + 锚点动态位；body 自身占位 counter
-            m_implicit |= Work::Implicit::PREEMPTED;
-            m_join_counter.fetch_add(1, std::memory_order_release);
-
-            Runtime rt(*this, wr, exe);
-            try {
-                if constexpr (sizeof...(Args) == 0) {
-                    if constexpr (runtime_invocable_plain<F>) {
-                        std::invoke(m_func, rt);
-                    } else {
-                        std::invoke(m_func, rt, _stop_token());
-                    }
-                } else {
-                    std::apply([this, &rt](auto&&... a) {
-                        if constexpr (runtime_invocable_plain<F, decltype(a)...>) {
-                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
-                        } else {
-                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt, _stop_token());
-                        }
-                    }, m_args);
-                }
-            } catch (...) {
-                _process_exception();
-            }
-
-            // Last-arriver 仲裁：
-            //   fetch_sub 返回 1 → counter 已归 0，无在飞 child，fallthrough 走 tear_down
-            //   否则            → counter > 0，仍有 child，return 让步；最后完成的 child
-            //                     负责把本节点重新入队触发第二次进入。
-            if (m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
-                return;   // 抢占退出：不做 tear_down，由最后到达的 child 触发重入
-            }
-            // Fallthrough：没有在飞 child，继续走到 tear_down
-        }
-
-        // ── 第二次进入
-        m_implicit &= ~Work::Implicit::PREEMPTED;
-        exe._tear_down_dep_async_task(this, wr, cache);
-    }
-};
-
-/// @brief 能够串接任意 Flow 实体的巨无霸容器节点，并在生命周期落幕时点燃专有回调。
-template <typename A, typename GhStore, typename P, typename C>
-class DepAsyncFlowInvoker final : private TopologyHolder, public GraphWork<GhStore> {
-    static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
-
-    using GraphWork<GhStore>::m_gh_store;
-    using Work::m_implicit;
-    using Work::m_topology;
-    using Work::m_join_counter;
-    using Work::_should_abort;
-
-    std::size_t m_num_sources{0};
-    P m_pred;
-    C m_callback;
-public:
-    template <typename Ghs, typename V, typename W>
-    explicit DepAsyncFlowInvoker(Executor& exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb)
-        : TopologyHolder{exec}
-        , GraphWork<GhStore>{std::forward<Ghs>(ghs),
-                             detail::anchor_bits<A>().first,
-                             detail::anchor_bits<A>().second,
-                             &m_local_topology,
-                             parent}
-        , m_pred{std::forward<V>(pred)}
-        , m_callback{std::forward<W>(cb)} {}
-
-    void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
-
-        // ── 首次进入：准入检查 + 子图初始化 ──────────────────
-        if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
-            // 初始化子图拓扑：重置各节点 join_counter、清除异常残留、
-            // 将零入度源节点 swap 到 graph 前端，返回源节点数量
-            m_num_sources = exe._set_up_graph(graph, m_topology, this);
-            // 标记已进入抢占窗口 + 置隐式锚点（捕获子图内未归档异常）
-            m_implicit |= Work::Implicit::PREEMPTED;
-        }
-
-        // ── 终止判定：三条件任一成立即结束循环 ──
-        //   pred == true    → 用户谓词决定停止迭代
-        //   join_weight == 0 → 子图为空或所有节点均有前驱（无法启动）
-        //   _should_abort()   → 拓扑层面已被异常终止
-        if (std::invoke_r<bool>(m_pred) || m_num_sources == 0 || _should_abort()) {
-            m_implicit &= ~Work::Implicit::PREEMPTED;
-            std::invoke(m_callback);                        // 用户终止回调（生命周期落幕通知）
-            exe._tear_down_dep_async_task(this, wr, cache);       // 拆除异步依赖链，传播完成信号给下游
-        } else {
-            m_join_counter.store(m_num_sources, std::memory_order_relaxed); // 倒计时屏障
-            exe._schedule(wr, graph.begin(), m_num_sources);// 批量投递源节点进调度队列
-        }
-    }
-};
-
-
-/// @brief 被高阶外部拓扑锁定的依赖型常规任务，需完成 CAS 抢占才能挂载入依赖树。
-template <typename A, typename F, typename... Args>
-class DepDeferredAsyncBasicInvoker final : private TopologyHolder, public BasicWork {
-    static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
-
-    F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
-public:
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit DepDeferredAsyncBasicInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
-        : TopologyHolder{exec}
-        , BasicWork{detail::anchor_bits<A>().first,
-                    detail::anchor_bits<A>().second,
+        , BasicWork{detail::anchor_implicit<A>(),
+                    detail::anchor_explicit<A>(),
                     &m_local_topology,
                     parent}
         , m_func{std::forward<U>(f)}
@@ -1380,7 +1227,7 @@ public:
 
 /// @brief 被高阶外部拓扑锁定的依赖型动态挂载任务。
 template <typename A, typename F, typename... Args>
-class DepDeferredAsyncRuntimeInvoker final : private TopologyHolder, public RuntimeWork {
+class AttachedRuntimeInvoker final : private TopologyHolder, public RuntimeWork {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
     F m_func;
@@ -1388,10 +1235,10 @@ class DepDeferredAsyncRuntimeInvoker final : private TopologyHolder, public Runt
 public:
     template <typename U, typename... Us>
         requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit DepDeferredAsyncRuntimeInvoker(Executor& exec, Work* parent, U&& f, Us&&... args)
+    explicit AttachedRuntimeInvoker(Executor* exec, Work* parent, U&& f, Us&&... args)
         : TopologyHolder{exec}
-        , RuntimeWork{detail::anchor_bits<A>().first,
-                      detail::anchor_bits<A>().second,
+        , RuntimeWork{detail::anchor_implicit<A>(),
+                      detail::anchor_explicit<A>(),
                       &m_local_topology,
                       parent}
         , m_func{std::forward<U>(f)}
@@ -1466,7 +1313,7 @@ public:
 
 /// @brief 能够串接任意 Flow 实体的巨无霸容器节点，并在生命周期落幕时点燃专有回调。
 template <typename A, typename GhStore, typename P, typename C>
-class DepDeferredAsyncFlowInvoker final : private TopologyHolder, public GraphWork<GhStore> {
+class AttachedFlowInvoker final : private TopologyHolder, public GraphWork<GhStore> {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
     using GraphWork<GhStore>::m_gh_store;
@@ -1485,11 +1332,11 @@ class DepDeferredAsyncFlowInvoker final : private TopologyHolder, public GraphWo
     C m_callback;
 public:
     template <typename Ghs, typename V, typename W>
-    explicit DepDeferredAsyncFlowInvoker(Executor& exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb)
+    explicit AttachedFlowInvoker(Executor* exec, Work* parent, Ghs&& ghs, V&& pred, W&& cb)
         : TopologyHolder{exec}
         , GraphWork<GhStore>{std::forward<Ghs>(ghs),
-                             detail::anchor_bits<A>().first,
-                             detail::anchor_bits<A>().second,
+                             detail::anchor_implicit<A>(),
+                             detail::anchor_explicit<A>(),
                              &m_local_topology, parent}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(cb)} {}
@@ -1541,23 +1388,20 @@ public:
     }
 };
 
-
 /// @brief 虚拟锚点元。在图解析和异步链排布中充当零损耗的汇聚地。
 template <typename A>
-class AnchorWork final : private TopologyHolder, public Work {
+class AnchorWork final : private TopologyHolder, public NoopWork {
     static_assert(anchor_tag<A>, "A must be tfl::anchor::{none_t, implicit_t, explicit_t}");
 
 public:
-    explicit AnchorWork(Executor& exec, Work* parent)
+    explicit AnchorWork(Executor* exec, Work* parent)
         : TopologyHolder{exec}
-        , Work{TaskType::None,
-               detail::anchor_bits<A>().first,
-               detail::anchor_bits<A>().second,
+        , Work{detail::anchor_implicit<A>(),
+               detail::anchor_explicit<A>(),
                &m_local_topology,
                parent} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {}
-    void dump(std::ostream& os) const override final {}
 };
 
 
@@ -1575,7 +1419,7 @@ inline void Runtime::cowait(Gh& gh) {
 
     // 一次性栈锚点 —— 隔离本次 corun 的 join 计数与异常归档,
     // 避免污染外层 m_work 的状态(m_work 当前正处于自锚定基线 1)。
-    AnchorWork<anchor::explicit_t> anchor{m_executor, std::addressof(m_work)};
+    AnchorWork<anchor::explicit_t> anchor{std::addressof(m_executor), std::addressof(m_work)};
 
     {
         // 把锚点临时置为显式锚定,使本作用域内派生的子链异常归档到此节点。

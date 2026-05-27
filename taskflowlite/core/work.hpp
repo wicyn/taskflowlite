@@ -37,8 +37,8 @@ namespace tfl {
 /// `Work` 是 taskflow-lite 的核心内部抽象：普通任务、运行时任务、条件分支、
 /// 跳转、嵌套 Flow、异步任务等，最终都会落到某个 `Work` 派生类上。
 ///
-/// 用户层不会直接操作 `Work`，而是通过 `Task` / `TaskView` / `AsyncTask` /
-/// `DeferredAsyncTask` 这些句柄访问受限能力。`Work` 本身只暴露给框架内部友元，
+/// 用户层不会直接操作 `Work`，而是通过 `Task` / `TaskView` / `AsyncTask`
+/// 这些句柄访问受限能力。`Work` 本身只暴露给框架内部友元，
 /// 用来承载调度、依赖计数、异常归档、信号量、观察者以及 D2 可视化等运行时状态。
 ///
 /// ============================================================================
@@ -53,7 +53,7 @@ namespace tfl {
 ///    ├── JumpWork             单目标强制跳转
 ///    ├── MultiJumpWork        多目标强制跳转
 ///    ├── GraphWork<FlowStore> 嵌套 Flow / 动态 Flow 容器节点
-///    └── AnchorWork           内部锚点节点，用于 cowait / dependent_async 的归档与计数
+///    └── AnchorWork           内部锚点节点，用于 cowait / lazy_async 的归档与计数
 /// @endcode
 ///
 /// 具体 Invoker 子类负责保存用户 callable 与参数，并在 `invoke()` 中执行用户逻辑。
@@ -140,8 +140,6 @@ class Work : public Immovable<Work> {
     friend class Flow;
     friend class Task;
     friend class TaskView;
-    friend class AsyncTask;
-    friend class DeferredAsyncTask;
     friend class Topology;
     friend class Worker;
     friend class Executor;
@@ -153,6 +151,7 @@ class Work : public Immovable<Work> {
     friend class MultiJump;
     friend class ExplicitAnchorGuard;
     friend class D2Renderer;
+    template <typename> friend class AsyncTask;
 
     TFL_WORK_SUBCLASS_FRIENDS;
 public:
@@ -412,7 +411,7 @@ protected:
 
         // ── 阶段 3：兜底 —— 存于本节点 ─────────────────────────────
         // 适用场景：
-        //   - silent_async 顶级任务，无任何父锚点
+        //   - detach 顶级任务，无任何父锚点
         //   - 前两级优先级归档时 CAUGHT 竞争失败（异常被丢弃，但本地仍留底）
         //
         // 同样使用 CAS（fetch_or + 检查旧 CAUGHT 位）：
