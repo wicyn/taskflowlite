@@ -418,7 +418,7 @@ template <typename Mode>
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
 inline AsyncTask<Mode>::AsyncTask(T&& task, Args&&... args)
-    : AsyncTask{make_attached_basic<anchor::explicit_t>(
+    : AsyncTask{make_attached_basic<anchor::none_t>(
           /*executor=*/ nullptr,
           /*parent=*/nullptr,
           std::forward<T>(task),
@@ -428,7 +428,7 @@ template <typename Mode>
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
 inline AsyncTask<Mode>::AsyncTask(T&& task, Args&&... args)
-    : AsyncTask{make_attached_runtime<anchor::explicit_t>(
+    : AsyncTask{make_attached_runtime<anchor::none_t>(
           /*executor=*/ nullptr,
           /*parent=*/nullptr,
           std::forward<T>(task),
@@ -460,11 +460,15 @@ template <typename Gh, typename C>
 inline AsyncTask<Mode>::AsyncTask(Gh&& gh, std::uint64_t num, C&& cb)
     : AsyncTask{std::forward<Gh>(gh),
                 [num, remaining = num]() mutable noexcept -> bool {
-                    if (remaining-- == 0) [[unlikely]] {
-                        remaining = num;
-                        return true;
+                    if constexpr (std::same_as<Mode, task_mode::repeat_t>) {
+                        if (remaining-- == 0) [[unlikely]] {
+                            remaining = num;
+                            return true;
+                        }
+                        return false;
+                    } else {
+                        return num-- == 0;
                     }
-                    return false;
                 },
                 std::forward<C>(cb)} {}
 
@@ -480,7 +484,7 @@ template <typename Mode>
 template <typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 inline AsyncTask<Mode>::AsyncTask(Gh&& gh, P&& pred, C&& cb)
-    : AsyncTask{make_attached_flow<anchor::explicit_t>(
+    : AsyncTask{make_attached_flow<anchor::none_t>(
           /*executor=*/ nullptr,
           /*parent=*/nullptr,
           std::forward<Gh>(gh),
