@@ -122,11 +122,9 @@ template <typename T>
 ///   2. 是右值且 decay 后可移动构造(接管临时对象所有权)
 ///   3. 是左值引用且 decay 后可拷贝构造(拷贝活对象)
 ///
-/// @par 为什么需要
 /// 异步代码中,把引用以值方式捕获到闭包里是常见的悬空 bug。
 /// 本 concept 强制用户说清意图:用 std::ref 显式包裹、传右值、或传可拷贝左值。
 ///
-/// @par Models / Non-models
 /// - `capturable<int>`                  → true  (情形 3)
 /// - `capturable<std::string&&>`        → true  (情形 2)
 /// - `capturable<std::ref_wrapper<int>>`→ true  (情形 1)
@@ -359,10 +357,8 @@ concept sem_count_sequence = detail::is_sem_count_seq<Ts...>::value;
 ///
 /// @tparam Ts 原始参数类型（由 CTAD 推导，未退化）。
 ///
-/// @par 内存布局
 ///   与等价的 `std::tuple<std::decay_t<Ts>...>` 完全相同，零额外开销。
 ///
-/// @par 退化规则
 ///   | 原始类型          | decay 后            | 说明                  |
 ///   |-------------------|---------------------|-----------------------|
 ///   | `void(int&)`      | `void(*)(int&)`     | 函数 → 函数指针       |

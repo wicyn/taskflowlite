@@ -1,8 +1,8 @@
-﻿/// @file macros.hpp
+/// @file  macros.hpp
 /// @brief 提供 taskflowlite 框架底层的编译器指令封装、宏元编程工具与断言诊断体系。
 /// @author wicyn
 /// @contact https://github.com/wicyn
-/// @date 2026-03-02
+/// @date 2026-05-28
 /// @license MIT
 /// @copyright Copyright (c) 2026 wicyn
 

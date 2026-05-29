@@ -1,26 +1,11 @@
-﻿/// @file work_factory.hpp
-/// @brief Work 节点工厂函数族 —— inline 实现，与 work_factory_fwd.hpp 配对
+/// @file work_factory.hpp
+/// @brief Work 节点工厂函数族 —— inline 实现，与 work_factory_fwd.hpp 配对。
 /// @author wicyn
 /// @contact https://github.com/wicyn
-/// @date 2026-04-20
+/// @date 2026-05-28
 /// @license MIT
 /// @copyright Copyright (c) 2026 wicyn
 ///
-/// @details
-/// 本文件提供 `make_*` 系列工厂的内联实现。所有函数都是 **薄包装**：
-/// 校验 concept 约束、`std::decay` 模板参数、`new` 出对应的 Invoker
-/// 子类。这层薄包装的存在意义有三：
-///
-///   - **运行时多态**：调用点拿到的是 `Work*`（多态基类指针），与具体 Invoker
-///     子类解耦，未来加新节点类型不会污染上层模板签名；
-///   - **统一入口**：所有 `Work` 实例化集中在此处，便于将来替换分配器；
-///   - **decay 标准化**：模板参数在用户传入时通常带引用 / cv 限定，本层
-///     统一用 `std::decay_t` 拍平，避免 Invoker 内部需要重复处理这种类型杂项。
-///
-/// 函数族结构与 work_factory_fwd.hpp 保持完全一致 —— 修改时务必同步两份。
-///
-/// @see work_factory_fwd.hpp  对应的前置声明（仅签名，不含实现）
-/// @see works.hpp            被本文件 new 出的各 Invoker 子类定义
 
 
 #pragma once
@@ -40,7 +25,7 @@ namespace tfl {
     return new NoopInvoker(graph);
 }
 
-/// @brief 创建普通同步任务节点 —— `BasicInvoker`。
+/// @brief 创建普通同步任务节点 —— BasicInvoker。
 /// @param graph  所属 Graph，用于依赖计数初始化。
 /// @param t      可调用对象（含 stop_token 重载亦可）。
 /// @param args   转发给可调用对象的参数。
@@ -51,7 +36,7 @@ template <typename T, typename... Args>
         graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
-/// @brief 创建单目标条件分支节点 —— `BranchInvoker`。
+/// @brief 创建单目标条件分支节点 —— BranchInvoker。
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && branch_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_branch(const Graph* graph, T&& t, Args&&... args) {
@@ -59,7 +44,7 @@ template <typename T, typename... Args>
         graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
-/// @brief 创建多目标广播分支节点 —— `MultiBranchInvoker`。
+/// @brief 创建多目标广播分支节点 —— MultiBranchInvoker。
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && multi_branch_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_multi_branch(const Graph* graph, T&& t, Args&&... args) {
@@ -67,7 +52,7 @@ template <typename T, typename... Args>
         graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
-/// @brief 创建单目标强制跳转节点 —— `JumpInvoker`。
+/// @brief 创建单目标强制跳转节点 —— JumpInvoker。
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && jump_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_jump(const Graph* graph, T&& t, Args&&... args) {
@@ -75,7 +60,7 @@ template <typename T, typename... Args>
         graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
-/// @brief 创建多目标广播跳转节点 —— `MultiJumpInvoker`。
+/// @brief 创建多目标广播跳转节点 —— MultiJumpInvoker。
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && multi_jump_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_multi_jump(const Graph* graph, T&& t, Args&&... args) {
@@ -83,7 +68,7 @@ template <typename T, typename... Args>
         graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
-/// @brief 创建运行时任务节点 —— `RuntimeInvoker`，注入 `Runtime&` 上下文。
+/// @brief 创建运行时任务节点 —— RuntimeInvoker，注入 Runtime& 上下文。
 template <typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_runtime(const Graph* graph, T&& t, Args&&... args) {
@@ -91,8 +76,8 @@ template <typename T, typename... Args>
         graph, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
-/// @brief 创建循环/条件子图节点 —— `SubflowInvoker`。
-/// @param pred  终止谓词 `bool()`，返回 `true` 时停止迭代。
+/// @brief 创建循环/条件子图节点 —— SubflowInvoker。
+/// @param pred  终止谓词 bool()，返回 true 时停止迭代。
 template <typename Gh, typename P>
     requires (capturable<P> && graph_holder<Gh> && predicate<P>)
 [[nodiscard]] inline Work* make_subflow(const Graph* graph, Gh&& gh, P&& pred) {
@@ -104,7 +89,7 @@ template <typename Gh, typename P>
 //  内联实现 — 独立异步任务工厂（fire-and-forget，无 promise 通道）
 // ============================================================================
 
-/// @brief 创建 fire-and-forget 普通异步任务 —— `DetachedBasicInvoker`。
+/// @brief 创建 fire-and-forget 普通异步任务 —— DetachedBasicInvoker。
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
 [[nodiscard]] inline Work* make_detached_basic(Executor* exec, Work* parent, T&& t, Args&&... args) {
@@ -112,7 +97,7 @@ template <anchor_tag A, typename T, typename... Args>
         exec, parent, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
-/// @brief 创建 fire-and-forget 运行时异步任务 —— `DetachedRuntimeInvoker`。
+/// @brief 创建 fire-and-forget 运行时异步任务 —— DetachedRuntimeInvoker。
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
 [[nodiscard]] inline Work* make_detached_runtime(Executor* exec, Work* parent, T&& t, Args&&... args) {
@@ -120,7 +105,7 @@ template <anchor_tag A, typename T, typename... Args>
         exec, parent, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
-/// @brief 创建 fire-and-forget 异步子图任务 —— `DetachedFlowInvoker`。
+/// @brief 创建 fire-and-forget 异步子图任务 —— DetachedFlowInvoker。
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 [[nodiscard]] inline Work* make_detached_flow(Executor* exec, Work* parent, Gh&& gh, P&& pred, C&& cb) {
@@ -128,7 +113,7 @@ template <anchor_tag A, typename Gh, typename P, typename C>
         exec, parent, detail::wrap(std::forward<Gh>(gh)), std::forward<P>(pred), std::forward<C>(cb));
 }
 
-/// @brief 创建带 `std::promise<R>` 的普通异步任务 —— `PromisedBasicInvoker`。
+/// @brief 创建带 std::promise<R> 的普通异步任务 —— PromisedBasicInvoker。
 template <anchor_tag A, typename T, typename R, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_promised_basic(Executor* exec, Work* parent, T&& t, std::promise<R>&& p, Args&&... args) {
@@ -136,7 +121,7 @@ template <anchor_tag A, typename T, typename R, typename... Args>
         exec, parent, std::forward<T>(t), std::move(p), std::forward<Args>(args)...);
 }
 
-/// @brief 创建带 `std::promise<R>` 的运行时异步任务 —— `PromisedRuntimeInvoker`。
+/// @brief 创建带 std::promise<R> 的运行时异步任务 —— PromisedRuntimeInvoker。
 template <anchor_tag A, typename T, typename R, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_promised_runtime(Executor* exec, Work* parent, T&& t, std::promise<R>&& p, Args&&... args) {
@@ -144,7 +129,7 @@ template <anchor_tag A, typename T, typename R, typename... Args>
         exec, parent, std::forward<T>(t), std::move(p), std::forward<Args>(args)...);
 }
 
-/// @brief 创建带 `std::promise<void>` 的异步子图任务 —— `PromisedFlowInvoker`。
+/// @brief 创建带 std::promise<void> 的异步子图任务 —— PromisedFlowInvoker。
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 [[nodiscard]] inline Work* make_promised_flow(Executor* exec, Work* parent, Gh&& gh, P&& pred, C&& cb, std::promise<void>&& p) {
@@ -155,7 +140,7 @@ template <anchor_tag A, typename Gh, typename P, typename C>
 //  内联实现 — 有依赖的异步任务工厂（挂载到外部 Topology）
 // ============================================================================
 
-/// @brief 创建依赖型延迟普通异步任务 —— `AttachedBasicInvoker`。
+/// @brief 创建依赖型延迟普通异步任务 —— AttachedBasicInvoker。
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_attached_basic(Executor* exec, Work* parent, T&& t, Args&&... args) {
@@ -163,7 +148,7 @@ template <anchor_tag A, typename T, typename... Args>
         exec, parent, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
-/// @brief 创建依赖型延迟运行时异步任务 —— `AttachedRuntimeInvoker`。
+/// @brief 创建依赖型延迟运行时异步任务 —— AttachedRuntimeInvoker。
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
 [[nodiscard]] inline Work* make_attached_runtime(Executor* exec, Work* parent, T&& t, Args&&... args) {
@@ -171,7 +156,7 @@ template <anchor_tag A, typename T, typename... Args>
         exec, parent, std::forward<T>(t), std::forward<Args>(args)...);
 }
 
-/// @brief 创建依赖型延迟异步子图任务 —— `AttachedFlowInvoker`。
+/// @brief 创建依赖型延迟异步子图任务 —— AttachedFlowInvoker。
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 [[nodiscard]] inline Work* make_attached_flow(Executor* exec, Work* parent, Gh&& gh, P&& pred, C&& cb) {
@@ -181,7 +166,7 @@ template <anchor_tag A, typename Gh, typename P, typename C>
         std::forward<C>(cb));
 }
 
-/// @brief 销毁工作节点，直接 delete
+/// @brief 销毁工作节点，直接 delete。
 inline void destroy(Work* work) noexcept {
     delete work;
 }

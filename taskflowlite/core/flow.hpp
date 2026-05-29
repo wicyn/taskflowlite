@@ -17,123 +17,15 @@
 #include "d2_render.hpp"
 namespace tfl {
 
-/// @brief DAG 构建器 —— 用户态任务图的蓝图（Blueprint）。
+/// @brief DAG 构建器 —— 声明式任务图编辑器。
 ///
-/// @details
-/// `Flow` 是框架的 **声明式 DAG 编辑器**：用户用它"画"出任务节点与边，
-/// 再把 `Flow` 整体提交给 `Executor` 反复执行。它本质上是一层薄薄的语义壳，
-/// 内部托管一个 `Graph`（节点指针数组）和一个 `std::string` 名字。
+/// 内部持有 Graph，提供 emplace/precede/succeed 等 fluent API 构建 DAG。
+/// MoveOnly，同一 Flow 可被 Executor 反复提交。节点内存由 Graph 统一管理，
+/// 返回的 Task 是弱引用（裸 Work*），不参与生命周期管理。
 ///
-/// 在框架的"静态 vs 动态" 维度上，`Flow` 站在静态侧；`Executor::lazy_async` /
-/// `Executor::deferred_async` 与 `Runtime` 站在动态侧，分别表达图外提交和任务体内派生：
-///
-/// | 维度          | `Flow`              | `Executor` 动态任务        | `Runtime`            |
-/// |---------------|--------------------|----------------------------|----------------------|
-/// | 何时构造图    | 提交 **前**（静态） | API 调用时（图外动态）      | 任务体 **内**（图内动态） |
-/// | 谁拥有节点    | Flow 自己          | Executor 内存池 / Topology | Executor 内存池 / Topology |
-/// | 适用场景      | 结构稳定的批处理    | 外部线程的一次性派发        | 数据驱动的自适应分支  |
-/// | 重复执行成本  | 极低（图复用）      | 一次性                     | 一次性                |
-///
-/// ============================================================================
-///  所有权与生命周期
-/// ============================================================================
-/// `Flow` 是 **MoveOnly** —— 同一份图蓝图只能有一个所有者，避免节点指针被多份
-/// 句柄重复 erase / clear。提交给 `Executor` 时传引用 / 右值，`Flow` 本身不被移交，
-/// 这意味着 **同一 Flow 可以被同一个 Executor 反复提交**（典型用法：流水线常驻图）。
-///
-/// 节点物理内存归 `Graph::m_works` 持有 —— 通过 `work_factory` 池统一分配 / 释放，
-/// `Flow` 析构时连带清理。返回给用户的 `Task` 是 **弱引用**（裸 Work*），不参与
-/// 生命周期管理 —— 这点与 `AsyncTask` 的引用计数语义形成关键区分（详见 task.hpp）。
-///
-/// ============================================================================
-///  emplace —— 唯一插入入口，按概念分发到 7 种节点工厂
-/// ============================================================================
-/// 所有节点插入收敛在 `emplace` 一个名字下，靠 C++20 concepts 在编译期分发：
-///
-/// | 概念                       | 节点类型             | 触发签名示例                          |
-/// |---------------------------|----------------------|-------------------------------------|
-/// | `basic_invocable`         | 普通同步任务          | `void()` / `void(Args...)`          |
-/// | `branch_invocable`        | 二选一条件分支        | `bool()` → 走 succ[0] 或 succ[1]    |
-/// | `multi_branch_invocable`  | N 选一条件分支        | `std::size_t()` → 走 succ[N]        |
-/// | `jump_invocable`          | 单跳转                | `Task()` → 强制转到目标             |
-/// | `multi_jump_invocable`    | 多跳转                | 返回若干目标 Task                    |
-/// | `runtime_invocable`       | 运行时任务            | `void(Runtime&)`                    |
-/// | `graph_holder`               | 嵌套子流程（Subflow） | 整个 Flow 作为节点                  |
-///
-/// 每个重载内部通过对应的 `make_xxx` 工厂在 `work_factory` 池里构造具体 Work 子类，
-/// 再用 `Graph::_emplace` 接管所有权。这一层"概念 → 工厂"的映射把"用户写什么签名
-/// 就得到什么节点类型" 这件事完全推到编译期，运行期零成本。
-///
-/// ============================================================================
-///  批量插入 —— 结构化绑定友好
-/// ============================================================================
-/// 两个变参重载支持一次性插入多个节点：
-/// - `emplace(Ts&&...)`         —— 适用于无参闭包 / 子流程；
-/// - `emplace(Packs&&...)`      —— 接收 `tfl::pack{callable, args...}`，
-///                                内部 `std::apply` 展开后转发到单任务 `emplace`。
-///
-/// 都返回 `std::tuple<Task, ...>`，配合结构化绑定写：
-/// @code
-///   auto [t1, t2, t3] = flow.emplace(
-///       tfl::pack{&Svc::work, &svc, 42},
-///       tfl::pack{Functor{}, std::ref(state)},
-///       []() noexcept { /* ... */ }
-///   );
-///   t1.precede(t2); t2.precede(t3);
-/// @endcode
-///
-/// ============================================================================
-///  图操作语义
-/// ============================================================================
-/// - `erase(Task)`              ：O(1)，靠 `Graph::_erase` 的 swap-with-last。
-///                               `Graph::_erase` 内部已调用 `_clear_predecessors()` 和
-///                               `_clear_successors()` 断开所有邻边，调用方无需手动清理。
-/// - `clear()`                  ：清空整个图，内部节点全部归还内存池。
-/// - `for_each(F)`              ：遍历当前节点，访问者收 `Task` 句柄。
-/// - `dump(Direction)`          ：导出 D2 图形描述，可视化到 SVG / PNG。
-///
-/// ============================================================================
-///  线程安全
-/// ============================================================================
-/// **构建期非线程安全** —— 这是有意为之的设计权衡：
-/// - 图通常一次构建后反复执行，单线程构建符合大多数使用场景；
-/// - 避免节点插入 / 边管理的内部加锁，让运行期完全无锁。
-///
-/// 一旦提交给 `Executor`，`Flow` 进入 **只读阶段**，调度器与多个 worker 可并发
-/// 访问其 `Graph` —— 节点入度 / 出度由各自 Work 的原子计数器保护，结构本身不变。
-/// 因此**正在执行的 Flow 不能被结构性修改**（emplace / erase / clear）。
-///
-/// ============================================================================
-///  哈希与等值
-/// ============================================================================
-/// `Flow` 的哈希 = `Graph` 对象地址的哈希 —— 用于把 Flow 当作 `unordered_map` 的
-/// 键（如缓存图 → 配置映射）。语义上两个 Flow 即便结构相同，地址不同就视作不同
-/// 实体。如需结构等值需自行实现深比较。
-///
-/// ============================================================================
-///  使用示例
-/// ============================================================================
-/// @code
-///   tfl::Flow flow;
-///   auto [a, b, c] = flow.emplace(
-///       []{ load(); },
-///       [](Runtime& rt){ rt.detach([]{ extra(); }); },   // 自适应分支
-///       []{ save(); }
-///   );
-///   a.precede(b); b.precede(c);
-///
-///   // 反复执行同一图
-///   executor.detach(flow, /*num=*/1000);
-///
-///   // 嵌套：把整张 flow 作为另一图的一个节点
-///   tfl::Flow outer;
-///   auto inner_task = outer.emplace(flow);   // Subflow 节点
-/// @endcode
-///
-/// @see Task              本类返回的节点句柄
-/// @see Graph             实际持有节点指针的容器
-/// @see Executor          消费 Flow 的执行引擎
-/// @see Runtime   动态侧的对偶 —— 不预先编图、运行期才决定结构
+/// emplace 按 C++20 concept 自动分发到 7 种节点工厂（basic/branch/jump/runtime/graph 等），
+/// 编译期零开销。构建期非线程安全，提交后进入只读阶段供多 worker 并发访问。
+/// 哈希基于 Graph 对象地址，可直接用作 unordered_map 键。
 ///
 class Flow : public MoveOnly<Flow> {
     friend class Work;
@@ -142,7 +34,7 @@ class Flow : public MoveOnly<Flow> {
     friend class Runtime;
 
 public:
-    /// @brief 构造空任务图。
+    /// @brief 默认构造空 DAG，不含任何节点，name 为空字符串；与 `Flow{}` 等价。
     Flow() = default;
 
 
@@ -167,47 +59,80 @@ public:
     /// @return 指向占位节点的 Task 句柄。
     [[nodiscard]] Task noop();
 
-    /// @brief 插入普通同步任务节点。
+    /// @brief 插入无 Runtime 参数的同步任务节点。
+    /// @tparam T 可调用对象类型，满足 basic_invocable concept。
+    /// @tparam Args 可捕获的附加参数类型。
+    /// @param task 可调用对象（函数指针、lambda、std::function 等）。
+    /// @param args 转发给 task 的参数（按值或 std::ref 捕获）。
+    /// @return 指向新节点的 Task 句柄（弱引用），可用于 precede/succeed 构建依赖。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && basic_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
-    /// @brief 插入单目标分支任务节点。
+    /// @brief 插入单目标分支任务节点，callable 接收 `Branch&` 选择恰好一个后继执行。
+    /// @param task 满足 branch_invocable concept 的可调用对象。
+    /// @param args 转发给 task 的附加参数。
+    /// @return 指向新分支节点的 Task 句柄。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && branch_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
-    /// @brief 插入多目标分支任务节点。
+    /// @brief 插入多目标分支任务节点，callable 接收 `MultiBranch&` 选择任意数量后继执行。
+    /// @param task 满足 multi_branch_invocable concept 的可调用对象。
+    /// @param args 转发给 task 的附加参数。
+    /// @return 指向新多目标分支节点的 Task 句柄。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && multi_branch_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
-    /// @brief 插入单目标跳转任务节点。
+    /// @brief 插入单目标跳转任务节点，callable 接收 `Jump&` 将执行流转移到另一节点。
+    /// @param task 满足 jump_invocable concept 的可调用对象。
+    /// @param args 转发给 task 的附加参数。
+    /// @return 指向新跳转节点的 Task 句柄。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && jump_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
-    /// @brief 插入多目标跳转任务节点。
+    /// @brief 插入多目标跳转任务节点，callable 接收 `MultiJump&` 将执行流转移到多个目标节点。
+    /// @param task 满足 multi_jump_invocable concept 的可调用对象。
+    /// @param args 转发给 task 的附加参数。
+    /// @return 指向新多目标跳转节点的 Task 句柄。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && multi_jump_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
-    /// @brief 插入运行时任务节点，任务体可接收 Runtime& 动态派发子任务。
+    /// @brief 插入运行时任务节点，callable 接收 `Runtime&` 可在执行期动态派生/调度子任务。
+    /// @param task 满足 runtime_invocable concept 的可调用对象。
+    /// @param args 转发给 task 的附加参数。
+    /// @return 指向新运行时节点的 Task 句柄。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
     [[nodiscard]] Task emplace(T&& task, Args&&... args);
 
-    /// @brief 插入子流程节点，执行时运行一整张 Flow。
+    /// @brief 插入子流程节点，执行时运行一整张 Flow（相当于调用一次）。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @param gh 要嵌入的子图。
+    /// @return 指向新子流程节点的 Task 句柄。
+    /// @note 等价于 `emplace(gh, 1ULL)`。
     template <typename Gh>
         requires graph_holder<Gh>
     [[nodiscard]] Task emplace(Gh&& gh);
 
-    /// @brief 插入固定次数循环执行的子流程节点。
+    /// @brief 插入固定次数循环执行的子流程节点，子图连续运行 @p num 次。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @param gh 要嵌入的子图。
+    /// @param num 循环次数。
+    /// @return 指向新子流程节点的 Task 句柄。
     template <typename Gh>
         requires graph_holder<Gh>
     [[nodiscard]] Task emplace(Gh&& gh, std::uint64_t num);
 
-    /// @brief 插入条件循环执行的子流程节点。
+    /// @brief 插入条件循环执行的子流程节点，每次迭代前调用 @p pred()，返回 true 时停止。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @tparam P 满足 predicate concept 的可调用对象。
+    /// @param gh 要嵌入的子图。
+    /// @param pred 循环终止谓词，返回 true 时退出循环。
+    /// @return 指向新子流程节点的 Task 句柄。
     template <typename Gh, typename P>
         requires (graph_holder<Gh> && capturable<P> && predicate<P>)
     [[nodiscard]] Task emplace(Gh&& gh, P&& pred);
@@ -232,7 +157,8 @@ public:
     //  图操作接口
     // ========================================================================
 
-    /// @brief 从图中移除一个任务节点。
+    /// @brief 从图中移除一个任务节点，同时清理其所有进出边并从相邻节点解链。
+    /// @param t 要移除的任务句柄，移除后该句柄悬空。
     void erase(Task t) noexcept;
 
     /// @brief 从图中批量移除多个任务节点。
@@ -246,10 +172,12 @@ public:
     /// @brief 清空当前任务图中的所有节点。
     void clear() noexcept;
 
-    /// @brief 判断当前任务图是否为空。
+    /// @brief 判断图内是否无任何任务节点。
+    /// @return 节点数为 0 时返回 true。
     [[nodiscard]] bool empty() const noexcept;
 
-    /// @brief 获取当前任务图中的节点数量。
+    /// @brief 返回图中任务节点总数，不含隐式辅助或临时节点。
+    /// @return 节点数量。
     [[nodiscard]] std::size_t size() const noexcept;
 
     /// @brief 遍历当前任务图中的所有节点。
@@ -268,13 +196,14 @@ public:
         requires std::constructible_from<std::string, S>
     Flow& name(S&& name);
 
-    /// @brief 获取当前任务图名称。
+    /// @brief 返回图名称（调试/可视化用），直接读取 Flow::m_name。
+    /// @return 图的名称 view；若未设置则为空字符串。
     [[nodiscard]] std::string_view name() const noexcept;
 
-    /// @brief 获取内部 Graph 引用。
+    /// @brief 获取内部 Graph 的可变引用，允许直接操作底层节点存储与边表。
     [[nodiscard]] Graph& graph() noexcept;
 
-    /// @brief 获取内部 Graph 只读引用。
+    /// @brief 获取内部 Graph 的只读引用，仅允许遍历/查询。
     [[nodiscard]] const Graph& graph() const noexcept;
 protected:
     Graph m_graph;

@@ -1,8 +1,8 @@
-﻿/// @file random.hpp
-/// @brief 轻量随机数生成器 SplitMix64 —— Work-Stealing 受害者选择专用
+/// @file  random.hpp
+/// @brief SplitMix64 伪随机数生成器 —— Work-Stealing 受害者选择的零开销 PRNG。
 /// @author wicyn
 /// @contact https://github.com/wicyn
-/// @date 2026-03-02
+/// @date 2026-05-28
 /// @license MIT
 /// @copyright Copyright (c) 2026 wicyn
 
@@ -93,67 +93,9 @@ namespace detail {
 
 /// @brief 工作窃取专用 PRNG —— SplitMix64 引擎 + mulhi64 零分支映射。
 ///
-/// @details
-/// `SplitMix64` 是为 Work-Stealing "受害者选择" 量身定制的小型 PRNG：
-/// 每个 Worker 独占一个实例，`_wait_for_work` 在 steal 阶段调用
-/// `m_rng()` 拿一个 `[0, num_queues)` 的随机索引，决定下次去偷哪个队列。
-///
-/// 这条调用是 **整个调度器最热的路径之一**：worker 闲下来时每秒可能调几十万次。
-/// 任何指令开销都会被放大。
-///
-/// ============================================================================
-///  为什么不用 std::mt19937？
-/// ============================================================================
-/// `std::mt19937` 状态 2.5 KB、init 几百周期、有分支 —— 完全不适合热路径。
-/// `std::uniform_int_distribution<>` 还要做拒绝采样，分支不可预测。
-///
-/// `SplitMix64`（Steele/Lea/Flood 2014）是 Java 8 的 SplittableRandom 引擎：
-/// - **状态 8 字节**（单个 uint64_t）；
-/// - **全周期 2^64**；
-/// - **无分支**（黄金比例增量 + 两次 xor-shift）；
-/// - 通过 BigCrush / PractRand 全部测试。
-///
-/// 配合 mulhi64 把 [0, 2^64) 映射到 [0, n) ：
-/// - **无除法、无取模、无拒绝采样**；
-/// - 仅一次 64×64→128 的乘法（x86 上一条 `mulq` 指令）；
-/// - 取高 64 位 = 无偏映射（小偏差在 n << 2^64 时可忽略）。
-///
-/// ============================================================================
-///  内存布局 —— 12 字节，无 padding
-/// ============================================================================
-/// @code
-///   offset 0: m_state  (uint64_t, 8B)
-///   offset 8: m_bound  (uint32_t, 4B)
-/// @endcode
-/// 紧凑排布让一个 Worker 的 `rng + vtm + adaptive_factor + max_steals` 总共
-/// 不到一行 cache line，连续访问命中率拉满。
-///
-/// ============================================================================
-///  Bound 预绑定 —— 零参数热路径
-/// ============================================================================
-/// 与传统"传 n 给 distribution"不同，本类把 `m_bound` 作为成员：
-/// - `Executor::_spawn` 时调用 `seed(thread_hash, num_queues)` 一次性绑定；
-/// - 之后的 `m_rng()` 无参数调用，编译为：
-///   ```
-///   movq m_state, %rax
-///   ... SplitMix64 mix（4 条 ALU）...
-///   mulq m_bound
-///   movl %edx, %eax
-///   ret
-///   ```
-///   汇编仅 3 条指令，调用约 10 cycles。
-///
-/// ============================================================================
-///  线程安全
-/// ============================================================================
-/// **非线程安全** —— 每个 Worker 持有独立实例。这是有意为之：
-/// - 加锁会让热路径瞬间崩塌；
-/// - 每 worker 一份的内存开销（12 字节 × N）远低于伪共享 / 锁竞争代价；
-/// - 不同 worker 用不同种子（`hash(thread_id)`），自然低相关性。
-///
-/// @note 不是密码学安全的 RNG，只用于负载均衡决策。
-/// @see Executor::_wait_for_work  主调用点
-/// @see Worker                    本类的归属容器
+/// 状态仅 8 字节，全周期 2^64，无分支。配合 mulhi64 把 [0, 2^64) 映射到 [0, n)
+/// 无需除法/取模/拒绝采样。m_bound 预绑定使热路径零参数调用，汇编约 3 条指令。
+/// @note 非线程安全 —— 每个 Worker 独占一份实例，非密码学安全。
 class SplitMix64 {
 public:
     constexpr SplitMix64() noexcept = default;
@@ -184,12 +126,18 @@ public:
         return static_cast<std::uint32_t>(detail::mulhi64(next(), m_bound));
     }
 
-    /// @brief 生成 [0, n) 的随机数（临时指定范围）。
+    /// @brief 生成 [0, n) 的半开区间随机数，允许临时覆盖预绑定范围。
+    /// @param n 不包含的上界，实际返回范围为 [0, n)。
+    /// @return [0, n) 均匀分布的 uint32_t 随机数。
     [[nodiscard]] constexpr std::uint32_t operator()(std::uint32_t n) noexcept {
         return static_cast<std::uint32_t>(detail::mulhi64(next(), n));
     }
 
     /// @brief 生成 [lo, hi] 闭区间随机数。
+    /// @param lo 下界（包含）。
+    /// @param hi 上界（包含）。当 lo==0 && hi==UINT32_MAX 时直接截断 next() 低位，
+    ///            避免 range = hi - lo + 1 溢出归零。
+    /// @return [lo, hi] 均匀分布的 uint32_t 随机数。
     [[nodiscard]] constexpr std::uint32_t operator()(std::uint32_t lo, std::uint32_t hi) noexcept {
         auto const range = hi - lo + 1;
         if (range == 0) [[unlikely]] {

@@ -15,34 +15,15 @@
 #include "utility.hpp"
 namespace tfl {
 
-/// @brief 任务返回值句柄 ── 组合 std::future 并附加 stop_source 协作停止能力。
+/// @brief 任务返回值句柄 —— 组合 std::future<R> 并附加协作式停止控制。
 ///
-/// @details
-/// 由 `Executor::async` 返回，是用户拿到任务结果的唯一通道。内部组合（而非
-/// 继承）`std::future<R>`：`std::future` 的析构函数非虚，公有继承会在
-/// 切片场景（拷贝/移动到基类、基类指针 delete）下静默泄漏 stop_source 的
-/// control block。组合方案以 6 行 forward 换取生命周期可控。
+/// 由 Executor::async / Runtime::async 返回，MoveOnly。组合而非继承 std::future
+/// （其析构非虚），以 6 行 forward 换取生命周期可控。
+/// m_stop_source 与任务 Topology 共享 control block：request_stop()、
+/// 框架内部 _stop_requested() 和用户 stop_token 三者同源，语义一致。
 ///
-/// `m_stop_source` 与任务所属 Topology 共享同一份 control block
-/// （`std::stop_source` 是 shared_ptr 语义）：用户调用 `request_stop()`、
-/// 框架内部 `_stop_requested()`、用户 callable 拿到的 `stop_token` 三者
-/// 看到的是同一个状态，不会出现"用户停了但框架不知道"的语义割裂。
-///
-/// | 维度          | tfl::Future          | std::future          | std::shared_future   |
-/// |---------------|----------------------|----------------------|----------------------|
-/// | 拷贝          | ✗                    | ✗                    | ✓                    |
-/// | 一次性 get    | ✓                    | ✓                    | 多次可读             |
-/// | 协作停止      | ✓ (request_stop)     | ✗                    | ✗                    |
-/// | 与 topology   | 共享 stop_source     | 无                   | 无                   |
-/// | 逃生口        | native_future()      | —                    | —                    |
-///
-/// ============================================================================
-///  Ownership and lifetime
-/// ============================================================================
-/// `Future` 是 move-only，与 `std::future` 一致。`m_stop_source` 持有的
-/// control block 让 Future 的生命周期可以独立于 Topology——即使任务已结束、
-/// Topology 已析构，Future 上的 `stop_requested()` 仍可安全查询（永远反映
-/// 最后一次状态），`request_stop()` 也是安全的（无副作用）。
+/// 提供 native_future() 逃生口以兼容现有 std::future& API。
+/// Future 生命周期可独立于 Topology，任务结束后仍可安全查询 stop_requested()。
 
 template <typename R>
 class Future : public MoveOnly<Future<R>> {
@@ -66,13 +47,14 @@ public:
     //  std::future 接口转发
     // ========================================================================
 
-    /// @brief 阻塞获取结果；仅可调用一次。
+    /// @brief 阻塞等待结果并从 std::future 移动取出；仅可调用一次，调用后 valid() 返回 false。
+    /// @return callable 的返回值 R（移动语义）。
     R get() { return m_future.get(); }
 
-    /// @brief 是否持有有效的共享状态（move-from 后为 false）。
+    /// @brief 是否持有有效的共享状态，move-from 或已 get() 后返回 false。
     [[nodiscard]] bool valid() const noexcept { return m_future.valid(); }
 
-    /// @brief 阻塞至结果就绪。
+    /// @brief 阻塞当前线程直到关联任务完成并设置结果。
     void wait() const { m_future.wait(); }
 
     /// @brief 阻塞最多 d；返回 ready / timeout / deferred。
@@ -87,19 +69,22 @@ public:
         return m_future.wait_until(tp);
     }
 
-    /// @brief 转换为可多次读取的 shared_future（stop 控制能力丢失）。
-    std::shared_future<R> share() noexcept { return m_future.share(); }
+    /// @brief 将内部 std::future 转换为可多次读取的 shared_future。
+    /// @return std::shared_future<R>，可被多处 wait/get。
+    /// @note 调用后本 Future 不再拥有 valid() 状态；stop 控制能力丢失（m_stop_source 不随 share 传递）。
+    [[nodiscard]] std::shared_future<R> share() noexcept { return m_future.share(); }
 
     /// @brief 取得底层 std::future 的引用——兼容接受 std::future& 的现有 API。
     /// @note 通过此接口操作底层 future 不会触发 stop 控制；仅作为逃生口。
-    std::future<R>& native_future() noexcept { return m_future; }
+    [[nodiscard]] std::future<R>& native_future() noexcept { return m_future; }
     const std::future<R>& native_future() const noexcept { return m_future; }
 
     // ========================================================================
     //  停止控制
     // ========================================================================
 
-    /// @brief 取得对应 stop_token；用户可在 callable 内查询或挂 stop_callback。
+    /// @brief 获取与此 Future 关联的 stop_token，用户可在 callable 内轮询 stop_requested() 或挂 stop_callback。
+    /// @return std::stop_token，与 m_stop_source 共享 control block。
     [[nodiscard]] std::stop_token stop_token() const noexcept {
         return m_stop_source.get_token();
     }

@@ -1,44 +1,10 @@
-﻿/// @file object_pool.hpp
-/// @brief 类型级静态对象池门面 —— 与 operator new/delete 对接的统一入口
+/// @file  object_pool.hpp
+/// @brief 类型级静态对象池门面 —— 与 operator new/delete 对接的统一入口。
 /// @author wicyn
 /// @contact https://github.com/wicyn
-/// @date 2026-05-15
+/// @date 2026-05-28
 /// @license MIT
 /// @copyright Copyright (c) 2026 wicyn
-///
-/// @details
-/// ObjectPool<T, Scheme, MaxCachedBytes> 提供:
-///
-///   - 类型级静态对象池入口
-///   - 与 operator new/delete 对接
-///   - 默认 scheme + 默认缓存上限
-///
-/// 默认配置:
-///
-///   ObjectPool<T>
-///
-/// 等价于:
-///
-///   ObjectPool<T,
-///              SubdividedScheme<sizeof(T), 8192, 4>,
-///              (1u << 26) /* 64 MB */>
-///
-/// 自定义示例:
-///
-/// @code
-/// // 自定义 scheme
-/// using MyPool = ObjectPool<MyObject, PowerOfTwoScheme<64, 4096>>;
-///
-/// // 自定义 scheme + cap (限流到 1 MB)
-/// using TightPool = ObjectPool<MyObject,
-///                              SubdividedScheme<64, 4096, 4>,
-///                              1u << 20>;
-/// @endcode
-///
-/// 启用开关:
-///
-///   #define TFL_ENABLE_OBJECT_POOL   // 走池化路径
-///   /* 未定义 */                    // 直接走 ::operator new/delete (零成本)
 
 #pragma once
 #include <cstddef>
@@ -49,18 +15,13 @@
 
 namespace tfl {
 
-/// @brief 类型级静态对象池。
+/// @brief 类型级静态对象池（Meyers 单例），与 operator new/delete 对接的统一入口。
 ///
-/// @tparam T              池服务的对象类型,size class 默认从 sizeof(T) 起算
-/// @tparam Scheme         size-class 方案,默认 SubdividedScheme 覆盖
-///                        [sizeof(T), 4096],每 octave 切 4 份 (内碎片 ≤ 25%)
-/// @tparam MaxCachedBytes 全池缓存字节上限,默认 64 MB。超此值的 deallocate 直接
-///                        交还 ::operator delete,防止长跑进程无界堆积
+/// @tparam T              池服务的对象类型
+/// @tparam Scheme         size-class 方案，默认 SubdividedScheme 覆盖 [sizeof(T), 8192]
+/// @tparam MaxCachedBytes 全池缓存字节上限，默认 64 MB。超出的 deallocate 直接交还系统
 ///
-/// 调参建议 (MaxCachedBytes):
-///   - 嵌入式/资源受限:  1u << 18  (256 KB)
-///   - 桌面/中等服务:    1u << 22  (4 MB)
-///   - 高吞吐服务器:     1u << 26  (64 MB) ← 当前默认
+/// @note 定义 TFL_ENABLE_OBJECT_POOL 走池化路径，否则直接 ::operator new/delete（零成本）。
 template <typename T,
          SizeClassScheme Scheme = SubdividedScheme<sizeof(T), 8192, 4>,
          std::size_t MaxCachedBytes = (1u << 26)>   // 64 MB
@@ -70,29 +31,34 @@ public:
     using scheme_type = Scheme;
     using pool_type   = SegmentedPool<scheme_type, MaxCachedBytes>;
 
+    /// @brief 全池缓存字节上限 (编译期常量)
     static constexpr std::size_t max_cached_bytes = MaxCachedBytes;
 
     static_assert(SizeClassScheme<scheme_type>, "invalid size-class scheme");
 
-    /// @brief 分配 bytes 字节。
-    /// @note 启用 TFL_ENABLE_OBJECT_POOL 时走 pool;否则走全局 new (零开销)。
+    /// @brief 分配 bytes 字节内存。
+    /// @param bytes 请求的字节数 (通常是 sizeof(T))。
+    /// @return 指向新分配内存的指针。
+    /// @note 启用 TFL_ENABLE_OBJECT_POOL 时走 pool; 否则走全局 new (零开销)。
     [[nodiscard]] static TFL_FORCE_INLINE void* allocate(std::size_t bytes) {
         return pool().allocate(bytes);
     }
 
     /// @brief 归还 p 到池 (bytes 必须与 allocate 时一致, 一般为 sizeof(T))。
-    /// @note 未启用 TFL_ENABLE_OBJECT_POOL 时走 sized delete,bytes 仍传给系统
+    /// @param p     归还的指针 (允许 nullptr, 此时为无操作)。
+    /// @param bytes 原始分配时的字节数。
+    /// @note 未启用 TFL_ENABLE_OBJECT_POOL 时走 sized delete, bytes 仍传给系统
     ///       分配器以加速反查 (jemalloc/tcmalloc 提速 30-50%)。
     static TFL_FORCE_INLINE void deallocate(void* p, std::size_t bytes) noexcept {
         pool().deallocate(p, bytes);
     }
 
-    /// @brief 获取当前静态池单例。
+    /// @brief 获取当前静态池单例 (Meyers 单例)。
     ///
-    /// Meyers 单例,首次访问时构造,atexit 阶段自动析构。析构时调用 release(),
+    /// @details 首次访问时构造, atexit 阶段自动析构。析构时调用 release(),
     /// 归还所有 freelist 缓存给 ::operator delete。
     ///
-    /// @warning 静态析构顺序
+    /// @warning 静态析构顺序:
     /// 池析构在 atexit 阶段进行。若有其他静态对象在析构时调用
     /// ObjectPool<T>::allocate/deallocate (析构里写日志、清理全局缓存等),
     /// 可能踩到"池已析构"问题。
@@ -106,24 +72,26 @@ public:
         return inst;
     }
 
-    /// @brief 查询当前缓存总字节数 (近似)。
+    /// @brief 查询当前缓存总字节数 (近似, relaxed 读取)。
+    /// @return 当前池中缓存的字节总数。
     [[nodiscard]] static std::size_t cached_bytes() noexcept {
         return pool().cached_bytes();
     }
 
-    /// @brief 手动释放池中所有缓存 chunk,归还 ::operator delete。
+    /// @brief 手动释放池中所有缓存 chunk, 归还 ::operator delete。
     ///
-    /// 池本身不销毁,后续仍可 allocate/deallocate (miss 率短暂上升,直到
+    /// @details
+    /// 池本身不销毁, 后续仍可 allocate/deallocate (miss 率短暂上升, 直到
     /// 缓存重新填满)。
     ///
     /// 使用场景:
-    ///   - 应用进入低活动期,主动释放缓存
+    ///   - 应用进入低活动期, 主动释放缓存
     ///   - 单元测试隔离: 每个用例前清空池
     ///   - 长跑服务定期回收: 防止缓存累积
     ///
     /// 一般无需调用 —— atexit 阶段池析构会自动 release。
     ///
-    /// @warning 调用方必须保证此时无并发 allocate/deallocate,且无对象仍引用池块。
+    /// @warning 调用方必须保证此时无并发 allocate/deallocate, 且无对象仍引用池块。
     static void release() noexcept {
         pool().release();
     }

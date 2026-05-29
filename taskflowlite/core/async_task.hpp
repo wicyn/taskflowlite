@@ -1,8 +1,8 @@
-﻿/// @file async_task.hpp
-/// @brief 提供异步任务句柄 AsyncTask。
+/// @file  async_task.hpp
+/// @brief 异步任务句柄 AsyncTask —— 动态 Work 节点的引用计数式值类型包装。
 /// @author wicyn
 /// @contact https://github.com/wicyn
-/// @date 2026-03-02
+/// @date 2026-05-28
 /// @license MIT
 /// @copyright Copyright (c) 2026 wicyn
 
@@ -19,61 +19,20 @@
 namespace tfl {
 
 // ============================================================
-// AsyncTask - 即发即用的轻量级句柄
+// AsyncTask —— 即发即用的轻量级句柄
 // ============================================================
 
 /// @brief 异步任务的引用计数式值类型句柄。
 ///
-/// @details
-/// `AsyncTask` 是用户与"运行期动态生成的 Work"打交道的唯一安全句柄。
-/// 框架的所有动态调度 API
-/// （`Executor::lazy_async` / `Executor::async` / `Runtime::lazy_async` / `Runtime::async` 等）
-/// 都返回它。其本质是一个 **手动管理引用计数的 Work\* 包装**，引用计数
-/// 寄存在所属 `Topology::m_use_count` 上 —— 计数归零即释放节点内存。
+/// AsyncTask 是用户与运行期动态生成的 Work 节点打交道的安全句柄。本质是
+/// 手动管理引用计数的 Work* 包装，引用计数归零即释放节点内存。与 Task
+/// （Flow 内弱引用）不同，AsyncTask 是强引用句柄：动态任务没有 Flow 兜底
+/// 生命周期，任务派发后用户可能退出作用域，因此句柄必须持有引用计数。
 ///
-/// ============================================================================
-///  为什么要单独一种句柄？—— 与 `Task` 的本质差异
-/// ============================================================================
+/// @tparam Mode 任务模式 tag：nonrepeat_t（单次，Idle→Running→Finished）
+///              或 repeat_t（可重复，Finished→Running 循环复用）。
 ///
-/// | 维度        | `Task`（弱引用）             | `AsyncTask`（强引用）              |
-/// |-------------|------------------------------|------------------------------------|
-/// | 节点拥有者  | `Flow::m_graph`              | `Topology` 引用计数                |
-/// | 适用图风格  | **静态图** —— 用户编辑期持有  | **动态任务** —— 调度期才存在        |
-/// | 拷贝代价    | 拷指针                        | 一次原子 fetch_add                 |
-/// | 析构代价    | 0                             | 一次 fetch_sub，归零则销毁节点     |
-/// | 失效时机    | Flow 析构即悬挂               | 引用计数归零才释放                 |
-/// | 等待 / 取异常 | 不支持（节点无独立生命周期）   | `wait()` / `get()` / `stop()`      |
-///
-/// 这一切的根本原因：**动态任务没有 Flow 兜底生命周期** —— 任务被异步派发出去后，
-/// 用户可能在它跑完前已经退出了创建作用域，必须有句柄持有引用计数维持其内存可达。
-///
-/// ============================================================================
-///  Topology 引用计数 —— 内存释放的精确时机
-/// ============================================================================
-/// 每个 `AsyncTask` 拷贝 / 构造时 `_incref()`，析构 / 重置时 `_decref()`。
-/// 计数归零的瞬间在 `_decref()` 内同步调用 `destroy(m_work)`，把节点归还
-/// 内存池 —— 这意味着：
-///
-/// - 节点的析构时机由 **最后一份句柄释放** 决定，与任务是否完成无关；
-/// - 任务执行完毕但用户仍持有 AsyncTask 时，节点保留在内存池里，直到句柄被释放；
-/// - `done()` 返回 true 之后 `wait()` 仍是合法的（瞬时返回）。
-///
-/// 这种"句柄式生命周期"是用户态等待 / 取异常 API（`wait`/`get`）能成立的前提。
-///
-/// ============================================================================
-///  状态查询 vs 控制
-/// ============================================================================
-/// 查询接口（const）：`running()` / `done()` / `has_exception()` / `name()`
-///   均查 `Topology` 状态机或 `Work` 的常量字段，**线程安全**（原子读）。
-///
-/// 控制接口：
-/// - `stop()`   —— 设置 topology 停止标志位（**软中断**：节点 invoke 前会自检）；
-/// - `wait()`   —— 阻塞直至 topology 进入 Finished 状态，**不重抛异常**；
-/// - `get()`    —— `wait() + _rethrow_exception()`，把节点截留的首个异常重抛。
-///
-/// `wait()` 与 `get()` 的差异
-/// 想拿异常一定要走 get / coget，纯 wait 会静默吞掉。
-///
+/// @note 非空句柄的所有查询方法线程安全（原子读）；空句柄上调用行为未定义。
 template <typename Mode>
 class AsyncTask {
     static_assert(task_mode_tag<Mode>, "AsyncTask<Mode>: Mode must satisfy task_mode_tag");
@@ -82,59 +41,104 @@ class AsyncTask {
     friend class Executor;
     template <typename> friend class AsyncTask;
 public:
-    /// @brief 默认构造空句柄。
+    // ========================================================================
+    //  构造与析构
+    // ========================================================================
+
+    /// @brief 默认构造空句柄（m_work == nullptr）。
     AsyncTask() = default;
 
     /// @brief 用基本可调用对象构造异步任务。
+    ///
+    /// 委托到 make_attached_basic 工厂，创建带有 Topology + Work 的完整任务，
+    /// 自动 _incref() 设定初始引用计数为 1。
+    ///
+    /// @tparam T    满足 basic_invocable concept 的任务体。
+    /// @tparam Args 任务参数类型包。
+    /// @param task  可调用对象。
+    /// @param args  任务参数。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && basic_invocable<T, Args...>)
     explicit AsyncTask(T&& task, Args&&... args);
 
-    /// @brief 用运行时可调用对象构造异步任务(可动态操纵图结构)。
+    /// @brief 用运行时可调用对象构造异步任务（可通过 Runtime 动态操纵图结构）。
+    ///
+    /// @tparam T    满足 runtime_invocable concept 的任务体。
+    /// @tparam Args 任务参数类型包。
+    /// @param task  可调用对象（签名为 void(Runtime&, Args...) 或其返回版）。
+    /// @param args  任务参数。
     template <typename T, typename... Args>
         requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
     explicit AsyncTask(T&& task, Args&&... args);
 
-    /// @brief 用任务图构造,执行一次。
+    /// @brief 用任务图构造，执行一次。
+    /// @tparam Gh 满足 graph_holder concept 的图持有者。
+    /// @param gh  任务图持有者。
     template <typename Gh>
         requires graph_holder<Gh>
     explicit AsyncTask(Gh&& gh);
 
     /// @brief 任务图执行一次 + 完成回调。
+    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam C  满足 callback concept。
+    /// @param gh  任务图持有者。
+    /// @param cb  完成回调。
     template <typename Gh, typename C>
         requires (capturable<C> && graph_holder<Gh> && callback<C>)
     explicit AsyncTask(Gh&& gh, C&& cb);
 
     /// @brief 任务图循环 num 次。
+    /// @tparam Gh  满足 graph_holder concept。
+    /// @param gh   任务图持有者。
+    /// @param num  循环次数。
     template <typename Gh>
         requires graph_holder<Gh>
     explicit AsyncTask(Gh&& gh, std::uint64_t num);
 
     /// @brief 任务图循环 num 次 + 完成回调。
+    /// @tparam Gh  满足 graph_holder concept。
+    /// @tparam C   满足 callback concept。
+    /// @param gh   任务图持有者。
+    /// @param num  循环次数。
+    /// @param cb   完成回调。
     template <typename Gh, typename C>
         requires (capturable<C> && graph_holder<Gh> && callback<C>)
     explicit AsyncTask(Gh&& gh, std::uint64_t num, C&& cb);
 
-    /// @brief 任务图谓词驱动循环。
+    /// @brief 任务图谓词驱动循环：pred 返回 true 时停止。
+    /// @tparam Gh   满足 graph_holder concept。
+    /// @tparam P    满足 predicate concept。
+    /// @param gh    任务图持有者。
+    /// @param pred  循环谓词。
     template <typename Gh, typename P>
         requires (capturable<P> && graph_holder<Gh> && predicate<P>)
     explicit AsyncTask(Gh&& gh, P&& pred);
 
     /// @brief 任务图谓词循环 + 完成回调。
+    /// @tparam Gh   满足 graph_holder concept。
+    /// @tparam P    满足 predicate concept。
+    /// @tparam C    满足 callback concept。
+    /// @param gh    任务图持有者。
+    /// @param pred  循环谓词。
+    /// @param cb    完成回调。
     template <typename Gh, typename P, typename C>
         requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
     explicit AsyncTask(Gh&& gh, P&& pred, C&& cb);
 
     /// @brief 析构句柄，释放当前持有的任务引用。
+    ///
+    /// 调用 _decref()：若引用计数归零则同步销毁 Work 节点。
     ~AsyncTask();
 
     /// @brief 构造空句柄（与默认构造等价）。
     explicit AsyncTask(std::nullptr_t) noexcept;
 
-    /// @brief 拷贝构造，增加上游拓扑的引用计数。
+    /// @brief 拷贝构造，增加上游 Topology 的引用计数（原子 fetch_add）。
     AsyncTask(const AsyncTask& rhs) noexcept;
 
     /// @brief 拷贝赋值，释放旧引用并增加新引用的计数。
+    ///
+    /// 自赋值安全（this != &rhs 检查）。
     AsyncTask& operator=(const AsyncTask& rhs) noexcept;
 
     /// @brief 移动构造，接管所有权，rhs 变为空句柄。
@@ -146,58 +150,87 @@ public:
     /// @brief 释放当前任务引用，并将句柄置空。
     AsyncTask& operator=(std::nullptr_t) noexcept;
 
-    /// @brief 判断两个句柄是否指向同一个底层任务节点。
+    /// @brief 判断两个句柄是否指向同一个底层任务节点（Work* 地址比较）。
     [[nodiscard]] bool operator==(const AsyncTask& rhs) const noexcept;
 
     /// @brief 判断两个句柄是否指向不同的底层任务节点。
     [[nodiscard]] bool operator!=(const AsyncTask& rhs) const noexcept;
 
-    /// @brief 判断当前句柄是否绑定了有效任务。
+    /// @brief 判断当前句柄是否绑定了有效任务（m_work != nullptr）。
     [[nodiscard]] explicit operator bool() const noexcept;
 
-    /// @brief 立即释放当前持有的任务引用，并将句柄置空。
+    /// @brief 立即释放当前持有的任务引用，并将句柄置空。等价于 operator=(nullptr)。
     void reset() noexcept;
 
     // ==================== 状态查询 ====================
 
-    /// @brief 获取当前句柄的哈希值，基于底层 Work 指针地址。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    /// @brief 获取当前句柄的哈希值，基于底层 Work* 地址。
+    ///
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
+    ///       调用前请用 valid() 或 operator bool 检查。
     [[nodiscard]] std::size_t hash_value() const noexcept;
 
     /// @brief 获取当前异步任务所属 Topology 的引用计数。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    ///
+    /// 反映当前有多少个 AsyncTask 句柄（及内部引用）共享同一 Topology。
+    ///
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     [[nodiscard]] std::size_t use_count() const noexcept;
 
     /// @brief 判断当前句柄是否绑定了底层任务节点。
+    ///
+    /// 等价于 operator bool()，但以命名函数形式提供。
     [[nodiscard]] bool valid() const noexcept;
 
-    /// @brief 检测任务是否正处于运行或锁定状态。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    /// @brief 检测任务是否正处于 Running 或 Locking 状态。
+    ///
+    /// 底层查询 Topology::_is_running()，返回 Topology::State 非 Idle 且
+    /// 非 Finished。
+    ///
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     [[nodiscard]] bool running() const noexcept;
 
-    /// @brief 检测任务是否已经完全执行结束。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    /// @brief 检测任务是否已完全执行结束（Topology::State == Finished）。
+    ///
+    /// 一旦返回 true，wait() 将瞬时返回，get() 可安全调用。
+    ///
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     [[nodiscard]] bool done() const noexcept;
 
-    /// @brief 获取该异步任务对应的底层节点类型。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    /// @brief 获取底层 Work 节点的运行时类型标签，用于区分控制流节点与普通任务。
+    /// @return TaskType 枚举值（None / Basic / Runtime / Graph / Branch / MultiBranch / Jump / MultiJump 等）。
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     [[nodiscard]] TaskType type() const noexcept;
 
-    /// @brief 获取任务名称。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    /// @brief 获取任务名称（string_view，零拷贝）。
+    ///
+    /// 名称在构造时由工厂设置，可通过 name() 修改。
+    ///
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     [[nodiscard]] std::string_view name() const noexcept;
 
-    /// @brief 检测任务执行期间是否已经记录异常。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    /// @brief 检测任务执行期间是否已记录异常。
+    ///
+    /// 查询 Work::m_explicit 中的 EXCEPTION 标志位（relaxed 读）。
+    ///
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     [[nodiscard]] bool has_exception() const noexcept;
 
 
-    /// @brief 为任务设置易读的名称，用于调试和可视化。
+    /// @brief 为任务设置易读的名称（lvalue 限定），用于调试和可视化。
+    ///
+    /// @tparam S 可构造 std::string 的类型。
+    /// @param n  新名称。
+    /// @return   *this 引用，支持链式调用。
     template <typename S>
         requires std::constructible_from<std::string, S>
     AsyncTask& name(S&& name) &;
 
-    /// @brief 右值限定重载 —— 返回 `AsyncTask` 值以支持链式调用。
+    /// @brief 为任务设置易读的名称（rvalue 限定），返回 AsyncTask 值以支持链式。
+    ///
+    /// @tparam S 可构造 std::string 的类型。
+    /// @param n  新名称。
+    /// @return   移动后的 AsyncTask 值。
     template <typename S>
         requires std::constructible_from<std::string, S>
     AsyncTask name(S&& name) &&;
@@ -206,41 +239,65 @@ public:
     // ==================== 可视化 ====================
 
     /// @brief 将当前异步任务导出为 D2 描述字符串。
-    /// @param dir 图布局方向。
-    /// @return D2 文本。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    ///
+    /// @param dir 图布局方向（Direction::TopToBottom 等）。
+    /// @return    D2 文本。
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
 
     /// @brief 将当前异步任务的 D2 描述写入输出流。
-    /// @param os 输出流。
+    ///
+    /// @param os  输出流。
     /// @param dir 图布局方向。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     void dump(std::ostream& os, Direction dir = Direction::Default) const;
 
     // ==================== 控制接口 ====================
 
-    /// @brief 获取与该异步任务关联的停止令牌。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    /// @brief 获取与该异步任务关联的 stop_token。
+    ///
+    /// 可用于在任务体内部（通过 Runtime 传入）轮询 stop_requested()。
+    ///
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     [[nodiscard]] std::stop_token stop_token() const noexcept;
 
     /// @brief 检测是否已收到停止请求。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    ///
+    /// 底层查询 topology->m_stop_source.stop_requested()。
+    ///
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     [[nodiscard]] bool stop_requested() const noexcept ;
 
-    /// @brief 检测停止是否可能（即是否有关联的停止状态）。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    /// @brief 检测是否可能向该任务发送停止请求。
+    /// @return true 若关联的 stop_source 拥有有效的 stop_state（构造时即建立，从不失效）。
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     [[nodiscard]] bool stop_possible() const noexcept;
 
-    /// @brief 向关联的停止源发出停止请求。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    /// @brief 向关联的 stop_source 发出停止请求（软中断）。
+    ///
+    /// 设置了 stop 标志后，任务节点在 invoke 前会自检并跳过执行。
+    /// 但不会强制中止正在执行中的节点。
+    ///
+    /// @return true 若停止请求已被发出，false 若已有人请求过。
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     bool request_stop() noexcept;
 
     /// @brief 阻塞当前线程，直到该异步任务完全执行完毕。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    ///
+    /// 底层调用 topology->_wait()，通过原子 wait 原语挂起直到
+    /// Topology::State == Finished。
+    ///
+    /// @warning 不重抛异常。若任务执行期间抛了异常，wait() 静默返回。
+    ///          需要获取异常请使用 get()。
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     void wait() const noexcept;
 
     /// @brief 同步等待并重新抛出任务执行期间捕获到的首个异常。
-    /// @note 若句柄为空(m_work == nullptr)，行为未定义。调用前请用 valid() 或 operator bool 检查。
+    ///
+    /// 等价于 wait() + _rethrow_exception()。若任务未抛异常，则正常返回。
+    ///
+    /// @throw 任务执行期间抛出的任何异常（捕获并归档在 Work::m_exception_ptr 中）。
+    /// @note 若句柄为空（m_work == nullptr），行为未定义。
     void get();
 
 
@@ -248,88 +305,110 @@ public:
     // ==================== 信号量 ====================
 
     /// @brief 获取任务执行前需要获取的信号量数量。
+    /// @return 通过 acquire() 注册的信号量约束个数。
     [[nodiscard]] std::size_t num_acquires() const noexcept;
 
     /// @brief 获取任务执行后需要释放的信号量数量。
+    /// @return 通过 release() 注册的信号量约束个数。
     [[nodiscard]] std::size_t num_releases() const noexcept;
 
-    /// @brief 获取任务已注册的观察者数量。
+    /// @brief 获取任务已注册的生命周期观察者数量。
+    /// @return 通过 register_observer() 注册的 TaskObserver 个数。
     [[nodiscard]] std::size_t num_observers() const noexcept;
 
-    /// @brief 为任务添加执行前需要获取的信号量，每个信号量默认占用 1 个配额。
+    /// @brief 为任务添加执行前需要获取的信号量（lvalue 限定，每个默认 1 配额）。
+    ///
+    /// @tparam Ts 均为 Semaphore 类型。
+    /// @param sems 一个或多个信号量引用。
+    /// @return     *this 引用，支持链式。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     AsyncTask& acquire(Ts&&... sems) &;
 
-    /// @brief 右值限定重载。
+    /// @brief acquire 的 rvalue 限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     AsyncTask acquire(Ts&&... sems) &&;
 
-    /// @brief 为任务添加执行后需要释放的信号量，每个信号量默认释放 1 个配额。
+    /// @brief 为任务添加执行后需要释放的信号量（lvalue 限定，每个默认 1 配额）。
+    ///
+    /// @tparam Ts 均为 Semaphore 类型。
+    /// @param sems 一个或多个信号量引用。
+    /// @return     *this 引用，支持链式。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     AsyncTask& release(Ts&&... sems) &;
 
-    /// @brief 右值限定重载。
+    /// @brief release 的 rvalue 限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     AsyncTask release(Ts&&... sems) &&;
 
     /// @brief 为任务添加执行前需要获取的信号量及对应配额。
+    ///
+    /// @tparam Ts 交替格式：(Semaphore, count) 对。参数个数必须 >= 2 且为偶数。
+    /// @param args 交替的信号量引用和整数配额。
+    /// @return     *this 引用，支持链式。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     AsyncTask& acquire(Ts&&... args) &;
 
-    /// @brief 右值限定重载。
+    /// @brief acquire(Sem,count) 的 rvalue 限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     AsyncTask acquire(Ts&&... args) &&;
 
     /// @brief 为任务添加执行后需要释放的信号量及对应配额。
+    ///
+    /// @tparam Ts 交替格式：(Semaphore, count) 对。
+    /// @param args 交替的信号量引用和整数配额。
+    /// @return     *this 引用，支持链式。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     AsyncTask& release(Ts&&... args) &;
 
-    /// @brief 右值限定重载。
+    /// @brief release(Sem,count) 的 rvalue 限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     AsyncTask release(Ts&&... args) &&;
 
-    /// @brief 移除任务执行前需要获取的指定信号量约束。
+    /// @brief 移除任务执行前需要获取的指定信号量约束（lvalue 限定）。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     AsyncTask& remove_acquire(Ts&&... sems) & noexcept;
 
-    /// @brief 右值限定重载。
+    /// @brief remove_acquire 的 rvalue 限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     AsyncTask remove_acquire(Ts&&... sems) && noexcept;
 
-    /// @brief 移除任务执行后需要释放的指定信号量约束。
+    /// @brief 移除任务执行后需要释放的指定信号量约束（lvalue 限定）。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     AsyncTask& remove_release(Ts&&... sems) & noexcept;
 
-    /// @brief 右值限定重载。
+    /// @brief remove_release 的 rvalue 限定重载。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     AsyncTask remove_release(Ts&&... sems) && noexcept;
 
-    /// @brief 清空所有执行前信号量获取约束。
+    /// @brief 清空所有执行前信号量获取约束（lvalue 限定）。
     AsyncTask& clear_acquires() & noexcept;
 
-    /// @brief 右值限定重载。
+    /// @brief clear_acquires 的 rvalue 限定重载。
     AsyncTask clear_acquires() && noexcept;
 
-    /// @brief 清空所有执行后信号量释放约束。
+    /// @brief 清空所有执行后信号量释放约束（lvalue 限定）。
     AsyncTask& clear_releases() & noexcept;
 
-    /// @brief 右值限定重载。
+    /// @brief clear_releases 的 rvalue 限定重载。
     AsyncTask clear_releases() && noexcept;
 
 
-    /// @brief 遍历任务执行前的信号量获取约束。
+    /// @brief 遍历任务执行前的信号量获取约束（mutable 版）。
+    ///
+    /// @tparam F 可调用对象，签名为 void(Semaphore&, size_t&) 或 void(Semaphore&)。
+    /// @param visitor 遍历回调。
     template <typename F>
         requires std::invocable<F&, Semaphore&, std::size_t&>
                  || std::invocable<F&, Semaphore&>
@@ -338,7 +417,11 @@ public:
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
-    /// @brief const 重载 —— 遍历时提供只读信号量与配额。
+    /// @brief 遍历任务执行前的信号量获取约束（const 版）。
+    ///
+    /// @tparam F 可调用对象，签名为 void(const Semaphore&, size_t) 或
+    ///           void(const Semaphore&)。
+    /// @param visitor 遍历回调。
     template <typename F>
         requires std::invocable<F&, const Semaphore&, std::size_t>
                  || std::invocable<F&, const Semaphore&>
@@ -347,7 +430,10 @@ public:
             ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
             : std::is_nothrow_invocable_v<F&, const Semaphore&>);
 
-    /// @brief 遍历任务执行后的信号量释放约束。
+    /// @brief 遍历任务执行后的信号量释放约束（mutable 版）。
+    ///
+    /// @tparam F 可调用对象，签名为 void(Semaphore&, size_t&) 或 void(Semaphore&)。
+    /// @param visitor 遍历回调。
     template <typename F>
         requires std::invocable<F&, Semaphore&, std::size_t&>
                  || std::invocable<F&, Semaphore&>
@@ -356,7 +442,11 @@ public:
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
-    /// @brief const 重载 —— 遍历时提供只读信号量与配额。
+    /// @brief 遍历任务执行后的信号量释放约束（const 版）。
+    ///
+    /// @tparam F 可调用对象，签名为 void(const Semaphore&, size_t) 或
+    ///           void(const Semaphore&)。
+    /// @param visitor 遍历回调。
     template <typename F>
         requires std::invocable<F&, const Semaphore&, std::size_t>
                  || std::invocable<F&, const Semaphore&>
@@ -368,24 +458,36 @@ public:
     // ==================== 观察者 ====================
 
     /// @brief 注册一个任务观察者，在任务执行前后接收回调。
+    ///
+    /// @tparam Observer std::derived_from<TaskObserver> 的具体类型。
+    /// @tparam Args     构造 Observer 的参数类型。
+    /// @param args      转发给 Observer 构造函数的参数。
+    /// @return          指向已注册观察者的 shared_ptr，可用于后续注销。
     template <std::derived_from<TaskObserver> Observer, typename... Args>
         requires std::constructible_from<Observer, Args...>
     [[nodiscard]] std::shared_ptr<Observer> register_observer(Args&&... args);
 
     /// @brief 注销指定任务观察者。
+    ///
+    /// @tparam Observer std::derived_from<TaskObserver> 的具体类型。
+    /// @param ptr       由 register_observer 返回的 shared_ptr。
     template <std::derived_from<TaskObserver> Observer>
     void unregister_observer(std::shared_ptr<Observer> ptr) noexcept;
 
 protected:
-    Work* m_work{nullptr};
+    Work* m_work{nullptr};  ///< 底层 Work 节点指针（空句柄时为 nullptr）
 
-    /// @brief 从底层 Work 指针构造句柄，并增加引用计数。
+    /// @brief 从底层 Work* 构造句柄，并增加引用计数（供工厂函数和 friend 使用）。
+    ///
+    /// @param work 指向已构造 Work 节点的指针。
     explicit AsyncTask(Work* work) noexcept;
 
-    /// @brief 增加当前任务所属 Topology 的引用计数。
+    /// @brief 增加当前任务所属 Topology 的引用计数（原子操作）。
     void _incref() noexcept;
 
     /// @brief 减少当前任务所属 Topology 的引用计数；归零时销毁底层任务节点。
+    ///
+    /// 调用 topology->_decref()，若返回 true 则同步调用 destroy(m_work)。
     void _decref() noexcept;
 
 };
@@ -411,7 +513,7 @@ inline AsyncTask<Mode>::AsyncTask(Work* w) noexcept : m_work{w} {
 }
 
 // ============================================================================
-//  任务工厂构造 —— 全部委托到 AsyncTask(Work*),自动 _incref
+//  任务工厂构造 —— 全部委托到 AsyncTask(Work*)，自动 _incref
 // ============================================================================
 
 template <typename Mode>
@@ -434,7 +536,7 @@ inline AsyncTask<Mode>::AsyncTask(T&& task, Args&&... args)
           std::forward<T>(task),
           std::forward<Args>(args)...)} {}
 
-// ---- 任务图族:层叠委托,逐级补默认值 ----
+// 任务图族：层叠委托，逐级补默认值
 
 template <typename Mode>
 template <typename Gh>
@@ -461,12 +563,14 @@ inline AsyncTask<Mode>::AsyncTask(Gh&& gh, std::uint64_t num, C&& cb)
     : AsyncTask{std::forward<Gh>(gh),
                 [num, remaining = num]() mutable noexcept -> bool {
                     if constexpr (std::same_as<Mode, task_mode::repeat_t>) {
+                        // repeat_t: 每轮重置 remaining，循环复用
                         if (remaining-- == 0) [[unlikely]] {
                             remaining = num;
                             return true;
                         }
                         return false;
                     } else {
+                        // nonrepeat_t: 单次递减，归零时停止
                         return num-- == 0;
                     }
                 },
@@ -907,12 +1011,18 @@ inline void AsyncTask<Mode>::unregister_observer(std::shared_ptr<Observer> ptr) 
     }
 }
 
-/// @brief 将 `AsyncTask<Mode>` 的 D2 描述写入输出流。
+/// @brief 将 AsyncTask<Mode> 的 D2 描述写入输出流（自由函数）。
+/// @relates AsyncTask
 template <typename Mode>
 inline std::ostream& operator<<(std::ostream& os, const AsyncTask<Mode>& task) {
     task.dump(os);
     return os;
 }
+
+// ============================================================================
+//  Executor::submit 与 Runtime::submit 实现
+//  —— 由于依赖 AsyncTask 定义，必须放在此文件中
+// ============================================================================
 
 template <typename T, typename... Deps>
     requires (any_async_task<T> && (nonrepeat_async_task<Deps> && ...))
@@ -936,7 +1046,7 @@ inline auto Executor::submit(T&& task, I first, S last)
     auto* topo = work->m_topology;
 
     if constexpr (nonrepeat_async_task<T>) {
-        // 单次模式:严格 Idle → Running,字段都是构造期初值(parent=nullptr / implicit=NONE / explicit=ANCHORED),无需写
+        // nonrepeat: 严格 Idle → Running CAS 原子状态转移
         auto expected = Topology::State::Idle;
         if (!topo->m_state.compare_exchange_strong(
                 expected, Topology::State::Running,
@@ -944,7 +1054,7 @@ inline auto Executor::submit(T&& task, I first, S last)
             throw Exception("AsyncTask Error: Task is not in Idle state.");
         }
     } else if constexpr (repeat_async_task<T>) {
-        // 可重复模式
+        // repeat: 允许 Finished → Running 转换，但禁止 Running 并发提交
         while (true) {
             auto cur = topo->m_state.load(std::memory_order_acquire);
             if (cur == Topology::State::Running) [[unlikely]] {
@@ -957,6 +1067,7 @@ inline auto Executor::submit(T&& task, I first, S last)
             if (topo->m_state.compare_exchange_weak(
                     expected, Topology::State::Running,
                     std::memory_order_acq_rel, std::memory_order_acquire)) [[likely]] {
+                // 清理上一轮的异常标志和 stop_source
                 auto old_exp = work->m_explicit.load(std::memory_order_relaxed);
                 if (old_exp & Work::Explicit::CAUGHT) [[unlikely]] {
                     work->m_exception_ptr = nullptr;
@@ -968,14 +1079,15 @@ inline auto Executor::submit(T&& task, I first, S last)
             }
         }
     } else {
-        // 这里能 grep 到,以后加新 mode 时就来这里加分支
+        // 未来添加新 Mode 时的编译期提示
         static_assert(sizeof(T) == 0, "Unhandled task mode");
     }
 
+    // 公共段：每次 submit 都要重写 parent / implicit / explicit / executor
     work->m_parent   = nullptr;
     work->m_implicit = Work::Implicit::NONE;
     work->m_explicit.store(Work::Explicit::ANCHORED, std::memory_order_relaxed);
-    topo->m_executor = this;   // 唯一每次都必须写的(可能换 executor)
+    topo->m_executor = this;   // 唯一每次都必须写的（可能换 executor）
     topo->_incref();
     std::size_t num_predecessors = static_cast<std::size_t>(std::ranges::distance(first, last));
     work->m_join_counter.store(num_predecessors, std::memory_order_relaxed);
@@ -1041,11 +1153,11 @@ inline auto Runtime::submit(T&& task, I first, S last)
             }
         }
     } else {
-        // 这里能 grep 到,以后加新 mode 时就来这里加分支
+        // 未来添加新 Mode 时的编译期提示
         static_assert(sizeof(T) == 0, "Unhandled task mode");
     }
 
-    // 公共段:Runtime::submit 每次都要重写 parent/implicit/explicit/executor
+    // 公共段：Runtime::submit 每次都要重写 parent / implicit / explicit / executor
     work->m_parent   = std::addressof(m_work);
     work->m_implicit = detail::anchor_implicit<A>();
     work->m_explicit.store(detail::anchor_explicit<A>(), std::memory_order_relaxed);
@@ -1067,7 +1179,9 @@ inline auto Runtime::submit(T&& task, I first, S last)
 // ==================== 标准库扩展 ====================
 
 namespace std {
-/// @brief `tfl::AsyncTask<Mode>` 的哈希支持,委托给 `AsyncTask::hash_value()`。
+/// @brief tfl::AsyncTask<Mode> 的 std::hash 特化，委托给 AsyncTask::hash_value()。
+///
+/// @tparam Mode 任务模式 tag（nonrepeat_t 或 repeat_t）。
 template <typename Mode>
 struct hash<tfl::AsyncTask<Mode>> {
     inline std::size_t operator()(const tfl::AsyncTask<Mode>& task) const noexcept {

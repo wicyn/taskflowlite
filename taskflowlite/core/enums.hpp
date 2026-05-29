@@ -1,8 +1,13 @@
-﻿/// @file enums.hpp
-/// @brief 定义框架核心枚举类型，包括任务类型与可视化布局方向。
+﻿/// @file  enums.hpp
+/// @brief 定义框架核心枚举类型 —— TaskType 任务原子类型与 Direction 可视化布局方向。
+/// @details
+/// 两种枚举各自配套 to_string / to_string_view / operator<< / std::formatter
+/// 四件套，确保在任何诊断、日志、格式化场景下零开销地获得可读名称。
+/// 内部元编程辅助 EnumMax<T>() 用于驱动编译期枚举遍历 (如 TaskType switch 穷举校验)。
+///
 /// @author wicyn
 /// @contact https://github.com/wicyn
-/// @date 2026-03-02
+/// @date 2026-05-28
 /// @license MIT
 /// @copyright Copyright (c) 2026 wicyn
 

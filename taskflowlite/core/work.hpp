@@ -1,8 +1,8 @@
-﻿/// @file work.hpp
-/// @brief DAG 任务节点基类 Work —— 框架最复杂、最核心的内部数据结构
+/// @file  work.hpp
+/// @brief DAG 任务节点基类 Work —— 框架最核心的内部数据结构。
 /// @author wicyn
 /// @contact https://github.com/wicyn
-/// @date 2026-03-02
+/// @date 2026-05-28
 /// @license MIT
 /// @copyright Copyright (c) 2026 wicyn
 
@@ -31,109 +31,15 @@
 
 namespace tfl {
 
-/// @brief DAG 任务节点基类 Work —— 框架内部的统一执行单元。
+/// @brief DAG 任务节点基类 —— 框架内部的统一执行单元。
 ///
-/// @details
-/// `Work` 是 taskflow-lite 的核心内部抽象：普通任务、运行时任务、条件分支、
-/// 跳转、嵌套 Flow、异步任务等，最终都会落到某个 `Work` 派生类上。
+/// 承载调度、依赖计数（m_join_counter）、异常归档、信号量和观察者等运行时状态。
+/// 边表统一布局为 [succs | preds]，单次分配双倍 cache 友好。
 ///
-/// 用户层不会直接操作 `Work`，而是通过 `Task` / `TaskView` / `AsyncTask`
-/// 这些句柄访问受限能力。`Work` 本身只暴露给框架内部友元，
-/// 用来承载调度、依赖计数、异常归档、信号量、观察者以及 D2 可视化等运行时状态。
+/// Implicit 标志（构造期确定，非原子）：ANCHORED / PREEMPTED / JOIN。
+/// Explicit 标志（运行期原子）：ANCHORED / EXCEPTION / CAUGHT。
 ///
-/// ============================================================================
-///  类层次（多态分派）
-/// ============================================================================
-/// @code
-///   Work
-///    ├── BasicWork            普通同步任务
-///    ├── RuntimeWork          注入 Runtime& 的动态任务
-///    ├── BranchWork           单目标条件分支
-///    ├── MultiBranchWork      多目标条件分支
-///    ├── JumpWork             单目标强制跳转
-///    ├── MultiJumpWork        多目标强制跳转
-///    ├── GraphWork<FlowStore> 嵌套 Flow / 动态 Flow 容器节点
-///    └── AnchorWork           内部锚点节点，用于 cowait / lazy_async 的归档与计数
-/// @endcode
-///
-/// 具体 Invoker 子类负责保存用户 callable 与参数，并在 `invoke()` 中执行用户逻辑。
-/// `Work` 基类只定义公共运行时协议，不关心 callable 的具体类型。
-///
-/// ============================================================================
-///  状态字段：Implicit + Explicit
-/// ============================================================================
-/// `Implicit` 是构造期确定的节点属性,运行期非原子读写：
-/// - `ANCHORED`：节点自带异常归档能力(如 Subflow/Runtime 在构造期置位)；
-/// - `PREEMPTED`：节点已挂起,等待子任务完成后由 `_schedule_parent` 重入；
-/// - `JOIN`：本节点作为前驱时对后继 join_counter 贡献 1;Jump/MultiJump 不置位。
-///
-/// `Explicit` 是运行期原子状态(多 Worker 并发读写)：
-/// - `ANCHORED`：`ExplicitAnchorGuard`/`corun` 在运行期动态开启的异常归档会话；
-/// - `EXCEPTION`：本节点或其子链路发生异常,用于 tear_down 识别异常路径；
-/// - `CAUGHT`：首个成功 fetch_or 该位的线程获胜,负责写入 `m_exception_ptr`。
-///
-/// ============================================================================
-///  统一边表 m_edges + m_num_successors
-/// ============================================================================
-/// 前驱与后继共用一个连续数组：
-/// @code
-///   m_edges = [ succ_0 ... succ_N-1 | pred_0 ... pred_M-1 ]
-///                              ↑
-///                       m_num_successors
-/// @endcode
-///
-/// 这样可以减少一次 vector 分配，并让邻接关系在内存中连续存放。
-/// 插入、删除边时必须维护“后继区间在前，前驱区间在后”的不变式。
-///
-/// ============================================================================
-///  Join Weight / Join Counter
-/// ============================================================================
-/// 每个节点的入度是前驱 `_join_counted()` 的权重和(非简单边数)：
-/// - 普通/Branch/MultiBranch 任务:JOIN 位置 1,权重 = 1,走 fetch_sub 计数协议；
-/// - Jump/MultiJump:JOIN 位为 0,权重 = 0,不走计数协议,通过 store(0) 强制触发目标。
-///
-/// `_set_up_graph()` 会在每轮执行前重新计算 `m_join_weight` 并初始化
-/// `m_join_counter`。前驱完成时递减后继计数，计数归零则后继进入就绪队列。
-///
-/// ============================================================================
-///  异常传播与归档
-/// ============================================================================
-/// `_process_exception()` 会沿 `m_parent` 链向上寻找归档点：
-/// 1. 优先找运行期显式锚点 `Explicit::ANCHORED`；
-/// 2. 其次找节点自带的隐式锚点 `Implicit::ANCHORED`；
-/// 3. 都没有时，异常归档到当前节点。
-///
-/// 归档通过原子状态位避免并发重复写入：第一个成功设置 `CAUGHT` 的线程保存
-/// `m_exception_ptr`，后续线程只传播状态，不覆盖异常对象。
-///
-/// ============================================================================
-///  PREEMPTED 重入协议
-/// ============================================================================
-/// `RuntimeWork` / `GraphWork` 这类节点可能在执行期间派生子任务或子图，不能在
-/// 用户 body 返回后立即 tear_down。它们采用两段式执行：
-///
-/// 1. 首次进入：设置 `PREEMPTED`，给自身 `join_counter` 增加一个 self-pin，
-///    执行用户 body 或启动子图；
-/// 2. 如果仍有子任务未完成，当前 worker 直接返回；
-/// 3. 最后一个子任务完成时通过 `_schedule_parent` 重新调度父节点；
-/// 4. 第二次进入：清除 `PREEMPTED`，执行真正的 tear_down。
-///
-/// 这使等待子任务完成的过程不阻塞 worker 线程，而是通过调度器协作完成。
-///
-/// ============================================================================
-///  线程安全边界
-/// ============================================================================
-/// - 构建期：由 `Flow` 单线程编辑，邻接表和名称等字段可写；
-/// - 执行期：图结构只读，调度状态通过原子字段维护；
-/// - 销毁期：静态图节点由 `Graph` 释放，动态任务由 `Topology` 引用计数归零后释放。
-///
-/// @see Task              用户层弱句柄
-/// @see AsyncTask         动态任务强句柄
-/// @see Topology          执行实例与引用计数
-/// @see Executor          调度与 tear_down 协议
-/// @see works.hpp         Work 派生类与 Invoker 实现
-
-
+/// @note 构建期单线程编辑邻接表；执行期图结构只读，调度状态通过原子字段维护。
 class Work : public Immovable<Work> {
 
     friend class Graph;
@@ -154,55 +60,66 @@ class Work : public Immovable<Work> {
     template <typename> friend class AsyncTask;
 
     TFL_WORK_SUBCLASS_FRIENDS;
+
 public:
-    /// @brief 隐式属性位域 —— 节点构造期确定，运行期不变，非原子。
+    /// @brief 隐式属性位域 —— 构造期确定，运行期非原子只读。
+    ///
+    /// 这些位描述节点类型固有的、不可变的行为属性。因为运行时不会改变，
+    /// 使用普通 uint32_t 而非 atomic，避免为常量属性付出原子操作开销。
     struct Implicit {
         using type = std::uint32_t;
         static constexpr unsigned BITS = sizeof(type) * char_bits;
         static constexpr type NONE      = 0;
 
-        /// @brief 隐式锚点：节点类型自带的异常汇聚点
-        ///        （Subflow / Runtime 等抢占式节点在构造期置位）。
+        /// @brief 隐式锚点: 节点类型自带的异常汇聚点。
+        ///
+        /// Subflow / Runtime 等可抢占节点在构造期置位，表示该节点可以承接
+        /// 子链路抛出的异常。
         static constexpr type ANCHORED  = type{1} << (BITS - 1);
 
-        /// @brief 可抢占：body 执行期间可能派生 child，
-        ///        需挂起节点等待 child 完成后恢复。
+        /// @brief 可抢占: body 执行期间可能派生 child，需挂起等待恢复。
         static constexpr type PREEMPTED = type{1} << (BITS - 2);
 
         /// @brief 是否计入后继 join_counter。
-        ///        置位表示本节点作为前驱时，对后继 join_counter 贡献 1；
-        ///        Jump / MultiJump 不置位。
+        ///
+        /// 置位 = 本节点作为前驱时对后继贡献 1；Jump/MultiJump 不置位（贡献 0）。
         static constexpr type JOIN = type{1} << (BITS - 3);
     };
 
     /// @brief 显式状态位域 —— 运行期动态设置，多 Worker 并发读写，必须原子访问。
+    ///
+    /// 这些位描述节点在单次执行中的瞬时状态，由不同 Worker 并发修改。
+    /// 使用 atomic<uint32_t> 保证原子性，配合 relaxed/acq_rel 内存序。
     struct Explicit {
         using type = std::uint32_t;
         static constexpr unsigned BITS = sizeof(type) * char_bits;
         static constexpr type NONE      = 0;
 
-        /// @brief 显式锚点：由 @c AnchorGuard / @c corun 在运行期动态开启的
-        ///        异常汇聚会话。置位方与读取方分处不同 Worker，故必须原子。
+        /// @brief 显式锚点: ExplicitAnchorGuard / corun 在运行期动态开启的异常汇聚会话。
+        ///
+        /// @note 置位方与读取方分处不同 Worker，必须原子。
         static constexpr type ANCHORED  = type{1} << (BITS - 1);
 
         /// @brief 本节点闭包执行期间抛出了异常（由抛出线程 release 置位）。
         static constexpr type EXCEPTION = type{1} << (BITS - 2);
 
-        /// @brief 异常已被本节点或上游锚点归档，停止继续向下传播。
+        /// @brief 异常已被本节点或上游锚点归档，停止继续向上传播。
         static constexpr type CAUGHT    = type{1} << (BITS - 3);
     };
 
 
-    /// @brief 信号量请求描述符
+    /// @brief 信号量请求描述符。
     struct SemaphoreReq {
-        Semaphore* sem;
-        std::size_t count;
+        Semaphore* sem;     ///< 目标信号量
+        std::size_t count;  ///< 请求配额
     };
 
-    /// @brief 节点绑定的信号量集合
+    /// @brief 节点绑定的信号量集合。
+    ///
+    /// acquire = 执行前必须获取的约束（阻塞型）；release = 执行后应当释放的约束。
     struct SemaphoreData {
-        std::vector<SemaphoreReq> acquires; ///< 执行前必须获取的约束及配额
-        std::vector<SemaphoreReq> releases; ///< 执行后应当释放的约束及配额
+        std::vector<SemaphoreReq> acquires; ///< 执行前必须获取
+        std::vector<SemaphoreReq> releases; ///< 执行后应当释放
 
         [[nodiscard]] bool empty() const noexcept {
             return acquires.empty() && releases.empty();
@@ -211,6 +128,8 @@ public:
 
 
     /// @brief 节点挂载的生命周期观察者集合（按需延迟分配）。
+    ///
+    /// 观察者在任务执行前后被回调（on_before / on_after），用于日志、性能采样等。
     struct ObserverData {
         std::vector<std::shared_ptr<TaskObserver>> observers;
 
@@ -219,24 +138,28 @@ public:
         }
     };
 
-    /// @brief 默认构造函数
+    /// @brief 默认构造空节点，所有字段零/空初始化（m_type=TaskType::None, m_join_counter=0, m_implicit/m_explicit=NONE）。
     explicit Work() = default;
 
-    /// @brief 静态图内节点构造函数
-    /// @param type 节点类型 tag,运行期常量
-    /// @param implicit 初始选项配置
-    /// @param graph 节点归属的任务物理图指针
+    /// @brief 静态图内节点构造函数。
+    ///
+    /// @param type     节点类型 tag（运行期常量）。
+    /// @param implicit 初始隐式属性配置。
+    /// @param explicit 初始显式状态配置。
+    /// @param graph    节点归属的任务物理图指针。
     explicit Work(const TaskType type, Implicit::type it, Explicit::type et, const Graph* graph) noexcept
         : m_type{type}
         , m_implicit{it}
         , m_explicit{et}
         , m_graph{graph} {}
 
-    /// @brief 独立异步任务节点构造函数 (挂接到外部 Topology)
-    /// @param type 节点类型 tag
-    /// @param implicit 初始选项配置
-    /// @param topo 该任务绑定的独立执行拓扑上下文
-    /// @param parent 父节点 (用于异常传播与生命周期追踪)
+    /// @brief 独立异步任务节点构造函数（挂接到外部 Topology）。
+    ///
+    /// @param type     节点类型 tag。
+    /// @param implicit 初始隐式属性配置。
+    /// @param explicit 初始显式状态配置。
+    /// @param topo     该任务绑定的独立执行拓扑上下文。
+    /// @param parent   父节点（异常传播与生命周期追踪用）。
     explicit Work(const TaskType type, Implicit::type it, Explicit::type et, Topology* topo, Work* parent) noexcept
         : m_type{type}
         , m_implicit{it}
@@ -253,8 +176,8 @@ public:
 #endif
     }
 
-    /// @brief sized delete：根据实际对象大小归还到对应 size class。
-    static void operator delete(void* p, std::size_t bytes) noexcept { 
+    /// @brief sized delete: 根据实际对象大小归还到对应 size class。
+    static void operator delete(void* p, std::size_t bytes) noexcept {
 #if defined(TFL_ENABLE_WORK_POOL)
         ObjectPool<Work>::deallocate(p, bytes);
 #else
@@ -284,6 +207,7 @@ public:
     virtual ~Work() noexcept = default;
 
     /// @brief 任务执行入口 —— 由 Executor 在工作线程上调用。
+    ///
     /// @param exec   所属 Executor。
     /// @param wr     执行当前任务的 Worker。
     /// @param cache  本地缓存指针，用于批量调度优化。
@@ -295,26 +219,34 @@ public:
 protected:
     std::string                     m_name;                     ///< 节点名称（调试/D2 可视化用）
     const Graph*                    m_graph{nullptr};           ///< 归属的任务物理图指针
-    const TaskType                  m_type{TaskType::None};     ///< 类型 tag (原虚函数 m_type 的字段化)
+    const TaskType                  m_type{TaskType::None};     ///< 类型 tag (原虚函数的字段化替代)
     std::exception_ptr              m_exception_ptr{nullptr};   ///< 捕获的异常（冷路径）
 
-    Topology*                       m_topology{nullptr};        ///< 执行拓扑上下文（invoke 开头读）
-    Work*                           m_parent{nullptr};          ///< 父容器（tear_down 循环内高频读）
-    Implicit::type                  m_implicit{Implicit::NONE};    ///< 静态选项
-    std::atomic<Explicit::type>     m_explicit{Explicit::NONE};       ///< 运行期状态 (4B)
-    std::size_t                     m_join_weight{0};           // 静态缓存：依赖权重总和
-    std::atomic<std::size_t>        m_join_counter{0};          // 运行期动态计数
-    std::size_t                     m_num_successors{0};        ///< edges 分割点
-    std::vector<Work*>              m_edges;                    ///< [后继|前驱] 统一存储
-    std::unique_ptr<SemaphoreData>  m_semaphores;               ///< 信号量约束
-    std::unique_ptr<ObserverData>   m_observers;                ///< 生命周期观察者（按需延迟分配）
+    Topology*                       m_topology{nullptr};        ///< 执行拓扑上下文（invoke 开头读取）
+    Work*                           m_parent{nullptr};          ///< 父容器（tear_down 循环内高频读取）
+    Implicit::type                  m_implicit{Implicit::NONE}; ///< 静态隐式属性（构造期确定，运行期只读）
+    std::atomic<Explicit::type>     m_explicit{Explicit::NONE}; ///< 运行期显式状态 (4B, 多 Worker 原子访问)
+    std::size_t                     m_join_weight{0};           ///< 静态缓存: 依赖权重总和（_set_up_graph 计算）
+    std::atomic<std::size_t>        m_join_counter{0};          ///< 运行期动态递减计数（归零 = 就绪）
+    std::size_t                     m_num_successors{0};        ///< edges 分割点: 后继数量
+    std::vector<Work*>              m_edges;                    ///< [后继 | 前驱] 统一存储
+    std::unique_ptr<SemaphoreData>  m_semaphores;               ///< 信号量约束（按需分配）
+    std::unique_ptr<ObserverData>   m_observers;                ///< 生命周期观察者（按需分配）
 
 
+    /// @brief 查询本节点作为前驱时是否计入后继的 join_counter。
+    ///
+    /// @return JOIN 位置位返回 true; Jump/MultiJump 返回 false。
+    ///
+    /// @note 此法在邻接表遍历时高频调用。JOIN 位是 Implicit 属性，
+    ///       构造期固定，运行期非原子读取无数据竞争风险。
     [[nodiscard]] bool _join_counted() const noexcept {
         return (m_implicit & Implicit::JOIN) != 0;
     }
 
-    // 本节点的 join 计数 = 所有前驱权重之和
+    /// @brief 计算本节点的 join 权重 = 所有"计入计数"的前驱权重之和。
+    ///
+    /// @return 所有权重之和。非计数的前驱（Jump/MultiJump）贡献 0。
     [[nodiscard]] std::size_t _join_weight() const noexcept {
         std::size_t sum = 0;
         for (std::size_t i = m_num_successors; i < m_edges.size(); ++i) {
@@ -323,12 +255,15 @@ protected:
         return sum;
     }
 
-    // Why: 只取本节点直属 topology 的 stop_source。父链路 stop 通过
-    //      _stop_requested() 的 traversal 在 invoke 入口处判定；
-    //      用户 callable 拿到的 stop_token 是直属 topology 的，
-    //      若需感知父链停止，由 topology 构造时 std::stop_callback 链接。
+    /// @brief 获取本节点直属 topology 的 stop_token。
+    ///
+        ///
+    /// @note 只取直属 topology。父链路 stop 通过 _stop_requested() 的
+    ///       traversal 在 invoke 入口处判定。用户 callable 拿到的 stop_token
+    ///       是直属 topology 的；若需感知父链停止，由 topology 构造时
+    ///       std::stop_callback 链接。
     [[nodiscard]] std::stop_token _stop_token() const noexcept {
-        return m_topology ? m_topology->m_stop_source.get_token() : std::stop_token{};   // 无所属 topology：返回空 token，永不 stopped
+        return m_topology ? m_topology->m_stop_source.get_token() : std::stop_token{};
     }
 
     /// @brief 查询节点所属 Topology 是否已被外部请求停止。
@@ -336,14 +271,26 @@ protected:
         return m_topology && m_topology->m_stop_source.stop_requested();
     }
 
+    /// @brief 本节点是否处于异常路径（查询 EXCEPTION 位）。
     [[nodiscard]] bool _has_exception() const noexcept {
         return m_explicit.load(std::memory_order_relaxed) & Explicit::EXCEPTION;
     }
 
+    /// @brief 是否应该中止执行 —— 异常或外部停止。
+    ///
+    /// @return 本节点标记了异常 OR 所属 Topology 已请求停止。
+    ///
+    /// @note 用于 invoke 入口快速跳过 body。relaxed 即可——EXCEPTION 位仅作
+    ///       状态查询，stop_requested 的可见性由 stop_source 内部保证。
     [[nodiscard]] bool _should_abort() const noexcept {
-        return (m_explicit.load(std::memory_order_relaxed) & Explicit::EXCEPTION) || (m_topology && m_topology->m_stop_source.stop_requested());
+        return (m_explicit.load(std::memory_order_relaxed) & Explicit::EXCEPTION)
+            || (m_topology && m_topology->m_stop_source.stop_requested());
     }
 
+    /// @brief 重新抛出已捕获的异常，并清除异常状态。
+    ///
+    /// @pre m_exception_ptr 非空。
+    /// @post m_exception_ptr 置空，EXCEPTION 和 CAUGHT 位均清除。
     void _rethrow_exception() {
         if (m_exception_ptr) {
             auto e = m_exception_ptr;
@@ -353,30 +300,44 @@ protected:
         }
     }
 
-    /// @brief 异常传播与归档。
+    /// @brief 异常传播与归档 —— 沿 m_parent 链向上寻找锚点并写入 exception_ptr。
     ///
-    /// 沿 m_parent 链向上:对中间节点标记 EXCEPTION(供 tear_down 级联取消),
-    /// 遇到 Explicit::ANCHORED 或 Implicit::ANCHORED 时停止,将 exception_ptr
-    /// 写入该锚点。首个通过 fetch_or 将 CAUGHT 位从 0 翻至 1 的线程获胜,
-    /// 其余并发异常的 exception_ptr 被丢弃(与 std::async 的单异常语义一致)。
+    /// @details
+    /// 三阶段协议:
     ///
-    /// 全程使用 relaxed 内存序:EXCEPTION 标记仅作状态查询,CAUGHT+m_exception_ptr
-    /// 的可见性由读取端(future::get/tear_down)的 acquire 操作保证。
+    /// 阶段 1: 沿父链向上传播 EXCEPTION 标记，寻找锚点
+    /// - 遇到 Explicit::ANCHORED 立即停止（显式锚点优先级最高）
+    /// - 非锚点节点打 EXCEPTION 位（供 tear_down 识别异常路径并级联取消）
+    /// - 沿途记录首个 Implicit::ANCHORED 节点
+    ///
+    /// 阶段 2: 按优先级竞争归档权（CAS 胜者写入）
+    /// - 优先级 1: 显式锚点（ExplicitAnchorGuard/corun 设置）
+    /// - 优先级 2: 隐式锚点（节点类型自带）
+    /// - 同时置 EXCEPTION | CAUGHT，检查旧 CAUGHT 位判断是否首个
+    ///
+    /// 阶段 3: 兜底 —— 存入当前节点
+    /// - 适用: detach 顶级任务无父锚点，或前两级 CAS 竞争失败
+    ///
+        ///            m_exception_ptr 的可见性由读取端 (future::get / tear_down)
+    ///            的 acquire 操作保证。
+    ///
+    /// @note 若所有锚点均已有并发异常先行归档（CAUGHT 竞争失败），当前异常被丢弃
+    ///       —— 与 std::async 的单异常语义一致。
     void _process_exception() noexcept {
-        // ── 阶段 1：沿父链向上传播 EXCEPTION，寻找锚点 ─────────────
-        // 循环不变式：
-        //   - explicit_anchor 始终为 nullptr（未找到显式锚点时继续向上）
-        //   - implicit_anchor 记录沿途首个隐式锚点（后续不再覆盖）
-        //   - cur 指向当前检查的节点，沿 m_parent 向上推进
+        // 阶段 1: 沿父链向上传播 EXCEPTION，寻找锚点
+        // 循环不变式:
+        //   - explicit_anchor = nullptr until an explicit anchor is found
+        //   - implicit_anchor 记录沿途首个隐式锚点
+        //   - cur 沿 m_parent 向上推进
         Work* explicit_anchor = nullptr;
         Work* implicit_anchor = nullptr;
         for (Work* cur = this; cur; cur = cur->m_parent) {
-            // 显式锚点优先级最高：一旦遇到立即停止传播，由阶段 2 归档
+            // 显式锚点优先级最高: 遇到立即停止, 由阶段 2 归档
             if (cur->m_explicit.load(std::memory_order_relaxed) & Explicit::ANCHORED) {
                 explicit_anchor = cur;
                 break;
             }
-            // 非锚点节点打 EXCEPTION 位，供 tear_down 识别异常路径
+            // 非锚点节点打 EXCEPTION 位, 供 tear_down 识别异常路径
             cur->m_explicit.fetch_or(Explicit::EXCEPTION, std::memory_order_relaxed);
             // 沿途捕获首个隐式锚点（非原子读 —— Implicit 构造期确定后不变）
             if (!implicit_anchor && (cur->m_implicit & Implicit::ANCHORED)) {
@@ -384,60 +345,65 @@ protected:
             }
         }
 
-        // ── 阶段 2：按优先级抢占归档权 ──────────────────────────────
-        // archive_mask 同时置 EXCEPTION 和 CAUGHT：
-        //   - EXCEPTION 标识锚点自身处于异常路径上（与阶段 1 中间节点一致）
-        //   - CAUGHT    作为 CAS 胜出标志，首个将该位从 0 翻至 1 的线程赢
+        // 阶段 2: 按优先级抢占归档权
+        // archive_mask 同时置 EXCEPTION 和 CAUGHT:
+        //   - EXCEPTION: 标识锚点自身处于异常路径（与阶段 1 中间节点一致）
+        //   - CAUGHT   : CAS 胜出标志, 首个将该位从 0 翻至 1 的线程赢
         constexpr auto archive_mask = Explicit::EXCEPTION | Explicit::CAUGHT;
 
-        // 优先级 1：显式锚点
+        // 优先级 1: 显式锚点
         if (explicit_anchor) {
             auto prev = explicit_anchor->m_explicit.fetch_or(archive_mask, std::memory_order_relaxed);
             if ((prev & Explicit::CAUGHT) == 0) {
                 explicit_anchor->m_exception_ptr = std::current_exception();
                 return;
             }
-            // CAS 失败：已有并发异常先行归档于此，当前异常丢弃 —— 跳至兜底
+            // CAS 失败: 已有并发异常先行归档于此，当前异常丢弃
         }
-        // 优先级 2：隐式锚点（仅在显式锚点完全不存在时触发）
+        // 优先级 2: 隐式锚点（仅在显式锚点完全不存在时触发）
         else if (implicit_anchor) {
             auto prev = implicit_anchor->m_explicit.fetch_or(archive_mask, std::memory_order_relaxed);
             if ((prev & Explicit::CAUGHT) == 0) {
                 implicit_anchor->m_exception_ptr = std::current_exception();
                 return;
             }
-            // CAS 失败：理由同上
         }
 
-        // ── 阶段 3：兜底 —— 存于本节点 ─────────────────────────────
-        // 适用场景：
-        //   - detach 顶级任务，无任何父锚点
-        //   - 前两级优先级归档时 CAUGHT 竞争失败（异常被丢弃，但本地仍留底）
+        // 阶段 3: 兜底 —— 存于本节点
+        // 适用场景:
+        //   - detach 顶级任务, 无任何父锚点
+        //   - 前两级 CAS 竞争失败（异常被丢弃, 但本地仍留底）
         //
-        // 同样使用 CAS（fetch_or + 检查旧 CAUGHT 位）：
-        // 防御 _process_exception 在同一节点被重入触发时的多次覆盖。
+        // 同样使用 CAS (fetch_or + 检查旧 CAUGHT 位):
+        // 防御 _process_exception 在同一节点被重入触发时的多次覆盖
         auto prev = m_explicit.fetch_or(archive_mask, std::memory_order_relaxed);
         if ((prev & Explicit::CAUGHT) == 0) {
             m_exception_ptr = std::current_exception();
         }
     }
 
+    /// @brief 获取后继节点的 span（只读视图）。
     [[nodiscard]] std::span<Work*> _successors() noexcept {
         return {m_edges.data(), m_num_successors};
     }
     [[nodiscard]] std::span<Work* const> _successors() const noexcept {
         return {m_edges.data(), m_num_successors};
     }
+
+    /// @brief 获取前驱节点的 span（只读视图）。
     [[nodiscard]] std::span<Work*> _predecessors() noexcept {
         return {m_edges.data() + m_num_successors, m_edges.size() - m_num_successors};
     }
     [[nodiscard]] std::span<Work* const> _predecessors() const noexcept {
         return {m_edges.data() + m_num_successors, m_edges.size() - m_num_successors};
     }
+
+    /// @brief 前驱节点数量。
     [[nodiscard]] std::size_t _num_predecessors() const noexcept {
         return m_edges.size() - m_num_successors;
     }
 
+    /// @brief 按需创建信号量数据。
     [[nodiscard]] SemaphoreData& _ensure_semaphores() {
         if (!m_semaphores) {
             m_semaphores = std::make_unique<SemaphoreData>();
@@ -445,6 +411,7 @@ protected:
         return *m_semaphores;
     }
 
+    /// @brief 若信号量数据为空则释放内存。
     void _try_release_semaphores() noexcept {
         if (m_semaphores && m_semaphores->empty()) {
             m_semaphores.reset();
@@ -473,6 +440,7 @@ protected:
         return m_observers ? m_observers->observers.size() : 0;
     }
 
+    // ---- 信号量管理 ----
     void _acquire(Semaphore* sem, std::size_t count);
     void _release(Semaphore* sem, std::size_t count);
     void _remove_acquire(Semaphore* sem) noexcept;
@@ -483,9 +451,11 @@ protected:
     [[nodiscard]] bool _try_acquire_semaphores(SmallVector<Work*>& out);
     void _release_semaphores(SmallVector<Work*>& out);
 
+    // ---- 观察者通知 ----
     void _notify_before(Worker& wr) const;
     void _notify_after(Worker& wr) const;
 
+    // ---- 边管理 ----
     void _erase_successor_at(std::size_t idx) noexcept;
     void _erase_predecessor_at(std::size_t idx) noexcept;
     void _precede(Work* target);
@@ -493,11 +463,21 @@ protected:
     void _clear_predecessors() noexcept;
     void _clear_successors() noexcept;
 
+    // ---- 图校验 ----
     [[nodiscard]] bool _has_path_without_jump(const Work* from, const Work* to) const;
     [[nodiscard]] std::expected<void, std::string_view> _can_precede(Work* target) const;
 };
 
 
+/// @brief 在 m_edges 中删除指定下标的后继节点，维护"后继在前、前驱在后"不变式。
+///
+/// 算法:
+/// 1. 若目标不是最后一个后继，用最后一个后继覆盖之
+/// 2. 若有前驱，将最后一个后继位置用最后一个前驱覆盖
+/// 3. pop_back + 递减 m_num_successors
+///
+/// @pre idx < m_num_successors
+/// @post m_edges 大小减少 1，m_num_successors 减少 1
 inline void Work::_erase_successor_at(std::size_t idx) noexcept {
     TFL_ASSERT(idx < m_num_successors);
     const std::size_t last_succ = m_num_successors - 1;
@@ -513,6 +493,12 @@ inline void Work::_erase_successor_at(std::size_t idx) noexcept {
     --m_num_successors;
 }
 
+/// @brief 在 m_edges 中删除指定下标的前驱节点。
+///
+/// 前驱区间 [m_num_successors, end)，直接用最后一个元素覆盖目标位置再 pop_back。
+///
+/// @pre idx < _num_predecessors()
+/// @post m_edges 大小减少 1，m_num_successors 不变
 inline void Work::_erase_predecessor_at(std::size_t idx) noexcept {
     TFL_ASSERT(idx < _num_predecessors());
     const std::size_t abs_idx = m_num_successors + idx;
@@ -520,13 +506,21 @@ inline void Work::_erase_predecessor_at(std::size_t idx) noexcept {
     m_edges.pop_back();
 }
 
+/// @brief 添加一条单向边: this -> target（并确保双向对称）。
+///
+/// @param target 目标节点。
+///
+/// @throws Exception 若建边不合法（自环、跨图、闭环等）。
+///
+/// @note 构造期静态建立邻接关系。将 target 插入后继区间末尾，
+///       在 target 侧将 this 插入前驱区间末尾。运行期 join_counter 计算
+///       直接复用此数据结构，零额外开销。
 inline void Work::_precede(Work* const target) {
     if (auto result = _can_precede(target); !result) {
         throw Exception("cannot precede: {}.", result.error());
     }
 
-    // Why: 双向压入 —— 后继区间在前、前驱区间在后，统一存入 m_edges。
-    // 构造期静态建立邻接关系，运行期 join_counter 计算直接复用，零额外开销。
+    // 双向压入: 后继区间在前, 前驱区间在后, 统一存入 m_edges
     m_edges.push_back(target);
     if (m_num_successors < m_edges.size() - 1) {
         std::swap(m_edges[m_num_successors], m_edges.back());
@@ -535,6 +529,9 @@ inline void Work::_precede(Work* const target) {
     target->m_edges.push_back(this);
 }
 
+/// @brief 删除到 target 的出边，同时在 target 侧删除对应入边。
+///
+/// @param target 目标节点（nullptr 时无操作）。
 inline void Work::_remove_successor(Work* const target) noexcept {
     if (!target) return;
 
@@ -549,6 +546,9 @@ inline void Work::_remove_successor(Work* const target) noexcept {
     target->_erase_predecessor_at(static_cast<std::size_t>(pit - pred.begin()));
 }
 
+/// @brief 清除所有入边（前驱），同时在每个前驱侧清除对应的出边。
+///
+/// @post 所有前驱的 successor 列表中不再包含 this。
 inline void Work::_clear_predecessors() noexcept {
     for (Work* pred : _predecessors()) {
         auto succ = pred->_successors();
@@ -560,6 +560,12 @@ inline void Work::_clear_predecessors() noexcept {
     m_edges.erase(m_edges.begin() + m_num_successors, m_edges.end());
 }
 
+/// @brief 清除所有出边（后继），同时在每个后继侧清除对应的入边。
+///
+/// @details
+/// 擦除前半段后利用底层 memmove 将前驱区间整体前移，保持后继区间在前的布局。
+///
+/// @post m_num_successors = 0, m_edges 仅含前驱。
 inline void Work::_clear_successors() noexcept {
     for (Work* succ : _successors()) {
         auto pred = succ->_predecessors();
@@ -573,6 +579,19 @@ inline void Work::_clear_successors() noexcept {
     m_num_successors = 0;
 }
 
+/// @brief 校验 this -> target 建边是否合法。
+///
+/// 检查项:
+/// 1. target 非空
+/// 2. 同图（跨图建边非法）
+/// 3. 不重复建边
+/// 4. 无非法闭环（Jump 类型允许自环；闭环中存在 Jump 节点 = 合法）
+///
+/// @param target 目标节点。
+/// @return 合法返回 void; 非法返回带错误描述的 std::unexpected。
+///
+/// @note Jump/MultiJump 可形成闭环（用于实现循环控制流），所以仅对不含 Jump
+///       的严格闭环报错。
 inline std::expected<void, std::string_view> Work::_can_precede(Work* const target) const {
     if (!target) return std::unexpected{"target is null"};
     if (!m_graph) return std::unexpected{"work not attached to graph"};
@@ -593,38 +612,47 @@ inline std::expected<void, std::string_view> Work::_can_precede(Work* const targ
     const bool target_is_jump = (target_type == TaskType::Jump || target_type == TaskType::MultiJump);
     if (target_is_jump) return {};
 
-    // 4. 冷路径：无跳转闭环的 BFS 检测
+    // 4. 冷路径: 无跳转闭环的 BFS 检测
     if (_has_path_without_jump(target, this)) {
         return std::unexpected{"invalid topology: strict cycle detected without any jump-type node"};
     }
 
     return {};
 }
+
+/// @brief 从 from 到 to 是否存在不含 Jump 节点的路径（DFS 搜索）。
+///
+/// @param from 起点。
+/// @param to   终点。
+/// @return 存在不含 Jump 的路径返回 true。
+///
+/// @note 使用 std::stack + std::vector 底层容器，保留连续内存的 L1 缓存预取优势。
+///       预分配 visited 哈希表容量 (64)，避免扩容开销。
 inline bool Work::_has_path_without_jump(const Work* from, const Work* to) const {
     if (!from || !to) return false;
 
-    // 显式指定底层使用 vector，保留连续内存的 L1 缓存预取优势
+    // 显式指定底层使用 vector, 保留连续内存的 L1 缓存预取优势
     std::stack<const Work*, std::vector<const Work*>> dfs_stack;
     unordered_dense::set<const Work*> visited;
 
-    // 预分配容量，避免扩容开销
+    // 预分配容量, 避免扩容开销
     visited.reserve(64);
 
     dfs_stack.push(from);
     visited.insert(from);
 
-    // 标准的 DFS 迭代搜索
+    // 标准 DFS 迭代搜索
     while (!dfs_stack.empty()) {
         const Work* curr = dfs_stack.top();
         dfs_stack.pop();
 
         for (const auto* succ : curr->_successors()) {
-            if (succ == to) return true; // 发现死锁回环
+            if (succ == to) return true; // 发现目标
 
             const auto st = succ->m_type;
             if (st == TaskType::Jump || st == TaskType::MultiJump) continue; // 遇跳转截断
 
-            // O(1) 查重，如果是新节点则压栈，准备深搜
+            // O(1) 查重, 新节点则压栈
             if (visited.insert(succ).second) {
                 dfs_stack.push(succ);
             }
@@ -634,13 +662,22 @@ inline bool Work::_has_path_without_jump(const Work* from, const Work* to) const
     return false;
 }
 
+/// @brief 向节点添加信号量获取约束。
+///
+/// @param sem   信号量。
+/// @param count 需要获取的配额。
+///
+/// @throws Exception 若 sem 为空或已存在。
+///
+/// @note count=0 时忽略（避免语义歧义）。
+/// @note 小 N 线性查重，优于哈希（acquire 列表通常很小）。
 inline void Work::_acquire(Semaphore* sem, std::size_t count) {
     if (!sem) throw Exception("cannot acquire null semaphore.");
-    if (count == 0) return; // 忽略空请求,避免语义歧义
+    if (count == 0) return; // 忽略空请求, 避免语义歧义
 
     auto& sd = _ensure_semaphores();
 
-    // 闭区间线性查重,小 N 下优于哈希
+    // 闭区间线性查重, 小 N 下优于哈希
     for (std::size_t i = 0; i < sd.acquires.size(); ++i) {
         if (sd.acquires[i].sem == sem) {
             throw Exception("semaphore already in acquire list.");
@@ -650,13 +687,19 @@ inline void Work::_acquire(Semaphore* sem, std::size_t count) {
     sd.acquires.emplace_back(sem, count);
 }
 
+/// @brief 向节点添加信号量释放约束。
+///
+/// @param sem   信号量。
+/// @param count 需要释放的配额。
+///
+/// @throws Exception 若 sem 为空或已存在。
 inline void Work::_release(Semaphore* sem, std::size_t count) {
     if (!sem) throw Exception("cannot release null semaphore.");
     if (count == 0) return;
 
     auto& sd = _ensure_semaphores();
 
-    // 闭区间线性查重,小 N 下优于哈希
+    // 闭区间线性查重, 小 N 下优于哈希
     for (std::size_t i = 0; i < sd.releases.size(); ++i) {
         if (sd.releases[i].sem == sem) {
             throw Exception("semaphore already in release list.");
@@ -666,7 +709,9 @@ inline void Work::_release(Semaphore* sem, std::size_t count) {
     sd.releases.emplace_back(sem, count);
 }
 
-
+/// @brief 移除指定信号量的获取约束（swap-with-last 删除）。
+///
+/// @param sem 要移除的信号量。
 inline void Work::_remove_acquire(Semaphore* sem) noexcept {
     if (!m_semaphores) return;
     auto& acqs = m_semaphores->acquires;
@@ -680,6 +725,9 @@ inline void Work::_remove_acquire(Semaphore* sem) noexcept {
     }
 }
 
+/// @brief 移除指定信号量的释放约束（swap-with-last 删除）。
+///
+/// @param sem 要移除的信号量。
 inline void Work::_remove_release(Semaphore* sem) noexcept {
     if (!m_semaphores) return;
     auto& rels = m_semaphores->releases;
@@ -694,24 +742,27 @@ inline void Work::_remove_release(Semaphore* sem) noexcept {
     }
 }
 
+/// @brief 清空所有获取约束。
 inline void Work::_clear_acquires() noexcept {
     if (!m_semaphores) return;
     m_semaphores->acquires.clear();
     _try_release_semaphores();
 }
 
+/// @brief 清空所有释放约束。
 inline void Work::_clear_releases() noexcept {
     if (!m_semaphores) return;
     m_semaphores->releases.clear();
     _try_release_semaphores();
 }
 
-/// @brief 尝试获取本节点声明的所有信号量配额
-/// @param out 回滚时释放的 waiters 汇总到此;调用方负责消费并调度
-/// @return 成功获取全部配额返回 true;部分失败则已完成回滚返回 false
+/// @brief 尝试获取本节点声明的所有信号量配额。
 ///
-/// @note 返回 false 时 out 可能非空——这些是回滚过程中解冻的其他等待者,
-///       调用方必须将它们推回调度器,否则会造成饥饿
+/// @param out 回滚时释放的 waiters 汇总到此处；调用方负责消费并调度。
+/// @return 成功获取全部配额返回 true；部分失败则已完成回滚返回 false。
+///
+/// @warning 返回 false 时 out 可能非空 —— 这些是回滚过程中解冻的其他等待者，
+///          调用方必须将它们推回调度器，否则会造成饥饿。
 TFL_FORCE_INLINE bool Work::_try_acquire_semaphores(SmallVector<Work*>& out) {
     auto& acqs = m_semaphores->acquires;
     for (std::size_t i = 0; i < acqs.size(); ++i) {
@@ -725,15 +776,18 @@ TFL_FORCE_INLINE bool Work::_try_acquire_semaphores(SmallVector<Work*>& out) {
     return true;
 }
 
-/// @brief 释放本节点声明的所有信号量配额
-/// @param out 解冻的 waiters 汇总到此;调用方负责调度
+/// @brief 释放本节点声明的所有信号量配额。
+///
+/// @param out 解冻的 waiters 汇总到此处；调用方负责调度。
 TFL_FORCE_INLINE void Work::_release_semaphores(SmallVector<Work*>& out) {
     for (const auto& req : m_semaphores->releases) {
         req.sem->_release(req.count, out);
     }
 }
 
-
+/// @brief 执行前通知所有注册的观察者（on_before 回调）。
+///
+/// @note [[likely]] 标记空集合快速路径。
 TFL_FORCE_INLINE void Work::_notify_before(Worker& wr) const {
     if (!m_observers) [[likely]] return;
     for (auto& aspect : m_observers->observers) {
@@ -741,6 +795,9 @@ TFL_FORCE_INLINE void Work::_notify_before(Worker& wr) const {
     }
 }
 
+/// @brief 执行后通知所有注册的观察者（on_after 回调）。
+///
+/// @note [[likely]] 标记空集合快速路径。
 TFL_FORCE_INLINE void Work::_notify_after(Worker& wr) const {
     if (!m_observers) [[likely]] return;
     for (auto& aspect : m_observers->observers) {
@@ -749,42 +806,26 @@ TFL_FORCE_INLINE void Work::_notify_after(Worker& wr) const {
 }
 
 
-/// @brief RAII 守卫 —— 在作用域内动态置 / 清节点的显式锚点位。
+/// @brief RAII 守卫 —— 在作用域内动态置/清节点的显式锚点位。
 ///
-/// @details
-/// 用于 `Runtime::cowait` / `corun` 等阻塞调用点 ——
-/// 进入阻塞窗口时把节点临时标为显式锚点（让作用域内派生的 child 异常归档
-/// 到此），退出时清除。
-///
-/// ============================================================================
-///  幂等性 —— 防破坏外层语义
-/// ============================================================================
-/// 若构造时节点 **已是** 显式锚点（嵌套场景或工厂期已设定），守卫感知后既不
-/// 重置也不清除：通过 `fetch_or` 返回旧值检查 ANCHORED 位，仅在自己"真正
-/// 拥有"该置位时才负责复位。
-///
-/// 典型嵌套场景：
-/// @code
-///   {
-///       ExplicitAnchorGuard g1{w};   // 外层置位，m_owned = true
-///       {
-///           ExplicitAnchorGuard g2{w};  // 已置位，m_owned = false
-///       }   // g2 析构：不清位（被外层占据）
-///   }   // g1 析构：清位
-/// @endcode
-///
-/// 这种"幂等 + 嵌套安全"是 RAII 守卫的标准设计要求。
-///
-/// @see Runtime::cowait / Executor::_cowait_until  使用点
+/// 用于 Runtime::cowait / corun 等阻塞调用点，嵌套安全（幂等性）。
+/// 通过 fetch_or 返回旧值检查 ANCHORED 位，仅在自己"真正拥有"该置位时才负责复位。
 class ExplicitAnchorGuard {
 public:
+    /// @brief 构造守卫，在目标节点上置显式锚点位。
+    ///
+    /// @param w 目标 Work 节点。
+    ///
+    /// @post 若此前 ANCHORED 未置位，则置位且 m_owned=true；
+    ///       若已置位（嵌套），则 m_owned=false（不拥有该位）。
     explicit ExplicitAnchorGuard(Work* w) noexcept : m_work{w} {
-        // fetch_or 返回旧值；旧值已含 ANCHORED 说明此前就是锚点
+        // fetch_or 返回旧值; 旧值已含 ANCHORED 说明此前就是锚点
         const auto prev = m_work->m_explicit.fetch_or(
             Work::Explicit::ANCHORED, std::memory_order_relaxed);
         m_owned = (prev & Work::Explicit::ANCHORED) == 0;
     }
 
+    /// @brief 析构守卫，仅当本实例拥有该位时才清除。
     ~ExplicitAnchorGuard() {
         if (m_owned) {
             m_work->m_explicit.fetch_and(~Work::Explicit::ANCHORED,
@@ -797,7 +838,7 @@ public:
 
 private:
     Work* const m_work;
-    bool        m_owned;   ///< 本守卫是否真的"拥有"锚点位的置/清责任
+    bool        m_owned;   ///< 本守卫是否真正"拥有"锚点位的置/清责任
 };
 
 

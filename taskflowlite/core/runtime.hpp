@@ -11,112 +11,17 @@
 #include "executor.hpp"
 namespace tfl {
 
-/// @brief 运行时调度上下文 —— 任务体内的动态调度代理。
+/// @brief 运行时调度上下文 —— 任务体内动态派生/激活子任务的唯一通道。
 ///
-/// @details
-/// `Runtime` 是 **运行期** 注入到任务体内的能力句柄：当一个 `Work` 被
-/// `Worker` 拣出执行时，调度器会构造一个 `Runtime` 实例并以引用形式传入
-/// 用户的可调用对象。用户通过它在任务执行的过程中 **动态派生子任务**、
-/// **激活兄弟任务**、**协作式等待** 子任务完成 —— 而无需提前知道这些
-/// 操作的存在。它是框架"任务可以反过来命令调度器"的唯一通道。
+/// Immovable，由 Worker 在栈上构造并按 Runtime& 注入用户 callable。
+/// 提供 detach（fire-and-forget 派生）、async（派生 + Future 返回值）、
+/// schedule（激活兄弟任务）、cowait（协作式等待不阻塞 worker）四组 API。
+/// 派生子任务通过父节点 join_counter 挂接，保证子任务引用资源存活。
 ///
-/// 在框架的"静态 vs 动态"主线上，`Runtime` 与 `Flow` / `Executor` 动态提交接口形成
-/// 能力光谱。三者都能让任务进入 `Executor`，区别在于 **构图时机** 与
-/// **谁决定下一步**：
+/// stop_requested() / has_exception() 暴露父节点终止/异常状态，用于协作式取消。
 ///
-/// | 维度          | `Flow`              | `Executor` 动态任务        | `Runtime`            |
-/// |---------------|---------------------|----------------------------|----------------------|
-/// | 构图时机      | 提交 **前**（静态） | API 调用时（图外动态）      | 任务体 **内**（图内动态） |
-/// | 调用者        | 用户主线程 / 外部线程 | 用户主线程 / 外部线程      | 任务体（被调度的代码）|
-/// | 谁拥有节点    | Flow 自己           | Executor 内存池 / Topology | Executor 内存池 / Topology |
-/// | 适用场景      | 结构稳定的批处理    | 外部线程的一次性派发        | 数据驱动的自适应分支  |
-/// | 重复执行成本  | 极低（图复用）      | 一次性                     | 一次性                |
+/// @note 构造函数私有、仅友元可造；栈帧内自动析构，引用不可逸出栈外。
 ///
-/// ============================================================================
-///  注入机制与生命周期
-/// ============================================================================
-/// `Runtime` 是 **不可移动、不可拷贝**（继承自 `Immovable`），构造函数私有，
-/// 仅 `Work` / `Flow` / `Executor` / `Worker` 友元可造。这套限制不是审美 ——
-/// `Runtime` 持有三个对内部对象的引用：`m_work`（当前正在执行的节点）、
-/// `m_worker`（执行线程）、`m_executor`（全局调度器）。一旦该任务调用结束，
-/// 这些引用所指向的语境立刻失效，因此 `Runtime` 必须在调用栈帧内自动析构、
-/// 不允许逸出。
-///
-/// 用户拿到的总是 `Runtime&`，由调度器的内部循环按值构造、按引用注入：
-///
-/// @code
-///                        ┌───────────────────────┐
-///                        │     Worker thread     │
-///                        └────────────┬──────────┘
-///                                     │ pop work
-///                                     ▼
-///                        ┌───────────────────────┐
-///                        │   Runtime rt{w, ...}  │  ← 栈上构造
-///                        └────────────┬──────────┘
-///                                     │ 引用注入
-///                                     ▼
-///                        ┌───────────────────────┐
-///                        │   user task body      │
-///                        │   void f(Runtime& rt) │
-///                        │   { rt.detach   │
-///                        │     (...);  ...     } │
-///                        └────────────┬──────────┘
-///                                     │ 返回
-///                                     ▼
-///                        ┌───────────────────────┐
-///                        │   rt.~Runtime()       │  ← 栈展开自动析构
-///                        └───────────────────────┘
-/// @endcode
-///
-/// 派生子任务通过将 `m_work` 标记为父节点、`fetch_add` 提升其 `join_counter`
-/// 来挂接：父节点的 tear_down 在所有子任务完成前不会触发，从而保证子任务
-/// 引用的资源仍然存活。
-///
-/// ============================================================================
-///  能力分组
-/// ============================================================================
-/// 公共接口按语义分四组，对应任务体内可能出现的四类需求：
-///
-///   1. **lazy_async** —— 派生 *有前驱依赖* 的子任务，前驱以
-///      `AsyncTask` 句柄列表传入。返回的 `AsyncTask` 句柄可继续作为
-///      下游任务的依赖，构成动态 DAG。
-///
-///   2. **detach** —— Fire-and-forget 派生：父节点持有 join 计数，
-///      但调用方拿不到句柄。适合"我只关心父任务等到孩子完成、不关心
-///      孩子结果"的场景。
-///
-///   3. **async** —— 派生 + `Future` 结果回收。运行成本比
-///      `detach` 略高（需要 `promise/future` pair），仅在确实需要
-///      返回值时使用。
-///
-///   4. **schedule / cowait*** —— 兄弟任务激活与协作式等待。`schedule`
-///      要求目标 `Task` 与本 Runtime 共享同一非空父节点（兄弟约束，
-///      违反抛 `Exception`）；`cowait()` 在等待期间不会阻塞 worker，
-///      而是让本 worker 继续偷其他任务，回到这里时再检查谓词。
-///
-/// `stop_requested()` / `has_exception()` 暴露父节点的提前终止与异常
-/// 状态，用于 long-running 任务里的协作式取消。
-///
-/// ============================================================================
-///  使用示例
-/// ============================================================================
-/// @code
-///   Flow flow;
-///   flow.emplace([](Runtime& rt) {
-///       // 数据驱动的动态分支：依据运行时大小决定派生几个子任务
-///       const std::size_t shards = compute_shard_count();
-///       for (std::size_t i = 0; i < shards; ++i) {
-///           rt.detach([i]{ process_shard(i); });
-///       }
-///       rt.cowait();   // 协作式等待全部 shard 完成（不阻塞 worker）
-///       finalize();
-///   }).name("dynamic-fan-out");
-/// @endcode
-///
-/// @see Flow            静态侧对偶 —— 提交前编辑的 DAG 蓝图
-/// @see Executor        动态任务提交与调度入口
-/// @see AsyncTask       Runtime 派生的子任务句柄类型
-/// @see Executor        Runtime 背后的真正执行引擎
 
 
 class Runtime : public Immovable<Runtime> {
@@ -125,134 +30,248 @@ class Runtime : public Immovable<Runtime> {
     TFL_WORK_SUBCLASS_FRIENDS;
 
 public:
-    /// @brief 提交任务图执行一次
+    /// @brief Fire-and-forget 派发：提交子图执行一次，不返回结果，不阻塞当前任务。
+    /// @tparam A 锚点策略（anchor::none_t 或 explicit_t），控制子节点如何挂接到父节点生命周期。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @param gh 要执行的子图。
     template <anchor_tag A = anchor::none_t, typename Gh>
         requires graph_holder<Gh>
     void detach(Gh&& gh);
 
-    /// @brief 提交任务图执行一次，完成后执行回调
+    /// @brief Fire-and-forget 派发：提交子图执行一次，子图所有节点完成后调用 @p cb。
+    /// @tparam A 锚点策略。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @tparam C 满足 callback concept 的回调类型。
+    /// @param gh 要执行的子图。
+    /// @param cb 子图完成后的回调（无参数 callable）。
     template <anchor_tag A = anchor::none_t, typename Gh, typename C>
         requires (capturable<C> && graph_holder<Gh> && callback<C>)
     void detach(Gh&& gh, C&& cb);
 
-    /// @brief 提交任务图执行指定次数
+    /// @brief Fire-and-forget 派发：提交子图循环执行 @p num 次。
+    /// @tparam A 锚点策略。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @param gh 要执行的子图。
+    /// @param num 循环次数。
     template <anchor_tag A = anchor::none_t, typename Gh>
         requires graph_holder<Gh>
     void detach(Gh&& gh, std::uint64_t num);
 
-    /// @brief 提交任务图循环执行指定次数，完成后执行回调
+    /// @brief Fire-and-forget 派发：提交子图循环执行 @p num 次，完成后调用 @p cb。
+    /// @tparam A 锚点策略。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @tparam C 满足 callback concept 的回调类型。
+    /// @param gh 要执行的子图。
+    /// @param num 循环次数。
+    /// @param cb 子图完成后的回调。
     template <anchor_tag A = anchor::none_t, typename Gh, typename C>
         requires (capturable<C> && graph_holder<Gh> && callback<C>)
     void detach(Gh&& gh, std::uint64_t num, C&& cb);
 
-    /// @brief 提交任务图条件循环执行
+    /// @brief Fire-and-forget 派发：提交子图条件循环执行，每次迭代前调用 @p pred()，返回 true 时停止。
+    /// @tparam A 锚点策略。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @tparam P 满足 predicate concept 的可调用对象。
+    /// @param gh 要执行的子图。
+    /// @param pred 循环终止谓词。
     template <anchor_tag A = anchor::none_t, typename Gh, typename P>
         requires (capturable<P> && graph_holder<Gh> && predicate<P>)
     void detach(Gh&& gh, P&& pred);
 
-    /// @brief 提交任务图条件循环执行，完成后执行回调
+    /// @brief Fire-and-forget 派发：提交子图条件循环执行，完成后调用 @p cb。
+    /// @tparam A 锚点策略。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @tparam P 满足 predicate concept 的可调用对象。
+    /// @tparam C 满足 callback concept 的回调类型。
+    /// @param gh 要执行的子图。
+    /// @param pred 循环终止谓词。
+    /// @param cb 子图完成后的回调。
     template <anchor_tag A = anchor::none_t, typename Gh, typename P, typename C>
         requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
     void detach(Gh&& gh, P&& pred, C&& cb);
 
 
-    /// @brief Fire-and-forget 异步执行
+    /// @brief Fire-and-forget 派发：异步执行单个无参 callable，不返回结果，不阻塞当前任务。
+    /// @tparam A 锚点策略。
+    /// @tparam T 满足 basic_invocable_plain concept 的可调用对象。
+    /// @tparam Args 转交给 task 的附加参数。
+    /// @param task 要执行的可调用对象。
+    /// @param args 转发给 task 的参数。
     template <anchor_tag A = anchor::none_t, typename T, typename... Args>
         requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
     void detach(T&& task, Args&&... args);
 
-    /// @brief Fire-and-forget 运行时任务
+    /// @brief Fire-and-forget 派发：异步执行单个 runtime callable，task 可接收 Runtime& 进行嵌套调度。
+    /// @tparam A 锚点策略。
+    /// @tparam T 满足 runtime_invocable_plain concept 的可调用对象。
+    /// @tparam Args 转交给 task 的附加参数。
+    /// @param task 要执行的可调用对象。
+    /// @param args 转发给 task 的参数。
     template <anchor_tag A = anchor::none_t, typename T, typename... Args>
         requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
     void detach(T&& task, Args&&... args);
 
 
-    /// @brief 异步执行任务图一次，返回 Future<void>
+    /// @brief 异步执行子图一次，返回 Future<void> 用于等待完成或请求停止。
+    /// @tparam A 锚点策略（默认 explicit_t，子节点显式挂接到父节点生命周期）。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @param gh 要执行的子图。
+    /// @return Future<void>，支持 get()/wait()/request_stop()。
     template <anchor_tag A = anchor::explicit_t, graph_holder Gh>
     [[nodiscard]] Future<void> async(Gh&& gh);
 
-    /// @brief 异步执行任务图一次，完成后执行回调，返回 Future<void>
+    /// @brief 异步执行子图一次，完成后调用 @p cb，返回 Future<void>。
+    /// @tparam A 锚点策略。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @tparam C 满足 callback concept 的回调类型。
+    /// @param gh 要执行的子图。
+    /// @param cb 子图完成后调用的回调。
+    /// @return Future<void>。
     template <anchor_tag A = anchor::explicit_t, graph_holder Gh, typename C>
         requires (capturable<C> && callback<C>)
     [[nodiscard]] Future<void> async(Gh&& gh, C&& cb);
 
-    /// @brief 异步执行任务图指定次数，返回 Future<void>
+    /// @brief 异步执行子图 @p num 次，返回 Future<void>。
+    /// @tparam A 锚点策略。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @param gh 要执行的子图。
+    /// @param num 循环次数。
+    /// @return Future<void>。
     template <anchor_tag A = anchor::explicit_t, graph_holder Gh>
     [[nodiscard]] Future<void> async(Gh&& gh, std::uint64_t num);
 
-    /// @brief 异步执行任务图指定次数，完成后执行回调，返回 Future<void>
+    /// @brief 异步执行子图 @p num 次，完成后调用 @p cb，返回 Future<void>。
+    /// @tparam A 锚点策略。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @tparam C 满足 callback concept 的回调类型。
+    /// @param gh 要执行的子图。
+    /// @param num 循环次数。
+    /// @param cb 子图完成后的回调。
+    /// @return Future<void>。
     template <anchor_tag A = anchor::explicit_t, graph_holder Gh, typename C>
         requires (capturable<C> && callback<C>)
     [[nodiscard]] Future<void> async(Gh&& gh, std::uint64_t num, C&& cb);
 
-    /// @brief 异步执行任务图条件循环，返回 Future<void>
+    /// @brief 异步执行子图条件循环：每次迭代前调用 @p pred()，返回 true 时停止。
+    /// @tparam A 锚点策略。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @tparam P 满足 predicate concept 的可调用对象。
+    /// @param gh 要执行的子图。
+    /// @param pred 循环终止谓词（每次迭代前调用，返回 true 停止）。
+    /// @return Future<void>。
     template <anchor_tag A = anchor::explicit_t, graph_holder Gh, typename P>
         requires (capturable<P> && predicate<P>)
     [[nodiscard]] Future<void> async(Gh&& gh, P&& pred);
 
-    /// @brief 异步执行任务图条件循环，完成后执行回调，返回 Future<void>
+    /// @brief 异步执行子图条件循环，完成后调用 @p cb。
+    /// @tparam A 锚点策略。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @tparam P 满足 predicate concept 的可调用对象。
+    /// @tparam C 满足 callback concept 的回调类型。
+    /// @param gh 要执行的子图。
+    /// @param pred 循环终止谓词。
+    /// @param cb 子图完成后的回调。
+    /// @return Future<void>。
     template <anchor_tag A = anchor::explicit_t, graph_holder Gh, typename P, typename C>
         requires (capturable<P, C> && predicate<P> && callback<C>)
     [[nodiscard]] Future<void> async(Gh&& gh, P&& pred, C&& cb);
 
-    /// @brief 异步执行并返回 Future
+    /// @brief 异步执行单个 callable，返回 Future<R> 携带返回值。
+    /// @tparam A 锚点策略。
+    /// @tparam T 满足 basic_invocable concept 的可调用对象。
+    /// @tparam Args 转交给 task 的附加参数。
+    /// @param task 要执行的可调用对象。
+    /// @param args 转发给 task 的参数。
+    /// @return Future<R>，R = basic_return_t<T, Args...> 即 callable 的返回类型。
     template <anchor_tag A = anchor::explicit_t, typename T, typename... Args>
         requires (capturable<T, Args...> && basic_invocable<T, Args...>)
     [[nodiscard]] auto async(T&& task, Args&&... args) -> Future<basic_return_t<T, Args...>>;
 
-    /// @brief 异步执行运行时任务并返回 Future
+    /// @brief 异步执行单个 runtime callable（可接收 Runtime&），返回 Future<R> 携带返回值。
+    /// @tparam A 锚点策略。
+    /// @tparam T 满足 runtime_invocable concept 的可调用对象。
+    /// @tparam Args 转交给 task 的附加参数。
+    /// @param task 要执行的可调用对象。
+    /// @param args 转发给 task 的参数。
+    /// @return Future<R>，R = runtime_return_t<T, Args...> 即 callable 的返回类型。
     template <anchor_tag A = anchor::explicit_t, typename T, typename... Args>
         requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
     [[nodiscard]] auto async(T&& task, Args&&... args) -> Future<runtime_return_t<T, Args...>>;
 
-    /// @brief 检测当前 Runtime 上下文是否已收到停止请求。
+    /// @brief 检查当前 Runtime 对应的父节点是否已收到停止请求（通过 Topology::m_stop_source）。
+    /// @return 已请求停止时返回 true；用户可在 callable 中查询此值实现协作式取消。
     [[nodiscard]] bool stop_requested() const noexcept;
 
-    /// @brief 检测当前 Runtime 上下文是否已记录异常。
+    /// @brief 检查当前 Runtime 对应的父节点执行过程中是否已捕获异常。
+    /// @return 有异常时返回 true，cowait() 结束后可检查此值决定是否处理异常。
     [[nodiscard]] bool has_exception() const noexcept;
     // ========================================================================
     //  同步执行 / 协作式等待
     // ========================================================================
-    /// @brief 立即调度一个兄弟任务到当前 worker 的本地队列。
+    /// @brief 立即调度一个兄弟任务（同父子关系）到当前 worker 的本地 LIFO 队列执行。
+    /// @param task 兄弟 Task，必须与 Runtime 的 work 共享同一非空父节点，否则抛出 Exception。
     void submit(Task task);
 
-    /// @brief 立即调度一个子图到当前 worker 的本地队列。
+    /// @brief 立即调度整个子图到当前 worker，采用 cowait 语义逐节点注入队列。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @param gh 要调度的子图。
     template <typename Gh>
         requires graph_holder<Gh>
     void submit(Gh& gh);
 
+    /// @brief 提交 AsyncTask 及其依赖列表：注入前置依赖节点后调度执行。
+    /// @tparam A 锚点策略。
+    /// @tparam T 满足 any_async_task concept 的 AsyncTask 类型。
+    /// @tparam Deps 满足 nonrepeat_async_task concept 的前置依赖（AsyncTask 列表）。
+    /// @param task 要调度的 AsyncTask。
+    /// @param deps 前置依赖 AsyncTask，当前 task 将在所有 deps 完成后执行。
+    /// @return lvalue 引用或值（取决于 task 是 lvalue 还是 rvalue）。
     template <anchor_tag A = anchor::explicit_t, typename T, typename... Deps>
         requires (any_async_task<T> && (nonrepeat_async_task<Deps> && ...))
     auto submit(T&& task, Deps&&... deps) -> std::conditional_t<std::is_lvalue_reference_v<T>, std::remove_reference_t<T>&, std::remove_cvref_t<T>>;
 
+    /// @brief 提交 AsyncTask 及迭代器范围的依赖：注入迭代器指向的所有前置节点后调度执行。
+    /// @tparam A 锚点策略。
+    /// @tparam T 满足 any_async_task concept 的 AsyncTask 类型。
+    /// @tparam I 输入迭代器，其 value_type 满足 nonrepeat_async_task。
+    /// @tparam S I 的 sentinel 类型。
+    /// @param task 要调度的 AsyncTask。
+    /// @param first, last 前置依赖的迭代器范围。
+    /// @return lvalue 引用或值。
     template <anchor_tag A = anchor::explicit_t, typename T, std::input_iterator I, std::sentinel_for<I> S>
         requires (any_async_task<T> && nonrepeat_async_task<std::iter_value_t<I>>)
     auto submit(T&& task, I first, S last) -> std::conditional_t<std::is_lvalue_reference_v<T>, std::remove_reference_t<T>&, std::remove_cvref_t<T>>;
 
 
-    /// @brief 协作式等待子图完成 —— 阻塞当前 worker 直到 `gh` 所有节点执行完毕。
+    /// @brief 协作式等待：阻塞当前 worker 直到 @p gh 所有节点执行完毕，期间 worker 持续窃取/执行其它任务。
+    /// @tparam Gh 满足 graph_holder concept 的类型。
+    /// @param gh 要等待的子图。
+    /// @note 不阻塞 OS 线程，worker 在等待期间继续参与调度；这一过程称为 cowait。
     template <typename Gh>
         requires graph_holder<Gh>
     void cowait(Gh& gh);
 
-    /// @brief 协作式等待 —— 阻塞当前 worker 直到所有已调度的子任务完成。
+    /// @brief 协作式等待：阻塞直到当前 Runtime 派生的所有子任务完成（join_counter 回到 1）。
+    /// @note join_counter == 1 表示只剩父节点自身，即所有子任务均已 tear_down。
     void cowait();
 
-    /// @brief 协作式等待 —— 阻塞直到 `pred()` 返回 `true`。
+    /// @brief 协作式等直到 @p pred() 返回 true，期间 worker 继续执行其它任务。
+    /// @tparam Pred 满足 predicate concept 的可调用对象。
+    /// @param pred 轮询谓词，返回 true 时停止等待。
     template <predicate Pred>
     void cowait_until(Pred&& pred);
 
     // ========================================================================
     //  Worker 访问
     // ========================================================================
-    /// @brief 获取所属 Worker 的可变引用。
+    /// @brief 获取当前执行上下文所属 Worker 的可变引用（可查询 worker_id、本地队列等）。
     [[nodiscard]] Worker& worker() noexcept;
-    /// @brief 获取所属 Worker 的只读引用。
+    /// @brief 获取当前执行上下文所属 Worker 的只读引用。
     [[nodiscard]] const Worker& worker() const noexcept;
 
-    /// @brief 获取所属 Executor 的可变引用。
+    /// @brief 获取当前执行上下文所属 Executor 的可变引用（可提交外部任务、获取线程数等）。
     [[nodiscard]] Executor& executor() noexcept;
-    /// @brief 获取所属 Executor 的只读引用。
+    /// @brief 获取当前执行上下文所属 Executor 的只读引用。
     [[nodiscard]] const Executor& executor() const noexcept;
 private:
     Work&       m_work;
@@ -468,7 +487,6 @@ inline bool Runtime::has_exception() const noexcept {
 
 /// @brief 立即触发一个兄弟任务的执行。
 ///
-/// @par 约束
 ///   - @p task 必须与本 Runtime 的 work 共享同一父节点（兄弟关系），
 ///     即两者归属同一隔离生命周期。
 ///   - 父节点不可为 @c nullptr —— 拒绝顶级孤立任务（无法占位）。

@@ -1,8 +1,8 @@
-﻿/// @file size_class.hpp
-/// @brief Size-class 分档方案 trait 与内置方案（PowerOfTwo / Subdivided / Hybrid / Table）
+/// @file size_class.hpp
+/// @brief Size-class 分档方案 trait 与内置方案（PowerOfTwo / Subdivided / Hybrid / Table）。
 /// @author wicyn
 /// @contact https://github.com/wicyn
-/// @date 2026-05-15
+/// @date 2026-05-28
 /// @license MIT
 /// @copyright Copyright (c) 2026 wicyn
 
@@ -22,14 +22,14 @@ namespace detail {
 //  type traits
 // ============================================================================
 
-/// @brief 检测 `T` 是否为 `std::array<std::size_t, N>` 特化。
+/// @brief 检测 T 是否为 std::array<std::size_t, N> 特化。
 template <typename T>
 struct is_size_array : std::false_type {};
 
 template <std::size_t N>
 struct is_size_array<std::array<std::size_t, N>> : std::true_type {};
 
-/// @brief `is_size_array` 的变量模板别名。
+/// @brief is_size_array 的变量模板别名，自动剥离 cvref 限定符后判定是否为 std::array<std::size_t, N>。
 template <typename T>
 inline constexpr bool is_size_array_v = is_size_array<std::remove_cvref_t<T>>::value;
 
@@ -38,31 +38,31 @@ inline constexpr bool is_size_array_v = is_size_array<std::remove_cvref_t<T>>::v
 //  concepts
 // ============================================================================
 
-/// @brief Scheme 通过 `class_sizes()` 静态成员返回 `std::array<std::size_t, N>`。
+/// @brief Scheme 通过 class_sizes() 静态成员返回 std::array<std::size_t, N>。
 template <typename S>
 concept HasClassSizes = requires {
     requires is_size_array_v<decltype(S::class_sizes())>;
 };
 
-/// @brief Scheme 提供 `class_count()` → `std::size_t` 编译期查询。
+/// @brief Scheme 提供 class_count() -> std::size_t 编译期查询。
 template <typename S>
 concept HasClassCount = requires {
     { S::class_count() } noexcept -> std::same_as<std::size_t>;
 };
 
-/// @brief Scheme 提供 `class_size(idx)` → `std::size_t` 按索引查大小。
+/// @brief Scheme 提供 class_size(idx) -> std::size_t 按索引查大小。
 template <typename S>
 concept HasClassSize = requires(std::size_t idx) {
     { S::class_size(idx) } noexcept -> std::same_as<std::size_t>;
 };
 
-/// @brief Scheme 提供 `class_index(bytes)` → `std::size_t` 按字节数查档位。
+/// @brief Scheme 提供 class_index(bytes) -> std::size_t 按字节数查档位。
 template <typename S>
 concept HasClassIndex = requires(std::size_t bytes) {
     { S::class_index(bytes) } noexcept -> std::same_as<std::size_t>;
 };
 
-/// @brief Scheme 同时提供 `class_count`、`class_size`、`class_index` 完整 API。
+/// @brief Scheme 同时提供 class_count、class_size、class_index 完整 API。
 template <typename S>
 concept HasFullClassApi = HasClassCount<S> && HasClassSize<S> && HasClassIndex<S>;
 
@@ -83,10 +83,9 @@ concept SizeClassScheme = detail::HasClassSizes<S> || detail::HasFullClassApi<S>
 //  SizeClassTraits
 // ============================================================================
 
-/// @brief 统一 scheme traits,自动补全两种风格之间的 API 差。
+/// @brief 统一 scheme traits，自动补全两种风格（class_sizes() / 完整 API）之间的差异。
 ///
-/// 所有 SegmentedPool 都通过 traits 访问 scheme,
-/// 避免直接依赖具体风格。
+/// @tparam S 任意 SizeClassScheme，通过 constexpr if 分支选择调用路径。
 template <SizeClassScheme S>
 struct SizeClassTraits {
 private:
@@ -104,6 +103,8 @@ private:
     }
 
 public:
+    /// @brief 返回 size-class 方案中的总档位数（编译期常量）。
+    /// @return 若方案提供 class_count() 则直接委托，否则从 class_sizes() 数组长度推导。
     [[nodiscard]] static constexpr std::size_t class_count() noexcept {
         if constexpr (detail::HasClassCount<S>) {
             return S::class_count();
@@ -112,7 +113,10 @@ public:
         }
     }
 
-    /// @pre bytes 必须恰好等于某个 class_size(i)
+    /// @brief 根据字节数查找对应的 size-class 索引。
+    /// @param bytes 待分配的对象字节数。
+    /// @return 方案中 >= bytes 的最小档位索引。
+    /// @pre bytes 必须在 [min_size(), max_size()] 范围内。
     [[nodiscard]] static constexpr std::size_t class_index(std::size_t bytes) noexcept {
         if constexpr (detail::HasClassIndex<S>) {
             return S::class_index(bytes);
@@ -122,6 +126,9 @@ public:
         }
     }
 
+    /// @brief 根据档位索引查询该档对应的实际分配字节数。
+    /// @param idx 档位索引，必须 < class_count()。
+    /// @return 该档位的实际分配大小（chunk size）。
     /// @pre idx < class_count()
     [[nodiscard]] static constexpr std::size_t class_size(std::size_t idx) noexcept {
         if constexpr (detail::HasClassSize<S>) {
@@ -131,10 +138,14 @@ public:
         }
     }
 
+    /// @brief 获取方案中最小档位的 chunk 大小（编译期常量）。
+    /// @return class_size(0) 的值。
     [[nodiscard]] static constexpr std::size_t min_size() noexcept {
         return class_size(0);
     }
 
+    /// @brief 获取方案中最大档位的 chunk 大小（编译期常量）。
+    /// @return class_size(class_count() - 1) 的值。
     [[nodiscard]] static constexpr std::size_t max_size() noexcept {
         return class_size(class_count() - 1);
     }
@@ -143,22 +154,9 @@ public:
 // ============================================================================
 //  TableScheme
 // ============================================================================
-/// @brief 表驱动 scheme。用户自己定义 size 数组,通过引用传入。
+/// @brief 表驱动 size-class scheme —— 用户自定义 std::array<std::size_t, N> 引用传入。
 ///
-/// 数组要求:
-///   - 类型: std::array<std::size_t, N>
-///   - 必须有 linkage (inline constexpr 全局变量)  ← NTTP 引用必需
-///   - 严格单调递增
-///   - 首元素 >= sizeof(void*)
-///
-/// @code
-///   // 1. 在某个 header 或 namespace 作用域定义 size 数组
-///   inline constexpr std::array<std::size_t, 5> kMySizes{72, 96, 128, 256, 512};
-///
-///   // 2. 用这个数组实例化 scheme
-///   using MyScheme = tfl::TableScheme<kMySizes>;
-///   using MyPool   = tfl::SegmentedPool<MyScheme>;
-/// @endcode
+/// @tparam Sizes 全局 inline constexpr std::array，需有 linkage、严格单调递增、首元素 >= sizeof(void*)。
 template <auto& Sizes>
 struct TableScheme {
     [[nodiscard]] static constexpr auto class_sizes() noexcept { return Sizes; }
@@ -177,17 +175,20 @@ static_assert(SizeClassScheme<TableScheme<detail::kProbeSizes>>, "TableScheme mu
 
 /// @brief 2^N size-class scheme。
 ///
-/// class 序列: MinSize, MinSize*2, MinSize*4, ..., MaxSize
+/// @tparam MinSize 最小类大小（向下对齐到 bit_floor），默认 16
+/// @tparam MaxSize 最大类大小（向上对齐到 bit_ceil），默认 4096
+///
+/// class 序列: MinSize, MinSize*2, MinSize*4, ..., MaxSize。class_index/class_size 全部位运算。
 template <std::size_t MinSize = 16, std::size_t MaxSize = 4096>
     requires (MinSize >= sizeof(void*)) && (MinSize < MaxSize)
 struct PowerOfTwoScheme {
 private:
     /// @brief 对齐后的最小类大小。向下对齐 (bit_floor),保证 k_min <= MinSize。
-    /// Why: 用户传入的 MinSize 不必是 2 的幂,内部统一按 2^N 处理以维持位运算闭环。
+    /// 用户传入的 MinSize 不必是 2 的幂,内部统一按 2^N 处理以维持位运算闭环。
     static constexpr std::size_t k_min = std::bit_floor(MinSize);
 
     /// @brief 对齐后的最大类大小。向上对齐 (bit_ceil),保证 k_max >= MaxSize。
-    /// Why: 必须覆盖用户请求的 MaxSize,所以向上取整。
+    /// 必须覆盖用户请求的 MaxSize,所以向上取整。
     static constexpr std::size_t k_max = std::bit_ceil(MaxSize);
 
     static constexpr std::size_t k_min_shift = static_cast<std::size_t>(std::countr_zero(k_min));
@@ -241,14 +242,14 @@ static_assert(P::class_index(128)  == 3);
 static_assert(P::class_index(1024) == 6);
 static_assert(P::class_index(4096) == 8);
 
-// ---- class_index: 任意 bytes ∈ [min_size, max_size] → ≥bytes 最小 2 幂 ----
-static_assert(P::class_index(17)   == 1);   // → 32
-static_assert(P::class_index(33)   == 2);   // → 64
-static_assert(P::class_index(1000) == 6);   // → 1024
-static_assert(P::class_index(1025) == 7);   // → 2048
-static_assert(P::class_index(4095) == 8);   // → 4096
+// ---- class_index: 任意 bytes in [min_size, max_size] -> >=bytes 最小 2 幂 ----
+static_assert(P::class_index(17)   == 1);   // -> 32
+static_assert(P::class_index(33)   == 2);   // -> 64
+static_assert(P::class_index(1000) == 6);   // -> 1024
+static_assert(P::class_index(1025) == 7);   // -> 2048
+static_assert(P::class_index(4095) == 8);   // -> 4096
 
-// ---- idx ↔ size 闭环 ----
+// ---- idx <-> size 闭环 ----
 constexpr bool roundtrip() {
     for (std::size_t i = 0; i < P::class_count(); ++i)
         if (P::class_index(P::class_size(i)) != i) return false;
@@ -264,7 +265,7 @@ constexpr bool monotonic() {
 }
 static_assert(monotonic());
 
-// ---- 全量暴力: ∀ b ∈ [min_size, max_size], class_index(b) 是 ≥b 的最小 2 幂档位 ----
+// ---- 全量暴力: forall b in [min_size, max_size], class_index(b) 是 >=b 的最小 2 幂档位 ----
 constexpr bool minimality() {
     for (std::size_t b = P::min_size; b <= P::max_size; ++b) {
         const auto idx = P::class_index(b);
@@ -277,10 +278,10 @@ constexpr bool minimality() {
 static_assert(minimality());
 
 // ---- 非幂参数自动对齐 ----
-using P2 = PowerOfTwoScheme<24, 3000>;            // → 16, 4096
+using P2 = PowerOfTwoScheme<24, 3000>;            // -> 16, 4096
 static_assert(P2::min_size == 16 && P2::max_size == 4096);
 static_assert(P2::class_count() == 9);
-static_assert(P2::class_index(3000) == 8);        // → 4096
+static_assert(P2::class_index(3000) == 8);        // -> 4096
 
 // ---- 相邻 2 幂 (最小配置) ----
 using P3 = PowerOfTwoScheme<16, 32>;
@@ -302,25 +303,13 @@ static_assert(P4::class_index(1u << 20) == 17);
 //  SubdividedScheme
 // ============================================================================
 
-/// @brief Subdivision size-class scheme。
+/// @brief Subdivision size-class scheme —— 每个 octave 再切 Subdivisions 等份。
 ///
-/// 每个 octave [2^N, 2^(N+1)) 被划分为 Subdivisions 个等距 class。
+/// @tparam MinSize      最小类大小（向下对齐到 bit_floor），默认 16
+/// @tparam MaxSize      最大类大小（向上对齐到 bit_ceil），默认 4096
+/// @tparam Subdivisions 每 octave 切分数（必须为 2^N），默认 4
 ///
-/// 例如 MinSize=16, MaxSize=4096, Subdivisions=4:
-///
-///   octave 0:  16   20   24   28      (base=16,  step=4)
-///   octave 1:  32   40   48   56      (base=32,  step=8)
-///   octave 2:  64   80   96  112      (base=64,  step=16)
-///   ...
-///   octave 7: 2048 2560 3072 3584     (base=2048, step=512)
-///   octave 8: 4096                    (last octave 仅保留 sub 0)
-///
-/// 共 (k_groups - 1) * Subdivisions + 1 = 33 个 class。
-///
-/// @note
-///
-/// Subdivisions 必须为 2^N: 用于位运算化 class_index/class_size 热路径,
-/// 消除整数除法。
+/// 内碎片 <= 1/Subdivisions，class_index/class_size 全部位运算化，消除整数除法。
 template <std::size_t MinSize = 16, std::size_t MaxSize = 4096, std::size_t Subdivisions = 4>
     requires (MinSize >= sizeof(void*))
             && (MinSize < MaxSize)
@@ -335,7 +324,7 @@ private:
     static constexpr std::size_t k_sub_shift = static_cast<std::size_t>(std::countr_zero(Subdivisions));
 
     /// @brief k_min << k_base_shift = Subdivisions; 等价于 k_min/Subdivisions 的 shift 形式。
-    /// Why: class_size 用它把 mul 吸收进 shl。
+    /// class_size 用它把 mul 吸收进 shl。
     static constexpr std::size_t k_base_shift = k_min_shift - k_sub_shift;
 
     static constexpr std::size_t k_groups    = k_max_shift - k_min_shift + 1;
@@ -404,24 +393,24 @@ static_assert(S::class_index(1024) == 24);
 static_assert(S::class_index(3584) == 31);
 static_assert(S::class_index(4096) == 32);
 
-// ---- class_index: 任意 bytes → ≥bytes 的最小档位 idx ----
-static_assert(S::class_index(17)   == 1);    // → 20
+// ---- class_index: 任意 bytes -> >=bytes 的最小档位 idx ----
+static_assert(S::class_index(17)   == 1);    // -> 20
 static_assert(S::class_index(19)   == 1);
-static_assert(S::class_index(21)   == 2);    // → 24
-static_assert(S::class_index(25)   == 3);    // → 28
+static_assert(S::class_index(21)   == 2);    // -> 24
+static_assert(S::class_index(25)   == 3);    // -> 28
 static_assert(S::class_index(29)   == 4);    // octave 0 空隙溢出到 octave 1 起点 (32)
 static_assert(S::class_index(31)   == 4);
-static_assert(S::class_index(33)   == 5);    // → 40
-static_assert(S::class_index(57)   == 8);    // → 64
+static_assert(S::class_index(33)   == 5);    // -> 40
+static_assert(S::class_index(57)   == 8);    // -> 64
 static_assert(S::class_index(63)   == 8);
-static_assert(S::class_index(65)   == 9);    // → 80
-static_assert(S::class_index(127)  == 12);   // → 128
-static_assert(S::class_index(1023) == 24);   // → 1024
-static_assert(S::class_index(1025) == 25);   // → 1280
-static_assert(S::class_index(3585) == 32);   // → 4096
+static_assert(S::class_index(65)   == 9);    // -> 80
+static_assert(S::class_index(127)  == 12);   // -> 128
+static_assert(S::class_index(1023) == 24);   // -> 1024
+static_assert(S::class_index(1025) == 25);   // -> 1280
+static_assert(S::class_index(3585) == 32);   // -> 4096
 static_assert(S::class_index(4095) == 32);
 
-// ---- idx ↔ size 闭环 ----
+// ---- idx <-> size 闭环 ----
 constexpr bool roundtrip() {
     for (std::size_t i = 0; i < S::class_count(); ++i)
         if (S::class_index(S::class_size(i)) != i) return false;
@@ -437,8 +426,8 @@ constexpr bool monotonic() {
 }
 static_assert(monotonic());
 
-// ---- 全量暴力: ∀ bytes ∈ [k_min, k_max] ----
-//      class_index(b) 给出 ≥b 的最小合法档位,且前一档无法容纳
+// ---- 全量暴力: forall bytes in [k_min, k_max] ----
+//      class_index(b) 给出 >=b 的最小合法档位,且前一档无法容纳
 constexpr bool minimality() {
     for (std::size_t b = S::min_size; b <= S::max_size; ++b) {
         const auto idx = S::class_index(b);
@@ -460,9 +449,9 @@ using S1 = SubdividedScheme<16, 256, 1>;
 static_assert(S1::class_count() == 5);
 static_assert(S1::class_size(0) == 16 && S1::class_size(4) == 256);
 static_assert(S1::class_index(16) == 0);
-static_assert(S1::class_index(17) == 1);     // → 32
+static_assert(S1::class_index(17) == 1);     // -> 32
 static_assert(S1::class_index(32) == 1);
-static_assert(S1::class_index(33) == 2);     // → 64
+static_assert(S1::class_index(33) == 2);     // -> 64
 
 // ---- Subdivisions=8 ----
 using S8 = SubdividedScheme<16, 1024, 8>;
@@ -508,27 +497,14 @@ static_assert(roundtrip_all());
 // ============================================================================
 //  HybridScheme
 // ============================================================================
-/// @brief 混合 scheme: 小对象线性分级,大对象几何分级 (mimalloc 风格)。
+/// @brief 混合 scheme: 小对象线性分级，大对象几何分级（mimalloc 风格）。
 ///
-/// 设计动机:
-///   - 小对象 (<= LinearMax): 每 LinearStep 字节一个桶,内碎片 <= LinearStep
-///   - 大对象 (>  LinearMax): 每 octave 切 Subdivisions 份,内碎片 <= 1/Subdivisions
-/// 这样小对象碎片接近 0,大对象保持几何分桶不爆炸。
+/// @tparam LinearStep   线性段步长（必须为 2^N），默认 8
+/// @tparam LinearMax    线性段上限（必须为 2^N），默认 64
+/// @tparam MaxSize      最大类大小（必须为 2^N），默认 4096
+/// @tparam Subdivisions 几何段每 octave 切分数（必须为 2^N），默认 4
 ///
-/// 例 LinearStep=8, LinearMax=64, MaxSize=4096, Subdivisions=4:
-///
-///   线性段 (8 个桶):
-///     idx  0..7:    8,  16,  24,  32,  40,  48,  56,  64
-///
-///   几何段 (6 octave * 4 = 24 个桶):
-///     idx  8..11:   80,  96, 112, 128       (octave 0, base=64,  step=16)
-///     idx 12..15:  160, 192, 224, 256       (octave 1, base=128, step=32)
-///     idx 16..19:  320, 384, 448, 512       (octave 2)
-///     idx 20..23:  640, 768, 896, 1024      (octave 3)
-///     idx 24..27: 1280,1536,1792, 2048      (octave 4)
-///     idx 28..31: 2560,3072,3584, 4096      (octave 5)
-///
-///   共 32 个桶。
+/// 小对象 (<= LinearMax) 内碎片 <= LinearStep，大对象内碎片 <= 1/Subdivisions，分桶不爆炸。
 template <std::size_t LinearStep   = 8,
          std::size_t LinearMax    = 64,
          std::size_t MaxSize      = 4096,
@@ -592,7 +568,7 @@ public:
 static_assert(SizeClassScheme<HybridScheme<>>, "HybridScheme must satisfy SizeClassScheme");
 
 // ============================================================================
-//  静态断言
+//  静态断言测试
 // ============================================================================
 namespace tfl::detail::hybrid_test {
 
@@ -628,23 +604,23 @@ static_assert(H::class_size(31) == 4096);   // 最末档
 // ---- class_index: 线性段 ----
 static_assert(H::class_index(1)  == 0);
 static_assert(H::class_index(8)  == 0);
-static_assert(H::class_index(9)  == 1);     // → 16
+static_assert(H::class_index(9)  == 1);     // -> 16
 static_assert(H::class_index(16) == 1);
-static_assert(H::class_index(17) == 2);     // → 24
-static_assert(H::class_index(63) == 7);     // → 64
+static_assert(H::class_index(17) == 2);     // -> 24
+static_assert(H::class_index(63) == 7);     // -> 64
 static_assert(H::class_index(64) == 7);     // 线性末
 
 // ---- class_index: 几何段 ----
-static_assert(H::class_index(65)   == 8);   // → 80
+static_assert(H::class_index(65)   == 8);   // -> 80
 static_assert(H::class_index(80)   == 8);
-static_assert(H::class_index(81)   == 9);   // → 96
+static_assert(H::class_index(81)   == 9);   // -> 96
 static_assert(H::class_index(128)  == 11);  // octave 0 末
-static_assert(H::class_index(129)  == 12);  // octave 1 首 (→ 160)
+static_assert(H::class_index(129)  == 12);  // octave 1 首 (-> 160)
 static_assert(H::class_index(256)  == 15);  // octave 1 末
 static_assert(H::class_index(1024) == 23);
 static_assert(H::class_index(4096) == 31);
 
-// ---- idx ↔ size 闭环 ----
+// ---- idx <-> size 闭环 ----
 constexpr bool roundtrip() {
     for (std::size_t i = 0; i < H::class_count(); ++i)
         if (H::class_index(H::class_size(i)) != i) return false;
@@ -660,7 +636,7 @@ constexpr bool monotonic() {
 }
 static_assert(monotonic());
 
-// ---- 全量暴力: class_index(b) 是 ≥b 的最小档位 ----
+// ---- 全量暴力: class_index(b) 是 >=b 的最小档位 ----
 constexpr bool minimality() {
     for (std::size_t b = H::min_size; b <= H::max_size; ++b) {
         const auto idx = H::class_index(b);
