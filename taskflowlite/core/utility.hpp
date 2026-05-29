@@ -1,8 +1,8 @@
-﻿/// @file utility.hpp
-/// @brief 框架基础工具集 —— CRTP 基类、类型安全转换、源码位置包装等
+/// @file  utility.hpp
+/// @brief 框架基础工具集 —— CRTP 策略基类、安全类型转换、源码位置包装、向量映射等。
 /// @author wicyn
 /// @contact https://github.com/wicyn
-/// @date 2026-03-02
+/// @date 2026-05-28
 /// @license MIT
 /// @copyright Copyright (c) 2026 wicyn
 
@@ -94,26 +94,10 @@ struct ChunkLink {
     }
 };
 
-/// @brief CRTP 空基类：禁止拷贝与移动，保证对象地址在构造后不变。
+/// @brief CRTP 空基类：禁止拷贝与移动，保证构造后地址不变。
 ///
-/// @details
-/// `Immovable<CRTP>` 禁掉所有四种特殊成员（拷贝构造 / 移动构造 / 拷贝赋值 / 移动赋值），
-/// 用于 Executor、Semaphore 等"构造后地址不可变"的核心对象。
-///
-/// ============================================================================
-///  CRTP 设计动机 —— 防误用 + 每派生类独立类型
-/// ============================================================================
-/// 为什么是 `Immovable<CRTP>` 而不是 `Immovable`（无模板）？
-/// - 多重继承时，多个基类的"非模板 Immovable"会冲突（钻石问题）；
-/// - 模板特化让每个派生类的 Immovable 是独立类型，避免冲突；
-/// - 通过 `static_assert(!requires{sizeof(CRTP);})` 检测 CRTP 误用 ——
-///   基类实例化时派生类必须仍是不完整类型，否则有人写了 `Immovable<int>` 这种
-///   错用。
-///
-/// EBO（Empty Base Optimization）保证不增加派生类大小。
-///
-/// @tparam CRTP 派生类（可设为 void 用于某些边角场景）
-/// @see MoveOnly  允许移动的对偶基类
+/// 禁掉全部四种特殊成员。模板化 CRTP 避免多重继承冲突，EBO 不增加派生类大小。
+/// @tparam CRTP 派生类类型
 template <typename CRTP>
 struct Immovable {
     // CRTP 模式在基类实例化时派生类必定为不完整类型，此断言防止非 CRTP 误用
@@ -328,10 +312,12 @@ public:
         , m_loc{std::forward<Loc>(loc)}
     {}
 
-    /// @brief 获取被包装的值。
+    /// @brief 获取被包装的基础值，即构造时传入的格式串或消息 payload。
+    /// @return 对内部存储 T 的常量引用。
     constexpr const T& format() const noexcept { return m_inner; }
 
-    /// @brief 获取捕获的源码位置。
+    /// @brief 获取该包装器构造时自动捕获的源码位置（文件、行号、函数名）。
+    /// @return std::source_location 结构体的常量引用。
     constexpr const std::source_location& location() const noexcept { return m_loc; }
 };
 
@@ -362,7 +348,8 @@ public:
         , m_trace{std::forward<Trace>(trace)}
     {}
 
-    /// @brief 获取捕获的堆栈跟踪。
+    /// @brief 获取该包装器构造时自动捕获的完整调用栈快照。
+    /// @return std::stacktrace 对象的常量引用，包含从 throw 点到 main 的调用链。
     constexpr const std::stacktrace& stacktrace() const noexcept { return m_trace; }
 };
 #endif

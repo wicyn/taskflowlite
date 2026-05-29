@@ -74,9 +74,6 @@ namespace tfl {
 /// 3. 最后一个子任务完成时通过 `_schedule_parent` 重新调度父节点；
 /// 4. 第二次进入：清除 `PREEMPTED`，执行真正的 tear_down。
 ///
-/// @see Work             所有子类的基类
-/// @see work_factory.hpp  本文件类型的 make_xxx 工厂
-/// @see Executor         调度与 tear_down 协议
 ///
 
 /// @brief 持有局部 `Topology` 实例的辅助基类。
@@ -87,7 +84,6 @@ namespace tfl {
 /// 确保 `m_local_topology` 先于 `Work` 基类构造，从而 `Work`
 /// 可以安全地持有指向该 Topology 的指针。
 ///
-/// @see Topology  运行时生命周期状态机
 struct TopologyHolder {
     Topology m_local_topology;
     explicit TopologyHolder(Executor* exec) : m_local_topology{exec} {}
@@ -118,7 +114,6 @@ protected:
 /// 本类不包含用户 callable 或参数；它仅固化节点类型与 D2 可视化样式。
 /// 用户逻辑由派生类 `BasicInvoker` 持有并通过 `invoke()` 执行。
 ///
-/// @see BasicInvoker  持有 `void()` 闭包的静态图节点
 class BasicWork : public Work {
 protected:
     template <typename... Xs>
@@ -142,8 +137,6 @@ protected:
 /// 派生类 `RuntimeInvoker` 在 `invoke()` 中构造 `Runtime` 句柄，
 /// 授予用户在工作线程上动态创建子任务的能力。
 ///
-/// @see RuntimeInvoker  持有 `void(Runtime&)` 闭包的静态图节点
-/// @see Runtime          动态任务调度上下文
 class RuntimeWork : public Work {
 protected:
     template <typename... Xs>
@@ -166,8 +159,6 @@ protected:
 /// 分支节点通过 `Branch` 句柄选择一个后继；未选中的出边在 tear_down
 /// 阶段被跳过（依赖计数不传播）。D2 渲染为菱形。
 ///
-/// @see BranchInvoker  持有 `void(Branch&)` 闭包的静态图分支节点
-/// @see Branch          单一通道挑选权杖
 class BranchWork : public Work {
 protected:
     template <typename... Xs>
@@ -191,8 +182,6 @@ protected:
 /// 用户通过 `MultiBranch` 句柄的 `activate()` 逐个挑选目标；
 /// tear_down 阶段对每个激活目标独立传播依赖计数。D2 渲染为六边形。
 ///
-/// @see MultiBranchInvoker  持有 `void(MultiBranch&)` 闭包的多分支节点
-/// @see MultiBranch          多线广播挑选权杖
 class MultiBranchWork : public Work {
 protected:
     template <typename... Xs>
@@ -217,8 +206,6 @@ protected:
 /// `JumpWork` 的 `Implicit` 位为 `NONE`（无需 join 汇合），
 /// 而 `BranchWork` 默认携带 `JOIN` 位。D2 渲染为虚线菱形。
 ///
-/// @see JumpInvoker  持有 `void(Jump&)` 闭包的静态图跳转节点
-/// @see Jump          物理传送跃迁指令权杖
 class JumpWork : public Work {
 protected:
     template <typename... Xs>
@@ -242,8 +229,6 @@ protected:
 /// 用户通过 `MultiJump` 句柄激活一组目标节点，未被激活的后继
 /// 在 tear_down 阶段被跳过。D2 渲染为虚线六边形。
 ///
-/// @see MultiJumpInvoker  持有 `void(MultiJump&)` 闭包的多跳转节点
-/// @see MultiJump          多目标摧毁重置权杖
 class MultiJumpWork : public Work {
 protected:
     template <typename... Xs>
@@ -272,9 +257,6 @@ protected:
 /// 中委托给 `Executor` 的子图调度协议。派生类负责在合适的生命周期阶段
 /// 调用 `Executor::_set_up_graph()` 初始化子图拓扑。
 ///
-/// @see SubflowInvoker  静态图中的循环/条件子图节点
-/// @see DetachedFlowInvoker  fire-and-forget 异步子图
-/// @see Graph            节点向量与边集合
 template <typename GhStore>
 class GraphWork : public Work {
 protected:

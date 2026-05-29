@@ -44,29 +44,31 @@ namespace tfl {
 /// std::cout << std::format("{}", v);  // "1.2.0"
 /// @endcode
 struct Version {
-    std::uint32_t major; ///< 主版本号
-    std::uint32_t minor; ///< 次版本号
-    std::uint32_t patch; ///< 修订号
+    std::uint32_t major;   ///< 主版本号
+    std::uint32_t minor;   ///< 次版本号
+    std::uint32_t patch;   ///< 修订号
 
     constexpr Version(std::uint32_t maj, std::uint32_t min, std::uint32_t pat) noexcept
         : major{maj}, minor{min}, patch{pat} {}
 
     constexpr std::strong_ordering operator<=>(const Version&) const = default;
 
-    /// @brief 格式化为 `"major.minor.patch"` 字符串。
+    /**
+     * @brief 格式化为 `"major.minor.patch"` 字符串。
+     */
     [[nodiscard]] std::string to_string() const {
         return std::format("{}.{}.{}", major, minor, patch);
     }
 
+    /// @brief 流输出操作符 —— 格式与 `to_string()` 一致
     friend std::ostream& operator<<(std::ostream& stream, const Version& ver) {
         return stream << ver.major << '.' << ver.minor << '.' << ver.patch;
     }
 };
 
-/// @brief 框架全局版本实例。
-///
-/// 标注 `inline constexpr`——在所有翻译单元中共享同一定义,ODR 安全。
-/// @par 线程安全 编译期即确定的只读常量,无任何同步开销。
+/**
+ * @brief 框架全局版本实例，编译期常量，ODR 安全。
+ */
 inline constexpr Version version(
     TASKFLOWLITE_VERSION_MAJOR,
     TASKFLOWLITE_VERSION_MINOR,

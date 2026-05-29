@@ -15,129 +15,28 @@
 
 namespace tfl {
 
-/// @brief DAG 节点的轻量级用户层句柄。
+/// @brief DAG 节点的轻量级用户层句柄 —— 裸 Work* 上的薄包装。
 ///
-/// @details
-/// `Task` 是 **裸 Work\* 上的薄包装**：内部仅一个指针，对外提供 fluent API
-/// 操作底层节点的依赖、信号量、观察者、命名等属性。所有 mutate 操作都直接
-/// 落到对应 `Work` 上，自身无任何独立状态。
+/// 单指针开销，提供 fluent API 操作依赖（precede/succeed）、信号量（acquire/release）、
+/// 观察者等节点属性。弱引用语义 —— 不参与生命周期管理，Flow 析构后句柄即刻悬挂。
+/// lvalue 上返回 Task& 零拷贝，rvalue 上按值返回堵住悬空引用陷阱。
 ///
-/// 它存在的根本理由是 **分层（layering）**：
-/// - `Work` 是框架内部类型，包含原子状态机 / 拓扑指针 / 异常归档等大量内部细节，
-///   不能直接暴露给用户（既会泄露 ABI，也容易被误改）。
-/// - `Task` 把"用户合法可改的那部分"切片暴露 —— 通过白名单 API 而非禁止名单。
+/// precede/succeed 在 Work::m_edges 上双向同步更新前驱与后继，保证 join_counter 正确。
+/// hash 基于 Work* 地址，特化 std::hash 支持直接用作 unordered_map 键。
 ///
-/// ============================================================================
-///  与同族句柄的边界
-/// ============================================================================
-/// 框架里"指向 Work 的句柄"有四种，各自语义截然不同 —— 选错会引发难以察觉的
-/// 生命周期 bug：
+/// @note 框架内有多种指向 Work 的句柄（Task/TaskView/AsyncTask），语义截然不同；
+/// 需要调度期持有引用应使用强引用的 AsyncTask，而非弱引用的 Task。
 ///
-/// | 句柄                | 所有权语义     | 拷贝代价  | 生命周期由谁兜底               |
-/// |---------------------|----------------|-----------|--------------------------------|
-/// | `Task`              | **弱引用**     | 单指针拷贝 | 归属的 `Flow` / `Graph`        |
-/// | `TaskView`          | **弱 const**   | 单引用拷贝 | 同 Task，编译期禁止 mutate    |
-/// | `AsyncTask`         | **强引用**     | refcount  | `Topology` 引用计数            |
-///
-/// 关键约束：**`Task` 不参与生命周期管理**。Flow 析构后所有 Task 句柄立即悬挂，
-/// 这是有意为之 —— 用户在图编辑期持有 Task，编辑结束后自然丢弃；如果需要在
-/// 调度阶段拿到任务的引用，应该用 `AsyncTask`。
-///
-/// 拷贝 / 移动 `Task` 都是 trivial 的指针搬运：
-/// - 拷贝：复制指针，原句柄仍有效；
-/// - 移动：转移指针，原句柄被置 null（只是为了语义清晰，不是必须）；
-/// - 等值：指针等同。
-///
-/// ============================================================================
-///  Fluent API 与依赖建模
-/// ============================================================================
-/// 拓扑构建走 fluent 链式风格,mutator 在 lvalue 上返回 `Task&` 零拷贝,
-/// 在 rvalue 上按值返回 `Task` —— 后者从源头堵住"链式调用返回值绑成
-/// 引用"的悬空陷阱(`Task& x = flow.emplace(...).precede(...)` 编译失败)。
-/// @code
-///   t1.name("load")
-///     .precede(t2, t3)            // t1 → {t2, t3}
-///     .acquire(sem_a)             // 进入需 acquire(sem_a)
-///     .release(sem_a, sem_b);     // 完成时 release(sem_a, sem_b)
-/// @endcode
-/// `precede` / `succeed` 在 `Work::m_edges` 上 **双向同步** 更新前驱与后继 ——
-/// 这是 DAG 拓扑一致性的硬约束：单边更新会让 join_counter 计算错误、导致死锁
-/// 或漏调度。`remove_predecessor` / `remove_successor` / `clear_*` 同理双向。
-///
-/// 信号量两族 API：
-/// - `acquire(Sem...)`               —— 单位计数模式（每个 sem 各占 1）；
-/// - `acquire(Sem, count, ...)`      —— 多计数模式（`sem_count_sequence` 概念）。
-/// `release` 同构。同一信号量重复 acquire 会累加计数。
-///
-/// ============================================================================
-///  迭代与观察者
-/// ============================================================================
-/// `for_each_predecessor` / `for_each_successor` / `for_each_acquire` /
-/// `for_each_release` 提供**只读式遍历**：访问者拿到的依然是 `Task`（可写）
-/// 或信号量引用，遍历期间用户**不应**修改邻接表（迭代器失效未做防护，是编辑期
-/// 单线程契约的延续）。
-///
-/// `register_observer<T>(args...)` 在 `Work::m_observers` 上挂一个 shared_ptr，
-/// 调度时被 `_notify_before` / `_notify_after` 回调。返回 shared 是为了让用户
-/// 也能持有，方便后续 `unregister_observer`。
-///
-/// ============================================================================
-///  TaskView —— 给 TaskObserver 的安全只读切片
-/// ============================================================================
-/// `TaskView` 持有 `const Work&`，**编译期** 屏蔽所有 mutator。设计动机：
-/// 框架在调度期会把节点信息回调给用户实现的 `TaskObserver`，这个回调时机
-/// 跑在 worker 线程上，绝不能允许用户篡改节点状态（会与调度器并发写）。
-///
-/// 类型系统在此承担安全边界：传 `Task` 给 observer 在编译期就被禁掉，
-/// 只能传 `TaskView` —— 比运行期断言更早、也更省。
-///
-/// ============================================================================
-///  哈希与容器
-/// ============================================================================
-/// `Task` 与 `TaskView` 的 hash 都基于底层 `Work*` 地址（同一节点不同视图
-/// 哈希相同）。框架特化了 `std::hash<Task>` 与 `std::hash<TaskView>`，
-/// 可直接用作 `unordered_map` / `unordered_set` 的键。
-///
-/// ============================================================================
-///  使用示例
-/// ============================================================================
-/// @code
-///   Flow flow;
-///   auto load = flow.emplace([]{ /* ... */ }).name("load");
-///   auto proc = flow.emplace([]{ /* ... */ }).name("process");
-///   auto save = flow.emplace([]{ /* ... */ }).name("save");
-///
-///   load.precede(proc, save);    // load → {proc, save}（双向同步）
-///   save.succeed(proc);          // 等价 proc.precede(save)
-///
-///   load.acquire(io_sem).release(io_sem);
-///   load.register_observer<MyTracer>("loader");
-/// @endcode
-///
-/// @see Flow              Task 的所有者与生产者
-/// @see Work              Task 包装的内部节点
-/// @see TaskView          只读对偶，给 TaskObserver 用
-/// @see AsyncTask         强引用对偶，参与 topology 引用计数
-
 // ============================================================================
 // TaskView - 只读视图
 // ============================================================================
-/// @brief Task 的 const 视图代理 —— 跨 API 边界传递节点信息的安全形态。
+/// @brief Task 的只读视图 —— 编译期禁写，专为 TaskObserver 回调场景设计。
 ///
-/// @details
-/// `TaskView` 与 `Task` 持有同一份 `Work` 指针 / 引用，但 **编译期** 禁掉所有
-/// mutator。专为 `TaskObserver::on_before` / `on_after` 等用户实现的回调
-/// 设计 —— 框架希望让用户读节点信息，但不允许在调度回调中改它。
+/// 持有 `const Work&`，将线程安全契约从运行期断言提升到类型系统：
+/// 调度回调中绝不允许篡改节点状态，编译错误即是契约。
+/// 所有访问器与 Task 同名只读方法一一对应，hash/equality 基于 Work* 地址。
 ///
-/// 这是把"线程安全契约"从运行期断言提升到 **类型系统** 的典型手法：
-/// 不需要 assert、不需要锁、不需要文档警告 —— 编译错误就是契约本身。
-///
-/// 所有访问器与 `Task` 的同名只读访问器一一对应，hash / equality 也按
-/// `Work*` 地址语义，因此 `Task` 与 `TaskView` 在容器中可以互查。
-///
-/// @note `TaskView` 不可默认构造（持引用），必须由框架内部构造后传出。
-/// @see Task        可写对偶
-/// @see TaskObserver  使用 TaskView 的回调接口
+/// @note 不可默认构造（持引用），必须由框架内部构造后传出。
 class TaskView {
     friend class Executor;
     friend class Branch;
@@ -156,31 +55,40 @@ public:
     /// @brief 获取当前视图的哈希值，基于底层 Work 地址。
     [[nodiscard]] std::size_t hash_value() const noexcept;
 
-    /// @brief 获取任务名称。
+    /// @brief 获取任务名称（调试/可视化用），直接读取底层 Work::m_name。
+    /// @return 任务名称 view，空字符串表示未命名。
     [[nodiscard]] std::string_view name() const noexcept;
 
-    /// @brief 获取后继任务数量。
+    /// @brief 获取当前任务的后继节点数量，直接读取 Work::m_num_successors。
+    /// @return 后继任务数量。
     [[nodiscard]] std::size_t num_successors() const noexcept;
 
-    /// @brief 获取前驱任务数量。
+    /// @brief 获取当前任务的前驱节点数量，通过 Work::_num_predecessors() 计算。
+    /// @return 前驱任务数量。
     [[nodiscard]] std::size_t num_predecessors() const noexcept;
 
-    /// @brief 获取执行前需要获取的信号量数量。
+    /// @brief 获取执行前需要获取的信号量约束数量。
+    /// @return 信号量获取项数量。
     [[nodiscard]] std::size_t num_acquires() const noexcept;
 
-    /// @brief 获取执行后需要释放的信号量数量。
+    /// @brief 获取执行后需要释放的信号量约束数量。
+    /// @return 信号量释放项数量。
     [[nodiscard]] std::size_t num_releases() const noexcept;
 
-    /// @brief 获取已注册的观察者数量。
+    /// @brief 获取已注册在任务上的观察者数量。
+    /// @return 观察者数量，0 表示无观察者或观察者数据尚未分配。
     [[nodiscard]] std::size_t num_observers() const noexcept;
 
-    /// @brief 获取底层任务节点类型。
+    /// @brief 获取底层任务节点类型，直接读取 Work::m_type 枚举。
+    /// @return TaskType 枚举值（Basic, Branch, Runtime, Graph 等）。
     [[nodiscard]] TaskType type() const noexcept;
 
-    /// @brief 检测任务执行期间是否已经记录异常。
+    /// @brief 检测任务执行期间是否已记录异常（读取 Work::m_exception_ptr）。
+    /// @return 有异常指针时返回 true。
     [[nodiscard]] bool has_exception() const noexcept;
 
-    /// @brief 获取任务执行期间记录的异常指针。
+    /// @brief 获取任务执行期间捕获的异常指针，直接返回 Work::m_exception_ptr。
+    /// @return std::exception_ptr，可能为空。
     [[nodiscard]] std::exception_ptr exception() const noexcept;
 
     /// @brief 将当前任务节点导出为 D2 描述字符串。
@@ -189,15 +97,21 @@ public:
     /// @brief 将当前任务节点的 D2 描述写入输出流。
     void dump(std::ostream& ostream, Direction dir = Direction::Default) const;
 
-    /// @brief 遍历所有前驱任务。
+    /// @brief 遍历当前任务的所有前驱只读节点，对每个调用 visitor(TaskView{*predecessor})。
+    /// @tparam F 可调用对象，接收 TaskView 只读句柄。
+    /// @param visitor 访问器，禁止修改前驱节点属性（TaskView 不可写）。
     template <std::invocable<TaskView> F>
     void for_each_predecessor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F, TaskView>);
 
-    /// @brief 遍历所有后继任务。
+    /// @brief 遍历当前任务的所有后继只读节点，对每个调用 visitor(TaskView{*successor})。
+    /// @tparam F 可调用对象，接收 TaskView 只读句柄。
+    /// @param visitor 访问器，禁止修改后继节点属性。
     template <std::invocable<TaskView> F>
     void for_each_successor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F, TaskView>);
 
-    /// @brief 遍历执行前的信号量获取约束。
+    /// @brief 遍历任务执行前的信号量获取约束，对每个调用 visitor(const Semaphore&, std::size_t) 或 visitor(const Semaphore&)。
+    /// @tparam F 可调用对象，可接收 (const Semaphore&, std::size_t) 或仅 (const Semaphore&)。
+    /// @param visitor 访问器，信号量与配额均为只读。
     template <typename F>
         requires std::invocable<F, const Semaphore&, std::size_t> || std::invocable<F, const Semaphore&>
     void for_each_acquire(F&& visitor) const noexcept(
@@ -206,7 +120,9 @@ public:
             : std::is_nothrow_invocable_v<F, const Semaphore&>
         );
 
-    /// @brief 遍历执行后的信号量释放约束。
+    /// @brief 遍历任务执行后的信号量释放约束，对每个调用 visitor(const Semaphore&, std::size_t) 或 visitor(const Semaphore&)。
+    /// @tparam F 可调用对象，可接收 (const Semaphore&, std::size_t) 或仅 (const Semaphore&)。
+    /// @param visitor 访问器，信号量与配额均为只读。
     template <typename F>
         requires std::invocable<F, const Semaphore&, std::size_t> || std::invocable<F, const Semaphore&>
     void for_each_release(F&& visitor) const noexcept(
@@ -336,25 +252,25 @@ class Task {
     friend class Executor;
 
 public:
-    /// @brief 构造空任务句柄。
+    /// @brief 默认构造空任务句柄，m_work 为 nullptr，valid() 返回 false。
     Task() = default;
 
-    /// @brief 构造空任务句柄。
+    /// @brief 显式构造空任务句柄，等价于默认构造。
     explicit Task(std::nullptr_t) noexcept;
 
-    /// @brief 拷贝构造，复制底层 Work 指针。
+    /// @brief 拷贝构造，浅复制底层 Work 指针；两个句柄指向同一节点。
     Task(const Task& rhs) noexcept;
 
-    /// @brief 拷贝赋值，复制底层 Work 指针。
+    /// @brief 拷贝赋值，浅复制底层 Work 指针；两个句柄指向同一节点。
     Task& operator=(const Task& rhs) noexcept;
 
-    /// @brief 移动构造，接管 rhs 的底层 Work 指针。
+    /// @brief 移动构造，接管 rhs 的底层 Work 指针并将 rhs 置空。
     Task(Task&& rhs) noexcept;
 
-    /// @brief 移动赋值，接管 rhs 的底层 Work 指针。
+    /// @brief 移动赋值，接管 rhs 的底层 Work 指针并将 rhs 置空。
     Task& operator=(Task&& rhs) noexcept;
 
-    /// @brief 将当前句柄置空。
+    /// @brief 将当前句柄置空（m_work = nullptr），等价于 `reset()`。
     Task& operator=(std::nullptr_t) noexcept;
 
     /// @brief 判断两个任务句柄是否指向同一个底层节点。
@@ -363,47 +279,58 @@ public:
     /// @brief 判断两个任务句柄是否指向不同底层节点。
     [[nodiscard]] bool operator!=(const Task& rhs) const noexcept;
 
-    /// @brief 将当前任务句柄置空。
+    /// @brief 将当前句柄置空（m_work = nullptr），等价于 `operator=(nullptr)`。
     void reset() noexcept;
 
     // ========================================================================
     //  状态查询
     // ========================================================================
 
-    /// @brief 获取当前任务句柄的哈希值，基于底层 Work 指针地址。
+    /// @brief 返回句柄的哈希值，基于底层 Work 指针地址，支持 unordered_map 直接使用。
+    /// @return std::hash<const Work*> 结果。
     [[nodiscard]] std::size_t hash_value() const noexcept;
 
-    /// @brief 获取任务名称。
+    /// @brief 获取任务名称（调试/可视化用），直接读取底层 Work::m_name。
+    /// @return 任务名称 view，可能为空字符串。
     [[nodiscard]] std::string_view name() const noexcept;
 
-    /// @brief 判断当前句柄是否绑定了有效任务节点。
+    /// @brief 判断当前句柄是否绑定了有效任务节点（m_work != nullptr）。
+    /// @return 绑定有效节点返回 true，默认构造/置空/悬空返回 false。
     [[nodiscard]] bool valid() const noexcept;
 
-    /// @brief 获取后继任务数量。
+    /// @brief 获取当前任务的后继节点数量，直接读取 Work::m_num_successors。
+    /// @return 后继任务数量。
     [[nodiscard]] std::size_t num_successors() const noexcept;
 
-    /// @brief 获取前驱任务数量。
+    /// @brief 获取当前任务的前驱节点数量，通过 Work::_num_predecessors() 计算。
+    /// @return 前驱任务数量。
     [[nodiscard]] std::size_t num_predecessors() const noexcept;
 
-    /// @brief 获取执行前需要获取的信号量数量。
+    /// @brief 获取执行前需要获取的信号量约束数量。
+    /// @return 信号量获取项数量。
     [[nodiscard]] std::size_t num_acquires() const noexcept;
 
-    /// @brief 获取执行后需要释放的信号量数量。
+    /// @brief 获取执行后需要释放的信号量约束数量。
+    /// @return 信号量释放项数量。
     [[nodiscard]] std::size_t num_releases() const noexcept;
 
-    /// @brief 获取已注册的任务观察者数量。
+    /// @brief 获取已注册在任务上的观察者数量。
+    /// @return 观察者数量，0 表示无观察者或观察者数据尚未分配。
     [[nodiscard]] std::size_t num_observers() const noexcept;
 
-    /// @brief 检测当前任务句柄是否有效（非空）。
+    /// @brief 检测当前句柄是否非空（m_work != nullptr），与 valid() 语义等价，支持 `if(task)`。
     [[nodiscard]] explicit operator bool() const noexcept;
 
-    /// @brief 检测任务执行期间是否已经记录异常。
+    /// @brief 检测任务执行期间是否已记录异常（读取 Work::m_exception_ptr）。
+    /// @return 有异常指针时返回 true。
     [[nodiscard]] bool has_exception() const noexcept;
 
-    /// @brief 获取底层任务节点类型。
+    /// @brief 获取底层任务节点类型，直接读取 Work::m_type 枚举。
+    /// @return TaskType 枚举值（Basic, Branch, Runtime, Graph 等）。
     [[nodiscard]] TaskType type() const noexcept;
 
-    /// @brief 获取任务执行期间记录的异常指针。
+    /// @brief 获取任务执行期间捕获的异常指针，直接返回 Work::m_exception_ptr。
+    /// @return std::exception_ptr，可能为空。
     std::exception_ptr exception() const noexcept;
 
     /// @brief 将当前任务节点导出为 D2 描述字符串。
@@ -416,7 +343,10 @@ public:
     //  拓扑构建
     // ========================================================================
 
-    /// @brief 设置任务名称，用于调试和可视化。
+    /// @brief 设置任务名称，直接写入 Work::m_name，用于调试和可视化。
+    /// @tparam S 任何可用于构造 std::string 的类型。
+    /// @param name 新的任务名称。
+    /// @return *this（lvalue 链式调用）。
     template <typename S>
         requires std::constructible_from<std::string, S>
     Task& name(S&& name) &;
@@ -426,7 +356,10 @@ public:
         requires std::constructible_from<std::string, S>
     Task name(S&& name) &&;
 
-    /// @brief 将当前任务设置为一个或多个任务的前驱。
+    /// @brief 将当前任务设为 @p ts 中每个任务的前驱，建立 this -> each(t) 依赖。
+    /// @tparam Ts 每个参数必须为 Task 类型。
+    /// @param ts 一个或多个后继任务。
+    /// @return *this（lvalue 链式调用）。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& precede(Ts&&... ts) &;
@@ -436,7 +369,10 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task precede(Ts&&... ts) &&;
 
-    /// @brief 将当前任务设置为一个或多个任务的后继。
+    /// @brief 将当前任务设为 @p ts 中每个任务的后继，建立 each(t) -> this 依赖。
+    /// @tparam Ts 每个参数必须为 Task 类型。
+    /// @param ts 一个或多个前驱任务。
+    /// @return *this（lvalue 链式调用）。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& succeed(Ts&&... ts) &;
@@ -446,7 +382,10 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task succeed(Ts&&... ts) &&;
 
-    /// @brief 移除当前任务的指定前驱任务。
+    /// @brief 移除当前任务与 @p ts 中各任务的前驱关系（即解除 each(t) -> this 依赖）。
+    /// @tparam Ts 每个参数必须为 Task 类型。
+    /// @param ts 要解除的前驱任务。
+    /// @return *this（lvalue 链式调用）。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& remove_predecessor(Ts&&... ts) & noexcept;
@@ -456,7 +395,10 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task remove_predecessor(Ts&&... ts) && noexcept;
 
-    /// @brief 移除当前任务的指定后继任务。
+    /// @brief 移除当前任务与 @p ts 中各任务的后继关系（即解除 this -> each(t) 依赖）。
+    /// @tparam Ts 每个参数必须为 Task 类型。
+    /// @param ts 要解除的后继任务。
+    /// @return *this（lvalue 链式调用）。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task& remove_successor(Ts&&... ts) & noexcept;
@@ -466,13 +408,15 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
     Task remove_successor(Ts&&... ts) && noexcept;
 
-    /// @brief 清空当前任务的所有前驱关系。
+    /// @brief 清空所有前驱关系，解除所有节点到当前任务的依赖。
+    /// @return *this（lvalue 链式调用）。
     Task& clear_predecessors() & noexcept;
 
     /// @brief 右值限定重载。
     Task clear_predecessors() && noexcept;
 
-    /// @brief 清空当前任务的所有后继关系。
+    /// @brief 清空所有后继关系，解除当前任务到所有节点的依赖。
+    /// @return *this（lvalue 链式调用）。
     Task& clear_successors() & noexcept;
 
     /// @brief 右值限定重载。
@@ -482,7 +426,10 @@ public:
     //  信号量管理
     // ========================================================================
 
-    /// @brief 为任务添加执行前需要获取的信号量，每个信号量默认占用 1 个配额。
+    /// @brief 声明任务执行前需获取的信号量，每个默认占用 1 个配额。
+    /// @tparam Ts 每个参数必须为 Semaphore 类型。
+    /// @param sems 一个或多个信号量引用。
+    /// @return *this（lvalue 链式调用）。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& acquire(Ts&&... sems) &;
@@ -492,7 +439,10 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task acquire(Ts&&... sems) &&;
 
-    /// @brief 为任务添加执行后需要释放的信号量，每个信号量默认释放 1 个配额。
+    /// @brief 声明任务执行后需释放的信号量，每个默认释放 1 个配额。
+    /// @tparam Ts 每个参数必须为 Semaphore 类型。
+    /// @param sems 一个或多个信号量引用。
+    /// @return *this（lvalue 链式调用）。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& release(Ts&&... sems) &;
@@ -502,7 +452,10 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task release(Ts&&... sems) &&;
 
-    /// @brief 为任务添加执行前需要获取的信号量及对应配额。
+    /// @brief 声明任务执行前需获取的信号量及对应配额（交错参数：sem1, count1, sem2, count2, ...）。
+    /// @tparam Ts 参数类型必须满足 sem_count_sequence（Semaphore 与整型交错排列）。
+    /// @param args 成对的 (Semaphore&, std::size_t) 交错参数。
+    /// @return *this（lvalue 链式调用）。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     Task& acquire(Ts&&... args) &;
@@ -512,7 +465,7 @@ public:
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     Task acquire(Ts&&... args) &&;
 
-    /// @brief 为任务添加执行后需要释放的信号量及对应配额。
+    /// @brief 声明任务执行后需释放的信号量及对应配额（交错参数：sem1, count1, sem2, count2, ...）。
     template <typename... Ts>
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     Task& release(Ts&&... args) &;
@@ -522,7 +475,9 @@ public:
         requires (sizeof...(Ts) >= 2) && (sizeof...(Ts) % 2 == 0) && sem_count_sequence<Ts...>
     Task release(Ts&&... args) &&;
 
-    /// @brief 移除任务执行前需要获取的指定信号量约束。
+    /// @brief 移除执行前指定的信号量获取约束（按信号量引用地址匹配移除）。
+    /// @param sems 要移除的信号量引用。
+    /// @return *this（lvalue 链式调用）。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& remove_acquire(Ts&&... sems) & noexcept;
@@ -532,7 +487,9 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task remove_acquire(Ts&&... sems) && noexcept;
 
-    /// @brief 移除任务执行后需要释放的指定信号量约束。
+    /// @brief 移除执行后指定的信号量释放约束（按信号量引用地址匹配移除）。
+    /// @param sems 要移除的信号量引用。
+    /// @return *this（lvalue 链式调用）。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task& remove_release(Ts&&... sems) & noexcept;
@@ -542,13 +499,15 @@ public:
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Semaphore> && ...)
     Task remove_release(Ts&&... sems) && noexcept;
 
-    /// @brief 清空所有执行前信号量获取约束。
+    /// @brief 移除所有执行前信号量获取约束，释放 acquire 列表。
+    /// @return *this（lvalue 链式调用）。
     Task& clear_acquires() & noexcept;
 
     /// @brief 右值限定重载。
     Task clear_acquires() && noexcept;
 
-    /// @brief 清空所有执行后信号量释放约束。
+    /// @brief 移除所有执行后信号量释放约束，释放 release 列表。
+    /// @return *this（lvalue 链式调用）。
     Task& clear_releases() & noexcept;
 
     /// @brief 右值限定重载。
@@ -558,23 +517,29 @@ public:
     //  迭代访问
     // ========================================================================
 
-    /// @brief 遍历当前任务的所有前驱任务。
+    /// @brief 遍历当前任务的所有前驱任务，对每个调用 visitor(Task{predecessor})。
+    /// @tparam F 可调用对象，接收 Task 句柄。
+    /// @param visitor 访问器，非 const 重载允许修改前驱节点的属性。
     template <std::invocable<Task> F>
     void for_each_predecessor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F&, Task>);
 
-    /// @brief const 重载 —— 遍历时提供 `TaskView` 只读句柄。
+    /// @brief const 重载 —— 遍历时提供 `TaskView` 只读句柄，禁止修改前驱节点。
     template <std::invocable<TaskView> F>
     void for_each_predecessor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>);
 
-    /// @brief 遍历当前任务的所有后继任务。
+    /// @brief 遍历当前任务的所有后继任务，对每个调用 visitor(Task{successor})。
+    /// @tparam F 可调用对象，接收 Task 句柄。
+    /// @param visitor 访问器，非 const 重载允许修改后继节点的属性。
     template <std::invocable<Task> F>
     void for_each_successor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F&, Task>);
 
-    /// @brief const 重载 —— 遍历时提供 `TaskView` 只读句柄。
+    /// @brief const 重载 —— 遍历时提供 `TaskView` 只读句柄，禁止修改后继节点。
     template <std::invocable<TaskView> F>
     void for_each_successor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>);
 
-    /// @brief 遍历任务执行前的信号量获取约束。
+    /// @brief 遍历任务执行前的信号量获取约束，对每个调用 visitor(Semaphore&, std::size_t&) 或 visitor(Semaphore&)。
+    /// @tparam F 可调用对象，可接收 (Semaphore&, std::size_t&) 或仅 (Semaphore&)。
+    /// @param visitor 访问器，可变重载允许修改信号量及配额。
     template <typename F>
         requires std::invocable<F&, Semaphore&, std::size_t&>
                  || std::invocable<F&, Semaphore&>
@@ -583,7 +548,7 @@ public:
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
-    /// @brief const 重载 —— 遍历时提供只读信号量与配额。
+    /// @brief const 重载 —— 遍历时提供只读信号量与不可变配额。
     template <typename F>
         requires std::invocable<F&, const Semaphore&, std::size_t>
                  || std::invocable<F&, const Semaphore&>
@@ -592,7 +557,9 @@ public:
             ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
             : std::is_nothrow_invocable_v<F&, const Semaphore&>);
 
-    /// @brief 遍历任务执行后的信号量释放约束。
+    /// @brief 遍历任务执行后的信号量释放约束，对每个调用 visitor(Semaphore&, std::size_t&) 或 visitor(Semaphore&)。
+    /// @tparam F 可调用对象，可接收 (Semaphore&, std::size_t&) 或仅 (Semaphore&)。
+    /// @param visitor 访问器，可变重载允许修改信号量及配额。
     template <typename F>
         requires std::invocable<F&, Semaphore&, std::size_t&>
                  || std::invocable<F&, Semaphore&>
@@ -601,7 +568,7 @@ public:
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
-    /// @brief const 重载 —— 遍历时提供只读信号量与配额。
+    /// @brief const 重载 —— 遍历时提供只读信号量与不可变配额。
     template <typename F>
         requires std::invocable<F&, const Semaphore&, std::size_t>
                  || std::invocable<F&, const Semaphore&>

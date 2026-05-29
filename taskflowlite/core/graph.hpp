@@ -1,8 +1,8 @@
-﻿/// @file graph.hpp
-/// @brief 任务图容器 Graph —— Work 节点的物理存储与生命周期管理
+/// @file  graph.hpp
+/// @brief 任务图容器 Graph —— Work 节点的物理存储与生命周期管理。
 /// @author wicyn
 /// @contact https://github.com/wicyn
-/// @date 2026-03-02
+/// @date 2026-05-28
 /// @license MIT
 /// @copyright Copyright (c) 2026 wicyn
 
@@ -17,63 +17,9 @@ namespace tfl {
 
 /// @brief 任务图节点容器 —— 一组 Work* 的所有权管理者。
 ///
-/// @details
-/// `Graph` 是 `Flow` 的 **物理后端**：Flow 是用户视角的语义壳，Graph 才是真正
-/// 持有 `std::vector<Work*>` 并负责 RAII 释放的实体。它出现的理由是分层 ——
-/// 让 Flow 专注语义（emplace / precede / dump），Graph 专注存储（emplace /
-/// erase / clear）。
-///
-/// ============================================================================
-///  核心设计抉择
-/// ============================================================================
-/// **裸指针 + 析构清理**，而非 unique_ptr 容器：
-/// - 节点之间需要互引（前驱 / 后继都是 Work\*）—— unique_ptr 会让边表持有
-///   非拥有指针时类型不一致；
-/// - 节点的物理内存归 Graph 独占管理，析构时统一 `destroy(w)` 收尾；
-/// - 这使得边表 `std::vector<Work*>` 永远是一致的非拥有引用，逻辑清晰。
-///
-/// **O(1) 删除（swap-with-last）**：
-/// - 删除任意节点：先在容器里找到位置（O(N) 线性搜，但典型图规模可接受），
-///   把最后一个节点搬过去 + pop_back —— 实际删除是 O(1)；
-/// - 改变了节点的物理顺序，但 DAG 节点遍历顺序与语义无关，安全。
-///
-/// **禁拷贝 + 私有移动**：
-/// - 禁拷贝：节点指针多份会导致双重释放；
-/// - 移动是 private：只让 friend Flow 调用，避免外部错误使用。
-///
-/// ============================================================================
-///  与上下游的关系
-/// ============================================================================
-///
-/// ```
-///   ┌────────┐    持有     ┌────────┐    持有 (vec)    ┌────────┐
-///   │  Flow  │ ───────────►│ Graph  │ ────────────────►│ Work*  │
-///   └────────┘             └────────┘                  └────────┘
-///                                ▲                          ▲
-///                                │ 通过 m_graph 反向         │ 通过 m_edges 互引
-///                                └──────────────────────────┘
-/// ```
-///
-/// `Work::m_graph` 反指向所属 Graph，让节点在 `_can_precede` 等校验中能验证
-/// "两个节点是否同图"（跨图建边是非法的）。
-///
-/// ============================================================================
-///  迭代器 / 容器接口
-/// ============================================================================
-/// `Graph` 暴露 `begin/end/size/empty/operator[]/data` 等标准容器接口，
-/// 让外部（主要是 Executor 调度路径）能直接把它当 `std::vector<Work*>` 用。
-/// 这是为了让 `_set_up_graph` / `_cowait_graph` 等内部协议代码读起来更自然。
-///
-/// ============================================================================
-///  D2 可视化
-/// ============================================================================
-/// `dump(ostream)` 把整张图渲染为 D2 描述：节点列表 + 出边定义。Branch / Jump
-/// 边走专门的样式（虚线 / 红色），让可视化结果一眼就能看出控制流形态。
-///
-/// @see Flow                语义壳，本类的所有者
-/// @see Work                被持有的节点
-/// @see D2Renderer          可视化代际
-/// @see work_factory.hpp     destroy(Work*) 的实现
+/// 裸指针 + 独占所有权: 节点间互引用非拥有 Work*，物理内存由 Graph 统一释放。
+/// O(1) 删除用 swap-with-last 策略。禁拷贝，移动操作为私有（仅友元可转移所有权）。
+/// 暴露标准容器接口（begin/end/size/operator[]），供 Executor 调度路径直接使用。
 class Graph {
     friend class Executor;
     friend class Flow;
@@ -95,10 +41,18 @@ public:
     using reverse_iterator = std::vector<Work*>::reverse_iterator;
     using const_reverse_iterator = std::vector<Work*>::const_reverse_iterator;
 
+    /// @brief 默认构造空图，m_works 为空 vector，不含任何 Work 节点。
     Graph() = default;
+
     /// @brief 析构时释放所有节点并清空边集合。
+    ///
+    /// 利用裸指针 + 独占所有权的设计：析构器遍历 m_works，对每个节点
+    /// 调用 destroy(w)。节点间互引的 m_edges 不拥有指针，无需额外清理。
+    ///
+    /// @post 所有 Work* 通过 destroy() 回收内存；m_works 清空。
     ~Graph() noexcept;
 
+    // ---- 迭代器 ----
     [[nodiscard]] iterator begin() noexcept { return m_works.begin(); }
     [[nodiscard]] iterator end() noexcept { return m_works.end(); }
     [[nodiscard]] const_iterator begin() const noexcept { return m_works.begin(); }
@@ -112,10 +66,12 @@ public:
     [[nodiscard]] const_reverse_iterator crbegin() const noexcept { return m_works.crbegin(); }
     [[nodiscard]] const_reverse_iterator crend() const noexcept { return m_works.crend(); }
 
+    // ---- 容量 ----
     [[nodiscard]] bool empty() const noexcept { return m_works.empty(); }
     [[nodiscard]] size_type size() const noexcept { return m_works.size(); }
     [[nodiscard]] size_type capacity() const noexcept { return m_works.capacity(); }
 
+    // ---- 元素访问 ----
     [[nodiscard]] reference operator[](size_type pos) noexcept { return m_works[pos]; }
     [[nodiscard]] const_reference operator[](size_type pos) const noexcept { return m_works[pos]; }
     [[nodiscard]] reference front() noexcept { return m_works.front(); }
@@ -125,29 +81,65 @@ public:
     [[nodiscard]] pointer data() noexcept { return m_works.data(); }
     [[nodiscard]] const_pointer data() const noexcept { return m_works.data(); }
 
-    /// @brief D2 可视化导出
+    /// @brief D2 可视化导出。
+    ///
+    /// 将图中所有节点及其边以 D2 格式输出。根据边类型应用不同样式:
+    ///   - Jump/MultiJump: 红色虚线
+    ///   - Branch/MultiBranch: 蓝色粗线
+    ///   - 普通边: 灰色
+    ///
+    /// @param ostream 输出流。
     void dump(std::ostream& ostream) const;
+
 protected:
 
-    // 禁用拷贝：防止双重释放
+    /// @brief 禁用拷贝，防止双重释放。
+    ///
+    /// m_works 中的裸指针由 Graph 独占所有权。若拷贝 Graph，
+    /// 两个实例会各自尝试 destroy 同一组指针，导致双重释放。
     Graph(const Graph&) = delete;
     Graph& operator=(const Graph&) = delete;
 
+    /// @brief 移动构造（私有: 仅 friend Flow 调用）。
+    ///
+    /// 将 other 的所有权转移到 this，other 清空。
     Graph(Graph&& other) noexcept;
+
+    /// @brief 移动赋值（私有: 仅 friend Flow 调用）。
+    ///
+    /// 先 _clear() 释放当前持有的节点，再接管 other 的所有权。
     Graph& operator=(Graph&& other) noexcept;
 
-    /// @brief 节点注册：添加到图中
+    /// @brief 节点注册: 添加到图中并设置 m_graph 回指。
+    ///
+    /// @param work 要注册的节点。
+    /// @return 返回 work 指针以便链式调用。
     [[nodiscard]] Work* _emplace(Work* work);
 
-    /// @brief O(1) 节点删除：Swap-with-last
+    /// @brief O(1) 节点删除 —— swap-with-last 策略。
+    ///
+    /// @param work 要删除的节点。
+    ///
+    /// 算法步骤:
+    /// 1. 断开该节点的所有前驱和后继边（双向同步清理）
+    /// 2. 在 m_works 中找到目标位置（线性搜索）
+    /// 3. 用最后一个节点覆盖当前节点（swap-with-last）
+    /// 4. pop_back + destroy(work)
+    ///
+    /// DAG 中节点遍历顺序不影响语义，改变物理顺序是安全的。
+    ///
+    /// @warning 调用方必须确保目标节点未处于执行状态（构建期单线程调用），
+    ///          否则直接 destroy 运行中的节点会导致 UAF。
     void _erase(Work* const work) noexcept;
 
-    /// @brief 清空所有节点
+    /// @brief 清空所有节点（遍历 m_works 逐个 destroy）。
+    ///
+    /// @post m_works 为空，所有节点的边表也随之失效。
     void _clear() noexcept;
 
 private:
+    /// @brief 节点存储 —— 裸指针数组，Graph 独占所有权。
     std::vector<Work*> m_works;
-
 };
 
 // ============================================================================
@@ -181,15 +173,18 @@ inline Work* Graph::_emplace(Work* work) {
     return work;
 }
 
-/// @brief O(1) 节点删除：Swap-with-last
+/// @brief O(1) 节点删除 —— swap-with-last 策略（实现）。
 ///
-/// @par 算法
-/// 1. 断开该节点的所有前驱后继边
-/// 2. 用最后一个节点覆盖当前节点
-/// 3. pop_back
+/// 算法步骤:
+/// 1. 前置校验: work 非空且属于本图
+/// 2. 调用 work->_clear_predecessors() / _clear_successors() 断开所有边，
+///    同时在每个邻接节点侧同步删除反向边
+/// 3. 在 m_works 中线性搜索 work 位置，用 back() 覆盖之
+/// 4. pop_back + destroy(work) 释放节点内存
 ///
-/// @note 节点顺序无关性：DAG 中节点遍历顺序不影响语义
-/// @warning 调用方必须确保目标节点未处于执行状态（构建期单线程调用），否则直接 destroy 运行中的节点导致 UAF
+/// @post work 节点已从图中移除并销毁；m_works 大小减少 1。
+///
+/// @warning 本函数仅应在图构建期调用（单线程）。执行期图结构为只读。
 inline void Graph::_erase(Work* const work) noexcept {
     if (!work || work->m_graph != this) return;
 
@@ -204,12 +199,22 @@ inline void Graph::_erase(Work* const work) noexcept {
     destroy(work);
 }
 
+/// @brief D2 可视化导出（实现）。
+///
+/// 两遍扫描: 第一遍输出节点声明（各节点调用自己的 dump），第二遍输出边定义。
+///
+/// 边样式:
+/// - Jump/MultiJump: 红色虚线，加粗，带索引
+/// - Branch/MultiBranch: 蓝色粗线，带索引
+/// - 普通边: 灰色
 inline void Graph::dump(std::ostream& os) const {
+    // 第一遍: 节点声明
     for (const auto* w : m_works) {
         w->dump(os);
         os << "\n";
     }
 
+    // 第二遍: 边定义
     for (const auto* w : m_works) {
         char src[24];
         std::snprintf(src, sizeof(src), "p%zx", reinterpret_cast<std::uintptr_t>(w));
