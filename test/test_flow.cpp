@@ -91,7 +91,7 @@ TEST_CASE("Flow: emplace argument forwarding semantics", "[flow][emplace][forwar
             v = 999; // 仅修改副本
             (void)v;
         }, outside);
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
         REQUIRE(outside == 42);
     }
 
@@ -100,7 +100,7 @@ TEST_CASE("Flow: emplace argument forwarding semantics", "[flow][emplace][forwar
         tfl::Flow flow;
         int outside = 0;
         flow.emplace([](int& r) { r = 42; }, std::ref(outside));
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
         REQUIRE(outside == 42);
     }
 
@@ -111,7 +111,7 @@ TEST_CASE("Flow: emplace argument forwarding semantics", "[flow][emplace][forwar
         flow.emplace([](std::atomic<int>& c) {
             c.fetch_add(7);
         }, std::ref(ac));
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
         REQUIRE(ac.load() == 7);
     }
 
@@ -122,7 +122,7 @@ TEST_CASE("Flow: emplace argument forwarding semantics", "[flow][emplace][forwar
         flow.emplace([](int& a, int& b, int& c) {
             a = 1; b = 2; c = 3;
         }, std::ref(x), std::ref(y), std::ref(z));
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
         REQUIRE(x == 1);
         REQUIRE(y == 2);
         REQUIRE(z == 3);
@@ -166,7 +166,7 @@ TEST_CASE("Flow: batch insert tfl::pack tasks with args", "[flow][emplace][batch
     );
     t1.precede(t2);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(a == 0);   // t1 修改了副本
     REQUIRE(b == 42);  // t2 通过引用写回
 }
@@ -219,7 +219,7 @@ TEST_CASE("Flow: all 7 signatures accepted by emplace", "[flow][emplace][type-de
     flow.emplace(std::move(inner));
 
     REQUIRE(flow.size() == 7);
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(hits.load() == 7);
 }
 

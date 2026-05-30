@@ -288,7 +288,7 @@ TEST_CASE("Future: Runtime::async Future stop_token", "[future][stop][runtime]")
         rt.cowait();
     });
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(token_seen.load());
 }
 

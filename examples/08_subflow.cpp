@@ -1,5 +1,6 @@
 ﻿/// @file 08_subflow.cpp
-/// @brief 演示子图 (Subflow) 嵌套，展示主图与子图如何通过 Lambda 捕获共享同一上下文。
+/// @brief 演示子图（Subflow）嵌套——emplace(Flow, N) 将子图作为节点挂入父图并循环 N 次。
+///   展示主图与子图通过 Lambda 引用捕获共享同一变量的经典模式。
 
 #include "../taskflowlite/taskflowlite.hpp"
 #include <iostream>
@@ -44,6 +45,6 @@ int main() {
     start.precede(subflow_task);
     subflow_task.precede(end);
 
-    executor.submit(main_flow).start().wait();
+    executor.async(main_flow).wait();
     return 0;
 }

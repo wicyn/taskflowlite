@@ -1,4 +1,4 @@
-﻿/// @file example_loop_workflow.cpp
+﻿/// @file 12_loop_workflow.cpp
 /// @brief 演示如何利用 Jump 节点构建合法的带环拓扑（状态机/循环迭代）
 
 #include "../taskflowlite/taskflowlite.hpp"
@@ -71,7 +71,7 @@ void build_training_loop() {
     std::cout << "=== Starting Loop Workflow ===\n";
     tfl::ResumeNever handler;
     tfl::Executor executor(handler, 4);
-    executor.submit(flow).start().wait();
+    executor.async(flow).wait();
 
     // 如果你通过 Task::dump 打印，你会看到生成的 D2 图代码中完美包含了一个后向反馈箭头。
     // std::cout << "\n=== D2 Graph Diagram ===\n" << init.dump() << "\n";

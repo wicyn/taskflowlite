@@ -1,5 +1,7 @@
 ﻿/// @file 10_dump.cpp
-/// @brief 演示任务命名与 D2 图形化脚本导出，直观展示框架拓扑结构。
+/// @brief 演示任务命名 + Semaphore 资源约束 + D2 图形化导出——完整真实场景拓扑。
+///   覆盖 Branch / MultiBranch / Jump / MultiJump / Subflow / Runtime 全部节点类型，
+///   以及 8 种信号量的 acquire/release 绑定，最终通过 flow.dump(ostream) 输出 D2 脚本。
 
 #include "../taskflowlite/taskflowlite.hpp"
 #include <iostream>

@@ -1,362 +1,553 @@
-﻿# 🚀 TaskflowLite (tfl)
+# TaskflowLite
 
-**An ultra-fast, lock-free, zero-overhead task scheduling and DAG orchestration engine for modern C++23**
-
-[![Standard](https://img.shields.io/badge/C%2B%2B-23-blue.svg?logo=c%2B%2B)](https://en.cppreference.com/w/cpp/23)
+[![Ubuntu](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml)
+[![macOS](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml)
+[![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?logo=cplusplus)](https://en.cppreference.com/w/cpp/23)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Header Only](https://img.shields.io/badge/Header--Only-Yes-success)](#)
 
-**[中文文档](README.md) · [English](README.en.md)**
+[简体中文](README.md) · **English**
+
+TaskflowLite (tfl) is a modern C++23 concurrency scheduling library inspired by [Taskflow](https://github.com/taskflow/taskflow).
 
 ---
 
-**TaskflowLite (tfl)** is a lightweight concurrent scheduling library inspired by [Taskflow](https://github.com/taskflow/taskflow), rebuilt from the ground up with **C++23 modern paradigms**. It focuses on **peak performance and type safety** — featuring a lock-free ring buffer, work-stealing scheduler, and powerful compile-time `Concepts` constraints — enabling developers to handle complex concurrent topologies, dynamic routing, and async dispatch with near-zero abstraction overhead.
+## Table of Contents
 
-## 📑 Table of Contents
+1. [Quick Start](#quick-start)
+2. [Building DAGs](#building-dags)
+3. [Task Types](#task-types)
+4. [Runtime Dynamic Scheduling](#runtime-dynamic-scheduling)
+5. [Control Flow](#control-flow)
+6. [Resource Control](#resource-control)
+7. [Visualization](#visualization)
+8. [Build & Integration](#build--integration)
+9. [Project Structure](#project-structure)
+10. [Benchmark Results](#benchmark-results)
+11. [Examples & Tests](#examples--tests)
+12. [License](#license)
 
-* [✨ Why TaskflowLite?](#-why-taskflowlite)
-* [✨ Core Features](#-core-features)
-* [🏗️ Architecture Overview](#-architecture-overview)
-* [📦 Quick Start](#-quick-start)
-* [🧠 Core Features & API](#-core-features--api)
-* [🛡️ Modern C++23 Design Techniques](#-modern-c23-design-techniques)
-* [🗂️ Task Type Cheat Sheet](#-task-type-cheat-sheet)
-* [🎨 D2 Graph Visualization Export](#-d2-graph-visualization-export)
-* [⚙️ Performance Optimizations](#-performance-optimizations)
-* [🛠️ Build Requirements & Integration](#-build-requirements--integration)
-* [🚀 Benchmarks](#-benchmarks)
-* [📄 License](#-license)
+## Quick Start
 
----
-
-## ✨ Why TaskflowLite?
-
-* 🪶 **Header-Only & Zero Dependencies**: Drop the headers into your project and go. (Internally bundles only the blazing-fast `ankerl::unordered_dense`.)
-* ⚡ **Extreme Work-Stealing**: Built on a `Xoshiro256**` PRNG and a lock-free bounded queue, delivering sub-millisecond scheduling for tens of millions of tasks.
-* 🛡️ **Safe Generic Programming**: A first-of-its-kind **Arity-Guard** provides perfect support for `[](auto x)` generic lambdas, eliminating Hard Errors from template deduction failures.
-* 🔀 **Powerful Control Flow**: Native conditional branching (`Branch`) and forced jumps/retries (`Jump`) reuse the underlying dependency counter — truly **zero extra allocation overhead**.
-* 🛑 **Deadlock-Safe Cooperative Waiting**: Waiting on a future or subgraph never system-blocks the thread; it actively steals side-channel tasks and squeezes every last cycle out of the CPU.
-
----
-
-## ✨ Core Features
-
-* **⚡ Extreme Work-Stealing Scheduling**: Each worker maintains a local bounded lock-free queue. When idle, it uses `Xoshiro256**` random numbers to steal from a shared unbounded queue or from neighbors — maximizing CPU utilization.
-* **🕸️ Powerful DAG Topology Orchestration**: Intuitive `precede` / `succeed` chaining API supporting arbitrary complex dependency graphs and nested subflows (graph-in-graph).
-* **🔀 Runtime Dynamic Flow Control**: Built-in `Branch` (conditional routing) and `Jump` (forced jumps/loops) mechanisms that fully reuse the underlying dependency counter with zero additional overhead.
-* **⏳ Cooperative Waiting**: When waiting on a future or subgraph inside a `Runtime`, the thread never sleeps — it actively steals other tasks, eliminating system-level deadlocks.
-* **🚦 Task-Level Semaphore**: `Semaphore` precisely limits task concurrency. Tasks that fail to acquire are "parked" without occupying a worker thread.
-* **🛡️ Modern C++23 Contract-Driven Design**: Deep use of C++23 `Concepts` for strict compile-time type checking; `noexcept` elides redundant `try-catch` assembly blocks.
-* **📊 One-Click D2 Visualization Export**: Natively dump complex runtime task graphs as D2 declarative diagram code for instant architecture visualization.
-
----
-
-## 🏗️ Architecture Overview
-
-```text
-┌─────────────────────────────────────────────────────────┐
-│                       User Code                         │
-│  Flow  →  emplace(task)  →  Task  →  precede/succeed    │
-│  Executor::submit(flow, N)  →  AsyncTask::start().wait()│
-└────────────────────┬────────────────────────────────────┘
-                     │ submit
-┌────────────────────▼────────────────────────────────────┐
-│                    Executor                             │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
-│  │ Worker 0 │  │ Worker 1 │  │ Worker N │               │
-│  │ BoundedQ │  │ BoundedQ │  │ BoundedQ │  ← Local Queue│
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘               │
-│       │   work-steal│             │                     │
-│  ┌────▼─────────────▼─────────────▼──────┐              │
-│  │          UnboundedQueueBucket         │ ← Shared Q   │
-│  └───────────────────────────────────────┘              │
-│  Notifier (atomic wait-based, loss-free wakeup hub)     │
-└─────────────────────────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────┐
-│               Work (Internal Physical Node)             │
-│  m_edges: [successors... | predecessors...]             │
-│  m_join_counter, m_topology, m_observers?, m_semaphores?│
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-## 📦 Quick Start
-
-A simple yet powerful DAG example:
+### Minimal Example
 
 ```cpp
 #include "taskflowlite/taskflowlite.hpp"
 #include <iostream>
 
 int main() {
-    tfl::ResumeNever handler;            // Exception policy: terminate on uncaught exception
-    tfl::Executor executor(handler, 4);  // Launch 4 worker threads
+    tfl::Executor executor(4);
     tfl::Flow flow;
 
-    // 1. Create tasks (C++17 structured bindings natively supported)
     auto [A, B, C, D] = flow.emplace(
-        [] { std::cout << "Task A (Init)\n"; },
-        [] { std::cout << "Task B (Process 1)\n"; },
-        [] { std::cout << "Task C (Process 2)\n"; },
-        [] { std::cout << "Task D (Merge)\n"; }
+        [] { std::cout << "Task A\n"; },
+        [] { std::cout << "Task B\n"; },
+        [] { std::cout << "Task C\n"; },
+        [] { std::cout << "Task D\n"; }
     );
 
-    // 2. Wire the topology: A runs first, then B and C in parallel, then D
+    // A -> {B, C} -> D
     A.precede(B, C);
     D.succeed(B, C);
 
-    // 3. Submit and wait for completion
-    executor.submit(flow).start().wait();
-
-    return 0;
+    executor.async(flow).wait();
 }
 ```
 
----
-
-## 🧠 Core Features & API
-
-### 1. Batch Insertion & DAG Orchestration
-
-TaskflowLite provides a robust parameter encapsulation mechanism via `tfl::pack`. It automatically handles function type decay and offers seamless support for `std::ref`, allowing you to orchestrate complex DAG topologies without verbose lambda captures or potential compile-time deduction errors.
+### Tasks with Arguments
 
 ```cpp
 tfl::Flow flow;
 int counter = 0;
 
-// Use tfl::pack to batch insert tasks with parameters
-// tfl::pack ensures function names automatically decay into function pointers,
-// avoiding the CTAD pitfalls of std::tuple.
 auto [t1, t2] = flow.emplace(
-    tfl::pack{[](int a) { std::cout << "Val: " << a << "\n"; }, 42},
-    tfl::pack{[](int& c) { c = 100; }, std::ref(counter)} // Secure reference passing
+    tfl::pack{ [](int a) { std::cout << "Val: " << a << "\n"; }, 42 },
+    tfl::pack{ [](int& c) { c = 100; }, std::ref(counter) }
 );
 
 t1.precede(t2);
+executor.async(flow).wait();
+// counter == 100
 ```
 
-### 2. Runtime Dynamic Dispatch
+### Loop Execution
 
-When a task signature includes `tfl::Runtime&`, the task gains the ability to control the scheduler during execution.
+```cpp
+// Fixed count
+executor.async(flow, 5ULL).wait();
+
+// Predicate-driven
+int round = 0;
+executor.async(flow, [&]() noexcept { return ++round >= 10; }).wait();
+```
+
+---
+
+## Building DAGs
+
+### Creating Nodes
+
+```cpp
+tfl::Flow flow;
+
+// 1. No-arg lambda
+auto t1 = flow.emplace([] { /* work */ });
+
+// 2. Lambda + value args (framework copies)
+auto t2 = flow.emplace([](int x, double y) { /* ... */ }, 42, 3.14);
+
+// 3. Lambda + std::ref (zero-copy)
+int state = 0;
+auto t3 = flow.emplace([](int& s) { s = 99; }, std::ref(state));
+
+// 4. Function pointer
+auto t4 = flow.emplace(&my_function, arg1, arg2);
+
+// 5. Functor
+auto t5 = flow.emplace(MyFunctor{multiplier}, std::ref(data));
+
+// 6. Member function pointer
+MyService svc;
+auto t6 = flow.emplace(&MyService::process, &svc, 42);
+auto t7 = flow.emplace(&MyService::process, std::ref(svc), 99);
+```
+
+### Weaving Dependencies
+
+```cpp
+// Fluent chaining — lvalue returns reference
+t1.name("Step1")
+  .precede(t2, t3)
+  .acquire(io_sem)
+  .release(io_sem);
+
+// succeed = reverse precede
+t4.succeed(t2, t3);
+
+// Batch insert + structured bindings
+auto [a, b, c] = flow.emplace(
+    [] { load(); },
+    [] { transform(); },
+    [] { save(); }
+);
+a.precede(b).precede(c);
+```
+
+### Graph Operations
+
+```cpp
+flow.erase(task);        // O(1) removal (swap-with-last)
+flow.clear();            // Remove all nodes
+flow.empty();            // Check if empty
+flow.size();             // Total node count
+flow.for_each([](tfl::Task t) { /* iterate */ });
+flow.name("MyPipeline"); // Name for debugging/visualization
+```
+
+---
+
+## Task Types
+
+`Flow::emplace` uses C++20 Concepts to dispatch to the correct node factory at compile time:
+
+### Basic — Plain Task
+
+```cpp
+flow.emplace([] { /* no Runtime access */ });
+flow.emplace([](int x) { /* with args */ }, 42);
+```
+
+### Runtime — Dynamic Scheduling
 
 ```cpp
 flow.emplace([](tfl::Runtime& rt) {
-    // Dynamically dispatch a subtask and get a future
+    rt.detach([] { /* fire-and-forget */ });
     auto fut = rt.async([](int x) { return x * 2; }, 21);
+    rt.cowait();
+    int val = fut.get();  // 42
+});
+```
 
-    // Cooperative wait: the thread does NOT block — it steals and runs other tasks!
-    rt.wait_until([&] {
-        return fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+### Branch — Single-Target Conditional
+
+```cpp
+auto decide = flow.emplace([](tfl::Branch& br) {
+    if (condition) br.select(0); else br.select(1);
+});
+auto good = flow.emplace([] { std::cout << "OK\n"; });
+auto bad  = flow.emplace([] { std::cout << "Fail\n"; });
+decide.precede(good, bad);
+```
+
+Also supports `operator()` and `select_if`:
+
+```cpp
+auto br = flow.emplace([](tfl::Branch& br) {
+    br(2);   // equivalent to br.select(2)
+    br.select_if([](tfl::TaskView tv) { return tv.name() == "target"; });
+});
+```
+
+### MultiBranch — Multi-Target Broadcast
+
+```cpp
+auto mb = flow.emplace([](tfl::MultiBranch& mb) {
+    mb.select(0, 2);       // activate successors 0 and 2
+    // mb.select_all();    // activate all
+    // mb.select_if(...);  // filter by name
+});
+mb.precede(t0, t1, t2, t3);
+```
+
+### Jump — Forced Jump (Loop / Retry)
+
+```cpp
+auto process = flow.emplace([] { /* work */ });
+
+auto retry = flow.emplace([&](tfl::Jump& jmp) {
+    if (++attempt < max)
+        jmp.select(0);       // jump back to process (target[0])
+    // No select → natural completion
+});
+
+process.precede(retry);
+retry.precede(process);       // weight=0, excluded from cycle detection
+```
+
+### MultiJump — Multi-Target Forced Jump
+
+```cpp
+auto mj = flow.emplace([](tfl::MultiJump& mj) {
+    mj.select(0, 1, 2);   // simultaneously reset three join_counters
+});
+```
+
+### Subflow — Nested Flow
+
+```cpp
+tfl::Flow inner;
+inner.emplace([]{ std::cout << "Inner task\n"; });
+
+// Single execution
+flow.emplace(std::move(inner));
+
+// Predicate-driven loop (5 iterations)
+int i = 0;
+flow.emplace(std::move(inner), [&i]() mutable noexcept { return ++i >= 5; });
+```
+
+---
+
+## Runtime Dynamic Scheduling
+
+### Runtime API
+
+```cpp
+flow.emplace([](tfl::Runtime& rt) {
+    // Fire-and-forget
+    rt.detach([] { background_work(); });
+
+    // Async with results
+    auto f1 = rt.async([] { return compute_a(); });
+    auto f2 = rt.async([](int n) { return compute_b(n); }, 100);
+
+    // Cooperative wait (worker steals tasks, never blocks)
+    rt.cowait_until([&] {
+        return f1.wait_for(0s) == std::future_status::ready
+            && f2.wait_for(0s) == std::future_status::ready;
     });
 
-    std::cout << "Result: " << fut.get() << "\n";
+    int result = f1.get() + f2.get();
+    std::cout << "Result: " << result << "\n";
 });
 ```
 
-### 3. Static Routing & State Machines (Branch & Jump)
+### How Cowait Works
 
-Reuse the DAG engine to express `if-else` and `while` loop logic natively.
-
-```cpp
-// ==========================================
-// Branch: dynamically choose a path
-// ==========================================
-auto start = flow.emplace([] { puts("Start"); }); // Explicit entry point
-
-auto check = flow.emplace([](tfl::Branch& br) {
-    br.select(1); // Activate successor at index 1 (failure), skip 0
-});
-auto success = flow.emplace([] { puts("OK"); });
-auto failure = flow.emplace([] { puts("Fail"); });
-
-start.precede(check);            // Wire the entry point
-check.precede(success, failure); // Bind successors in order: 0, 1
-
-// ==========================================
-// Jump: retry loop on failure
-// ==========================================
-auto init = flow.emplace([] { puts("Init"); }); // Explicit entry point
-
-auto process = flow.emplace([]{ /* business logic */ });
-auto retry = flow.emplace([](tfl::Jump& jmp) {
-    if (need_retry()) jmp.select(0); // Jump: pull back target 0 and reset its dependency count
-});
-
-init.precede(process);   // Entry point: execution begins here
-process.precede(retry);
-retry.precede(process);  // Close the loop: process becomes Jump's target 0
-                         // (Note: Jump edges have initial weight 0, preventing static graph deadlock)
+```
+Normal wait:     Worker thread → OS blocks → CPU wasted
+TFL cowait:      Worker thread → steals other tasks → CPU never idles
 ```
 
-### 4. Task-Level Concurrency Throttling (Semaphore)
+During `cowait` / `cowait_until`, the worker continuously steals tasks from its local queue or neighbors. It never performs a system-level block, completely eliminating deadlock risks in recursive scheduling and subflow nesting.
 
-Precisely limit concurrency for specific resources (e.g., GPU, database connections). Tasks exceeding the limit are suspended without blocking worker threads.
+### AsyncTask
+
+`AsyncTask` is a reference-counted handle (vs `Task` which is a weak reference):
 
 ```cpp
-tfl::Semaphore db_limit(2); // At most 2 concurrent DB operations globally
+auto t1 = tfl::NonrepeatAsyncTask([] { step_a(); });
+auto t2 = tfl::NonrepeatAsyncTask([] { step_b(); });
+auto t3 = tfl::NonrepeatAsyncTask([] { step_c(); });
 
-for (int i = 0; i < 10; ++i) {
-    auto t = flow.emplace([i] { /* access database */ });
-    t.acquire(db_limit).release(db_limit); // Declare resource consumption
+executor.submit(t2, t1);   // t2 depends on t1
+executor.submit(t3, t2);   // t3 depends on t2
+
+t3.wait();                 // Wait for the entire chain
+```
+
+---
+
+## Control Flow
+
+### Exception Handling
+
+```cpp
+// Terminate on uncaught exception (default)
+tfl::ResumeNever handler;
+tfl::Executor exec(handler, 4);
+
+// Ignore exceptions, successors continue
+tfl::ResumeAlways handler;
+tfl::Executor exec(handler, 4);
+```
+
+### Cancellation
+
+```cpp
+auto task = tfl::NonrepeatAsyncTask([] { /* long work */ });
+executor.submit(task);
+// ...
+task.request_stop();  // Set soft interrupt
+task.wait();          // Node self-checks before next invoke and skips
+```
+
+### TaskObserver
+
+```cpp
+struct MyTracer : tfl::TaskObserver {
+    void on_before(tfl::TaskView tv) override {
+        std::cout << "Start: " << tv.name() << "\n";
+    }
+    void on_after(tfl::TaskView tv) override {
+        std::cout << "End: " << tv.name() << "\n";
+    }
+};
+
+auto t = flow.emplace([] { /* work */ });
+t.register_observer<MyTracer>();
+```
+
+---
+
+## Resource Control
+
+### Semaphore — Task-Level Concurrency Limit
+
+```cpp
+tfl::Semaphore db_pool(4);   // max 4 concurrent
+
+for (int i = 0; i < 20; ++i) {
+    flow.emplace([i] { query_database(i); })
+        .acquire(db_pool)
+        .release(db_pool);
 }
+// Excess tasks suspend without occupying worker threads
 ```
 
-### 5. Graph-in-Graph Nesting (Subflow)
-
-Embed an entire `Flow` as a single node inside a parent graph, with optional **predicate-driven loop execution**.
+### Advanced Usage
 
 ```cpp
-tfl::Flow subflow;
-subflow.emplace([]{ puts("Subflow tick"); });
+tfl::Semaphore sem(3, 0);               // capacity 3, initial available 0
+producer.release(sem, 3);               // batch release 3 permits
+consumer.acquire(sem);                  // activate after producer releases
 
-int loops = 0;
-// Mount subflow into the main graph with a loop predicate
-flow.emplace(std::move(subflow), [&loops]() mutable noexcept {
-    return ++loops >= 5; // Stop after 5 iterations
-});
+sem.reset(10);                          // dynamic resize
+sem.value();                            // current available
+sem.max_value();                        // maximum capacity
 ```
 
 ---
 
-## 🛡️ Modern C++23 Design Techniques
-
-TaskflowLite employs numerous cutting-edge defensive programming patterns:
-
-* **Generic Lambda Guard (Arity-Guard)**: Traditional TMP easily triggers Hard Errors when probing `[](auto x)` with `std::invocable`. TFL uses `requires` expressions for arity sniffing, perfectly supporting unconstrained generic closures.
-* **Reference Unwrapping Transparency (`std::ref` Unwrap)**: The framework stores closures using `unwrap_ref_decay_t`, allowing users to pass state via `std::ref` with zero copies — just like `std::thread` — while Concept validation sees the true underlying reference type.
-* **Tag Dispatching Priority Routing**: Eliminates overload resolution ambiguity caused by `std::bind` type erasure, producing precise and readable compile errors.
-
----
-
-## 🗂️ Task Type Cheat Sheet
-
-`emplace` uses C++23 Concepts to automatically deduce your closure signature — no explicit type tagging required:
-
-| Signature | Deduced Type | Description | Visual Style |
-| --- | --- | --- | --- |
-| `[]()` | **Basic** | Plain sequential task, zero abstraction overhead | Grey rectangle |
-| `[](tfl::Runtime&)` | **Runtime** | Dynamically dispatch tasks, cooperative blocking wait | Pink rectangle |
-| `[](tfl::Branch)` | **Branch** | Single-path conditional select (activates 1 path) | Blue diamond |
-| `[](tfl::MultiBranch)` | **MultiBranch** | Multi-path parallel dispatch (activates N paths) | Blue hexagon |
-| `[](tfl::Jump)` | **Jump** | Forced state-machine back-jump (supports retry loops) | Red dashed diamond |
-| `[](tfl::MultiJump)` | **MultiJump** | Parallel fan-out forced jumps | Red dashed hexagon |
-| Pass a `Flow` object | **Subflow** | Embed an entire graph as a single node | Green group box |
-
----
-
-## 🎨 D2 Graph Visualization Export
-
-How do you debug an extremely complex nested topology? Export it in one line as D2 declaration language and render it instantly via [D2 Playground](https://play.d2lang.com) or local tooling.
+## Visualization
 
 ```cpp
 std::ofstream file("pipeline.d2");
 flow.name("MyPipeline").dump(file);
-```
-> 💡 **Source Reference**: This demonstration can be found in the examples program [`examples/10_dump.cpp`](examples/10_dump.cpp)
-![D2 Visualization](documentation/img/d2.svg)
 
-The exported graph is immediately readable: **grey solid lines** represent normal transitions, **blue lines** represent conditional branch choices, and **red dashed lines** represent topology-breaking back-edges from jumps.
+// Or get the string directly
+std::string d2 = flow.dump();
+std::cout << d2;
+```
+
+Paste the output into the [D2 Playground](https://play.d2lang.com) to render. Legend:
+
+- **Gray solid line** — Normal dependency edge
+- **Blue line** — Conditional branch
+- **Red dashed line** — Jump back-edge
 
 ---
 
-## ⚙️ Performance Optimizations
+## Build & Integration
 
-TaskflowLite squeezes every clock cycle at the lowest level:
+### Requirements
 
-1. **Cache-Line Isolation**: Strict `alignas(std::hardware_destructive_interference_size)` on hot atomics (e.g., queue `top/bottom`) completely eliminates multicore **false sharing**.
-2. **Edge Storage Optimization**: Successor and predecessor pointers for each `Work` node are packed into a single contiguous `std::vector<Work*>`, accessed via cursor offsets — eliminating one heap allocation and improving L1 cache hit rates.
-3. **Zero-Overhead Exception Elision**: If your closure is marked `noexcept`, the compiler strips the surrounding `try-catch` assembly when instantiating `invoke()`.
-4. **Divisionless Distribution**: The random steal module uses Lemire's divisionless bounded mapping algorithm with bitwise operations, significantly reducing CPU cycle cost.
+| Compiler | Minimum Version |
+|----------|----------------|
+| GCC | 12+ |
+| Clang | 15+ |
+| MSVC | 2022+ (17.0+) |
+| Apple Clang | 15+ (Xcode 15+) |
 
----
+- **C++ Standard**: C++23
+- **CMake**: 3.21+
+- **Dependencies**: C++ standard library + pthread (Unix)
 
-## 🛠️ Build Requirements & Integration
+### CMake
 
-**System Requirements:**
+```bash
+# Basic build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --parallel
 
-* **C++ Standard**: C++23 or later.
-* **Compiler**: GCC 12+, Clang 15+, MSVC 2022+ (full Concepts and structured binding support required).
+# With tests
+cmake -S . -B build -DTASKFLOWLITE_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build -C Release --output-on-failure
 
-**Integration (Header-Only):**
-
-No library compilation needed. Simply place the `taskflowlite/` directory on your include path:
-
-```cpp
-#include "taskflowlite/taskflowlite.hpp"
+# Sanitizer
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTASKFLOWLITE_SANITIZER=ASAN
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTASKFLOWLITE_SANITIZER=TSAN
 ```
 
-**Recommended CMake Options:**
+### As a Dependency
 
 ```cmake
-set(CMAKE_CXX_STANDARD 23)
-target_compile_options(your_target PRIVATE -O3 -march=native)
+# add_subdirectory
+add_subdirectory(path/to/taskflowlite)
+target_link_libraries(your_app PRIVATE TaskflowLite::taskflowlite)
+
+# FetchContent
+include(FetchContent)
+FetchContent_Declare(taskflowlite
+    GIT_REPOSITORY https://github.com/wicyn/taskflowlite.git GIT_TAG main)
+FetchContent_MakeAvailable(taskflowlite)
+target_link_libraries(your_app PRIVATE TaskflowLite::taskflowlite)
+```
+
+### Header-Only
+
+```cpp
+#include "taskflowlite/taskflowlite.hpp"  // one line, compile with -std=c++23 -pthread
 ```
 
 ---
 
-## 🚀 Performance Benchmarks
+## Project Structure
 
-### Test Environment
-
-* **Baseline**: [Taskflow v4.0.0](https://github.com/taskflow/taskflow)
-* **Benchmark code**:
-  * Comprehensive suite: [`benchmarks/benchmark.cpp`](benchmarks/benchmark.cpp) (TaskflowLite)
-    and [`benchmarks/bench_taskflow.cpp`](benchmarks/bench_taskflow.cpp) (Taskflow control group),
-    covering 18 fully symmetric workloads for apples-to-apples comparison.
-  * Micro-benchmark: [`benchmarks/bench_taskflowlite.cpp`](benchmarks/bench_taskflowlite.cpp)
-    and [`benchmarks/bench_taskflow.cpp`](benchmarks/bench_taskflow.cpp),
-    focused on extreme scheduling density with a 100-layer × 100-task topology.
-* **Hardware**: Intel® Core™ i7-9750H @ 2.60 GHz (6C/12T) / Windows 11
-* **Build config**: MSVC 2022 / Release / `/O2`, identical hardware, thread count, and iteration count across both libraries.
-
-### Comprehensive Results (lower is better)
-
-> Data is from a representative single run on the same hardware; trends are consistent across multiple runs.
-
-| # | Workload | Taskflow (ms) | TaskflowLite (ms) | Speedup |
-|---|---|---:|---:|---:|
-| 01 | 32 parallel \| 8 threads \| 500k runs | 1600 | 1320 | **+17.5%** |
-| 02 | 32 serial \| 1 thread \| 1M runs | 1351 | 618 | **+54.3%** |
-| 03 | diamond DAG \| 2 threads \| 1M runs | 387 | 255 | **+34.1%** |
-| 04a | 4×2 full \| 2 threads \| 1M runs | 647 | 477 | **+26.3%** |
-| 04b | 6×4 full \| 4 threads \| 500k runs | 1797 | 1635 | **+9.0%** |
-| 04c | 8×8 full \| 8 threads \| 100k runs | 1185 | 991 | **+16.4%** |
-| 04d | 8×16 full \| 8 threads \| 50k runs | 1355 | 1103 | **+18.6%** |
-| 04e | 8×32 full \| 8 threads \| 20k runs | 1414 | 1105 | **+21.9%** |
-| 04f | 6×100 full \| 8 threads \| 2k runs | 650 | 519 | **+20.2%** |
-| 05 | binary tree \| 8 threads \| 500k runs | 2933 | 1834 | **+37.5%** |
-| 06 | 1→256→1 \| 8 threads \| 100k runs | 4455 | 3241 | **+27.3%** |
-| 07 | 16 pipes \| 8 threads \| 200k runs | 2458 | 818 | **+66.7%** |
-| 08 | 16×16 grid \| 8 threads \| 100k runs | 2682 | 1103 | **+58.9%** |
-| 09 | sparse DAG \| 8 threads \| 500k runs | 3785 | 2114 | **+44.1%** |
-| 10 | jump / cond loop \| 1 thread \| 1M iter | 55 | 29 | **+47.3%** |
-| 11 | multi-jump / multi-cond \| 4 threads \| 200k iter | 73 | 60 | **+17.8%** |
-| 12 | subflow x1 \| 4 threads \| 200k runs | 197 | 159 | **+19.3%** |
-| 13 | subflow loop \| 2 threads \| 500k iter | 176 | 103 | **+41.5%** |
-| **Total** | **18 workloads** | **27200** | **17484** | **+35.7%** |
-
-### Micro-benchmark: 100 Layers × 100 Tasks
-
-A second micro-benchmark targets raw **scheduling overhead density**. It builds a
-topology of 100 layers with 100 tasks per layer, testing two extreme shapes:
-**fully-connected** (990,000 edges) and **no-connection** (10,000 purely parallel
-tasks). Each runs for 10 iterations on 8 threads.
-
-| Scenario | Metric | Taskflow | TaskflowLite | Speedup |
-|---|---|---:|---:|---:|
-| **Full-Connected** (100×100, 990k edges) | Total time       | 71.51 ms    | 50.03 ms    | **+30.0%** |
-|                                          | Per run          | 7.15 ms     | 5.00 ms     | **+30.0%** |
-|                                          | Per task         | 715.06 ns   | 500.30 ns   | **+30.0%** |
-| **No Connection** (10k parallel tasks)   | Total time       | 11.61 ms    | 8.64 ms     | **+25.6%** |
-|                                          | Per run          | 1.16 ms     | 0.86 ms     | **+25.6%** |
-|                                          | Per task         | 116.14 ns   | 86.42 ns    | **+25.6%** |
+```
+taskflowlite/
+├── taskflowlite/
+│   ├── taskflowlite.hpp                   # Unified include
+│   └── core/                              # 30+ core headers
+│       ├── executor.hpp                   # Scheduling engine
+│       ├── flow.hpp / task.hpp            # DAG builder & task handles
+│       ├── async_task.hpp / runtime.hpp   # Dynamic tasks & runtime
+│       ├── work.hpp / works.hpp           # Node base & factories
+│       ├── branch.hpp / jump.hpp          # Control flow
+│       ├── semaphore.hpp / observer.hpp   # Resources & observation
+│       ├── bounded_queue.hpp etc.         # Concurrency primitives
+│       └── traits.hpp / utility.hpp       # Concepts & utilities
+├── test/                                  # 23 test files (Catch2 v3)
+├── examples/                              # 25 examples
+├── benchmarks/                            # Performance comparison (vs Taskflow)
+├── .github/workflows/ci.yml               # CI matrix
+├── CMakeLists.txt
+├── LICENSE (MIT)
+└── README.md
+```
 
 ---
 
-## 📄 License
+## Benchmark Results
 
-This project is open-sourced under the [MIT License](LICENSE).
+TaskflowLite vs Taskflow — **same hardware, threads, topology, and total iterations**.
 
-*TaskflowLite — Built for developers who demand peak performance and modern C++ aesthetics.*
+**Test Environment:** Intel Core i7-9750H @ 2.60GHz (6C/12T), Windows 11, MSVC 2022 /O2
+
+| # | Scenario | Config | TaskflowLite | Taskflow | Speedup |
+|--:|---------|------|--------:|------------:|------:|
+| 01 | 32 parallel | 8 thr · 500k | 1009 ms | 1479 ms | **1.47×** |
+| 02 | 32 serial | 1 thr · 1M | 662 ms | 1323 ms | **2.00×** |
+| 03 | Diamond DAG | 2 thr · 1M | 255 ms | 400 ms | **1.57×** |
+| 04a | 4×2 full | 2 thr · 1M | 504 ms | 663 ms | **1.32×** |
+| 04b | 6×4 full | 4 thr · 500k | 1737 ms | 1964 ms | **1.13×** |
+| 04c | 8×8 full | 8 thr · 100k | 1076 ms | 1309 ms | **1.22×** |
+| 04d | 8×16 full | 8 thr · 50k | 1250 ms | 1531 ms | **1.22×** |
+| 04e | 8×32 full | 8 thr · 20k | 1210 ms | 1795 ms | **1.48×** |
+| 04f | 6×100 full | 8 thr · 2k | 516 ms | 778 ms | **1.51×** |
+| 05 | Binary tree | 8 thr · 500k | 1969 ms | 3278 ms | **1.66×** |
+| 06 | 1→256→1 fan | 8 thr · 100k | 3395 ms | 4167 ms | **1.23×** |
+| 07 | 16 pipelines | 8 thr · 200k | 911 ms | 2591 ms | **2.84×** |
+| 08 | 16×16 grid | 8 thr · 100k | 1228 ms | 2978 ms | **2.43×** |
+| 09 | Sparse DAG | 8 thr · 500k | 2508 ms | 4042 ms | **1.61×** |
+| 10 | Jump loop | 1 thr · 1M | 30 ms | 53 ms | **1.77×** |
+| 11 | MultiJump loop | 4 thr · 200k | 58 ms | 82 ms | **1.41×** |
+| 12 | Subflow once | 4 thr · 200k | 160 ms | 210 ms | **1.31×** |
+| 13 | Subflow loop | 2 thr · 500k | 105 ms | 168 ms | **1.60×** |
+| 14 | Empty task | 1 thr · 10M | 473 ms | 642 ms | **1.36×** |
+| 15 | Parallel for | 8 thr · 1024×10k | 734 ms | 1221 ms | **1.66×** |
+| 16 | Reduce tree | 8 thr · 127×50k | 465 ms | 828 ms | **1.78×** |
+| 17 | Scan chain | 1 thr · 128×100k | 235 ms | 570 ms | **2.43×** |
+| 18 | Wavefront | 8 thr · 210×10k | 115 ms | 262 ms | **2.28×** |
+| 19 | Heterogeneous | 8 thr · 18×100k | 851 ms | 878 ms | **1.03×** |
+| 20 | Memory stress | 8 thr · 2000×500 | 774 ms | 1144 ms | **1.48×** |
+| | **Geometric mean** | | | | **≈ 1.58×** |
+
+> Full benchmark source code in [benchmarks/](benchmarks/).
+
+---
+
+## Examples & Tests
+
+### Examples
+
+```bash
+cmake -S . -B build -DTASKFLOWLITE_BUILD_EXAMPLES=ON
+cmake --build build --config Release
+
+./build/bin/examples/01_basic_dag       # Basic DAG
+./build/bin/examples/05_branch          # Conditional branching
+./build/bin/examples/09_pipeline        # Map-Reduce pipeline
+```
+
+Full index: [examples/README.md](examples/README.md) (Chinese).
+
+### Tests
+
+```bash
+cmake -S . -B build -DTASKFLOWLITE_BUILD_TESTS=ON
+cmake --build build --config Release
+
+# All tests
+./build/bin/TaskflowLiteTest
+
+# Filter by tag
+./build/bin/TaskflowLiteTest "[flow]"
+./build/bin/TaskflowLiteTest "[queue]"
+
+# Single file (build on demand)
+cmake --build build --target tfl_test_queue
+./build/bin/tfl_test_queue
+```
+
+### Benchmarks
+
+```bash
+cmake -S . -B build -DTASKFLOWLITE_BUILD_BENCHMARKS=ON
+cmake --build build --config Release
+
+./build/bin/bench_taskflowlite
+./build/bin/bench_taskflow
+```
+
+> Benchmarks only require Taskflow (header-only), auto-cloned during configure. Offline: use `-DTASKFLOW_LOCAL_PATH=<path>`.
+
+---
+
+## License
+
+[MIT License](LICENSE)
+
+*TaskflowLite — built for developers who demand extreme performance and modern C++ aesthetics.*

@@ -1,90 +1,165 @@
-﻿name: TaskflowLite CI
+name: TaskflowLite CI
 
 on:
   push:
     branches: [ "main" ]
+    paths-ignore: [ "**.md", "docs/**", "documentation/**" ]
   pull_request:
     branches: [ "main" ]
+    paths-ignore: [ "**.md", "docs/**", "documentation/**" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # ============================================================================
+  # 代码格式检查（clang-format）
+  # ============================================================================
+  clang-format:
+    name: clang-format check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: jidicula/clang-format-action@v4
+      with:
+        clang-format-version: '18'
+        check-path: 'taskflowlite'
+
+  # ============================================================================
+  # 编译 + 测试矩阵（OS × BuildType × Sanitizer）
+  # ============================================================================
   build-and-test:
     name: ${{ matrix.os }} | ${{ matrix.build_type }} | San=${{ matrix.sanitizer }}
     runs-on: ${{ matrix.os }}
+    needs: clang-format
     strategy:
       fail-fast: false
       matrix:
         include:
-          # ---------- Ubuntu ----------
+          # ── Ubuntu GCC ──
           - os: ubuntu-latest
+            compiler: gcc
             build_type: Release
             sanitizer: OFF
           - os: ubuntu-latest
+            compiler: gcc
             build_type: Debug
             sanitizer: ASAN
           - os: ubuntu-latest
+            compiler: gcc
             build_type: Debug
             sanitizer: TSAN
 
-          # ---------- macOS ----------
+          # ── Ubuntu Clang ──
+          - os: ubuntu-latest
+            compiler: clang
+            build_type: Release
+            sanitizer: OFF
+          - os: ubuntu-latest
+            compiler: clang
+            build_type: Debug
+            sanitizer: ASAN
+
+          # ── macOS ──
           - os: macos-latest
+            compiler: clang
             build_type: Release
             sanitizer: OFF
           - os: macos-latest
+            compiler: clang
             build_type: Debug
             sanitizer: ASAN
           - os: macos-latest
+            compiler: clang
             build_type: Debug
             sanitizer: TSAN
 
-          # ---------- Windows ----------
-          # Note: TSan is not supported on MSVC, so Windows only gets ASan coverage.
+          # ── Windows MSVC ──
           - os: windows-latest
+            compiler: msvc
             build_type: Release
             sanitizer: OFF
           - os: windows-latest
+            compiler: msvc
             build_type: Debug
             sanitizer: ASAN
 
     steps:
-    - name: Checkout Repository
+    - name: Checkout
       uses: actions/checkout@v4
 
+    # ── 编译器配置 ──
+    - name: Setup GCC
+      if: matrix.compiler == 'gcc'
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq g++-14
+        echo "CC=gcc-14" >> $GITHUB_ENV
+        echo "CXX=g++-14" >> $GITHUB_ENV
+
+    - name: Setup Clang
+      if: matrix.compiler == 'clang'
+      run: |
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+        sudo add-apt-repository -y "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main"
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq clang-18 libc++-18-dev libc++abi-18-dev
+        echo "CC=clang-18" >> $GITHUB_ENV
+        echo "CXX=clang++-18" >> $GITHUB_ENV
+
+    # ── ccache 加速 ──
+    - name: Setup ccache
+      if: matrix.os != 'windows-latest'
+      uses: hendrikmuhs/ccache-action@v1
+      with:
+        key: ${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}
+
+    - name: Configure ccache (MSVC)
+      if: matrix.os == 'windows-latest'
+      uses: actions/cache@v4
+      with:
+        path: ~/ccache
+        key: ccache-${{ matrix.os }}-${{ matrix.build_type }}-${{ github.run_id }}
+        restore-keys: ccache-${{ matrix.os }}-${{ matrix.build_type }}-
+
+    # ── CMake 配置 ──
     - name: Configure CMake
       run: >
         cmake -S . -B build
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
         -DTASKFLOWLITE_BUILD_TESTS=ON
+        -DTASKFLOWLITE_BUILD_EXAMPLES=ON
         -DTASKFLOWLITE_SANITIZER=${{ matrix.sanitizer }}
+        ${{ matrix.os == 'windows-latest' && '-T ClangCL' || '' }}
 
+    # ── 编译 ──
     - name: Build
-      run: cmake --build build --config ${{ matrix.build_type }} --parallel 4
+      run: cmake --build build --config ${{ matrix.build_type }} --parallel ${{ runner.os == 'macOS' && '3' || '4' }}
 
-    - name: Prepare ASan DLLs (Windows Only)
+    # ── Windows ASan DLL 准备 ──
+    - name: Copy ASan DLLs (Windows)
       if: matrix.os == 'windows-latest' && matrix.sanitizer == 'ASAN'
       shell: pwsh
-      working-directory: ${{github.workspace}}/build
+      working-directory: ${{ github.workspace }}/build
       run: |
         $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
         $msvcVer = (Get-ChildItem "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).Name
         $asanDir = "$vsPath\VC\Tools\MSVC\$msvcVer\bin\Hostx64\x64"
-        $testExe = Get-ChildItem -Path . -Filter "TaskflowLiteTest.exe" -Recurse | Select-Object -First 1
-        if ($testExe) {
-            Write-Host "Found test executable at: $($testExe.DirectoryName)"
-            Write-Host "Copying ASan runtime DLLs from: $asanDir"
-            Copy-Item -Path "$asanDir\clang_rt.asan*.dll" -Destination $testExe.DirectoryName -Force
-            Write-Host "Copy complete."
-        } else {
-            Write-Warning "TaskflowLiteTest.exe not found! Build step might have failed."
+        Get-ChildItem -Path . -Filter "TaskflowLiteTest.exe" -Recurse | ForEach-Object {
+          Copy-Item -Path "$asanDir\clang_rt.asan*.dll" -Destination $_.DirectoryName -Force
         }
 
+    # ── 运行测试 (Unix) ──
     - name: Run Tests (Unix)
       if: matrix.os != 'windows-latest'
-      working-directory: ${{github.workspace}}/build
+      working-directory: ${{ github.workspace }}/build
       env:
-        TSAN_OPTIONS: ${{ (matrix.sanitizer == 'TSAN') && format('suppressions={0}/tsan_suppressions.txt', github.workspace) || '' }}
-        # ASan + UBSan: halt on first error, print full stack traces
-        ASAN_OPTIONS: ${{ (matrix.sanitizer == 'ASAN') && 'halt_on_error=1:abort_on_error=1:print_stacktrace=1' || '' }}
-        UBSAN_OPTIONS: ${{ (matrix.sanitizer == 'ASAN') && 'halt_on_error=1:print_stacktrace=1' || '' }}
+        TSAN_OPTIONS: ${{ matrix.sanitizer == 'TSAN' && format('suppressions={0}/tsan_suppressions.txt second_deadlock_stack=1 history_size=7', github.workspace) || '' }}
+        ASAN_OPTIONS: ${{ matrix.sanitizer == 'ASAN' && 'halt_on_error=1:abort_on_error=1:print_stacktrace=1:detect_leaks=1' || '' }}
+        UBSAN_OPTIONS: ${{ matrix.sanitizer == 'ASAN' && 'halt_on_error=1:print_stacktrace=1' || '' }}
+        CTEST_OUTPUT_ON_FAILURE: '1'
       run: |
         if [ "${{ matrix.sanitizer }}" = "TSAN" ]; then
           printf '%s\n' \
@@ -94,11 +169,80 @@ jobs:
             'race:Catch::OutputRedirect' \
             'race:Catch::ConsoleReporter' \
             'race:__sanitizer::IsAccessibleMemoryRange' \
-            > ${{github.workspace}}/tsan_suppressions.txt
+            > ${{ github.workspace }}/tsan_suppressions.txt
         fi
-        ctest -C ${{ matrix.build_type }} --output-on-failure
+        ctest -C ${{ matrix.build_type }} --output-on-failure -j2
 
+    # ── 运行测试 (Windows) ──
     - name: Run Tests (Windows)
       if: matrix.os == 'windows-latest'
-      working-directory: ${{github.workspace}}/build
-      run: ctest -C ${{ matrix.build_type }} --output-on-failure
+      working-directory: ${{ github.workspace }}/build
+      run: ctest -C ${{ matrix.build_type }} --output-on-failure -j2
+
+  # ============================================================================
+  # 额外：Clang-Tidy 静态分析
+  # ============================================================================
+  clang-tidy:
+    name: clang-tidy analysis
+    runs-on: ubuntu-latest
+    needs: clang-format
+    if: github.event_name == 'pull_request'
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install tools
+      run: |
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+        sudo add-apt-repository -y "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main"
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq clang-tidy-18
+    - name: Configure CMake
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTASKFLOWLITE_BUILD_TESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    - name: Run clang-tidy
+      run: |
+        git diff origin/main --name-only --diff-filter=AM 'taskflowlite/core/*.hpp' | \
+        xargs -r clang-tidy-18 -p build \
+          --checks='-*,bugprone-*,performance-*,modernize-use-nullptr,modernize-use-override' \
+          --warnings-as-errors='bugprone-*'
+
+  # ============================================================================
+  # 发布构建验证（Install + 消费测试）
+  # ============================================================================
+  install-test:
+    name: install + consumer test
+    runs-on: ubuntu-latest
+    needs: clang-format
+    steps:
+    - uses: actions/checkout@v4
+    - name: Configure
+      run: cmake -S . -B build -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
+    - name: Install
+      run: cmake --install build
+    - name: Verify installed files
+      run: |
+        test -f install/include/taskflowlite/taskflowlite.hpp
+        test -f install/lib/cmake/TaskflowLite/TaskflowLiteConfig.cmake
+        echo "Install verified OK"
+    - name: Consumer test
+      run: |
+        mkdir -p /tmp/test-consumer
+        cat > /tmp/test-consumer/CMakeLists.txt << 'EOF'
+        cmake_minimum_required(VERSION 3.21)
+        project(TestConsumer LANGUAGES CXX)
+        find_package(TaskflowLite REQUIRED)
+        add_executable(test_consumer main.cpp)
+        target_link_libraries(test_consumer PRIVATE TaskflowLite::taskflowlite)
+        EOF
+        cat > /tmp/test-consumer/main.cpp << 'EOF'
+        #include <taskflowlite/taskflowlite.hpp>
+        int main() {
+            tfl::Flow flow;
+            flow.emplace([]{});
+            tfl::Executor exec(1);
+            exec.async(flow).wait();
+            return 0;
+        }
+        EOF
+        cmake -S /tmp/test-consumer -B /tmp/test-consumer/build \
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install
+        cmake --build /tmp/test-consumer/build
+        echo "Consumer build OK"

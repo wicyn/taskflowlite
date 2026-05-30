@@ -18,23 +18,20 @@
 #  - CTest 支持标签过滤（ctest -R tfl.flow）和单文件过滤（ctest -R tfl_test.flow）。
 #  - 可选 ASan / TSan 支持。
 #
-#  使用方式：
+#  便捷目标精简（v2）：
 #  ----------
-#    # 单体模式（和以前一样）
-#    ./TaskflowLiteTest                         # 跑全部
-#    ./TaskflowLiteTest "[flow]"                # 仅跑 [flow] 标签
-#    cmake --build . --target run_all_tests     # 一键构建+测试
-#    cmake --build . --target run_flow_tests    # 仅跑 [flow]
+#  - 默认只生成 run_all_tests 一个便捷目标，解决方案不再被 ~50 个 run_* 刷屏。
+#  - 按标签 / 按文件的 run_<tag>_tests / run_test_<name> 收进开关
+#    TFL_TEST_RUN_TARGETS（默认 OFF），需要时 -DTFL_TEST_RUN_TARGETS=ON 再生成。
+#  - 所有 run_* 一律折进 VS 解决方案文件夹 "Run/"。
+#  - 不再 include(CTest)：去掉无用的 Experimental/Nightly/Continuous/NightlyMemoryCheck
+#    仪表盘目标（仅 enable_testing() 即可注册 add_test）。
 #
-#    # 单文件模式（新增）
-#    cmake --build . --target tfl_test_queue    # 只编译队列测试
-#    ./build/bin/tfl_test_queue -s              # 只跑队列测试
-#    cmake --build . --target run_test_queue    # 一键编译+跑队列测试
-#
-#    # CTest 过滤
-#    ctest -R "^tfl_test\\."                    # 跑全部单文件测试
-#    ctest -R "^tfl_test\\.queue$"              # 只跑队列单文件测试
-#    ctest -L perfile                           # 跑全部单文件测试（标签过滤）
+#  日常按类筛测试（无需 run_* 目标）：
+#  ----------
+#    ctest -R "^tfl\.flow$"          # 只跑 [flow] 标签
+#    ctest -R "^tfl_test\.queue$"    # 只跑队列单文件测试
+#    ./TaskflowLiteTest "[flow]"     # 直接用 Catch2 标签过滤
 # ============================================================================
 
 cmake_minimum_required(VERSION 3.21)
@@ -47,6 +44,9 @@ cmake_minimum_required(VERSION 3.21)
 if(NOT CMAKE_PROJECT_NAME)
     project(TaskflowLiteTest LANGUAGES CXX)
 endif()
+
+# VS 解决方案启用文件夹分组（全局属性，影响整个解决方案）
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 # ----------------------------------------------------------------------------
 #  全局 C++ 标准
@@ -69,6 +69,14 @@ endif()
 # ----------------------------------------------------------------------------
 option(TFL_TEST_ENABLE_ASAN "Enable AddressSanitizer for tests" OFF)
 option(TFL_TEST_ENABLE_TSAN "Enable ThreadSanitizer for tests" OFF)
+
+# ----------------------------------------------------------------------------
+#  可选：是否生成按标签 / 按文件的 run_* 便捷目标
+#  默认 OFF —— 只保留 run_all_tests, 解决方案保持清爽。
+#  需要逐类 / 逐文件一键跑时再开：-DTFL_TEST_RUN_TARGETS=ON
+# ----------------------------------------------------------------------------
+option(TFL_TEST_RUN_TARGETS
+    "Generate per-tag (run_<tag>_tests) and per-file (run_test_<name>) convenience targets" OFF)
 
 # ----------------------------------------------------------------------------
 #  线程库（Catch2 / 测试代码 / TaskflowLite 都需要）
@@ -224,8 +232,12 @@ endforeach()
 
 # ============================================================================
 #  CTest 注册
+#
+#  注意: 这里只用 enable_testing() 而非 include(CTest)。
+#  include(CTest) 会额外生成 Experimental/Nightly/Continuous/NightlyMemoryCheck
+#  等一堆 CDash 仪表盘目标（只有往 CDash 上报结果时才用得到），徒增噪音。
+#  add_test / set_tests_properties / ctest 过滤仅需 enable_testing()。
 # ============================================================================
-include(CTest)
 enable_testing()
 
 # --- 单体主测试（不变） ---
@@ -239,7 +251,7 @@ set_tests_properties(TaskflowLiteTest PROPERTIES
     LABELS "unit;taskflowlite"
 )
 
-# --- 标签过滤子测试（不变） ---
+# --- 标签过滤子测试（ctest -R "^tfl\.<tag>$" 即可筛, 不依赖 run_* 目标） ---
 set(TFL_TEST_TAGS
     flow task executor runtime async semaphore
     branch jump subflow observer exception
@@ -259,7 +271,7 @@ foreach(tag ${TFL_TEST_TAGS})
     )
 endforeach()
 
-# --- 单文件测试（新增） ---
+# --- 单文件测试（ctest -R "^tfl_test\.<name>$" 即可筛） ---
 foreach(_src ${TFL_TEST_SOURCES})
     get_filename_component(_full_name "${_src}" NAME_WE)
     string(REGEX REPLACE "^test_" "" _test_name "${_full_name}")
@@ -277,10 +289,14 @@ foreach(_src ${TFL_TEST_SOURCES})
 endforeach()
 
 # ============================================================================
-#  自定义构建目标: run_all_tests / run_<tag>_tests / run_test_<name>
+#  便捷构建目标
+#
+#  默认只生成 run_all_tests（一键 构建+全跑）。
+#  按标签 / 按文件的 run_* 由 TFL_TEST_RUN_TARGETS 控制（默认 OFF）。
+#  所有 run_* 折进解决方案文件夹 "Run/"。
 # ============================================================================
 
-# --- 一键全跑（不变） ---
+# --- 一键全跑（始终生成） ---
 add_custom_target(run_all_tests
     COMMAND ${CMAKE_CTEST_COMMAND}
             --output-on-failure
@@ -291,35 +307,40 @@ add_custom_target(run_all_tests
     USES_TERMINAL
     COMMENT "运行所有 TaskflowLite 单元测试..."
 )
+set_target_properties(run_all_tests PROPERTIES FOLDER "Run")
 
-# --- 标签一键跑（不变） ---
-foreach(tag ${TFL_TEST_TAGS})
-    add_custom_target(run_${tag}_tests
-        COMMAND ${CMAKE_CTEST_COMMAND}
-                --output-on-failure
-                -C $<CONFIG>
-                -R "^tfl\\.${tag}$"
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-        DEPENDS TaskflowLiteTest
-        USES_TERMINAL
-        COMMENT "运行 [${tag}] 标签的测试..."
-    )
-endforeach()
+if(TFL_TEST_RUN_TARGETS)
+    # --- 标签一键跑 ---
+    foreach(tag ${TFL_TEST_TAGS})
+        add_custom_target(run_${tag}_tests
+            COMMAND ${CMAKE_CTEST_COMMAND}
+                    --output-on-failure
+                    -C $<CONFIG>
+                    -R "^tfl\\.${tag}$"
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+            DEPENDS TaskflowLiteTest
+            USES_TERMINAL
+            COMMENT "运行 [${tag}] 标签的测试..."
+        )
+        set_target_properties(run_${tag}_tests PROPERTIES FOLDER "Run/ByTag")
+    endforeach()
 
-# --- 单文件一键跑（新增） ---
-foreach(_src ${TFL_TEST_SOURCES})
-    get_filename_component(_full_name "${_src}" NAME_WE)
-    string(REGEX REPLACE "^test_" "" _test_name "${_full_name}")
-    set(_target "tfl_test_${_test_name}")
+    # --- 单文件一键跑 ---
+    foreach(_src ${TFL_TEST_SOURCES})
+        get_filename_component(_full_name "${_src}" NAME_WE)
+        string(REGEX REPLACE "^test_" "" _test_name "${_full_name}")
+        set(_target "tfl_test_${_test_name}")
 
-    add_custom_target(run_test_${_test_name}
-        COMMAND ${_target} -s -d yes
-        WORKING_DIRECTORY $<TARGET_FILE_DIR:${_target}>
-        DEPENDS ${_target}
-        USES_TERMINAL
-        COMMENT "Running standalone test: ${_test_name}"
-    )
-endforeach()
+        add_custom_target(run_test_${_test_name}
+            COMMAND ${_target} -s -d yes
+            WORKING_DIRECTORY $<TARGET_FILE_DIR:${_target}>
+            DEPENDS ${_target}
+            USES_TERMINAL
+            COMMENT "Running standalone test: ${_test_name}"
+        )
+        set_target_properties(run_test_${_test_name} PROPERTIES FOLDER "Run/ByFile")
+    endforeach()
+endif()
 
 # ============================================================================
 #  状态摘要
@@ -330,6 +351,12 @@ message(STATUS "  测试源文件数      : ${_nfiles}")
 message(STATUS "  单体二进制        : TaskflowLiteTest")
 message(STATUS "  单文件目标        : ${_nfiles} 个 (tfl_test_*)")
 message(STATUS "  单文件默认构建    : ${TFL_TEST_PER_FILE_DEFAULT}")
+message(STATUS "  run_* 便捷目标    : run_all_tests" )
+if(TFL_TEST_RUN_TARGETS)
+    message(STATUS "                      + 按标签/按文件 (TFL_TEST_RUN_TARGETS=ON)")
+else()
+    message(STATUS "                      (按标签/按文件已关闭, -DTFL_TEST_RUN_TARGETS=ON 开启)")
+endif()
 message(STATUS "  C++ 标准         : C++${CMAKE_CXX_STANDARD}")
 message(STATUS "  Build Type       : ${CMAKE_BUILD_TYPE}")
 if(NOT MSVC)

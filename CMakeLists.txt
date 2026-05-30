@@ -4,17 +4,35 @@
 
 cmake_minimum_required(VERSION 3.21)
 
-# 允许使用 CMAKE_MSVC_RUNTIME_LIBRARY 来控制 MSVC 运行时 (MT/MD)
+# 策略兼容
 if(POLICY CMP0091)
-    cmake_policy(SET CMP0091 NEW)
+    cmake_policy(SET CMP0091 NEW)  # MSVC runtime library 控制
+endif()
+if(POLICY CMP0141)
+    cmake_policy(SET CMP0141 NEW)  # MSVC debug information format
 endif()
 
+# IDE 友好：启用解决方案文件夹分组
+# Why: 子目录里 set_target_properties(... FOLDER ...) 才会生效；
+#      VS 自带的 ALL_BUILD / ZERO_CHECK / INSTALL 也会自动归入 CMakePredefinedTargets，
+#      顶层不再被一堆杂目标刷屏。设在根目录是最规范的位置。
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
+# C++23 硬性要求
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 强制开启编译命令导出，方便 Clangd/VSCode 等现代化 IDE 自动提供代码提示
+# IDE 友好：导出 compile_commands.json
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ccache / sccache 加速
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    set(CMAKE_C_COMPILER_LAUNCHER   "${CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    message(STATUS "ccache detected: enabled")
+endif()
 
 # ==============================================================================
 # 魔法开始：从 C++ 源码中逆向提取版本号 (Source-Driven Versioning)
@@ -37,6 +55,49 @@ project(TaskflowLite
     HOMEPAGE_URL "https://github.com/wicyn/taskflowlite"
 )
 
+# MSVC 全局 UTF-8 源码解析
+# Why: 项目源码/头文件含中文注释且为 UTF-8。MSVC 在中文系统(代码页 936)下
+#      默认按 GBK 解析, 会把多字节中文连同后续的 }/*/ 等一起吃掉, 报出一堆
+#      假的 C2059/C2143/C2086(根因是 C4819)。全局加 /utf-8 后, 所有目标
+#      (含第三方 Taskflow benchmark、未来新增目标)都按 UTF-8 解析, 一劳永逸。
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
+# ==============================================================================
+# 依赖获取：GitHub 访问方式（供 benchmarks 子目录克隆 Taskflow/CGraph 用）
+# 放在根 CMake 顶层 => cmake-gui 第一次 Configure 就能看到并修改这些变量，
+# 不必等 benchmarks 子目录跑到克隆那一步。
+# ==============================================================================
+# GitHub 访问方式（cmake-gui 里是下拉框）：
+#   direct        = 直连 github.com
+#   ghfast.top 等 = 加速镜像（国内连不上 github 时选；改默认值可永久生效）
+set(TFL_GITHUB_MIRROR "direct" CACHE STRING
+    "GitHub 访问方式: direct / ghfast.top / gh-proxy.com / ghproxy.net")
+set_property(CACHE TFL_GITHUB_MIRROR PROPERTY STRINGS
+    direct ghfast.top gh-proxy.com ghproxy.net)
+
+# 进阶覆盖：
+#   TFL_GITHUB_PREFIX 非空时优先于下拉选择（自定义镜像前缀，拼在 github URL 前）
+#   TFL_GIT_PROXY     git 走本地 HTTP(S) 代理，如 http://127.0.0.1:7890
+set(TFL_GITHUB_PREFIX "" CACHE STRING "自定义 GitHub 前缀(非空时覆盖 TFL_GITHUB_MIRROR)")
+set(TFL_GIT_PROXY     "" CACHE STRING "git HTTP(S) proxy, e.g. http://127.0.0.1:7890")
+
+# partial clone：省流量但需 promisor 二次拉取；镜像下若卡 promisor 就关掉它（OFF）
+option(TFL_PARTIAL_CLONE "用 --filter=blob:none 部分克隆" ON)
+option(TFL_UPDATE_DEPS   "重新 configure 时把已克隆依赖更新到分支最新提交" OFF)
+
+# 解析出最终生效前缀：自定义 PREFIX > 下拉镜像 > 直连
+if(TFL_GITHUB_PREFIX)
+    set(TFL_EFFECTIVE_PREFIX "${TFL_GITHUB_PREFIX}")
+elseif(TFL_GITHUB_MIRROR STREQUAL "direct")
+    set(TFL_EFFECTIVE_PREFIX "")
+else()
+    set(TFL_EFFECTIVE_PREFIX "https://${TFL_GITHUB_MIRROR}/")
+endif()
+message(STATUS "[deps] GitHub 访问: "
+    "mirror=${TFL_GITHUB_MIRROR}, prefix='${TFL_EFFECTIVE_PREFIX}', proxy='${TFL_GIT_PROXY}'")
+
 # ==============================================================================
 # 构建选项与依赖
 # ==============================================================================
@@ -50,9 +111,9 @@ set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 
-option(TASKFLOWLITE_BUILD_EXAMPLES "Build TaskflowLite examples" ${TFL_IS_TOP_LEVEL})
-option(TASKFLOWLITE_BUILD_BENCHMARKS "Build TaskflowLite benchmarks" ON)
-option(TASKFLOWLITE_BUILD_TESTS "Build TaskflowLite unit tests" ${TFL_IS_TOP_LEVEL})
+option(TASKFLOWLITE_BUILD_EXAMPLES "Build examples" ${TFL_IS_TOP_LEVEL})
+option(TASKFLOWLITE_BUILD_BENCHMARKS "Build benchmarks" OFF)
+option(TASKFLOWLITE_BUILD_TESTS "Build unit tests" ${TFL_IS_TOP_LEVEL})
 
 # Sanitizer 三态开关：OFF / ASAN / TSAN (CI 核心)
 # Why: ASan 和 TSan 不能同时启用 (运行时互斥)，且各自捕获完全不同类别的 bug，

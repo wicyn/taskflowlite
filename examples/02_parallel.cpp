@@ -1,5 +1,6 @@
 ﻿/// @file 02_parallel.cpp
-/// @brief 演示数据并行，展示通过 Lambda 捕获闭包直接进行批量插入 (Ts&&... tasks)。
+/// @brief 演示数据并行——通过 emplace 可变参数一次创建多个任务，利用 atomic 统计完成数。
+///   展示 [&] 引用捕获与 [id, base] 值捕获混用的经典模式。
 
 #include "../taskflowlite/taskflowlite.hpp"
 #include <iostream>
@@ -38,7 +39,7 @@ int main() {
         }
         );
 
-    executor.submit(flow).start().wait();
+    executor.async(flow).wait();
 
     std::cout << "Executed " << counter.load() << " parallel tasks\n";
     return 0;

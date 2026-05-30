@@ -1301,6 +1301,7 @@ template <typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 inline void Executor::detach(Gh&& gh, P&& pred, C&& cb) {
     Work* work = make_detached_flow<anchor::explicit_t>(
+        this,
         /*parent=*/nullptr,
         std::forward<Gh>(gh),
         std::forward<P>(pred),

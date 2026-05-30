@@ -1,4 +1,10 @@
-﻿#include "../taskflowlite/taskflowlite.hpp"
+﻿/// @file 11_flow_emplace.cpp
+/// @brief 穷举 flow.emplace() 的所有调用形式：捕获、传参、协议对象、子图、批量插入。
+/// 覆盖 Lambda、全局函数、Functor、成员函数指针、std::function、std::bind_front、
+/// Branch/MultiBranch/Jump/MultiJump/Runtime 协议任务、子图展开，以及 Executor 的
+/// async/detach 变体和 AsyncTask 依赖链，最后用多层全连接 DAG 做压力验证。
+
+#include "../taskflowlite/taskflowlite.hpp"
 #include <iostream>
 #include <string>
 #include <tuple>
@@ -783,7 +789,7 @@ int main() {
     std::cout << flow.dump() << "\n";
 
     // ========================================================================
-    // 类别 K: Executor 提交 — 所有 submit/async/silent_async 变体
+    // 类别 K: Executor 提交 — 所有 async/detach 变体
     // ========================================================================
 
     // 注意：Flow 提交需要 Executor，以下单独建图测试
@@ -794,13 +800,13 @@ int main() {
     // K1. submit(Flow) — 执行1次
     {
         tfl::Flow f; f.emplace([]{ std::cout << "K1. submit once\n"; });
-        exe.submit(f).start().wait();
+        exe.async(f).wait();
     }
 
     // K2. submit(Flow, callback) — 执行1次 + 完成回调
     {
         tfl::Flow f; f.emplace([]{ std::cout << "K2. submit + callback\n"; });
-        exe.submit(f, []() noexcept { std::cout << "K2. callback fired\n"; }).start().wait();
+        exe.async(f, []() noexcept { std::cout << "K2. callback fired\n"; }).wait();
     }
 
     // K3. submit(Flow, N) — 执行N次
@@ -808,7 +814,7 @@ int main() {
         tfl::Flow f;
         std::atomic<int> c{0};
         f.emplace([](std::atomic<int>& c) { c.fetch_add(1); }, std::ref(c));
-        exe.submit(f, 5ULL).start().wait();
+        exe.async(f, 5ULL).wait();
         exe.wait_for_all();
         std::cout << "K3. submit N=5, count=" << c.load() << "\n";
     }
@@ -818,9 +824,9 @@ int main() {
         tfl::Flow f;
         std::atomic<int> c{0};
         f.emplace([](std::atomic<int>& c) { c.fetch_add(1); }, std::ref(c));
-        exe.submit(f, 3ULL, []() noexcept {
+        exe.async(f, 3ULL, []() noexcept {
                std::cout << "K4. callback after 3 runs\n";
-           }).start().wait();
+           }).wait();
         exe.wait_for_all();
         std::cout << "K4. count=" << c.load() << "\n";
     }
@@ -831,86 +837,86 @@ int main() {
         std::atomic<int> c{0};
         f.emplace([](std::atomic<int>& c) { c.fetch_add(1); }, std::ref(c));
         int runs = 0;
-        exe.submit(f, [&runs]() mutable noexcept -> bool {
-               return ++runs >= 4;
-           }).start().wait();
+        exe.async(f, [&runs]() mutable noexcept -> bool {
+            return ++runs >= 4;
+        }).wait();
         exe.wait_for_all();
         std::cout << "K5. predicate loop, count=" << c.load() << "\n";
     }
 
-    // K6. submit(Flow, predicate, callback)
+    // K6. async(Flow, predicate, callback)
     {
         tfl::Flow f;
         std::atomic<int> c{0};
         f.emplace([](std::atomic<int>& c) { c.fetch_add(1); }, std::ref(c));
         int runs = 0;
-        exe.submit(f,
-                   [&runs]() mutable noexcept -> bool { return ++runs >= 2; },
-                   []() noexcept { std::cout << "K6. pred+callback done\n"; }
-                   ).start().wait();
+        exe.async(f,
+                  [&runs]() mutable noexcept -> bool { return ++runs >= 2; },
+                  []() noexcept { std::cout << "K6. pred+callback done\n"; }
+        ).wait();
         exe.wait_for_all();
         std::cout << "K6. count=" << c.load() << "\n";
     }
 
     // K7. submit(basic_task) — 独立基础任务
     {
-        exe.submit([]{ std::cout << "K7. submit basic task\n"; }).start().wait();
+        exe.async([]{ std::cout << "K7. submit basic task\n"; }).wait();
     }
 
     // K8. submit(basic_task, args) — 独立基础任务 + 参数
     {
         int x = 0;
-        exe.submit([](int& v) { v = 42; std::cout << "K8. v=" << v << "\n"; },
-                   std::ref(x)).start().wait();
+        exe.async([](int& v) { v = 42; std::cout << "K8. v=" << v << "\n"; },
+                   std::ref(x)).wait();
         exe.wait_for_all();
     }
 
     // K9. submit(runtime_task)
     {
-        exe.submit([](tfl::Runtime& rt) {
-               std::cout << "K9. submit runtime task\n";
-           }).start().wait();
+        exe.async([](tfl::Runtime& rt) {
+            std::cout << "K9. async runtime task\n";
+        }).wait();
     }
 
     // K10. submit(runtime_task, args)
     {
         int x = 0;
-        exe.submit([](int& v, tfl::Runtime& rt) {
-               v = 77;
-               std::cout << "K10. runtime v=" << v << "\n";
-           }, std::ref(x)).start().wait();
+        exe.async([](int& v, tfl::Runtime& rt) {
+            v = 77;
+            std::cout << "K10. async runtime v=" << v << "\n";
+        }, std::ref(x)).wait();
         exe.wait_for_all();
     }
 
-    // K11. silent_async(basic_task) — fire-and-forget
+    // K11. detach(basic_task) — fire-and-forget
     {
-        exe.silent_async([]{ std::cout << "K11. silent_async basic\n"; });
+        exe.detach([]{ std::cout << "K11. detach basic\n"; });
         exe.wait_for_all();
     }
 
-    // K12. silent_async(basic_task, args)
+    // K12. detach(basic_task, args)
     {
         std::atomic<int> c{0};
-        exe.silent_async([](std::atomic<int>& v) { v.fetch_add(1); }, std::ref(c));
+        exe.detach([](std::atomic<int>& v) { v.fetch_add(1); }, std::ref(c));
         exe.wait_for_all();
-        std::cout << "K12. silent_async count=" << c.load() << "\n";
+        std::cout << "K12. detach count=" << c.load() << "\n";
     }
 
-    // K13. silent_async(runtime_task)
+    // K13. detach(runtime_task)
     {
-        exe.silent_async([](tfl::Runtime& rt) {
-            std::cout << "K13. silent_async runtime\n";
+        exe.detach([](tfl::Runtime& rt) {
+            std::cout << "K13. detach runtime\n";
         });
         exe.wait_for_all();
     }
 
-    // K14. silent_async(runtime_task, args)
+    // K14. detach(runtime_task, args)
     {
         std::atomic<int> c{0};
-        exe.silent_async([](std::atomic<int>& v, tfl::Runtime& rt) { v.fetch_add(1); },
+        exe.detach([](std::atomic<int>& v, tfl::Runtime& rt) { v.fetch_add(1); },
                          std::ref(c));
         exe.wait_for_all();
-        std::cout << "K14. silent_async runtime count=" << c.load() << "\n";
+        std::cout << "K14. detach runtime count=" << c.load() << "\n";
     }
 
     // K15. async(task) → future<void>
@@ -963,26 +969,26 @@ int main() {
     // L1. 两个独立任务，t2 依赖 t1
     {
         std::atomic<int> order{0};
-        auto t1 = exe.submit([&order]{ order.store(1); std::cout << "L1. t1\n"; });
-        auto t2 = exe.submit([&order]{
+        auto t1 = tfl::NonrepeatAsyncTask([&order]{ order.store(1); std::cout << "L1. t1\n"; });
+        auto t2 = tfl::NonrepeatAsyncTask([&order]{
             std::cout << "L1. t2, order=" << order.load() << "\n";
         });
-        t1.start().wait();
-        t2.start(t1).wait();
+        exe.submit(t2, t1);
+        t2.wait();
         exe.wait_for_all();
     }
 
     // L2. 三级依赖链
     {
         std::atomic<int> step{0};
-        auto s1 = exe.submit([&step]{ step.store(1); });
-        auto s2 = exe.submit([&step]{ step.store(2); });
-        auto s3 = exe.submit([&step]{
+        auto s1 = tfl::NonrepeatAsyncTask([&step]{ step.store(1); });
+        auto s2 = tfl::NonrepeatAsyncTask([&step]{ step.store(2); });
+        auto s3 = tfl::NonrepeatAsyncTask([&step]{
             std::cout << "L2. final step=" << step.load() << "\n";
         });
-        s1.start().wait();
-        s2.start(s1).wait();
-        s3.start(s2).wait();
+        exe.submit(s2, s1);
+        exe.submit(s3, s2);
+        s3.wait();
         exe.wait_for_all();
     }
 
@@ -1015,7 +1021,7 @@ int main() {
             }
         }
 
-        exe.submit(dag, static_cast<uint64_t>(ITERATIONS)).start().wait();
+        exe.async(dag, static_cast<uint64_t>(ITERATIONS)).wait();
         exe.wait_for_all();
 
         int expected = LAYERS * PER_LAYER * ITERATIONS;

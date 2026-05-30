@@ -53,7 +53,7 @@ TEST_CASE("Jump: retry loop", "[jump][retry]") {
     process.precede(check);
     check.precede(process, success);  // 0 = process，1 = success
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(attempts == MAX);
     REQUIRE(success_run.load());
@@ -72,7 +72,7 @@ TEST_CASE("Jump: reset follows normal path", "[jump][reset]") {
     entry.precede(j);
     j.precede(next);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(next_run.load());
 
 }
@@ -100,7 +100,7 @@ TEST_CASE("Jump: select_if name-match jump", "[jump][select_if]") {
     step.precede(decide);
     decide.precede(step, finish);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(state == 3);
     REQUIRE(finish_run.load());
 }
@@ -126,7 +126,7 @@ TEST_CASE("Jump: operator[] subscript syntax", "[jump][operator]") {
     work.precede(gate);
     gate.precede(work, done);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(work_runs.load() == 2);
 }
 
@@ -168,7 +168,7 @@ TEST_CASE("MultiJump: parallel fan-out loop", "[jump][multi][parallel]") {
     auto init = flow.emplace([] {});
     init.precede(branch_a, branch_b, branch_c);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(hits_a.load() == ITERS);
     REQUIRE(hits_b.load() == ITERS);
     REQUIRE(hits_c.load() == ITERS);

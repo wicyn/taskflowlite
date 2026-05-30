@@ -86,7 +86,7 @@ TEST_CASE("Semaphore: Concurrency cap throttling", "[semaphore][throttle]") {
         t.acquire(sem).release(sem);
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(peak.load() <= K);
     REQUIRE(peak.load() > 0);
@@ -114,7 +114,7 @@ TEST_CASE("Semaphore: Capacity 1 enforces serialization", "[semaphore][serialize
         t.acquire(mutex_like).release(mutex_like);
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(peak.load() == 1);  // 严格串行
 }
 
@@ -143,7 +143,7 @@ TEST_CASE("Semaphore: Event signal pattern (initial value 0)", "[semaphore][even
     producer.release(event_sem, 3);
 
     // 注意：消费者与生产者之间无 precede 边 — 同步完全依赖信号量
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(consumed.load() == 3);
 }
@@ -177,7 +177,7 @@ TEST_CASE("Semaphore: Multi-count acquire", "[semaphore][multi-count]") {
     light.acquire(pool).release(pool);
     light2.acquire(pool).release(pool);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(peak_quota.load() <= 4);
     REQUIRE(pool.value() == 4);
@@ -259,11 +259,11 @@ TEST_CASE("Semaphore: multi-Flow contention stress", "[semaphore][stress][mt]") 
     }
 
     // Start all in parallel
-    std::vector<tfl::DeferredAsyncTask> tasks;
+    std::vector<tfl::NonrepeatAsyncTask> tasks;
     for (auto& f : flows) {
-        tasks.push_back(env.executor.deferred_async(f));
+        tasks.push_back(tfl::NonrepeatAsyncTask(f));
     }
-    for (auto& t : tasks) t.start();
+    for (auto& t : tasks) env.executor.submit(t);
     for (auto& t : tasks) t.wait();
 
     REQUIRE(total_done.load() == kFlows * kTasksPerFlow);
@@ -296,7 +296,7 @@ TEST_CASE("Semaphore: heavy serialization with 1 permit", "[semaphore][stress][m
         t.acquire(mutex).release(mutex);
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(violations.load() == 0);
     REQUIRE(peak.load() == 1);
@@ -344,7 +344,7 @@ TEST_CASE("Semaphore: mixed heavy/light tasks under pool cap", "[semaphore][stre
         t.acquire(pool).release(pool);
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(done.load() == kHeavy + kLight);
     REQUIRE(peak_quota.load() <= 6);
@@ -371,8 +371,8 @@ TEST_CASE("Semaphore: reset with pending waiters throws", "[semaphore][error]") 
     });
     waiter.acquire(gate);  // 阻塞：current=0，无法获取
 
-    auto task = env.executor.deferred_async(flow);
-    task.start();
+    auto task = tfl::NonrepeatAsyncTask(flow);
+    env.executor.submit(task);
 
     // 给调度器时间把任务放入信号量等待队列
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -385,7 +385,7 @@ TEST_CASE("Semaphore: reset with pending waiters throws", "[semaphore][error]") 
     tfl::Flow release_flow;
     auto releaser = release_flow.emplace([] {});
     releaser.release(gate);  // 释放 1 配额 → 唤醒 waiter
-    env.executor.deferred_async(release_flow).start().wait();
+    env.executor.async(release_flow).wait();
 
     // waiter 现在应已完成
     task.wait();
@@ -424,7 +424,7 @@ TEST_CASE("Semaphore: zero-count acquire/release", "[semaphore][boundary]") {
     auto t = flow.emplace([&] { hit.store(1); });
     t.acquire(sem, 0).release(sem, 0);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(hit.load() == 1);
     REQUIRE(sem.value() == 3);  // unchanged
 }
@@ -457,7 +457,7 @@ TEST_CASE("Semaphore: concurrent release wakeup stress", "[semaphore][concurrent
     auto producer = flow.emplace([] {});
     producer.release(sem, static_cast<std::size_t>(N));
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(consumers_done.load() == N);
     REQUIRE(sem.value() == 0);  // 全部消费完毕

@@ -44,7 +44,7 @@ TEST_CASE("Pattern: Three-stage Pipeline", "[pattern][pipeline]") {
     producer.precede(transformer);
     transformer.precede(consumer);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(total.load() == 9900);  // 0+2+4+...+198
 }
 
@@ -82,7 +82,7 @@ TEST_CASE("Pattern: Map-Reduce sum of squares", "[pattern][map-reduce]") {
     });
     for (auto& m : mappers) m.precede(reducer);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(sum.load() == 64L * 65 * 129 / 6);  // = 89440
 }
 
@@ -131,7 +131,7 @@ TEST_CASE("Pattern: Binary tree reduce", "[pattern][tree-reduce]") {
         idx_base /= 2;
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(partial[1].load() == N * (N + 1) / 2);  // = 136
 }
 
@@ -163,7 +163,7 @@ TEST_CASE("Pattern: Multi-level diamond expand/contract", "[pattern][diamond]") 
         prev = next;
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     // 1 个起始 + 4 层 x (4 个中间 + 1 个收缩) = 21
     REQUIRE(total_runs.load() == 1 + LEVELS * (WIDTH + 1));
 }
@@ -194,7 +194,7 @@ TEST_CASE("Pattern: 1D Wavefront", "[pattern][wavefront-1d]") {
     }
     for (int i = 1; i < N; ++i) tasks[i - 1].precede(tasks[i]);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     for (int i = 0; i < N; ++i) {
         REQUIRE(wave[i].load() == i + 1);
     }
@@ -234,7 +234,7 @@ TEST_CASE("Pattern: 2D Stencil Wavefront", "[pattern][wavefront-2d]") {
         }
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(grid[idx(0, 0)].load() == 1);
     REQUIRE(grid[idx(0, W - 1)].load() == W);
@@ -270,7 +270,7 @@ TEST_CASE("Pattern: Divide-and-conquer fork-join", "[pattern][divide-conquer]") 
     split.precede(process);
     process.precede(merge);
 
-    env.executor.deferred_async(outer).start().wait();
+    env.executor.async(outer).wait();
     // 求和 1^2..8^2 = 204
     REQUIRE(total.load() == 1 + 4 + 9 + 16 + 25 + 36 + 49 + 64);
 }
@@ -279,7 +279,7 @@ TEST_CASE("Pattern: Divide-and-conquer fork-join", "[pattern][divide-conquer]") 
 // SECTION 8: 异步任务依赖图
 // ============================================================================
 
-/// @test [pattern][async-dag] 使用 DeferredAsyncTask 构建动态依赖图
+/// @test [pattern][async-dag] 使用 AsyncTask<> 构建动态依赖图
 /// @details 非典型 DAG：使用 AsyncTask 而非 Flow 来构造复杂依赖关系。
 TEST_CASE("Pattern: AsyncTask dependency graph", "[pattern][async-dag]") {
     TestEnv env;
@@ -287,24 +287,24 @@ TEST_CASE("Pattern: AsyncTask dependency graph", "[pattern][async-dag]") {
     std::atomic<bool> ok_b{false}, ok_c{false}, ok_d{false};
 
     // A → {B, C} → D
-    auto a = env.executor.deferred_async([&] { step.fetch_add(1); });
-    auto b = env.executor.deferred_async([&] {
+    auto a = tfl::NonrepeatAsyncTask([&] { step.fetch_add(1); });
+    auto b = tfl::NonrepeatAsyncTask([&] {
         ok_b.store(step.load() >= 1);
         step.fetch_add(1);
     });
-    auto c = env.executor.deferred_async([&] {
+    auto c = tfl::NonrepeatAsyncTask([&] {
         ok_c.store(step.load() >= 1);
         step.fetch_add(1);
     });
-    auto d = env.executor.deferred_async([&] {
+    auto d = tfl::NonrepeatAsyncTask([&] {
         ok_d.store(step.load() >= 3);  // a + b + c 均已运行
         step.fetch_add(1);
     });
 
-    d.start(b, c);
-    b.start(a);
-    c.start(a);
-    a.start();
+    env.executor.submit(d, b, c);
+    env.executor.submit(b, a);
+    env.executor.submit(c, a);
+    env.executor.submit(a);
 
     d.wait();
     env.executor.wait_for_all();

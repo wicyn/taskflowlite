@@ -79,7 +79,7 @@ TEST_CASE("Lifecycle: closure objects released after Flow destruction", "[lifecy
         for (int i = 0; i < 16; ++i) {
             flow.emplace(Probe{});
         }
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
         REQUIRE(Probe::alive.load() > 0);  // Flow 内部仍有存活对象
     }
     // Flow 和 Executor 均已销毁
@@ -98,7 +98,7 @@ TEST_CASE("Lifecycle: no leaks after multiple Flow submissions", "[lifecycle][pr
         for (int i = 0; i < 8; ++i) flow.emplace(Probe{});
 
         for (int run = 0; run < 10; ++run) {
-            env.executor.deferred_async(flow).start().wait();
+            env.executor.async(flow).wait();
         }
     }
 
@@ -116,26 +116,27 @@ TEST_CASE("Lifecycle: multiple AsyncTask handles share a node", "[lifecycle][ref
 
     {
         TestEnv env;
-        auto t = env.executor.deferred_async(Probe{});
+        auto t = tfl::NonrepeatAsyncTask(Probe{});
         auto copy1 = t;
         auto copy2 = t;
         // 三个句柄指向同一节点；仅 1 个 Probe 实例（在节点内部）
 
-        t.start().wait();
+        env.executor.submit(t);
+        t.wait();
     }
 
     REQUIRE(Probe::alive.load() == 0);
 }
 
-/// @section silent-async-released-after-execution
-/// @test [lifecycle][refcount] silent_async 任务执行后即释放。
-TEST_CASE("Lifecycle: silent_async tasks released after execution", "[lifecycle][silent_async]") {
+/// @section detach-released-after-execution
+/// @test [lifecycle][refcount] detach 任务执行后即释放。
+TEST_CASE("Lifecycle: detach tasks released after execution", "[lifecycle][detach]") {
     Probe::reset();
 
     {
         TestEnv env;
         for (int i = 0; i < 100; ++i) {
-            env.executor.silent_async(Probe{});
+            env.executor.detach(Probe{});
         }
         env.executor.wait_for_all();
     }
@@ -162,7 +163,7 @@ TEST_CASE("Lifecycle: Subflow nesting does not leak", "[lifecycle][subflow]") {
         outer.emplace(std::move(inner), 3ULL);  // 子图运行 3 次
         outer.emplace(Probe{});
 
-        env.executor.deferred_async(outer).start().wait();
+        env.executor.async(outer).wait();
     }
 
     REQUIRE(Probe::alive.load() == 0);
@@ -191,7 +192,7 @@ TEST_CASE("Lifecycle: exception path does not leak", "[lifecycle][exception]") {
             throw std::runtime_error("planned");
         });
 
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
     }
 
     REQUIRE(Probe::alive.load() == 0);
@@ -216,7 +217,7 @@ TEST_CASE("Lifecycle: mass construction/destruction stress", "[lifecycle][stress
         for (int r = 0; r < RUNS; ++r) {
             tfl::Flow flow;
             for (int i = 0; i < N; ++i) flow.emplace(Probe{});
-            env.executor.deferred_async(flow).start().wait();
+            env.executor.async(flow).wait();
         }
     }
 
