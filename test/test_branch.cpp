@@ -1,5 +1,6 @@
 /// @file test_branch.cpp
 /// @brief Branch / MultiBranch 测试 —— 条件路由，协作式多路径释放。
+/// @author wicyn
 ///
 /// 覆盖的接口（Branch 单目标排他）：
 ///   - Branch::select(index)                  按索引选择单个后继
@@ -42,7 +43,7 @@ TEST_CASE("Branch: select(index) only releases a single successor", "[branch][se
 
         br.precede(p0, p1, p2);
 
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
 
         for (int i = 0; i < 3; ++i) {
             REQUIRE(ran[i].load() == (i == target ? 1 : 0));
@@ -65,7 +66,7 @@ TEST_CASE("Branch: select_if selects first predicate match", "[branch][select_if
 
     br.precede(p_other, p_match);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(matched.load());
     REQUIRE_FALSE(other.load());
 }
@@ -81,7 +82,7 @@ TEST_CASE("Branch: reset blocks all successors", "[branch][reset]") {
     auto p1 = flow.emplace([&] { any.store(true); });
     br.precede(p0, p1);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE_FALSE(any.load());
 }
 
@@ -98,7 +99,7 @@ TEST_CASE("Branch: operator[] subscript syntax", "[branch][operator]") {
     auto p1 = flow.emplace([&] { ran[1].store(1); });
     br.precede(p0, p1);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(ran[0].load() == 0);
     REQUIRE(ran[1].load() == 1);
 }
@@ -122,7 +123,7 @@ TEST_CASE("MultiBranch: select(...) multi-index broadcast", "[branch][multi][sel
     auto p3 = flow.emplace([&] { ran[3].store(1); });
     mb.precede(p0, p1, p2, p3);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(ran[0].load() == 1);
     REQUIRE(ran[1].load() == 0);
     REQUIRE(ran[2].load() == 1);
@@ -141,7 +142,7 @@ TEST_CASE("MultiBranch: select_all broadcasts all successors", "[branch][multi][
         mb.precede(p);
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(hits.load() == 5);
 }
 
@@ -161,7 +162,7 @@ TEST_CASE("MultiBranch: select_if selects all matches", "[branch][multi][select_
     auto c = flow.emplace([&] { ok_hits.fetch_add(1); }).name("ok_c");
     mb.precede(a, b, c);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(ok_hits.load() == 2);
     REQUIRE(skip_hits.load() == 0);
 }
@@ -181,7 +182,7 @@ TEST_CASE("MultiBranch: reset clears accumulated selections", "[branch][multi][r
     auto p2 = flow.emplace([&] { hits.fetch_add(1); });
     mb.precede(p0, p1, p2);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(hits.load() == 0);
 }
 
@@ -199,7 +200,7 @@ TEST_CASE("MultiBranch: operator[multi-index] compile-time length check", "[bran
     auto p2 = flow.emplace([&] { ran[2].store(1); });
     mb.precede(p0, p1, p2);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(ran[0].load() == 1);
     REQUIRE(ran[1].load() == 0);
     REQUIRE(ran[2].load() == 1);

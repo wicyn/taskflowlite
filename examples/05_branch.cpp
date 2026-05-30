@@ -1,5 +1,7 @@
-﻿/// @file 05_branch.cpp
+/// @file 05_branch.cpp
 /// @brief 演示 Branch（单目标条件路由）与 MultiBranch（多目标广播路由）。
+///   覆盖 select(index)、operator()、select_if、select_all、unselect 等 API。
+
 #include "../taskflowlite/taskflowlite.hpp"
 #include <iostream>
 #include <random>
@@ -11,10 +13,10 @@ int main() {
     tfl::Executor executor(handler, 4);
 
     // ================================================================
-    //  Part 1: Branch — 单目标条件路由
+    // Part 1: Branch -- select(index) 单目标条件路由
     // ================================================================
     {
-        std::cout << "--- Part 1: Branch (Single-target) ---\n";
+        std::cout << "--- Part 1: Branch select(index) ---\n";
 
         std::random_device rd;
         std::mt19937 gen(rd());
@@ -23,11 +25,8 @@ int main() {
         for (int i = 0; i < 3; ++i) {
             tfl::Flow flow;
 
-            auto start = flow.emplace([] {
-                std::cout << "  [Start]\n";
-            });
+            auto start = flow.emplace([] { std::cout << "  [Start]\n"; });
 
-            // ---- 方式 1: select(index) ----
             auto branch = flow.emplace([&gen, &dis](tfl::Branch& br) {
                 int route = dis(gen);
                 std::cout << "  [Branch] select(" << route << ")\n";
@@ -46,27 +45,23 @@ int main() {
             path2.precede(end);
 
             std::cout << "\n  Run #" << i + 1 << ":\n";
-            executor.submit(flow).start().wait();
+            executor.async(flow).wait();
         }
     }
 
     // ================================================================
-    //  Part 2: Branch — operator[] 语法
+    // Part 2: Branch -- operator() 语法
     // ================================================================
     {
-        std::cout << "\n--- Part 2: Branch operator[] ---\n";
+        std::cout << "\n--- Part 2: Branch operator() ---\n";
 
         tfl::Flow flow;
 
-        auto start = flow.emplace([] {
-            std::cout << "  [Start]\n";
-        });
+        auto start = flow.emplace([] { std::cout << "  [Start]\n"; });
 
-        // ---- 方式 2: operator[] = true/false ----
         auto branch = flow.emplace([](tfl::Branch& br) {
-            std::cout << "  [Branch] br[0] = false; br[2] = true;\n";
-            br[0] = false;  // 显式关闭 0（本就未选中，无操作）
-            br[2] = true;   // 选中 2
+            std::cout << "  [Branch] br(2) -- select successor 2\n";
+            br(2);
         });
 
         auto path0 = flow.emplace([] { std::cout << "    -> Path 0 (should NOT run)\n"; });
@@ -80,23 +75,21 @@ int main() {
         path1.precede(end);
         path2.precede(end);
 
-        executor.submit(flow).start().wait();
+        executor.async(flow).wait();
     }
 
     // ================================================================
-    //  Part 3: Branch — select_if 谓词选择
+    // Part 3: Branch -- select_if 谓词选择
     // ================================================================
     {
         std::cout << "\n--- Part 3: Branch select_if ---\n";
 
         tfl::Flow flow;
 
-        auto start = flow.emplace([] {
-            std::cout << "  [Start]\n";
-        });
+        auto start = flow.emplace([] { std::cout << "  [Start]\n"; });
 
         auto branch = flow.emplace([](tfl::Branch& br) {
-            std::cout << "  [Branch] select_if: 选择名为 'target' 的后继\n";
+            std::cout << "  [Branch] select_if: select successor named 'target'\n";
             br.select_if([](tfl::TaskView tv) {
                 return tv.name() == "target";
             });
@@ -117,24 +110,22 @@ int main() {
         path1.precede(end);
         path2.precede(end);
 
-        executor.submit(flow).start().wait();
+        executor.async(flow).wait();
     }
 
     // ================================================================
-    //  Part 4: MultiBranch — 多目标广播路由
+    // Part 4: MultiBranch -- 多目标广播路由
     // ================================================================
     {
-        std::cout << "\n--- Part 4: MultiBranch (Multi-target) ---\n";
+        std::cout << "\n--- Part 4: MultiBranch ---\n";
 
         tfl::Flow flow;
 
-        auto start = flow.emplace([] {
-            std::cout << "  [Start]\n";
-        });
+        auto start = flow.emplace([] { std::cout << "  [Start]\n"; });
 
-        // ---- 方式 1: select(indices...) ----
+        // 方式 1: select(indices...)
         auto mb1 = flow.emplace([](tfl::MultiBranch& mb) {
-            std::cout << "  [MB] select(0, 2) — 选中 0 和 2\n";
+            std::cout << "  [MB] select(0, 2) -- select 0 and 2\n";
             mb.select(0, 2);
         });
 
@@ -149,12 +140,10 @@ int main() {
         a1.precede(mid);
         a2.precede(mid);
 
-        // ---- 方式 2: operator[] 单索引 ----
+        // 方式 2: operator() 多索引
         auto mb2 = flow.emplace([](tfl::MultiBranch& mb) {
-            std::cout << "  [MB] mb[0] = true; mb[1] = true; mb[2] = false;\n";
-            mb[0] = true;
-            mb[1] = true;
-            mb[2] = false;
+            std::cout << "  [MB] mb(0, 1) -- select 0 and 1\n";
+            mb(0, 1);
         });
 
         auto b0 = flow.emplace([] { std::cout << "    -> B0 (should run)\n"; });
@@ -168,10 +157,10 @@ int main() {
         b1.precede(mid2);
         b2.precede(mid2);
 
-        // ---- 方式 3: operator[i, j, k] = {bool, bool, bool} ----
+        // 方式 3: operator() 选择 0 和 2
         auto mb3 = flow.emplace([](tfl::MultiBranch& mb) {
-            std::cout << "  [MB] mb[0, 1, 2, 3] = {true, false, true, false}\n";
-            mb[0, 1, 2, 3] = {true, false, true, false};
+            std::cout << "  [MB] mb(0, 2) -- select 0 and 2\n";
+            mb(0, 2);
         });
 
         auto c0 = flow.emplace([] { std::cout << "    -> C0 (should run)\n"; });
@@ -187,11 +176,11 @@ int main() {
         c2.precede(end);
         c3.precede(end);
 
-        executor.submit(flow).start().wait();
+        executor.async(flow).wait();
     }
 
     // ================================================================
-    //  Part 5: MultiBranch — select_all / select_if / reset
+    // Part 5: MultiBranch -- select_all / select_if
     // ================================================================
     {
         std::cout << "\n--- Part 5: MultiBranch select_all / select_if ---\n";
@@ -202,7 +191,7 @@ int main() {
             auto start = flow.emplace([] { std::cout << "  [Start]\n"; });
 
             auto mb = flow.emplace([](tfl::MultiBranch& mb) {
-                std::cout << "  [MB] select_all() — 广播全部后继\n";
+                std::cout << "  [MB] select_all() -- broadcast to all successors\n";
                 mb.select_all();
             });
 
@@ -217,7 +206,7 @@ int main() {
             d1.precede(end);
             d2.precede(end);
 
-            executor.submit(flow).start().wait();
+            executor.async(flow).wait();
         }
 
         // select_if 谓词筛选
@@ -226,7 +215,7 @@ int main() {
             auto start = flow.emplace([] { std::cout << "\n  [Start]\n"; });
 
             auto mb = flow.emplace([](tfl::MultiBranch& mb) {
-                std::cout << "  [MB] select_if: 选择名称以 'ok' 开头的后继\n";
+                std::cout << "  [MB] select_if: select successors whose name starts with 'ok'\n";
                 mb.select_if([](tfl::TaskView tv) {
                     return tv.name().starts_with("ok");
                 });
@@ -247,7 +236,7 @@ int main() {
             e1.precede(end);
             e2.precede(end);
 
-            executor.submit(flow).start().wait();
+            executor.async(flow).wait();
         }
     }
 

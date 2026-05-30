@@ -6,7 +6,7 @@
 ///   - TaskObserver::on_after(WorkerView)         任务执行后回调
 ///   - Task::register_observer<T>(args...)        注册（返回 shared_ptr）
 ///   - Task::unregister_observer(ptr)             取消注册
-///   - DeferredAsyncTask 同样支持注册
+///   - AsyncTask<> 同样支持注册
 ///
 /// 关键不变量：
 ///   1. on_before 在每次任务调用前同步执行；
@@ -44,14 +44,14 @@ TEST_CASE("Observer: single execution before/after each called once", "[observer
     auto t = flow.emplace([] {});
     auto obs = t.register_observer<CountingObserver>();
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(obs->before.load() == 1);
     REQUIRE(obs->after.load() == 1);
 }
 
 /// @section n-executions-before-after-n-times
-/// @test [observer][repeat] deferred_async(flow, N) 运行 N 次，回调各调用 N 次。
+/// @test [observer][repeat] async(flow, N) 运行 N 次，回调各调用 N 次。
 TEST_CASE("Observer: N executions before/after each called N times", "[observer][repeat]") {
     TestEnv env;
     tfl::Flow flow;
@@ -60,7 +60,7 @@ TEST_CASE("Observer: N executions before/after each called N times", "[observer]
     auto t = flow.emplace([] {});
     auto obs = t.register_observer<CountingObserver>();
 
-    env.executor.deferred_async(flow, static_cast<std::uint64_t>(N)).start().wait();
+    env.executor.async(flow, static_cast<std::uint64_t>(N)).wait();
     env.executor.wait_for_all();
 
     REQUIRE(obs->before.load() == N);
@@ -81,7 +81,7 @@ TEST_CASE("Observer: multiple observers coexist", "[observer][multi]") {
     auto obs_a = t.register_observer<CountingObserver>();
     auto obs_b = t.register_observer<CountingObserver>();
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(obs_a->before.load() == 1);
     REQUIRE(obs_a->after.load() == 1);
@@ -106,7 +106,7 @@ TEST_CASE("Observer: no longer called after unregister", "[observer][unregister]
         auto obs2 = t.register_observer<CountingObserver>();
 
         // 运行一次
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
         REQUIRE(obs1->before.load() == 1);
         REQUIRE(obs2->before.load() == 1);
 
@@ -114,7 +114,7 @@ TEST_CASE("Observer: no longer called after unregister", "[observer][unregister]
         t.unregister_observer(obs1);
 
         // 再次运行 — obs1 不应再被调用
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
         env.executor.wait_for_all();
         REQUIRE(obs1->before.load() == 1);  // 未变
         REQUIRE(obs2->before.load() == 2);  // +1
@@ -122,17 +122,17 @@ TEST_CASE("Observer: no longer called after unregister", "[observer][unregister]
 }
 
 // ============================================================================
-// SECTION 4: 在 DeferredAsyncTask 上注册 observer
+// SECTION 4: 在 AsyncTask<> 上注册 observer
 // ============================================================================
 
-/// @section deferred-async-task-registration
-/// @test [observer][async] DeferredAsyncTask 可在 start 前注册 observer。
-TEST_CASE("Observer: DeferredAsyncTask registration", "[observer][async]") {
+/// @section async-task-registration
+/// @test [observer][async] AsyncTask<> 可在 submit 前注册 observer。
+TEST_CASE("Observer: AsyncTask<> registration", "[observer][async]") {
     TestEnv env;
 
-    auto t = env.executor.deferred_async([] {});
+    auto t = tfl::NonrepeatAsyncTask([] {});
     auto obs = t.register_observer<CountingObserver>();
-    t.start().wait();
+    env.executor.submit(t); t.wait();
 
     REQUIRE(obs->before.load() == 1);
     REQUIRE(obs->after.load() == 1);
@@ -153,7 +153,7 @@ TEST_CASE("Observer: observer on Subflow tasks fires correctly", "[observer][sub
     tfl::Flow outer;
     outer.emplace(std::move(inner));
 
-    env.executor.deferred_async(outer).start().wait();
+    env.executor.async(outer).wait();
 
     // Subflow 默认执行一次
     REQUIRE(obs->before.load() == 1);
@@ -172,7 +172,7 @@ TEST_CASE("Observer: Subflow repeat triggers observer N times", "[observer][subf
     tfl::Flow outer;
     outer.emplace(std::move(inner), static_cast<std::uint64_t>(kRepeats));
 
-    env.executor.deferred_async(outer).start().wait();
+    env.executor.async(outer).wait();
 
     REQUIRE(obs->before.load() == kRepeats);
     REQUIRE(obs->after.load() == kRepeats);
@@ -198,7 +198,7 @@ TEST_CASE("Observer: concurrent tasks each with own observer", "[observer][concu
         observers.push_back(t.register_observer<CountingObserver>());
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     int total_before = 0, total_after = 0;
     for (auto& obs : observers) {
@@ -218,7 +218,7 @@ TEST_CASE("Observer: observer outlives Flow via shared_ptr", "[observer][lifecyc
         tfl::Flow flow;
         auto t = flow.emplace([] {});
         obs = t.register_observer<CountingObserver>();
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
     }
 
     // Flow 和 Executor 已析构，observer 仍有效
@@ -245,7 +245,7 @@ TEST_CASE("Observer: custom observer with state", "[observer][custom]") {
     auto t = flow.emplace([] {});
     auto obs = t.register_observer<StatefulObserver>();
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     // 每次执行: before +10, after +1 = 11
     REQUIRE(obs->sum.load() == 11);

@@ -12,7 +12,7 @@
 ///   TEST_CASE("...", "[xxx]") {
 ///       TestEnv env;            // 4 工作线程
 ///       TestEnv env2(8);        // 显式指定线程数
-///       env.executor.submit(flow).start().wait();
+///       env.executor.async(flow).wait();
 ///   }
 /// @endcode
 

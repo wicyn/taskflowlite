@@ -1,20 +1,18 @@
 /// @file test_executor.cpp
-/// @brief Executor 模块测试 —— DAG 调度正确性 / deferred_async 各种形式 / async / silent_async。
+/// @brief Executor 模块测试 —— DAG 调度正确性 / async 各种形式 / async(single) / detach。
 ///
 /// 覆盖的接口：
-///   - Executor(handler, num_workers)        构造
-///   - Executor::deferred_async(Flow)                 单次提交
-///   - Executor::deferred_async(Flow, callback)       带回调
-///   - Executor::deferred_async(Flow, num)            固定次数循环
-///   - Executor::deferred_async(Flow, num, callback)  固定次数 + 回调
-///   - Executor::deferred_async(Flow, predicate)      谓词驱动循环
-///   - Executor::deferred_async(callable, args...)    单个基本任务（返回 AsyncTask）
-///   - Executor::deferred_async(runtime_callable)     单个 Runtime 任务
-///   - Executor::silent_async                 即发即忘
-///   - Executor::async                        返回 future
-///   - Executor::wait_for_all                 全局等待
-///
-/// 关键约束：所有 deferred_async(...) 返回 DeferredAsyncTask，必须调用 .start().wait() 来执行。
+///   - Executor(handler, num_workers)             构造
+///   - Executor::async(Flow)                      单次提交
+///   - Executor::async(Flow, callback)            带回调
+///   - Executor::async(Flow, num)                 固定次数循环
+///   - Executor::async(Flow, num, callback)       固定次数 + 回调
+///   - Executor::async(Flow, predicate)           谓词驱动循环
+///   - tfl::NonrepeatAsyncTask(callable, args...)        独立异步任务
+///   - Executor::submit / AsyncTask::wait         独立任务提交与等待
+///   - Executor::detach                           即发即忘
+///   - Executor::async(single)                    返回 Future
+///   - Executor::wait_for_all                     全局等待
 
 #include "test_common.hpp"
 
@@ -42,7 +40,7 @@ TEST_CASE("Executor: serial chain executes in topological order", "[executor][da
     b.precede(c);
     c.precede(d);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(step.load() == 4);
     REQUIRE(ok_a.load());
@@ -69,7 +67,7 @@ TEST_CASE("Executor: diamond DAG synchronization semantics", "[executor][dag][di
     a.precede(b, c);
     d.succeed(b, c);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(a_done.load());
     REQUIRE(b_done.load());
@@ -90,30 +88,30 @@ TEST_CASE("Executor: N independent tasks run in parallel", "[executor][dag][para
         flow.emplace([&] { hits.fetch_add(1, std::memory_order_relaxed); });
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(hits.load() == N);
 }
 
 // ============================================================================
-// SECTION 2: deferred_async(Flow, ...) 的所有变体
+// SECTION 2: async(Flow, ...) 的所有变体
 // ============================================================================
 
-/// @test [executor][deferred_async] deferred_async(Flow, N) 执行 N 次。
-TEST_CASE("Executor: deferred_async(flow, N) fixed count", "[executor][deferred_async][repeat]") {
+/// @test [executor][async] async(Flow, N) 执行 N 次。
+TEST_CASE("Executor: async(flow, N) fixed count", "[executor][async][repeat]") {
     TestEnv env;
     tfl::Flow flow;
     std::atomic<int> count{0};
 
     flow.emplace([&] { count.fetch_add(1); });
 
-    env.executor.deferred_async(flow, 5ULL).start().wait();
+    env.executor.async(flow, 5ULL).wait();
     env.executor.wait_for_all();
 
     REQUIRE(count.load() == 5);
 }
 
-/// @test [executor][deferred_async] deferred_async(Flow, callback) 在完成时调用回调。
-TEST_CASE("Executor: deferred_async(flow, callback)", "[executor][deferred_async][callback]") {
+/// @test [executor][async] async(Flow, callback) 在完成时调用回调。
+TEST_CASE("Executor: async(flow, callback)", "[executor][async][callback]") {
     TestEnv env;
     tfl::Flow flow;
     std::atomic<bool> task_run{false};
@@ -121,15 +119,15 @@ TEST_CASE("Executor: deferred_async(flow, callback)", "[executor][deferred_async
 
     flow.emplace([&] { task_run.store(true); });
 
-    env.executor.deferred_async(flow, [&]() noexcept { cb_run.store(true); })
-                .start().wait();
+    env.executor.async(flow, [&]() noexcept { cb_run.store(true); })
+                .wait();
 
     REQUIRE(task_run.load());
     REQUIRE(cb_run.load());
 }
 
-/// @test [executor][deferred_async] deferred_async(Flow, N, callback) 运行 N 次后调用一次回调。
-TEST_CASE("Executor: deferred_async(flow, N, callback)", "[executor][deferred_async][repeat][callback]") {
+/// @test [executor][async] async(Flow, N, callback) 运行 N 次后调用一次回调。
+TEST_CASE("Executor: async(flow, N, callback)", "[executor][async][repeat][callback]") {
     TestEnv env;
     tfl::Flow flow;
     std::atomic<int> count{0};
@@ -137,15 +135,15 @@ TEST_CASE("Executor: deferred_async(flow, N, callback)", "[executor][deferred_as
 
     flow.emplace([&] { count.fetch_add(1); });
 
-    env.executor.deferred_async(flow, 3ULL, [&]() noexcept { cb_count.fetch_add(1); })
-                .start().wait();
+    env.executor.async(flow, 3ULL, [&]() noexcept { cb_count.fetch_add(1); })
+                .wait();
 
     REQUIRE(count.load() == 3);
     REQUIRE(cb_count.load() == 1);  // 回调仅被调用一次
 }
 
-/// @test [executor][deferred_async] deferred_async(Flow, predicate) 谓词驱动循环。
-TEST_CASE("Executor: deferred_async(flow, predicate) predicate loop", "[executor][deferred_async][predicate]") {
+/// @test [executor][async] async(Flow, predicate) 谓词驱动循环。
+TEST_CASE("Executor: async(flow, predicate) predicate loop", "[executor][async][predicate]") {
     TestEnv env;
     tfl::Flow flow;
     std::atomic<int> count{0};
@@ -153,59 +151,59 @@ TEST_CASE("Executor: deferred_async(flow, predicate) predicate loop", "[executor
     flow.emplace([&] { count.fetch_add(1); });
 
     int runs = 0;
-    env.executor.deferred_async(flow, [&runs]() mutable noexcept {
+    env.executor.async(flow, [&runs]() mutable noexcept {
         return runs++ >= 4;  // 执行 4 轮后停止
-    }).start().wait();
+    }).wait();
 
     REQUIRE(count.load() == 4);
 }
 
 // ============================================================================
-// SECTION 3: deferred_async(callable, args...) —— 独立任务
+// SECTION 3: AsyncTask<>(callable, args...) + submit —— 独立任务
 // ============================================================================
 
-/// @test [executor][deferred_async] deferred_async(基本任务) 返回 DeferredAsyncTask。
-TEST_CASE("Executor: deferred_async single basic task", "[executor][deferred_async][standalone]") {
+/// @test [executor][async] AsyncTask<>(基本任务) + submit 提交执行。
+TEST_CASE("Executor: AsyncTask single basic task", "[executor][async][standalone]") {
     TestEnv env;
     std::atomic<int> v{0};
 
-    auto t = env.executor.deferred_async([&] { v.store(42); });
-    t.start().wait();
+    auto t = tfl::NonrepeatAsyncTask([&] { v.store(42); });
+    env.executor.submit(t); t.wait();
 
     REQUIRE(v.load() == 42);
 }
 
-/// @test [executor][deferred_async] deferred_async(callable, args...) 参数转发形式。
-TEST_CASE("Executor: deferred_async single task with arguments", "[executor][deferred_async][standalone][args]") {
+/// @test [executor][async] AsyncTask<>(callable, args...) 参数转发 + submit。
+TEST_CASE("Executor: AsyncTask single task with arguments", "[executor][async][standalone][args]") {
     TestEnv env;
     int v = 0;
-    auto t = env.executor.deferred_async([](int& r) { r = 99; }, std::ref(v));
-    t.start().wait();
+    auto t = tfl::NonrepeatAsyncTask([](int& r) { r = 99; }, std::ref(v));
+    env.executor.submit(t); t.wait();
     REQUIRE(v == 99);
 }
 
-/// @test [executor][deferred_async] deferred_async(Runtime 可调用对象) 单个 Runtime 任务。
-TEST_CASE("Executor: deferred_async single Runtime task", "[executor][deferred_async][runtime]") {
+/// @test [executor][async] AsyncTask<>(Runtime 可调用对象) + submit。
+TEST_CASE("Executor: AsyncTask single Runtime task", "[executor][async][runtime]") {
     TestEnv env;
     std::atomic<int> v{0};
 
-    auto t = env.executor.deferred_async([&](tfl::Runtime&) { v.store(7); });
-    t.start().wait();
+    auto t = tfl::NonrepeatAsyncTask([&](tfl::Runtime&) { v.store(7); });
+    env.executor.submit(t); t.wait();
 
     REQUIRE(v.load() == 7);
 }
 
 // ============================================================================
-// SECTION 4: silent_async / async
+// SECTION 4: detach / async
 // ============================================================================
 
-/// @test [executor][silent_async] silent_async 即发即忘。
-TEST_CASE("Executor: silent_async returns no handle", "[executor][silent_async]") {
+/// @test [executor][detach] detach 即发即忘。
+TEST_CASE("Executor: detach returns no handle", "[executor][detach]") {
     TestEnv env;
     std::atomic<int> n{0};
 
     for (int i = 0; i < 16; ++i) {
-        env.executor.silent_async([&] { n.fetch_add(1); });
+        env.executor.detach([&] { n.fetch_add(1); });
     }
     env.executor.wait_for_all();
 
@@ -239,14 +237,14 @@ TEST_CASE("Executor: async Runtime task", "[executor][async][runtime]") {
 // SECTION 5: 压力测试 —— 大规模并发
 // ============================================================================
 
-/// @test [executor][stress] 10K silent_async 任务全部完成。
-TEST_CASE("Executor: large-scale silent_async stress", "[executor][stress]") {
+/// @test [executor][stress] 10K detach 任务全部完成。
+TEST_CASE("Executor: large-scale detach stress", "[executor][stress]") {
     TestEnv env(8);
     std::atomic<int> n{0};
     constexpr int N = 10'000;
 
     for (int i = 0; i < N; ++i) {
-        env.executor.silent_async([&] { n.fetch_add(1, std::memory_order_relaxed); });
+        env.executor.detach([&] { n.fetch_add(1, std::memory_order_relaxed); });
     }
     env.executor.wait_for_all();
 

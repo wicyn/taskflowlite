@@ -1,358 +1,555 @@
-﻿# 🚀 TaskflowLite (tfl)
+# TaskflowLite
 
-**为现代 C++23 打造的极速、无锁、零开销的任务调度与 DAG 编排引擎**
-
-[![Standard](https://img.shields.io/badge/C%2B%2B-23-blue.svg?logo=c%2B%2B)](https://en.cppreference.com/w/cpp/23)
+[![Ubuntu](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml)
+[![macOS](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml)
+[![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?logo=cplusplus)](https://en.cppreference.com/w/cpp/23)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Header Only](https://img.shields.io/badge/Header--Only-Yes-success)](#)
 
-**[中文文档](README.md) · [English](README.en.md)**
+**简体中文** · [English](README.en.md)
+
+TaskflowLite（简称 tfl）是一个受 [Taskflow](https://github.com/taskflow/taskflow) 启发的现代 C++23 并发调度库。
 
 ---
 
-**TaskflowLite (tfl)** 是一个受 [Taskflow](https://github.com/taskflow/taskflow) 启发，但在底层全面拥抱 **C++23 现代化范式** 的轻量级并发调度库。它专注于**极致性能与类型安全**，通过无锁环形队列 (Lock-free Ring Buffer)、工作窃取 (Work-Stealing) 算法以及强悍的编译期 `Concepts` 约束，帮助开发者以极低的抽象开销，轻松应对复杂的并发拓扑、动态路由与异步调度。
+## 目录
 
-## 📑 目录
+1. [快速开始](#快速开始)
+2. [构建 DAG](#构建-dag)
+3. [任务类型全解](#任务类型全解)
+4. [运行时动态调度](#运行时动态调度)
+5. [控制流](#控制流)
+6. [资源控制](#资源控制)
+7. [可视化](#可视化)
+8. [编译与集成](#编译与集成)
+9. [项目结构](#项目结构)
+10. [性能数据](#性能数据)
+11. [示例与测试](#示例与测试)
+12. [许可证](#许可证)
 
-* [✨ 为什么选择 TaskflowLite？](#-为什么选择-taskflowlite)
-* [✨ 核心特性](#-核心特性)
-* [🏗️ 架构概览](#-架构概览)
-* [📦 快速开始](#-快速开始)
-* [🧠 核心特性与 API](#-核心特性与-api)
-* [🛡️ 现代 C++23 黑魔法设计](#-现代-c23-黑魔法设计)
-* [🗂️ 任务类型速查表](#-任务类型速查表)
-* [🎨 D2 图可视化导出](#-d2-图可视化导出)
-* [⚙️ 极致的性能优化](#-极致的性能优化)
-* [🛠️ 编译要求与集成](#-编译要求与集成)
-* [🚀 性能基准测试](#-性能基准测试)
-* [📄 许可证](#-许可证)
+## 快速开始
 
----
-
-## ✨ 为什么选择 TaskflowLite？
-
-* 🪶 **Header-Only & 零依赖**：只需将代码拖入项目即可使用（内部仅集成极速的 `ankerl::unordered_dense`）。
-* ⚡ **极致的工作窃取 (Work-Stealing)**：基于 `Xoshiro256**` 伪随机数发生器与无锁有界队列，实现千万级任务的亚毫秒级调度。
-* 🛡️ **安全的泛型编程**：首创 **Arity-Guard (参数数量守卫)**，完美支持 `[](auto x)` 泛型 Lambda，彻底消灭模板推导引发的 Hard Error。
-* 🔀 **强大的控制流**：原生支持条件分支 (`Branch`)、强制跳转/重试 (`Jump`)，复用底层依赖计数器，真正做到**零额外分配开销**。
-* 🛑 **防死锁协作等待**：等待 Future 或子图时，线程绝不系统级阻塞，而是主动窃取旁路任务，榨干 CPU 最后一丝算力。
-
----
-
-## ✨ 核心特性
-
-* **⚡ 极致的 Work-Stealing 调度**：每个 Worker 维护本地有界无锁队列，空闲时通过 `Xoshiro256**` 极速随机数从共享无界队列或邻居窃取任务，最大化 CPU 利用率。
-* **🕸️ 强大的 DAG 拓扑编排**：直观的 `precede` / `succeed` 链式 API，支持任意复杂的依赖关系与图中图（Subflow）嵌套。
-* **🔀 运行期动态流控**：内置 `Branch` (条件分支) 与 `Jump` (强制跳转/循环) 机制，完美复用底层依赖计数器，零额外开销。
-* **⏳ 协作式等待 (Cooperative Wait)**：在 `Runtime` 中等待 Future 或子图时，线程绝不阻塞休眠，而是主动窃取其他任务执行，彻底告别系统级死锁。
-* **🚦 任务级信号量**：`Semaphore` 精确限制任务并发数，获取失败时将任务"停车"挂起，不占用底层 Worker 线程。
-* **🛡️ 现代 C++23 契约驱动**：深度使用 C++23 `Concepts` 进行编译期严格类型安检；利用 `noexcept` 智能擦除冗余的 `try-catch` 汇编块。
-* **📊 D2 可视化一键导出**：原生支持将运行期的复杂任务图直接 `dump()` 为 D2 声明式图形代码，轻松生成架构图。
-
----
-
-## 🏗️ 架构概览
-
-```text
-┌─────────────────────────────────────────────────────────┐
-│                        用户代码                         │
-│  Flow  →  emplace(task)  →  Task  →  precede/succeed    │
-│  Executor::submit(flow, N)  →  AsyncTask::start().wait()│
-└────────────────────┬────────────────────────────────────┘
-                     │ submit
-┌────────────────────▼────────────────────────────────────┐
-│                    Executor                             │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
-│  │ Worker 0 │  │ Worker 1 │  │ Worker N │               │
-│  │ BoundedQ │  │ BoundedQ │  │ BoundedQ │  ← 本地队列   │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘               │
-│       │   work-steal│             │                     │
-│  ┌────▼─────────────▼─────────────▼──────┐              │
-│  │          UnboundedQueueBucket         │ ← 共享队列   │
-│  └───────────────────────────────────────┘              │
-│  Notifier (基于原子 wait 的防丢失唤醒中枢)              │
-└─────────────────────────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────┐
-│                    Work (内部物理节点)                  │
-│  m_edges: [successors... | predecessors...]             │
-│  m_join_counter, m_topology, m_observers?, m_semaphores?│
-└─────────────────────────────────────────────────────────┘
-```
-
-## 📦 快速开始
-
-一个简单却强大的有向无环图 (DAG) 示例：
+### 最简示例
 
 ```cpp
 #include "taskflowlite/taskflowlite.hpp"
 #include <iostream>
 
 int main() {
-    tfl::ResumeNever handler;            // 异常策略：遇到未捕获异常立刻终止
-    tfl::Executor executor(handler, 4);  // 启动 4 个物理工作线程
+    tfl::Executor executor(4);
     tfl::Flow flow;
 
-    // 1. 创建任务 (完美支持 C++17 结构化绑定)
     auto [A, B, C, D] = flow.emplace(
-        [] { std::cout << "Task A (Init)\n"; },
-        [] { std::cout << "Task B (Process 1)\n"; },
-        [] { std::cout << "Task C (Process 2)\n"; },
-        [] { std::cout << "Task D (Merge)\n"; }
+        [] { std::cout << "Task A\n"; },
+        [] { std::cout << "Task B\n"; },
+        [] { std::cout << "Task C\n"; },
+        [] { std::cout << "Task D\n"; }
     );
 
-    // 2. 编排拓扑: A 执行完后 B 和 C 并行，最后执行 D
+    // A -> {B, C} -> D
     A.precede(B, C);
     D.succeed(B, C);
 
-    // 3. 提交并同步等待
-    executor.submit(flow).start().wait();
-
-    return 0;
+    executor.async(flow).wait();
 }
 ```
 
----
-
-## 🧠 核心特性与 API
-
-### 1. 批量插入与 DAG 编排
-
-TaskflowLite 通过 `tfl::pack` 提供健壮的参数封装机制。它能自动处理函数类型的退化，并完美支持 `std::ref`，让你在编排复杂的 DAG 拓扑时，告别冗长的 Lambda 捕获和潜在的编译期推导错误。
+### 带参数的任务
 
 ```cpp
 tfl::Flow flow;
 int counter = 0;
 
-// 使用 tfl::pack 批量插入带参数的任务
-// tfl::pack 确保了函数名会自动退化为函数指针，避免了 std::tuple 的 CTAD 缺陷
 auto [t1, t2] = flow.emplace(
-    tfl::pack{[](int a) { std::cout << "Val: " << a << "\n"; }, 42},
-    tfl::pack{[](int& c) { c = 100; }, std::ref(counter)} // 安全的引用传递
+    tfl::pack{ [](int a) { std::cout << "Val: " << a << "\n"; }, 42 },
+    tfl::pack{ [](int& c) { c = 100; }, std::ref(counter) }
 );
 
 t1.precede(t2);
+executor.async(flow).wait();
+// counter == 100
 ```
 
-### 2. 运行时动态挂载 (Runtime)
+### 循环执行
 
-当任务签名包含 `tfl::Runtime&` 时，任务将在执行期获得操控调度器的特权。
+```cpp
+// 固定次数
+executor.async(flow, 5ULL).wait();
+
+// 谓词驱动
+int round = 0;
+executor.async(flow, [&]() noexcept { return ++round >= 10; }).wait();
+```
+
+---
+
+## 构建 DAG
+
+### 创建节点
+
+```cpp
+tfl::Flow flow;
+
+// 1. 无参 lambda
+auto t1 = flow.emplace([] { /* work */ });
+
+// 2. lambda + 按值参数（框架负责拷贝存储）
+auto t2 = flow.emplace([](int x, double y) { /* ... */ }, 42, 3.14);
+
+// 3. lambda + std::ref（零拷贝引用传递）
+int state = 0;
+auto t3 = flow.emplace([](int& s) { s = 99; }, std::ref(state));
+
+// 4. 函数指针
+auto t4 = flow.emplace(&my_function, arg1, arg2);
+
+// 5. 仿函数
+auto t5 = flow.emplace(MyFunctor{multiplier}, std::ref(data));
+
+// 6. 成员函数指针
+MyService svc;
+auto t6 = flow.emplace(&MyService::process, &svc, 42);
+auto t7 = flow.emplace(&MyService::process, std::ref(svc), 99);
+```
+
+### 编织依赖
+
+```cpp
+// 链式调用 —— lvalue 返回引用
+t1.name("Step1")
+  .precede(t2, t3)
+  .acquire(io_sem)
+  .release(io_sem);
+
+// succeed = 反向 precede
+t4.succeed(t2, t3);   // 等价于 t2.precede(t4); t3.precede(t4);
+
+// 批量插入 + 结构化绑定
+auto [a, b, c] = flow.emplace(
+    [] { load(); },
+    [] { transform(); },
+    [] { save(); }
+);
+a.precede(b).precede(c);
+```
+
+### 图操作
+
+```cpp
+flow.erase(task);        // O(1) 删除（swap-with-last）
+flow.clear();            // 清空全部节点
+flow.empty();            // 是否为空
+flow.size();             // 节点总数
+flow.for_each([](tfl::Task t) { /* 遍历 */ });
+flow.name("MyPipeline"); // 命名（调试 / 可视化）
+```
+
+---
+
+## 任务类型全解
+
+`Flow::emplace` 根据 callable 签名，由 C++20 Concepts 在编译期自动分发到对应的节点工厂：
+
+### Basic — 普通任务
+
+```cpp
+flow.emplace([] { /* 无 Runtime 权限 */ });
+flow.emplace([](int x) { /* 带参数 */ }, 42);
+```
+
+### Runtime — 动态调度任务
 
 ```cpp
 flow.emplace([](tfl::Runtime& rt) {
-    // 动态派发子任务并获取 Future
+    rt.detach([] { /* 即发即弃 */ });
     auto fut = rt.async([](int x) { return x * 2; }, 21);
+    rt.cowait();
+    int val = fut.get();  // 42
+});
+```
 
-    // 协作式等待：线程不会挂起，而是去窃取执行其他队列的任务！
-    rt.wait_until([&] {
-        return fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+### Branch — 单目标条件分支
+
+```cpp
+auto decide = flow.emplace([](tfl::Branch& br) {
+    if (condition) br.select(0); else br.select(1);
+});
+auto good = flow.emplace([] { std::cout << "OK\n"; });
+auto bad  = flow.emplace([] { std::cout << "Fail\n"; });
+decide.precede(good, bad);
+```
+
+还支持 `operator()` 和 `select_if`：
+
+```cpp
+auto br = flow.emplace([](tfl::Branch& br) {
+    br(2);   // 等价于 br.select(2)
+    br.select_if([](tfl::TaskView tv) { return tv.name() == "target"; });
+});
+```
+
+### MultiBranch — 多路广播分支
+
+```cpp
+auto mb = flow.emplace([](tfl::MultiBranch& mb) {
+    mb.select(0, 2);       // 同时激活后继 [0] 和 [2]
+    // mb.select_all();    // 激活全部后继
+    // mb.select_if(...);  // 按名称筛选
+});
+mb.precede(t0, t1, t2, t3);
+```
+
+### Jump — 强制跳转（循环/重试）
+
+```cpp
+auto process = flow.emplace([] { /* 处理逻辑 */ });
+
+auto retry = flow.emplace([&](tfl::Jump& jmp) {
+    if (++attempt < max)
+        jmp.select(0);       // 跳回 process（target[0]）
+    // 不调用 select → 自然结束
+});
+
+process.precede(retry);
+retry.precede(process);       // weight=0，不参与拓扑环检测
+```
+
+### MultiJump — 多路强制跳转
+
+```cpp
+auto mj = flow.emplace([](tfl::MultiJump& mj) {
+    mj.select(0, 1, 2);   // 同时重置三条分支的 join_counter
+});
+```
+
+### Subflow — 子图嵌套
+
+```cpp
+tfl::Flow inner;
+inner.emplace([]{ std::cout << "Inner task\n"; });
+
+// 单次执行
+flow.emplace(std::move(inner));
+
+// 谓词循环 5 次
+int i = 0;
+flow.emplace(std::move(inner), [&i]() mutable noexcept { return ++i >= 5; });
+```
+
+---
+
+## 运行时动态调度
+
+### Runtime API
+
+```cpp
+flow.emplace([](tfl::Runtime& rt) {
+    // 即发即弃
+    rt.detach([] { background_work(); });
+
+    // 异步获取结果
+    auto f1 = rt.async([] { return compute_a(); });
+    auto f2 = rt.async([](int n) { return compute_b(n); }, 100);
+
+    // 协作式等待（Worker 不阻塞，继续参与调度）
+    rt.cowait_until([&] {
+        return f1.wait_for(0s) == std::future_status::ready
+            && f2.wait_for(0s) == std::future_status::ready;
     });
 
-    std::cout << "Result: " << fut.get() << "\n";
+    int result = f1.get() + f2.get();
+    std::cout << "Result: " << result << "\n";
 });
 ```
 
-### 3. 静态路由与状态机 (Branch & Jump)
+### Cowait 原理
 
-复用 DAG 引擎实现 `if-else` 与 `while` 循环逻辑。
-
-```cpp
-// ==========================================
-// Branch: 动态决定走哪条分支
-// ==========================================
-auto start = flow.emplace([] { puts("Start"); }); // 明确的无依赖起点
-
-auto check = flow.emplace([](tfl::Branch& br) {
-    br.select(1); // 激活下标为 1 (failure) 的后继节点，跳过 0
-});
-auto success = flow.emplace([] { puts("OK"); });
-auto failure = flow.emplace([] { puts("Fail"); });
-
-start.precede(check);            // 连线起点
-check.precede(success, failure); // 按照 0, 1 顺序绑定后继
-
-// ==========================================
-// Jump: 失败重试循环
-// ==========================================
-auto init = flow.emplace([] { puts("Init"); });   // 明确的无依赖起点
-
-auto process = flow.emplace([]{ /* 业务逻辑 */ });
-auto retry = flow.emplace([](tfl::Jump& jmp) {
-    if (need_retry()) jmp.select(0); // 触发跳转，拉回 target 0 并重置其依赖
-});
-
-init.precede(process);   // 连线起点：系统从这里进入
-process.precede(retry);
-retry.precede(process);  // 闭环连线：将 process 设为 Jump 的 0 号 target
-                         // (注：底层设计中 Jump 连线的初始权重为 0，不会引发静态图死锁)
+```
+普通 wait：   Worker 线程 → OS 阻塞 → 浪费 CPU
+TFL cowait：  Worker 线程 → 主动窃取其他任务 → 等待期间 CPU 不空闲
 ```
 
-### 4. 任务级并发限流 (Semaphore)
+`cowait` / `cowait_until` 期间 Worker 持续从本地队列或邻居窃取任务执行，不会系统级阻塞，彻底消除了递归调度和子图嵌套的死锁风险。
 
-限制特定资源（如 GPU、数据库连接）的并发度，超额任务将被挂起，且**不阻塞 Worker 线程**。
+### AsyncTask — 动态任务句柄
+
+`AsyncTask` 是引用计数句柄（vs Task 是弱引用），支持运行期依赖组装：
 
 ```cpp
-tfl::Semaphore db_limit(2); // 全局最多 2 个并发
+auto t1 = tfl::NonrepeatAsyncTask([] { step_a(); });
+auto t2 = tfl::NonrepeatAsyncTask([] { step_b(); });
+auto t3 = tfl::NonrepeatAsyncTask([] { step_c(); });
 
-for (int i = 0; i < 10; ++i) {
-    auto t = flow.emplace([i] { /* 操作数据库 */ });
-    t.acquire(db_limit).release(db_limit); // 声明配额消耗
+executor.submit(t2, t1);   // t2 依赖 t1
+executor.submit(t3, t2);   // t3 依赖 t2
+
+t3.wait();                 // 等待整条链完成
+```
+
+---
+
+## 控制流
+
+### 异常处理
+
+```cpp
+// 遇到未捕获异常立即终止（默认）
+tfl::ResumeNever handler;
+tfl::Executor exec(handler, 4);
+
+// 忽略异常，后继节点继续执行
+tfl::ResumeAlways handler;
+tfl::Executor exec(handler, 4);
+```
+
+### 取消
+
+```cpp
+auto task = tfl::NonrepeatAsyncTask([] { /* long work */ });
+executor.submit(task);
+// ...
+task.request_stop();  // 设置软中断
+task.wait();          // 节点在下次 invoke 前自检并跳过
+```
+
+### TaskObserver
+
+```cpp
+struct MyTracer : tfl::TaskObserver {
+    void on_before(tfl::TaskView tv) override {
+        std::cout << "Start: " << tv.name() << "\n";
+    }
+    void on_after(tfl::TaskView tv) override {
+        std::cout << "End: " << tv.name() << "\n";
+    }
+};
+
+auto t = flow.emplace([] { /* work */ });
+t.register_observer<MyTracer>();
+```
+
+---
+
+## 资源控制
+
+### Semaphore — 任务级并发限流
+
+```cpp
+tfl::Semaphore db_pool(4);   // 最多 4 并发
+
+for (int i = 0; i < 20; ++i) {
+    flow.emplace([i] { query_database(i); })
+        .acquire(db_pool)
+        .release(db_pool);
 }
+// 超额任务挂起，不占用 Worker 线程
 ```
 
-### 5. 图中图嵌套 (Subflow)
-
-支持将一整张 Flow 作为节点嵌套进主图中，甚至支持**基于谓词的动态循环执行**。
+### 高级用法
 
 ```cpp
-tfl::Flow subflow;
-subflow.emplace([]{ puts("Subflow tick"); });
+tfl::Semaphore sem(3, 0);               // 容量 3，初始可用 0
+producer.release(sem, 3);               // 批量释放 3 个配额
+consumer.acquire(sem);                  // 生产者释放后才激活
 
-int loops = 0;
-// 将 subflow 挂载到主图，并基于 Lambda 谓词循环执行
-flow.emplace(std::move(subflow), [&loops]() mutable noexcept {
-    return ++loops >= 5;
-});
+sem.reset(10);                          // 动态扩容
+sem.value();                            // 当前可用
+sem.max_value();                        // 最大容量
 ```
 
 ---
 
-## 🛡️ 现代 C++23 黑魔法设计
-
-TaskflowLite 内部包含大量针对现代 C++ 的尖端防御性编程设计：
-
-* **泛型 Lambda 保护 (Arity-Guard)**：传统 TMP 在遇到 `[](auto x)` 配合 `std::invocable` 探测时，极易引发函数体非法实例化的 Hard Error。TFL 底层基于 `requires` 表达式实现了参数数量嗅探，完美支持无约束泛型闭包。
-* **引用折叠透明化 (`std::ref` Unwrap)**：框架底层存储闭包时使用 `unwrap_ref_decay_t`，允许用户像使用 `std::thread` 一样，通过 `std::ref` 零拷贝地传递状态，且 Concept 验证能精准识别其真实引用类型。
-* **Tag Dispatching 优先级路由**：消灭了因 `std::bind` 类型擦除导致的重载决议二义性，使编译报错精准、清晰。
-
----
-
-## 🗂️ 任务类型速查表
-
-`emplace` 会利用 C++23 Concepts 自动推导你的闭包签名，无需显式指定类型：
-
-| 函数签名 | 类型推导 | 功能说明 | 图形化标识 |
-| --- | --- | --- | --- |
-| `[]()` | **Basic** | 普通顺序任务，零抽象开销 | 灰色矩形 |
-| `[](tfl::Runtime&)` | **Runtime** | 动态派发新任务、协作式阻塞等待 | 粉色矩形 |
-| `[](tfl::Branch)` | **Branch** | 单路条件选择（激活 1 条路径） | 蓝色菱形 |
-| `[](tfl::MultiBranch)` | **MultiBranch** | 多路并行分发（激活 N 条路径） | 蓝色六边形 |
-| `[](tfl::Jump)` | **Jump** | 强制状态机回跳（支持循环重试） | 红色菱形(虚线) |
-| `[](tfl::MultiJump)` | **MultiJump** | 并行散射强制跳转（扇出） | 红色六边形(虚线) |
-| 传入 `Flow` 对象 | **Subflow** | 将一整张图作为一个节点嵌套执行 | 绿色分组框 |
-
----
-
-## 🎨 D2 图可视化导出
-
-极其复杂的嵌套拓扑如何调试？一行代码将其导出为 D2 描述语言，利用前端工具或 [D2 官网](https://play.d2lang.com) 极速渲染。
+## 可视化
 
 ```cpp
 std::ofstream file("pipeline.d2");
 flow.name("MyPipeline").dump(file);
+
+// 或直接获取字符串
+std::string d2 = flow.dump();
+std::cout << d2;
 ```
-> 💡 **源码参考**：该效果演示位于示例程序 [`examples/10_dump.cpp`](examples/10_dump.cpp)
 
-![D2 Visualization](documentation/img/d2.svg)
+将输出粘贴到 [D2 Playground](https://play.d2lang.com) 渲染。图例：
 
-导出的逻辑极度清晰：**灰色实线**表示普通推演，**蓝色连线**表示条件分支抉择，**红色虚线**表示破坏拓扑的跳转回边。
+- **灰色实线** — 普通依赖边
+- **蓝色连线** — 条件分支
+- **红色虚线** — Jump 跳转回边
 
 ---
 
-## ⚙️ 极致的性能优化
+## 编译与集成
 
-TaskflowLite 在底层死抠了每一个时钟周期：
+### 系统要求
 
-1. **缓存行隔离 (Cache-Line Isolation)**：严格使用 `alignas(std::hardware_destructive_interference_size)` 隔离热点原子变量（如队列的 `top/bottom`），彻底消灭多核**伪共享 (False Sharing)**。
-2. **极速边存储 (Edge Storage Optimization)**：节点 `Work` 的后继指针与前驱指针打包在同一块连续的 `std::vector<Work*>` 中，通过游标偏移访问，省去一次堆分配并提高 L1 缓存命中率。
-3. **零开销异常擦除 (Noexcept Elision)**：如果你的闭包标记为 `noexcept`，编译器在实例化 `invoke()` 时将直接抹除包裹它的 `try-catch` 汇编块。
-4. **无除法映射 (Divisionless Distribution)**：随机窃取模块采用 Lemire 的无除法界限映射算法与位运算，大幅降低 CPU 周期消耗。
+| 编译器 | 最低版本 |
+|--------|---------|
+| GCC | 12+ |
+| Clang | 15+ |
+| MSVC | 2022+ (17.0+) |
+| Apple Clang | 15+ (Xcode 15+) |
 
----
+- **C++ 标准**：C++23
+- **CMake**：3.21+
+- **依赖**：仅 C++ 标准库 + pthread（Unix）
 
-## 🛠️ 编译要求与集成
+### CMake
 
-**系统要求：**
+```bash
+# 基础构建
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --parallel
 
-* **C++ Standard**: C++23 或更高。
-* **Compiler**: GCC 12+, Clang 15+, MSVC 2022+ (需完全支持 Concepts 与结构化绑定)。
+# 带测试
+cmake -S . -B build -DTASKFLOWLITE_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build -C Release --output-on-failure
 
-**集成方式（Header-Only）：**
-无需编译动态库，直接将 `taskflowlite/` 目录放入项目的 `include` 路径即可：
-
-```cpp
-#include "taskflowlite/taskflowlite.hpp"
+# Sanitizer
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTASKFLOWLITE_SANITIZER=ASAN
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTASKFLOWLITE_SANITIZER=TSAN
 ```
 
-**CMake 推荐选项：**
+### 作为依赖
 
 ```cmake
-set(CMAKE_CXX_STANDARD 23)
-target_compile_options(your_target PRIVATE -O3 -march=native)
+# add_subdirectory
+add_subdirectory(path/to/taskflowlite)
+target_link_libraries(your_app PRIVATE TaskflowLite::taskflowlite)
+
+# FetchContent
+include(FetchContent)
+FetchContent_Declare(taskflowlite
+    GIT_REPOSITORY https://github.com/wicyn/taskflowlite.git GIT_TAG main)
+FetchContent_MakeAvailable(taskflowlite)
+target_link_libraries(your_app PRIVATE TaskflowLite::taskflowlite)
+```
+
+### Header-Only
+
+```cpp
+#include "taskflowlite/taskflowlite.hpp"  // 一行即可，编译时 -std=c++23 -pthread
 ```
 
 ---
 
-## 🚀 性能基准测试
+## 项目结构
 
-### 测试环境
-
-* **对比对象**：[Taskflow v4.0.0](https://github.com/taskflow/taskflow)
-* **基准代码**：
-  * 综合对照：[`benchmarks/benchmark.cpp`](benchmarks/benchmark.cpp)（TaskflowLite）
-    与 [`benchmarks/bench_taskflow.cpp`](benchmarks/bench_taskflow.cpp)（Taskflow 对照组），
-    覆盖完全对称的 18 组工作负载。
-  * 微基准：[`benchmarks/bench_taskflowlite.cpp`](benchmarks/bench_taskflowlite.cpp)
-    与 [`benchmarks/bench_taskflow.cpp`](benchmarks/bench_taskflow.cpp)，
-    聚焦 100 层 × 100 任务的极限调度密度。
-* **测试硬件**：Intel® Core™ i7-9750H @ 2.60GHz（6C/12T）/ Windows 11
-* **构建配置**：MSVC 2022 / Release / `/O2`，相同硬件、相同线程数、相同迭代次数。
-
-### 综合对比结果（时间越低越好）
-
-> 数据为同一硬件下连续运行的代表性一次结果，多次运行趋势一致。
-
-| # | 测试场景 | Taskflow (ms) | TaskflowLite (ms) | 提升 |
-|---|---|---:|---:|---:|
-| 01 | 32 parallel \| 8 threads \| 500k runs | 1600 | 1320 | **+17.5%** |
-| 02 | 32 serial \| 1 thread \| 1M runs | 1351 | 618 | **+54.3%** |
-| 03 | diamond DAG \| 2 threads \| 1M runs | 387 | 255 | **+34.1%** |
-| 04a | 4×2 full \| 2 threads \| 1M runs | 647 | 477 | **+26.3%** |
-| 04b | 6×4 full \| 4 threads \| 500k runs | 1797 | 1635 | **+9.0%** |
-| 04c | 8×8 full \| 8 threads \| 100k runs | 1185 | 991 | **+16.4%** |
-| 04d | 8×16 full \| 8 threads \| 50k runs | 1355 | 1103 | **+18.6%** |
-| 04e | 8×32 full \| 8 threads \| 20k runs | 1414 | 1105 | **+21.9%** |
-| 04f | 6×100 full \| 8 threads \| 2k runs | 650 | 519 | **+20.2%** |
-| 05 | binary tree \| 8 threads \| 500k runs | 2933 | 1834 | **+37.5%** |
-| 06 | 1→256→1 \| 8 threads \| 100k runs | 4455 | 3241 | **+27.3%** |
-| 07 | 16 pipes \| 8 threads \| 200k runs | 2458 | 818 | **+66.7%** |
-| 08 | 16×16 grid \| 8 threads \| 100k runs | 2682 | 1103 | **+58.9%** |
-| 09 | sparse DAG \| 8 threads \| 500k runs | 3785 | 2114 | **+44.1%** |
-| 10 | jump / cond loop \| 1 thread \| 1M iter | 55 | 29 | **+47.3%** |
-| 11 | multi-jump / multi-cond \| 4 threads \| 200k iter | 73 | 60 | **+17.8%** |
-| 12 | subflow x1 \| 4 threads \| 200k runs | 197 | 159 | **+19.3%** |
-| 13 | subflow loop \| 2 threads \| 500k iter | 176 | 103 | **+41.5%** |
-| **总计** | **18 组场景** | **27200** | **17484** | **+35.7%** |
-
-### 微基准：100 层 × 100 任务
-
-另一组聚焦"调度开销密度"的微基准，构建 100 层 × 每层 100 个任务的拓扑，
-分别测试**全连接**（990,000 条边）与**无连接**（纯并行 10,000 任务）两种极端形态，
-均执行 10 次迭代，8 线程。
-
-| 场景 | 指标 | Taskflow | TaskflowLite | 提升 |
-|---|---|---:|---:|---:|
-| **Full-Connected**（100×100，990k 边） | 总耗时       | 71.51 ms    | 50.03 ms    | **+30.0%** |
-|                                         | 单轮平均     | 7.15 ms     | 5.00 ms     | **+30.0%** |
-|                                         | 单任务平均   | 715.06 ns   | 500.30 ns   | **+30.0%** |
-| **No Connection**（纯并行 10k 任务）    | 总耗时       | 11.61 ms    | 8.64 ms     | **+25.6%** |
-|                                         | 单轮平均     | 1.16 ms     | 0.86 ms     | **+25.6%** |
-|                                         | 单任务平均   | 116.14 ns   | 86.42 ns    | **+25.6%** |
+```
+taskflowlite/
+├── taskflowlite/
+│   ├── taskflowlite.hpp                   # 统一入口
+│   └── core/                              # 30+ 核心头文件
+│       ├── executor.hpp                   # 调度引擎
+│       ├── flow.hpp / task.hpp            # DAG 构建 & 任务句柄
+│       ├── async_task.hpp / runtime.hpp   # 动态任务 & 运行时
+│       ├── work.hpp / works.hpp           # 节点基类 & 工厂
+│       ├── branch.hpp / jump.hpp          # 控制流
+│       ├── semaphore.hpp / observer.hpp   # 资源 & 观察
+│       ├── bounded_queue.hpp etc.         # 并发原语
+│       └── traits.hpp / utility.hpp       # Concepts & 工具
+├── test/                                  # 23 个测试文件 (Catch2 v3)
+├── examples/                              # 25 个示例
+├── benchmarks/                            # vs Taskflow 性能对比
+├── .github/workflows/ci.yml               # CI 矩阵
+├── CMakeLists.txt
+├── LICENSE (MIT)
+└── README.md
+```
 
 ---
 
-## 📄 许可证
+## 性能数据
 
-本项目采用 [MIT License](LICENSE) 开源。
+TaskflowLite vs Taskflow，**相同硬件、相同线程数、相同拓扑、相同总迭代次数**。
+
+**测试环境：** Intel Core i7-9750H @ 2.60GHz (6C/12T), Windows 11, MSVC 2022 /O2
+
+| # | 测试场景 | 参数 | TaskflowLite | Taskflow | 加速比 |
+|--:|---------|------|--------:|------------:|------:|
+| 01 | 32 并行 | 8 线 · 500k | 1009 ms | 1479 ms | **1.47×** |
+| 02 | 32 串行 | 1 线 · 1M | 662 ms | 1323 ms | **2.00×** |
+| 03 | 菱形 DAG | 2 线 · 1M | 255 ms | 400 ms | **1.57×** |
+| 04a | 4×2 全连接 | 2 线 · 1M | 504 ms | 663 ms | **1.32×** |
+| 04b | 6×4 全连接 | 4 线 · 500k | 1737 ms | 1964 ms | **1.13×** |
+| 04c | 8×8 全连接 | 8 线 · 100k | 1076 ms | 1309 ms | **1.22×** |
+| 04d | 8×16 全连接 | 8 线 · 50k | 1250 ms | 1531 ms | **1.22×** |
+| 04e | 8×32 全连接 | 8 线 · 20k | 1210 ms | 1795 ms | **1.48×** |
+| 04f | 6×100 全连接 | 8 线 · 2k | 516 ms | 778 ms | **1.51×** |
+| 05 | 二叉归约树 | 8 线 · 500k | 1969 ms | 3278 ms | **1.66×** |
+| 06 | 1→256→1 扇出 | 8 线 · 100k | 3395 ms | 4167 ms | **1.23×** |
+| 07 | 16 条管线 | 8 线 · 200k | 911 ms | 2591 ms | **2.84×** |
+| 08 | 16×16 网格 | 8 线 · 100k | 1228 ms | 2978 ms | **2.43×** |
+| 09 | 稀疏 DAG | 8 线 · 500k | 2508 ms | 4042 ms | **1.61×** |
+| 10 | Jump 循环 | 1 线 · 1M | 30 ms | 53 ms | **1.77×** |
+| 11 | MultiJump 循环 | 4 线 · 200k | 58 ms | 82 ms | **1.41×** |
+| 12 | Subflow 单次 | 4 线 · 200k | 160 ms | 210 ms | **1.31×** |
+| 13 | Subflow 循环 | 2 线 · 500k | 105 ms | 168 ms | **1.60×** |
+| 14 | 空任务 | 1 线 · 10M | 473 ms | 642 ms | **1.36×** |
+| 15 | 并行 for | 8 线 · 1024×10k | 734 ms | 1221 ms | **1.66×** |
+| 16 | 归约树（带计算） | 8 线 · 127×50k | 465 ms | 828 ms | **1.78×** |
+| 17 | 扫描链 | 1 线 · 128×100k | 235 ms | 570 ms | **2.43×** |
+| 18 | 三角波前 | 8 线 · 210×10k | 115 ms | 262 ms | **2.28×** |
+| 19 | 异构负载 | 8 线 · 18×100k | 851 ms | 878 ms | **1.03×** |
+| 20 | 内存压力 | 8 线 · 2000×500 | 774 ms | 1144 ms | **1.48×** |
+| | **几何平均** | | | | **≈ 1.58×** |
+
+**结论：** 全部 25 项 TaskflowLite 均快于 Taskflow，最大优势在管线（07，2.84×）、网格（08，2.43×）、扫描链（17，2.43×）等依赖链密集的拓扑。异构负载（19，1.03×）接近持平——该场景含大量计算，调度开销占比低，恰好说明 tfl 的优势集中在调度本身。
+
+> 完整 benchmark 代码见 [benchmarks/](benchmarks/) 目录，可在目标机器上自行复跑。
+
+---
+
+## 示例与测试
+
+### 示例
+
+```bash
+cmake -S . -B build -DTASKFLOWLITE_BUILD_EXAMPLES=ON
+cmake --build build --config Release
+
+./build/bin/examples/01_basic_dag       # 基础 DAG
+./build/bin/examples/05_branch          # 条件分支
+./build/bin/examples/09_pipeline        # Map-Reduce 管线
+```
+
+25 个示例完整索引见 [examples/README.md](examples/README.md)。
+
+### 测试
+
+```bash
+cmake -S . -B build -DTASKFLOWLITE_BUILD_TESTS=ON
+cmake --build build --config Release
+
+# 全部
+./build/bin/TaskflowLiteTest
+
+# 按标签
+./build/bin/TaskflowLiteTest "[flow]"
+./build/bin/TaskflowLiteTest "[queue]"
+
+# 单文件（按需构建）
+cmake --build build --target tfl_test_queue
+./build/bin/tfl_test_queue
+```
+
+### 基准
+
+```bash
+cmake -S . -B build -DTASKFLOWLITE_BUILD_BENCHMARKS=ON
+cmake --build build --config Release
+
+./build/bin/bench_taskflowlite
+./build/bin/bench_taskflow
+```
+
+> benchmark 仅额外依赖 Taskflow（header-only），配置时自动稀疏克隆。离线环境可用 `-DTASKFLOW_LOCAL_PATH=<路径>` 指定本地源码。
+
+---
+
+## 许可证
+
+[MIT License](LICENSE)
 
 *TaskflowLite — 为追求极致性能与现代 C++ 审美的开发者而生。*

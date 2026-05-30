@@ -39,7 +39,7 @@ TEST_CASE("Subflow: basic nesting execution", "[subflow][basic]") {
     pre.precede(sub);
     sub.precede(post);
 
-    env.executor.deferred_async(main_flow).start().wait();
+    env.executor.async(main_flow).wait();
     REQUIRE(outer_count.load() == 2);
     REQUIRE(inner_count.load() == 2);
 }
@@ -60,7 +60,7 @@ TEST_CASE("Subflow: fixed-count loop", "[subflow][repeat]") {
     tfl::Flow main_flow;
     main_flow.emplace(std::move(inner), static_cast<std::uint64_t>(LOOPS));
 
-    env.executor.deferred_async(main_flow).start().wait();
+    env.executor.async(main_flow).wait();
     REQUIRE(hits.load() == LOOPS);
 }
 
@@ -84,7 +84,7 @@ TEST_CASE("Subflow: predicate-driven loop", "[subflow][predicate]") {
         return loops++ >= TARGET;  // 返回 true 表示 TARGET 次迭代后停止
     });
 
-    env.executor.deferred_async(main_flow).start().wait();
+    env.executor.async(main_flow).wait();
     REQUIRE(hits.load() == TARGET);
 }
 
@@ -108,7 +108,7 @@ TEST_CASE("Subflow: parent and subgraph share external atomic", "[subflow][captu
 
     // pre 节点与 sub 节点没有显式 precede —— 更安全的做法是将 pre 前置串联
     // 这里仅验证累积的共享结果
-    env.executor.deferred_async(main_flow).start().wait();
+    env.executor.async(main_flow).wait();
     REQUIRE(shared.load() == 1 + 10 + 100 + 1000);
 }
 
@@ -121,12 +121,12 @@ TEST_CASE("Subflow: lvalue mounting", "[subflow][lvalue]") {
     TestEnv env;
     std::atomic<int> hits{0};
 
-    tfl::Flow persistent_sub;        // 必须在 deferred_async 调用后仍然存活
+    tfl::Flow persistent_sub;        // 必须在 async 调用后仍然存活
     persistent_sub.emplace([&] { hits.fetch_add(1); });
 
     tfl::Flow main_flow;
     main_flow.emplace(persistent_sub);  // 左值传入
 
-    env.executor.deferred_async(main_flow).start().wait();
+    env.executor.async(main_flow).wait();
     REQUIRE(hits.load() == 1);
 }

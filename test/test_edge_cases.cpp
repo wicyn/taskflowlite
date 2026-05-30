@@ -1,5 +1,6 @@
 /// @file test_edge_cases.cpp
 /// @brief 边界条件测试 — 空图 / 单节点 / 复用 / 不连通图 / 最小线程池。
+/// @author wicyn
 ///
 /// 这些测试容易被忽略，但往往是真实 bug 所在之处。
 /// 参考来源：GoogleTest 风格的"零、一、多"覆盖原则。
@@ -13,22 +14,22 @@ using tfl_test::TestEnv;
 // ============================================================================
 
 /// @test [edge][empty] 提交空 Flow 不会出错。
-/// @details 用户可能从零次迭代的循环中构造空 Flow；框架不应崩溃。
+/// @brief 用户可能从零次迭代的循环中构造空 Flow；框架不应崩溃。
 TEST_CASE("Edge: Empty Flow submission without error", "[edge][empty]") {
     TestEnv env;
     tfl::Flow flow;
     REQUIRE(flow.empty());
-    REQUIRE_NOTHROW(env.executor.deferred_async(flow).start().wait());
+    REQUIRE_NOTHROW(env.executor.async(flow).wait());
 }
 
 /// @test [edge][empty][callback] 空 Flow 带回调 — 回调仍然会被调用。
-/// @details 即使没有任务运行，完成回调的语义也应当被保留。
+/// @brief 即使没有任务运行，完成回调的语义也应当被保留。
 TEST_CASE("Edge: Empty Flow with callback", "[edge][empty][callback]") {
     TestEnv env;
     tfl::Flow flow;
     std::atomic<int> cb{0};
 
-    env.executor.deferred_async(flow, [&]() noexcept { cb.store(1); }).start().wait();
+    env.executor.async(flow, [&]() noexcept { cb.store(1); }).wait();
     REQUIRE(cb.load() == 1);
 }
 
@@ -38,8 +39,8 @@ TEST_CASE("Edge: Empty Flow repeated execution", "[edge][empty][repeat]") {
     tfl::Flow flow;
     std::atomic<int> cb{0};
 
-    env.executor.deferred_async(flow, 5ULL, [&]() noexcept { cb.fetch_add(1); })
-                .start().wait();
+    env.executor.async(flow, 5ULL, [&]() noexcept { cb.fetch_add(1); })
+                .wait();
     REQUIRE(cb.load() == 1);  // 回调仅执行一次
 }
 
@@ -54,7 +55,7 @@ TEST_CASE("Edge: Single-node Flow", "[edge][single]") {
     std::atomic<int> n{0};
     flow.emplace([&] { n.store(42); });
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(n.load() == 42);
 }
 
@@ -65,7 +66,7 @@ TEST_CASE("Edge: Single node repeated N times", "[edge][single][repeat]") {
     std::atomic<int> n{0};
     flow.emplace([&] { n.fetch_add(1); });
 
-    env.executor.deferred_async(flow, 50ULL).start().wait();
+    env.executor.async(flow, 50ULL).wait();
     REQUIRE(n.load() == 50);
 }
 
@@ -74,7 +75,7 @@ TEST_CASE("Edge: Single node repeated N times", "[edge][single][repeat]") {
 // ============================================================================
 
 /// @test [edge][reuse] 同一个 Flow 提交多次 — 每次运行相互独立。
-/// @details 验证在 deferred_async 调用之间，Flow 的拓扑/状态能正确重置。
+/// @brief 验证在 async 调用之间，Flow 的拓扑/状态能正确重置。
 TEST_CASE("Edge: Same Flow submitted multiple times", "[edge][reuse]") {
     TestEnv env;
     tfl::Flow flow;
@@ -86,7 +87,7 @@ TEST_CASE("Edge: Same Flow submitted multiple times", "[edge][reuse]") {
 
     constexpr int RUNS = 100;
     for (int i = 0; i < RUNS; ++i) {
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
     }
 
     // 每次运行增加 11
@@ -98,7 +99,7 @@ TEST_CASE("Edge: Same Flow submitted multiple times", "[edge][reuse]") {
 // ============================================================================
 
 /// @test [edge][disconnected] 同一 Flow 中包含多个不连通子图。
-/// @details 这本质上是合法的 DAG；验证调度器能正确启动每一个连通分量。
+/// @brief 这本质上是合法的 DAG；验证调度器能正确启动每一个连通分量。
 TEST_CASE("Edge: Disconnected subgraphs", "[edge][disconnected]") {
     TestEnv env;
     tfl::Flow flow;
@@ -120,7 +121,7 @@ TEST_CASE("Edge: Disconnected subgraphs", "[edge][disconnected]") {
     // 子图 C: 孤立单节点
     flow.emplace([&] { c_hits.fetch_add(1); });
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(a_hits.load() == 2);
     REQUIRE(b_hits.load() == 4);
@@ -132,7 +133,7 @@ TEST_CASE("Edge: Disconnected subgraphs", "[edge][disconnected]") {
 // ============================================================================
 
 /// @test [edge][lifecycle] 反复构造和销毁 Flow。
-/// @details 模拟"每个请求一个 Flow"的服务器场景。
+/// @brief 模拟"每个请求一个 Flow"的服务器场景。
 TEST_CASE("Edge: Repeated construct/destroy Flow", "[edge][lifecycle]") {
     TestEnv env;
     constexpr int ITERS = 200;
@@ -142,7 +143,7 @@ TEST_CASE("Edge: Repeated construct/destroy Flow", "[edge][lifecycle]") {
         tfl::Flow flow;
         flow.emplace([&] { hits.fetch_add(1); });
         flow.emplace([&] { hits.fetch_add(1); });
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
     }
 
     REQUIRE(hits.load() == ITERS * 2);
@@ -159,14 +160,14 @@ TEST_CASE("Edge: Reuse after clear", "[edge][clear]") {
     std::atomic<int> n{0};
 
     flow.emplace([&] { n.store(1); });
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(n.load() == 1);
 
     flow.clear();
     REQUIRE(flow.empty());
 
     flow.emplace([&] { n.store(99); });
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(n.load() == 99);
 }
 
@@ -175,7 +176,7 @@ TEST_CASE("Edge: Reuse after clear", "[edge][clear]") {
 // ============================================================================
 
 /// @test [edge][edit] 两次提交之间添加/删除边。
-/// @details 验证图编辑阶段（用户层）与执行阶段（框架层）之间的状态隔离。
+/// @brief 验证图编辑阶段（用户层）与执行阶段（框架层）之间的状态隔离。
 TEST_CASE("Edge: Edit graph between submissions", "[edge][edit]") {
     TestEnv env;
     tfl::Flow flow;
@@ -185,14 +186,14 @@ TEST_CASE("Edge: Edit graph between submissions", "[edge][edit]") {
     auto b = flow.emplace([&] { hits.fetch_add(1); });
     a.precede(b);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(hits.load() == 2);
 
     // 添加新节点 c，链接在 b 之后
     auto c = flow.emplace([&] { hits.fetch_add(1); });
     b.precede(c);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     // a/b/c 各运行一次 = +3 = 5
     REQUIRE(hits.load() == 5);
 }
@@ -202,7 +203,7 @@ TEST_CASE("Edge: Edit graph between submissions", "[edge][edit]") {
 // ============================================================================
 
 /// @test [edge][large-graph] 5 万节点图的构造（不执行）。
-/// @details 检查 Flow 能否容纳大规模图；emplace + precede 接口在大型图上不应退化。
+/// @brief 检查 Flow 能否容纳大规模图；emplace + precede 接口在大型图上不应退化。
 TEST_CASE("Edge: 50K-node graph construction", "[edge][large-graph]") {
     constexpr int N = 50'000;
 

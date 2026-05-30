@@ -1,5 +1,7 @@
-﻿/// @file 06_jump.cpp
+/// @file 06_jump.cpp
 /// @brief 演示 Jump（单目标无条件跳转/重试）与 MultiJump（多目标强制调度）。
+///   覆盖 select、operator()、select_if、select_all、unselect 及复合场景。
+
 #include "../taskflowlite/taskflowlite.hpp"
 #include <iostream>
 
@@ -10,7 +12,7 @@ int main() {
     tfl::Executor executor(handler, 4);
 
     // ================================================================
-    //  Part 1: Jump — 重试循环（select 方式）
+    // Part 1: Jump -- 重试循环（select 方式）
     // ================================================================
     {
         std::cout << "--- Part 1: Jump Retry Loop (select) ---\n";
@@ -20,40 +22,38 @@ int main() {
         constexpr int max_attempts = 3;
 
         auto init = flow.emplace([] {
-            std::cout << "  [Init] 系统初始化\n";
+            std::cout << "  [Init] System init\n";
         });
 
         auto process = flow.emplace([&attempts] {
-            std::cout << "  [Process] 第 " << ++attempts << " 次尝试...\n";
+            std::cout << "  [Process] Attempt #" << ++attempts << "...\n";
         });
 
-        // Jump 节点：失败时跳回 process（索引 0），成功则不跳转走常规路径
         auto check = flow.emplace([&attempts, max_attempts](tfl::Jump& jmp) {
             if (attempts < max_attempts) {
-                std::cout << "  [Check] 失败，跳回 Process (select(0))\n";
-                jmp.select(0);  // 后继索引 0 = process
+                std::cout << "  [Check] Failed, jump back to Process (select(0))\n";
+                jmp.select(0);
             } else {
-                std::cout << "  [Check] 通过！\n";
-                // 不调用 select → 不跳转 → 走常规 tear_down → success 被触发
+                std::cout << "  [Check] Passed!\n";
             }
         });
 
         auto success = flow.emplace([] {
-            std::cout << "  [Success] 操作成功！\n";
+            std::cout << "  [Success] Operation succeeded!\n";
         });
 
         init.precede(process);
         process.precede(check);
-        check.precede(process, success);  // 后继 0=process, 1=success
+        check.precede(process, success);
 
-        executor.submit(flow).start().wait();
+        executor.async(flow).wait();
     }
 
     // ================================================================
-    //  Part 2: Jump — operator[] 语法
+    // Part 2: Jump -- operator() 语法
     // ================================================================
     {
-        std::cout << "\n--- Part 2: Jump operator[] ---\n";
+        std::cout << "\n--- Part 2: Jump operator() ---\n";
 
         tfl::Flow flow;
         int counter = 0;
@@ -67,14 +67,12 @@ int main() {
             std::cout << "  [Work] counter = " << counter << "\n";
         });
 
-        // 使用 operator[] 语法
         auto gate = flow.emplace([&counter](tfl::Jump& jmp) {
             if (counter < 2) {
-                std::cout << "  [Gate] jmp[0] = true (跳回 Work)\n";
-                jmp[0] = true;   // 跳回 work
+                std::cout << "  [Gate] jmp(0) -- jump back to Work\n";
+                jmp(0);
             } else {
-                std::cout << "  [Gate] jmp[0] = false (不跳转)\n";
-                jmp[0] = false;  // 不跳转，走常规路径
+                std::cout << "  [Gate] No jump, follow normal path\n";
             }
         });
 
@@ -84,13 +82,13 @@ int main() {
 
         entry.precede(work);
         work.precede(gate);
-        gate.precede(work, done);  // 0=work, 1=done
+        gate.precede(work, done);
 
-        executor.submit(flow).start().wait();
+        executor.async(flow).wait();
     }
 
     // ================================================================
-    //  Part 3: Jump — select_if 谓词跳转
+    // Part 3: Jump -- select_if 谓词跳转
     // ================================================================
     {
         std::cout << "\n--- Part 3: Jump select_if ---\n";
@@ -107,36 +105,35 @@ int main() {
             std::cout << "  [Step] state = " << state << "\n";
         });
 
-        // 跳转到名为 "retry" 的后继
         auto decide = flow.emplace([&state](tfl::Jump& jmp) {
             if (state < 3) {
-                std::cout << "  [Decide] select_if: 跳转到 'retry'\n";
+                std::cout << "  [Decide] select_if: jump to 'retry'\n";
                 jmp.select_if([](tfl::TaskView tv) {
                     return tv.name() == "retry";
                 });
             } else {
-                std::cout << "  [Decide] 条件满足，不跳转\n";
+                std::cout << "  [Decide] Condition met, no jump\n";
             }
         });
 
         auto finish = flow.emplace([] {
-            std::cout << "  [Finish] 完成！\n";
+            std::cout << "  [Finish] Done!\n";
         });
 
         step.name("retry");
 
         start.precede(step);
         step.precede(decide);
-        decide.precede(step, finish);  // 0=step("retry"), 1=finish
+        decide.precede(step, finish);
 
-        executor.submit(flow).start().wait();
+        executor.async(flow).wait();
     }
 
     // ================================================================
-    //  Part 4: MultiJump — 多目标强制调度（select 方式）
+    // Part 4: MultiJump -- 多目标强制调度
     // ================================================================
     {
-        std::cout << "\n--- Part 4: MultiJump (Multi-target) ---\n";
+        std::cout << "\n--- Part 4: MultiJump ---\n";
 
         tfl::Flow flow;
 
@@ -144,9 +141,9 @@ int main() {
             std::cout << "  [Start]\n";
         });
 
-        // 同时强制调度多个后继
+        // 方式 1: select(indices...)
         auto mj1 = flow.emplace([](tfl::MultiJump& mj) {
-            std::cout << "  [MJ] select(0, 2) — 强制跳转到 0 和 2\n";
+            std::cout << "  [MJ] select(0, 2) -- force jump to 0 and 2\n";
             mj.select(0, 2);
         });
 
@@ -161,12 +158,10 @@ int main() {
         target1.precede(mid);
         target2.precede(mid);
 
-        // ---- 方式 2: operator[] 单索引 ----
+        // 方式 2: operator() 多索引
         auto mj2 = flow.emplace([](tfl::MultiJump& mj) {
-            std::cout << "  [MJ] mj[0] = true; mj[1] = false; mj[2] = true;\n";
-            mj[0] = true;
-            mj[1] = false;
-            mj[2] = true;
+            std::cout << "  [MJ] mj(0, 2) -- jump to 0 and 2\n";
+            mj(0, 2);
         });
 
         auto u0 = flow.emplace([] { std::cout << "    -> U0 (should run)\n"; });
@@ -180,10 +175,10 @@ int main() {
         u1.precede(mid2);
         u2.precede(mid2);
 
-        // ---- 方式 3: operator[i, j, k] = {bool, bool, bool} ----
+        // 方式 3: operator() 选择 0 和 2
         auto mj3 = flow.emplace([](tfl::MultiJump& mj) {
-            std::cout << "  [MJ] mj[0, 1, 2, 3] = {true, false, true, false}\n";
-            mj[0, 1, 2, 3] = {true, false, true, false};
+            std::cout << "  [MJ] mj(0, 2) -- select 0 and 2\n";
+            mj(0, 2);
         });
 
         auto v0 = flow.emplace([] { std::cout << "    -> V0 (should run)\n"; });
@@ -199,11 +194,11 @@ int main() {
         v2.precede(end);
         v3.precede(end);
 
-        executor.submit(flow).start().wait();
+        executor.async(flow).wait();
     }
 
     // ================================================================
-    //  Part 5: MultiJump — select_all / select_if
+    // Part 5: MultiJump -- select_all / select_if
     // ================================================================
     {
         std::cout << "\n--- Part 5: MultiJump select_all / select_if ---\n";
@@ -214,7 +209,7 @@ int main() {
             auto start = flow.emplace([] { std::cout << "  [Start]\n"; });
 
             auto mj = flow.emplace([](tfl::MultiJump& mj) {
-                std::cout << "  [MJ] select_all() — 强制跳转全部后继\n";
+                std::cout << "  [MJ] select_all() -- force jump to all successors\n";
                 mj.select_all();
             });
 
@@ -229,7 +224,7 @@ int main() {
             w1.precede(end);
             w2.precede(end);
 
-            executor.submit(flow).start().wait();
+            executor.async(flow).wait();
         }
 
         // select_if 谓词筛选
@@ -238,7 +233,7 @@ int main() {
             auto start = flow.emplace([] { std::cout << "\n  [Start]\n"; });
 
             auto mj = flow.emplace([](tfl::MultiJump& mj) {
-                std::cout << "  [MJ] select_if: 强制跳转名称包含 'hot' 的后继\n";
+                std::cout << "  [MJ] select_if: force jump to successors containing 'hot'\n";
                 mj.select_if([](tfl::TaskView tv) {
                     return tv.name().find("hot") != std::string_view::npos;
                 });
@@ -259,12 +254,12 @@ int main() {
             x1.precede(end);
             x2.precede(end);
 
-            executor.submit(flow).start().wait();
+            executor.async(flow).wait();
         }
     }
 
     // ================================================================
-    //  Part 6: MultiJump — 复合场景：先选后改
+    // Part 6: MultiJump -- 复合场景：先选后撤
     // ================================================================
     {
         std::cout << "\n--- Part 6: MultiJump mixed operations ---\n";
@@ -274,11 +269,9 @@ int main() {
         auto start = flow.emplace([] { std::cout << "  [Start]\n"; });
 
         auto mj = flow.emplace([](tfl::MultiJump& mj) {
-            // 先全选
             mj.select_all();
-            std::cout << "  [MJ] select_all() 后 mj[1] = false 撤回索引 1\n";
-            // 再撤回其中一个
-            mj[1] = false;
+            std::cout << "  [MJ] select_all() then unselect(1) to cancel index 1\n";
+            mj.unselect(1);
         });
 
         auto y0 = flow.emplace([] { std::cout << "    -> Y0 (should run)\n"; });
@@ -292,7 +285,7 @@ int main() {
         y1.precede(end);
         y2.precede(end);
 
-        executor.submit(flow).start().wait();
+        executor.async(flow).wait();
     }
 
     return 0;

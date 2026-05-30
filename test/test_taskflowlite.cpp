@@ -68,7 +68,7 @@ TEST_CASE("Flow: Batch Emplace (Tuple & Args)", "[flow]") {
 
     tfl::ResumeNever handler;
     tfl::Executor executor(handler, 1);
-    executor.deferred_async(flow).start().wait();
+    executor.async(flow).wait();
 
     REQUIRE(counter == 100);
 }
@@ -99,7 +99,7 @@ TEST_CASE("DAG: Strict Linear Execution Order", "[dag]") {
 
     tfl::ResumeNever handler;
     tfl::Executor executor(handler, 4);
-    executor.deferred_async(flow).start().wait();
+    executor.async(flow).wait();
 
     REQUIRE(order == std::vector<int>{1, 2, 3, 4});
 }
@@ -133,7 +133,7 @@ TEST_CASE("DAG: Diamond Topology Synchronization", "[dag]") {
 
     tfl::ResumeNever handler;
     tfl::Executor executor(handler, 4);
-    executor.deferred_async(flow).start().wait();
+    executor.async(flow).wait();
 
     // 所有断言在主线程上
     REQUIRE(counter.load() == 4);
@@ -163,7 +163,7 @@ TEST_CASE("Branch: Exclusive Path Routing", "[branch]") {
 
         branch.precede(p0, p1, p2); // 0->p0, 1->p1, 2->p2
 
-        executor.deferred_async(flow).start().wait();
+        executor.async(flow).wait();
 
         for (int i = 0; i < 3; ++i) {
             if (i == route) REQUIRE(hits[i].load() == 1);
@@ -189,7 +189,7 @@ TEST_CASE("MultiBranch: Concurrent Path Routing", "[branch]") {
 
     tfl::ResumeNever handler;
     tfl::Executor executor(handler, 4);
-    executor.deferred_async(flow).start().wait();
+    executor.async(flow).wait();
 
     REQUIRE(hits[0].load() == 1);
     REQUIRE(hits[1].load() == 0);
@@ -220,7 +220,7 @@ TEST_CASE("Runtime: Dynamic Async & Wait", "[runtime]") {
 
     tfl::ResumeNever handler;
     tfl::Executor executor(handler, 4);
-    executor.deferred_async(flow).start().wait();
+    executor.async(flow).wait();
 
     REQUIRE(result.load() == 30);
 }
@@ -240,7 +240,7 @@ TEST_CASE("Subflow: Predicate Condition Loop", "[subflow]") {
 
     tfl::ResumeNever handler;
     tfl::Executor executor(handler, 2);
-    executor.deferred_async(main_flow).start().wait();
+    executor.async(main_flow).wait();
 
     REQUIRE(runs.load() == 4);
 }
@@ -273,7 +273,7 @@ TEST_CASE("Semaphore: Real Concurrency Limiting", "[semaphore]") {
     tfl::ResumeNever handler;
     // 分配 8 个物理线程，但由于信号量限制，实际并发不应超过 2
     tfl::Executor executor(handler, 8);
-    executor.deferred_async(flow).start().wait();
+    executor.async(flow).wait();
 
     REQUIRE(max_active_observed.load() <= 2);
     REQUIRE(max_active_observed.load() > 0);
@@ -288,23 +288,23 @@ TEST_CASE("Executor: AsyncTask Explicit Dependencies", "[executor]") {
     // 修复：不要在 worker 线程内调用 REQUIRE，使用原子标志收集结果
     std::atomic<bool> t1_ok{false}, t2_ok{false}, t3_ok{false};
 
-    auto t1 = executor.deferred_async([&] {
+    auto t1 = tfl::NonrepeatAsyncTask([&] {
         t1_ok.store(step.load() == 0, std::memory_order_relaxed);
         step.store(1);
     });
-    auto t2 = executor.deferred_async([&] {
+    auto t2 = tfl::NonrepeatAsyncTask([&] {
         t2_ok.store(step.load() == 1, std::memory_order_relaxed);
         step.store(2);
     });
-    auto t3 = executor.deferred_async([&] {
+    auto t3 = tfl::NonrepeatAsyncTask([&] {
         t3_ok.store(step.load() == 2, std::memory_order_relaxed);
         step.store(3);
     });
 
     // 逆序组装并启动：t3 依赖 t2，t2 依赖 t1
-    t3.start(t2);
-    t2.start(t1);
-    t1.start(); // 触发点
+    executor.submit(t3, t2);
+    executor.submit(t2, t1);
+    executor.submit(t1); // 触发点
 
     t3.wait();
     executor.wait_for_all();
@@ -326,7 +326,7 @@ TEST_CASE("Executor: Flow Callbacks and Submissions", "[executor]") {
     flow.emplace([&] { runs.fetch_add(1); });
 
     // 提交多次执行并附带回调
-    executor.deferred_async(flow, 3ULL, [&] { cb_called.store(true); }).start().wait();
+    executor.async(flow, 3ULL, [&] { cb_called.store(true); }).wait();
 
     REQUIRE(runs.load() == 3);
     REQUIRE(cb_called.load() == true);
@@ -363,7 +363,7 @@ TEST_CASE("Exception: ResumeAlways Ignores Failure", "[exception]") {
     fail.precede(next);
 
     // 不应传播到用户层
-    REQUIRE_NOTHROW(executor.deferred_async(flow).start().wait());
+    REQUIRE_NOTHROW(executor.async(flow).wait());
     // 后续任务不应继续执行
     REQUIRE(next_task_run.load() == 0);
 }
@@ -392,7 +392,7 @@ TEST_CASE("Stress: Mass Concurrent Graph Submissions", "[stress]") {
                 start.precede(mid);
                 mid.precede(end);
             }
-            executor.deferred_async(f).start().wait();
+            executor.async(f).wait();
         }
     };
 
@@ -415,7 +415,7 @@ TEST_CASE("Edge: Disconnected Empty Tasks", "[edge]") {
     }
 
     // 只要不崩溃且正常退出即通过
-    REQUIRE_NOTHROW(executor.deferred_async(flow).start().wait());
+    REQUIRE_NOTHROW(executor.async(flow).wait());
 }
 
 TEST_CASE("Task Topology Constraints - precede() exception and cycle detection") {
@@ -555,7 +555,7 @@ TEST_CASE("Jump: Backward Retry Loop", "[jump]") {
 
     tfl::ResumeNever handler;
     tfl::Executor executor(handler, 2);
-    executor.deferred_async(flow).start().wait();
+    executor.async(flow).wait();
 
     REQUIRE(attempts.load() == 5);
 }

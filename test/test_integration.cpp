@@ -33,8 +33,8 @@ TEST_CASE("Integration: executor with many workers does not crash", "[integratio
     REQUIRE_NOTHROW([&] {
         tfl::Executor exec(handler, kN);
         std::atomic<int> n{0};
-        auto t = exec.deferred_async([&] { n.store(42); });
-        t.start().wait();
+        auto t = tfl::NonrepeatAsyncTask([&] { n.store(42); });
+        exec.submit(t); t.wait();
         REQUIRE(n.load() == 42);
     }());
 }
@@ -49,7 +49,7 @@ TEST_CASE("Integration: executor destructor joins all workers", "[integration][e
         for (int i = 0; i < 100; ++i) {
             flow.emplace([&] { hits.fetch_add(1, std::memory_order_relaxed); });
         }
-        exec.deferred_async(flow).start().wait();
+        exec.async(flow).wait();
         exec.wait_for_all();
     }
     REQUIRE(hits.load() == 100);
@@ -82,7 +82,7 @@ TEST_CASE("Integration: three-level deep Subflow nesting", "[integration][subflo
     pre.precede(sub);
     sub.precede(post);
 
-    env.executor.deferred_async(outer).start().wait();
+    env.executor.async(outer).wait();
 
     REQUIRE(innermost.load() == 2);
     REQUIRE(middle.load() == 1);
@@ -106,7 +106,7 @@ TEST_CASE("Integration: nested subflow with repeat counts", "[integration][subfl
     tfl::Flow outer;
     outer.emplace(std::move(mid_flow), 2ULL);
 
-    env.executor.deferred_async(outer).start().wait();
+    env.executor.async(outer).wait();
 
     // 叶子每 repeat 跑 1 次: 2×3×1 = 6
     REQUIRE(leaf.load() == 6);
@@ -135,7 +135,7 @@ TEST_CASE("Integration: condition task routing to Subflow vs basic", "[integrati
         auto basic_node = flow.emplace([&] { basic_hits.fetch_add(1); });
         cond.precede(sub_node, basic_node);
 
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
 
         if (route == 0) {
             REQUIRE(sub_hits.load() == 2);
@@ -172,7 +172,7 @@ TEST_CASE("Integration: concurrent submit of multiple Flows", "[integration][con
     for (int i = 0; i < kThreads; ++i) {
         threads.emplace_back([&, idx = i] {
             auto flow = make_flow(idx);
-            env.executor.deferred_async(flow).start().wait();
+            env.executor.async(flow).wait();
         });
     }
 
@@ -201,16 +201,15 @@ TEST_CASE("Integration: executor destruction with pending tasks", "[integration]
         for (int i = 0; i < N; ++i) {
             flow.emplace([&] { hits.fetch_add(1, std::memory_order_relaxed); });
         }
-        auto task = exec.deferred_async(std::move(flow));
-        task.start();
-        // 不调 wait —— 内部处理
+        exec.async(std::move(flow));
+        // async 自动启动；不调 wait —— 内部处理
     }
     // 析构函数内部 _shutdown() → wait_for_all() → join workers
     REQUIRE(hits.load() == N);
 }
 
-/// @test [integration][shutdown][stress] 析构时还有未完成的 silent_async 任务
-TEST_CASE("Integration: executor destruction with pending silent_async", "[integration][shutdown][stress]") {
+/// @test [integration][shutdown][stress] 析构时还有未完成的 detach 任务
+TEST_CASE("Integration: executor destruction with pending detach", "[integration][shutdown][stress]") {
     std::atomic<int> hits{0};
     constexpr int N = 500;
 
@@ -218,7 +217,7 @@ TEST_CASE("Integration: executor destruction with pending silent_async", "[integ
         tfl::ResumeNever handler;
         tfl::Executor exec(handler, 4);
         for (int i = 0; i < N; ++i) {
-            exec.silent_async([&] {
+            exec.detach([&] {
                 hits.fetch_add(1, std::memory_order_relaxed);
             });
         }
@@ -231,8 +230,8 @@ TEST_CASE("Integration: executor destruction with pending silent_async", "[integ
 // 第 6 节: wait_for_all 语义
 // ============================================================================
 
-/// @test [integration][wait_for_all] wait_for_all 覆盖 Flow 和 silent_async
-TEST_CASE("Integration: wait_for_all covers both flows and silent_async", "[integration][wait_for_all]") {
+/// @test [integration][wait_for_all] wait_for_all 覆盖 Flow 和 detach
+TEST_CASE("Integration: wait_for_all covers both flows and detach", "[integration][wait_for_all]") {
     TestEnv env;
     std::atomic<int> flow_done{0}, async_done{0};
     constexpr int kFlowTasks = 50, kAsyncTasks = 100;
@@ -242,11 +241,10 @@ TEST_CASE("Integration: wait_for_all covers both flows and silent_async", "[inte
         flow.emplace([&] { flow_done.fetch_add(1); });
     }
 
-    auto ft = env.executor.deferred_async(flow);
-    ft.start();
+    env.executor.async(flow);
 
     for (int i = 0; i < kAsyncTasks; ++i) {
-        env.executor.silent_async([&] { async_done.fetch_add(1); });
+        env.executor.detach([&] { async_done.fetch_add(1); });
     }
 
     env.executor.wait_for_all();
@@ -260,7 +258,7 @@ TEST_CASE("Integration: multiple wait_for_all calls", "[integration][wait_for_al
     TestEnv env;
     std::atomic<int> n{0};
 
-    env.executor.silent_async([&] { n.store(1); });
+    env.executor.detach([&] { n.store(1); });
     env.executor.wait_for_all();
     REQUIRE(n.load() == 1);
 
@@ -268,7 +266,7 @@ TEST_CASE("Integration: multiple wait_for_all calls", "[integration][wait_for_al
     REQUIRE_NOTHROW(env.executor.wait_for_all());
 
     // 提交新任务后再等
-    env.executor.silent_async([&] { n.store(2); });
+    env.executor.detach([&] { n.store(2); });
     env.executor.wait_for_all();
     REQUIRE(n.load() == 2);
 }
@@ -292,7 +290,7 @@ TEST_CASE("Integration: exception in one Subflow does not block sibling", "[inte
     outer.emplace(std::move(bad_inner));
     outer.emplace(std::move(good_inner));
 
-    env.executor.deferred_async(outer).start().wait();
+    env.executor.async(outer).wait();
 
     REQUIRE(sibling_done.load());
 }
@@ -313,7 +311,7 @@ TEST_CASE("Integration: exception in deeply nested Subflow", "[integration][exce
     auto post = outer.emplace([&] { outer_post.store(true); });
     sub.precede(post);
 
-    env.executor.deferred_async(outer).start().wait();
+    env.executor.async(outer).wait();
 
     // ResumeNever 策略：异常后后继节点不运行
     REQUIRE_FALSE(outer_post.load());
@@ -333,7 +331,7 @@ TEST_CASE("Integration: same Flow submitted multiple times concurrently", "[inte
 
     constexpr int kSubmissions = 100;
     for (int i = 0; i < kSubmissions; ++i) {
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
     }
 
     REQUIRE(counter.load() == kSubmissions);
@@ -353,7 +351,7 @@ TEST_CASE("Integration: Runtime cowait before successor in Flow", "[integration]
     tfl::Flow flow;
     auto rt = flow.emplace([&](tfl::Runtime& rt) {
         for (int i = 0; i < kSubTasks; ++i) {
-            rt.silent_async([&] { sub_done.fetch_add(1); });
+            rt.detach([&] { sub_done.fetch_add(1); });
         }
         rt.cowait();  // 等所有子任务在父任务体内完成
     });
@@ -362,7 +360,7 @@ TEST_CASE("Integration: Runtime cowait before successor in Flow", "[integration]
     });
     rt.precede(next);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(sub_done.load() == kSubTasks);
     REQUIRE(successor_ran.load());
@@ -391,7 +389,7 @@ TEST_CASE("Integration: 100K-node chain construction and execution", "[integrati
         tasks[i - 1].precede(tasks[i]);
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(counter.load() == N);
 }
 
@@ -414,7 +412,7 @@ TEST_CASE("Integration: custom graph_holder submitted to executor", "[integratio
     NamedPipeline pipeline;
     pipeline.flow.emplace([] {});
     pipeline.flow.emplace([] {});
-    REQUIRE_NOTHROW(env.executor.deferred_async(pipeline.flow).start().wait());
+    REQUIRE_NOTHROW(env.executor.async(pipeline.flow).wait());
 }
 
 // ============================================================================
@@ -430,7 +428,7 @@ TEST_CASE("Integration: async Future used alongside Flow", "[integration][future
     tfl::Flow flow;
     std::atomic<int> flow_done{0};
     flow.emplace([&] { flow_done.fetch_add(1); });
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(flow_done.load() == 1);
     REQUIRE(fut.get() == 42);
@@ -440,7 +438,7 @@ TEST_CASE("Integration: async Future used alongside Flow", "[integration][future
 // 覆盖矩阵
 // ============================================================================
 //   E3  ✓ "Integration: executor destructor joins all workers"
-//   E5  ✓ "Integration: executor destruction with pending tasks" / "pending silent_async"
+//   E5  ✓ "Integration: executor destruction with pending tasks" / "pending detach"
 //   E9  ✓ "Integration: exception in deeply nested Subflow"
 //   E11 ✓ "Integration: concurrent submit of multiple Flows" / "same Flow submitted multiple times"
 //   E13 ⏸ 0 worker（API 设计问题）
@@ -448,5 +446,5 @@ TEST_CASE("Integration: async Future used alongside Flow", "[integration][future
 //   X2  ✓ "Integration: exception in one Subflow does not block sibling"
 //   X4  ✓ "Integration: three-level deep Subflow nesting" / "condition task routing to Subflow"
 //         "Integration: Runtime cowait before successor in Flow"
-//   X5  ✓ "Integration: executor destruction with pending tasks" / "pending silent_async"
+//   X5  ✓ "Integration: executor destruction with pending tasks" / "pending detach"
 //   F8  ✓ "Integration: three-level deep Subflow nesting" / "nested subflow with repeat counts"

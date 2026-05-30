@@ -20,14 +20,14 @@ using tfl_test::TestEnv;
 // SECTION 1: 大规模即发即忘
 // ============================================================================
 
-/// @test [stress][async] 100K silent_async 任务全部完成且结果正确
-TEST_CASE("Stress: 100K silent_async", "[stress][async]") {
+/// @test [stress][async] 100K detach 任务全部完成且结果正确
+TEST_CASE("Stress: 100K detach", "[stress][async]") {
     TestEnv env(8);
     constexpr int N = 100'000;
     std::atomic<long> sum{0};
 
     for (int i = 0; i < N; ++i) {
-        env.executor.silent_async([&, i] {
+        env.executor.detach([&, i] {
             sum.fetch_add(i, std::memory_order_relaxed);
         });
     }
@@ -61,7 +61,7 @@ TEST_CASE("Stress: 10K deep chain ordering guarantee", "[stress][chain][deep]") 
     }
     for (int i = 1; i < N; ++i) tasks[i - 1].precede(tasks[i]);
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(step.load() == N);
     REQUIRE(violations.load() == 0);
 }
@@ -90,7 +90,7 @@ TEST_CASE("Stress: 10K wide fanout + converge", "[stress][wide]") {
         t.precede(sink);
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(hits.load() == N);
     REQUIRE(sink_saw_all.load());
 }
@@ -112,7 +112,7 @@ TEST_CASE("Stress: 1000 independent Flows submitted sequentially", "[stress][bur
         for (int i = 0; i < PER_FLOW; ++i) {
             flow.emplace([&] { total.fetch_add(1); });
         }
-        env.executor.deferred_async(flow).start().wait();
+        env.executor.async(flow).wait();
     }
 
     REQUIRE(total.load() == FLOWS * PER_FLOW);
@@ -169,7 +169,7 @@ TEST_CASE("Stress: random DAG topological order correctness", "[stress][random][
         }
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     // 属性 1：所有节点均已执行
     for (int i = 0; i < N; ++i) {
@@ -199,7 +199,7 @@ TEST_CASE("Stress: single worker scheduling", "[stress][single-worker]") {
         flow.emplace([&] { hits.fetch_add(1); });
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(hits.load() == N);
 }
 
@@ -208,7 +208,7 @@ TEST_CASE("Stress: single worker scheduling", "[stress][single-worker]") {
 // ============================================================================
 
 /// @test [stress][work-stealing] 16 个 Runtime，每个派发 100 个子任务
-/// @details 模拟工作窃取场景：多个工作线程同时遇到 silent_async 派发，
+/// @details 模拟工作窃取场景：多个工作线程同时遇到 detach 派发，
 ///          应均衡负载，无死锁，无丢失任务。
 TEST_CASE("Stress: work stealing with multiple Runtimes", "[stress][work-stealing]") {
     TestEnv env(8);
@@ -219,7 +219,7 @@ TEST_CASE("Stress: work stealing with multiple Runtimes", "[stress][work-stealin
     for (int o = 0; o < OUTER; ++o) {
         flow.emplace([&](tfl::Runtime& rt) {
             for (int i = 0; i < INNER; ++i) {
-                rt.silent_async([&] {
+                rt.detach([&] {
                     hits.fetch_add(1, std::memory_order_relaxed);
                 });
             }
@@ -227,7 +227,7 @@ TEST_CASE("Stress: work stealing with multiple Runtimes", "[stress][work-stealin
         });
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
     REQUIRE(hits.load() == OUTER * INNER);
 }
 
@@ -263,7 +263,7 @@ TEST_CASE("Stress: semaphore rate-limiting heavy contention", "[stress][semaphor
         t.acquire(sem).release(sem);
     }
 
-    env.executor.deferred_async(flow).start().wait();
+    env.executor.async(flow).wait();
 
     REQUIRE(done.load() == N);
     REQUIRE(peak.load() <= 4);
@@ -275,10 +275,10 @@ TEST_CASE("Stress: semaphore rate-limiting heavy contention", "[stress][semaphor
 // SECTION 9: 混合工作负载
 // ============================================================================
 
-/// @test [stress][mixed] 在同一 Executor 上同时运行 Flow + silent_async
+/// @test [stress][mixed] 在同一 Executor 上同时运行 Flow + detach
 /// @details 验证 Executor 支持不同类型的工作单元并发执行，
 ///          wait_for_all 正确等待全部完成。
-TEST_CASE("Stress: mixed Flow + silent_async", "[stress][mixed]") {
+TEST_CASE("Stress: mixed Flow + detach", "[stress][mixed]") {
     TestEnv env(4);
     std::atomic<int> flow_hits{0};
     std::atomic<int> async_hits{0};
@@ -288,14 +288,14 @@ TEST_CASE("Stress: mixed Flow + silent_async", "[stress][mixed]") {
     for (int i = 0; i < 50; ++i) {
         flow.emplace([&] { flow_hits.fetch_add(1); });
     }
-    auto flow_task = env.executor.deferred_async(flow);
+    auto flow_task = tfl::NonrepeatAsyncTask(flow);
 
-    // 同时大量 silent_async
+    // 同时大量 detach
     for (int i = 0; i < 500; ++i) {
-        env.executor.silent_async([&] { async_hits.fetch_add(1); });
+        env.executor.detach([&] { async_hits.fetch_add(1); });
     }
 
-    flow_task.start();
+    env.executor.submit(flow_task);
     flow_task.wait();
     env.executor.wait_for_all();
 
