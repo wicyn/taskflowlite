@@ -539,8 +539,8 @@ cmake --build build --config Release
 ./build/bin/TaskflowLiteTest
 
 # 单文件（按需构建）
-cmake --build build --target tfl_test_queue
-./build/bin/tfl_test_queue
+cmake --build build --target tfl_test_task
+./build/bin/tfl_test_task
 ```
 
 > 测试依赖 Catch2 v3 amalgamated：`test/` 下已有则直接使用（离线、可复现）；
