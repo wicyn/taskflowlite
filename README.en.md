@@ -539,8 +539,8 @@ cmake --build build --config Release
 ./build/bin/TaskflowLiteTest
 
 # Single file (build on demand)
-cmake --build build --target tfl_test_queue
-./build/bin/tfl_test_queue
+cmake --build build --target tfl_test_task
+./build/bin/tfl_test_task
 ```
 
 > Tests depend on Catch2 v3 amalgamated: used directly if present under `test/`
