@@ -512,7 +512,7 @@ inline void Runtime::submit(Task task) {
 template <typename Gh>
     requires graph_holder<Gh>
 inline void Runtime::submit(Gh& gh) {
-    auto& graph = detail::to_graph(detail::unwrap(gh));
+    auto& graph = detail::to_graph(gh);
     if (graph.empty()) {
         return;
     }

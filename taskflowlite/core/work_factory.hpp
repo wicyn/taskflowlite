@@ -1,4 +1,4 @@
-/// @file work_factory.hpp
+﻿/// @file work_factory.hpp
 /// @brief Work 节点工厂函数族 —— inline 实现，与 work_factory_fwd.hpp 配对。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -81,8 +81,8 @@ template <typename T, typename... Args>
 template <typename Gh, typename P>
     requires (capturable<P> && graph_holder<Gh> && predicate<P>)
 [[nodiscard]] inline Work* make_subflow(const Graph* graph, Gh&& gh, P&& pred) {
-    return new SubflowInvoker<detail::wrap_t<Gh>, std::decay_t<P>>(
-        graph, detail::wrap(std::forward<Gh>(gh)), std::forward<P>(pred));
+    return new SubflowInvoker<detail::captured_t<Gh>, std::decay_t<P>>(
+        graph, detail::capture(std::forward<Gh>(gh)), std::forward<P>(pred));
 }
 
 // ============================================================================
@@ -109,8 +109,8 @@ template <anchor_tag A, typename T, typename... Args>
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 [[nodiscard]] inline Work* make_detached_flow(Executor* exec, Work* parent, Gh&& gh, P&& pred, C&& cb) {
-    return new DetachedFlowInvoker<A, detail::wrap_t<Gh>, std::decay_t<P>, std::decay_t<C>>(
-        exec, parent, detail::wrap(std::forward<Gh>(gh)), std::forward<P>(pred), std::forward<C>(cb));
+    return new DetachedFlowInvoker<A, detail::captured_t<Gh>, std::decay_t<P>, std::decay_t<C>>(
+        exec, parent, detail::capture(std::forward<Gh>(gh)), std::forward<P>(pred), std::forward<C>(cb));
 }
 
 /// @brief 创建带 std::promise<R> 的普通异步任务 —— PromisedBasicInvoker。
@@ -133,8 +133,8 @@ template <anchor_tag A, typename T, typename R, typename... Args>
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 [[nodiscard]] inline Work* make_promised_flow(Executor* exec, Work* parent, Gh&& gh, P&& pred, C&& cb, std::promise<void>&& p) {
-    return new PromisedFlowInvoker<A, detail::wrap_t<Gh>, std::decay_t<P>, std::decay_t<C>>(
-        exec, parent, detail::wrap(std::forward<Gh>(gh)), std::forward<P>(pred), std::forward<C>(cb), std::move(p));
+    return new PromisedFlowInvoker<A, detail::captured_t<Gh>, std::decay_t<P>, std::decay_t<C>>(
+        exec, parent, detail::capture(std::forward<Gh>(gh)), std::forward<P>(pred), std::forward<C>(cb), std::move(p));
 }
 // ============================================================================
 //  内联实现 — 有依赖的异步任务工厂（挂载到外部 Topology）
@@ -160,8 +160,8 @@ template <anchor_tag A, typename T, typename... Args>
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 [[nodiscard]] inline Work* make_attached_flow(Executor* exec, Work* parent, Gh&& gh, P&& pred, C&& cb) {
-    return new AttachedFlowInvoker<A, detail::wrap_t<Gh>, std::decay_t<P>, std::decay_t<C>>(
-        exec, parent, detail::wrap(std::forward<Gh>(gh)),
+    return new AttachedFlowInvoker<A, detail::captured_t<Gh>, std::decay_t<P>, std::decay_t<C>>(
+        exec, parent, detail::capture(std::forward<Gh>(gh)),
         std::forward<P>(pred),
         std::forward<C>(cb));
 }

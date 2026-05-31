@@ -1,4 +1,4 @@
-/// @file  forward.hpp
+﻿/// @file  forward.hpp
 /// @brief 框架全体前向声明 + 架构总览 —— 组件分层、协作关系与快速索引。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -32,7 +32,7 @@ template <typename>     class AsyncTask;
 
 
 // Work 子类前向声明
-                                                                    class NoopInvoker;
+class NoopInvoker;
 template <typename F, typename... Args>                             class BasicInvoker;
 template <typename F, typename... Args>                             class BranchInvoker;
 template <typename F, typename... Args>                             class MultiBranchInvoker;
@@ -53,7 +53,7 @@ template <typename A>                                               class Anchor
 
 
 #define TFL_WORK_SUBCLASS_FRIENDS                                                                                 \
-                                                            friend class ::tfl::NoopInvoker;               \
+friend class ::tfl::NoopInvoker;               \
     template <typename, typename...>                        friend class ::tfl::BasicInvoker;                     \
     template <typename, typename...>                        friend class ::tfl::BranchInvoker;                    \
     template <typename, typename...>                        friend class ::tfl::MultiBranchInvoker;               \

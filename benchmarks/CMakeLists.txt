@@ -6,7 +6,7 @@
 #   - 优先使用本地路径 (TASKFLOW_LOCAL_PATH)
 #   - 否则用 git 稀疏 + 部分克隆, 只取 taskflow/ 子目录, 不锁版本(跟随 master 顶端)
 #   - examples / docs / test / images 等一律不下载
-#   - 刷新到更新提交: 删掉 build/taskflow_src 重新 configure, 或配置时加 -DTFL_UPDATE_DEPS=ON
+#   - 刷新到更新提交: 删掉 build/third_party/taskflow 重新 configure, 或加 -DTFL_UPDATE_DEPS=ON
 # ==============================================================================
 
 find_package(Git REQUIRED)
@@ -40,7 +40,7 @@ endif()
 #   --depth 1          : 不要历史
 #   --filter=blob:none : 部分克隆, blob 按需取
 #   --sparse           : 工作树初始为空(仅根文件), 再用 sparse-checkout 展开子目录
-# 三者叠加 => 磁盘上基本只有指定子目录的内容
+#   三者叠加 => 磁盘上基本只有指定子目录的内容
 # ──────────────────────────────────────────────────────────────────────────────
 function(tfl_sparse_clone _name _repo _branch _subdir _outdir)
     # 可选代理: 注入 -c http.proxy=... -c https.proxy=...
@@ -57,7 +57,7 @@ function(tfl_sparse_clone _name _repo _branch _subdir _outdir)
 
     if(EXISTS "${_outdir}/.git")
         if(TFL_UPDATE_DEPS)
-            message(STATUS "[${_name}] 更新到 ${_branch} 最新提交 ...")
+            message(STATUS "[taskflow] 更新到 ${_branch} 最新提交 ...")
             execute_process(
                 COMMAND "${GIT_EXECUTABLE}" ${_proxy} ${_speed} -C "${_outdir}" fetch --depth 1 origin "${_branch}")
             execute_process(
@@ -68,7 +68,7 @@ function(tfl_sparse_clone _name _repo _branch _subdir _outdir)
         return()
     endif()
 
-    message(STATUS "[${_name}] 稀疏克隆 ${_subdir}/ @ ${_branch} -> ${_outdir}")
+    message(STATUS "[${_name}] 稀疏克隆 ${_subdir}/ @ ${_branch} → ${_outdir}")
     message(STATUS "[${_name}] URL: ${_url}")
 
     # partial clone 开关: 烂网络/镜像下卡 promisor 时, 配置加 -DTFL_PARTIAL_CLONE=OFF
@@ -109,8 +109,7 @@ function(tfl_sparse_clone _name _repo _branch _subdir _outdir)
 endfunction()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Taskflow (header-only, 对比基线)
-# 只取 taskflow/ 目录, 跟随 master 最新
+# Taskflow (header-only, 对比基线) —— 只取 taskflow/ 目录, 跟随 master 最新
 # ──────────────────────────────────────────────────────────────────────────────
 set(TASKFLOW_LOCAL_PATH "" CACHE PATH "Local path to Taskflow source (备用)")
 
@@ -119,11 +118,13 @@ if(NOT TASKFLOW_LOCAL_PATH AND EXISTS "${CMAKE_SOURCE_DIR}/../taskflow/taskflow/
 endif()
 
 if(TASKFLOW_LOCAL_PATH)
-    message(STATUS "Using local Taskflow: ${TASKFLOW_LOCAL_PATH}")
+    set(TFL_TASKFLOW_SOURCE "local")
+    message(STATUS "[taskflow] 使用本地源码: ${TASKFLOW_LOCAL_PATH}")
     set(taskflow_SOURCE_DIR "${TASKFLOW_LOCAL_PATH}")
 else()
-    set(taskflow_SOURCE_DIR "${CMAKE_BINARY_DIR}/taskflow_src")
-    tfl_sparse_clone(Taskflow
+    set(TFL_TASKFLOW_SOURCE "cloned(master)")
+    set(taskflow_SOURCE_DIR "${CMAKE_BINARY_DIR}/third_party/taskflow")
+    tfl_sparse_clone(taskflow
         "https://github.com/taskflow/taskflow.git" master taskflow "${taskflow_SOURCE_DIR}")
 endif()
 
@@ -150,7 +151,6 @@ endif()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # bench_taskflowlite -- TaskflowLite benchmarks (20 scheduling scenarios)
-# Uses TaskflowLite::taskflowlite (defined in parent project)
 # ──────────────────────────────────────────────────────────────────────────────
 add_executable(bench_taskflowlite bench_taskflowlite.cpp)
 target_link_libraries(bench_taskflowlite PRIVATE
@@ -196,10 +196,18 @@ endforeach()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # IDE 解决方案文件夹分组 (依赖根 CMakeLists 的 USE_FOLDERS ON)
-#   bench_* -> Benchmarks/ ; run_all_benchmarks -> Run/
-# (Taskflow 是 INTERFACE 库, VS 里本就不显示; taskflow_headers 已归 ThirdParty/)
 # ──────────────────────────────────────────────────────────────────────────────
 foreach(b ${BENCHMARKS})
     set_target_properties(${b} PROPERTIES FOLDER "Benchmarks")
 endforeach()
 set_target_properties(run_all_benchmarks PROPERTIES FOLDER "Run")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 状态摘要
+# ──────────────────────────────────────────────────────────────────────────────
+message(STATUS "── TaskflowLite Benchmarks ────────────────────")
+message(STATUS "  对比目标      : bench_taskflowlite / bench_taskflow")
+message(STATUS "  Taskflow 来源 : ${TFL_TASKFLOW_SOURCE}")
+message(STATUS "  Taskflow 路径 : ${taskflow_SOURCE_DIR}")
+message(STATUS "  一键运行      : run_all_benchmarks")
+message(STATUS "───────────────────────────────────────────────")

@@ -518,6 +518,9 @@ TEST_CASE("FreeStack: concurrent push/pop stress", "[allocator][freestack][stres
     }
 
     // Popper 线程: pop → 查 bitmap 检测重复
+    // 使用原子错误标志收集失败信息，主线程 join 后统一 REQUIRE
+    std::atomic<bool> dup_error{ false };
+    std::atomic<bool> alien_error{ false };
     std::vector<std::thread> poppers;
     for (int i = 0; i < kThreads / 2; ++i) {
         poppers.emplace_back([&] {
@@ -528,13 +531,17 @@ TEST_CASE("FreeStack: concurrent push/pop stress", "[allocator][freestack][stres
                     bool found = false;
                     for (int k = 0; k < kTotalChunks; ++k) {
                         if (chunks[k] == p) {
-                            REQUIRE_FALSE(popped[k].exchange(true));  // 不重复 pop
+                            if (popped[k].exchange(true, std::memory_order_relaxed)) {
+                                dup_error.store(true, std::memory_order_relaxed);
+                            }
                             pop_count.fetch_add(1, std::memory_order_relaxed);
                             found = true;
                             break;
                         }
                     }
-                    REQUIRE(found);  // pop 出的必须是我们的 chunk
+                    if (!found) {
+                        alien_error.store(true, std::memory_order_relaxed);
+                    }
                 }
             }
             });
@@ -542,6 +549,10 @@ TEST_CASE("FreeStack: concurrent push/pop stress", "[allocator][freestack][stres
 
     for (auto& t : pushers) t.join();
     for (auto& t : poppers) t.join();
+
+    // 主线程统一断言
+    REQUIRE_FALSE(dup_error.load());
+    REQUIRE_FALSE(alien_error.load());
 
     // 主线程清理残余
     while (void* p = stack.pop()) {

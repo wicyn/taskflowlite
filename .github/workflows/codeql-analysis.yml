@@ -1,0 +1,37 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: '30 2 * * 1'
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+    steps:
+    - uses: actions/checkout@v4
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: cpp
+    - name: Build
+      # 只编库本体 + examples 供 CodeQL 扫描自有代码。
+      # 关掉 TESTS: CodeQL 无需测试代码, 且开 TESTS 会触发下载 Catch2(第三方),
+      #             那些源码会被一并扫描、产生与本项目无关的告警, 污染安全分析结果。
+      run: |
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+              -DTFL_BUILD_EXAMPLES=ON \
+              -DTFL_BUILD_TESTS=OFF
+        cmake --build build --parallel $(nproc)
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3

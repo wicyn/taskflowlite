@@ -83,13 +83,15 @@ template <typename T>
 inline constexpr bool is_reference_wrapper_after_decay_v = is_reference_wrapper<std::decay_t<T>>::value;
 
 // ============================================================================
-//  wrap / unwrap 运行时工具
+//  capture / borrow 运行时工具 —— 配对使用
+//  capture: 把实参转成可存储表示（左值存 ref，右值存值/移动接管）
+//  borrow : 从存储表示借出一个可用的左值引用（不取得所有权）
 // ============================================================================
 
-/// @brief 左值引用包装函数。
-/// @return 左值返回 std::ref 包装，右值直接转发。
+/// @brief 把实参转成可长期存储的表示。
+/// @return 左值 → std::ref 包装（非拥有引用）；右值 → 按值接管。
 template <typename T>
-[[nodiscard]] constexpr auto wrap(T&& t) noexcept {
+[[nodiscard]] constexpr auto capture(T&& t) noexcept {
     if constexpr (std::is_lvalue_reference_v<T>) {
         return std::ref(t);
     } else {
@@ -97,21 +99,20 @@ template <typename T>
     }
 }
 
-/// @brief 获取 wrap 函数的返回类型
+/// @brief capture 结果的存储类型。
 template <typename T>
-using wrap_t = decltype(wrap(std::declval<T>()));
+using captured_t = decltype(capture(std::declval<T>()));
 
-/// @brief 类型解包函数。
-/// @return 如果有 reference_wrapper 包装则返回解包后的左值引用，否则原样转发。
+/// @brief 从 capture 的存储表示借出一个左值引用，与 capture() 配对。
+/// @return reference_wrapper → 其引用的左值；存储的值对象 → 指向它的左值引用。
 template <typename T>
-[[nodiscard]] constexpr decltype(auto) unwrap(T&& t) noexcept {
+[[nodiscard]] constexpr decltype(auto) borrow(T&& t) noexcept {
     if constexpr (is_reference_wrapper_after_decay_v<T>) {
         return t.get();
     } else {
-        return std::forward<T>(t);
+        return static_cast<std::remove_reference_t<T>&>(t);
     }
 }
-
 } // namespace detail
 
 
