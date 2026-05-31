@@ -1,0 +1,9 @@
+# Mark third-party and build artifacts as vendored / excluded from stats
+benchmarks/taskflow/* linguist-vendored
+build/* linguist-vendored
+documentation/img/* linguist-vendored
+
+# C++ source files
+*.cpp linguist-language=C++
+*.hpp linguist-language=C++
+*.h linguist-language=C++

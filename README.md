@@ -1,8 +1,9 @@
 # TaskflowLite
 
-[![Ubuntu](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml)
-[![macOS](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml)
-[![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
+[![CI](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
+[![Linux](https://img.shields.io/badge/Linux-passing-success?logo=linux&logoColor=white)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
+[![macOS](https://img.shields.io/badge/macOS-passing-success?logo=apple&logoColor=white)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
+[![Windows](https://img.shields.io/badge/Windows-passing-success?logo=windows&logoColor=white)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?logo=cplusplus)](https://en.cppreference.com/w/cpp/23)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Header Only](https://img.shields.io/badge/Header--Only-Yes-success)](#)
@@ -402,14 +403,27 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --parallel
 
 # 带测试
-cmake -S . -B build -DTASKFLOWLITE_BUILD_TESTS=ON
+cmake -S . -B build -DTFL_BUILD_TESTS=ON
 cmake --build build
 ctest --test-dir build -C Release --output-on-failure
 
 # Sanitizer
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTASKFLOWLITE_SANITIZER=ASAN
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTASKFLOWLITE_SANITIZER=TSAN
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_SANITIZER=ASAN
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_SANITIZER=TSAN
 ```
+
+### 国内网络 / 镜像
+
+开启测试或基准时可能需要从 GitHub 获取依赖（测试的 Catch2、基准的 Taskflow）。
+直连 GitHub 不畅时，可在配置时切换镜像（默认 `direct` 直连）：
+
+```bash
+# 可选值：direct / ghfast.top / gh-proxy.com / ghproxy.net
+cmake -S . -B build -DTFL_BUILD_TESTS=ON -DTFL_GITHUB_MIRROR=ghfast.top
+```
+
+进阶项（cmake-gui 的 Advanced 里）：`TFL_GITHUB_PREFIX`（自定义前缀，覆盖镜像下拉）、
+`TFL_GIT_PROXY`（git 走本地 HTTP(S) 代理，如 `http://127.0.0.1:7890`）。
 
 ### 作为依赖
 
@@ -421,7 +435,8 @@ target_link_libraries(your_app PRIVATE TaskflowLite::taskflowlite)
 # FetchContent
 include(FetchContent)
 FetchContent_Declare(taskflowlite
-    GIT_REPOSITORY https://github.com/wicyn/taskflowlite.git GIT_TAG main)
+    GIT_REPOSITORY https://github.com/wicyn/taskflowlite.git
+    GIT_TAG v1.2.0)   # 建议钉具体版本而非 main，保证可复现
 FetchContent_MakeAvailable(taskflowlite)
 target_link_libraries(your_app PRIVATE TaskflowLite::taskflowlite)
 ```
@@ -506,7 +521,7 @@ TaskflowLite vs Taskflow，**相同硬件、相同线程数、相同拓扑、相
 ### 示例
 
 ```bash
-cmake -S . -B build -DTASKFLOWLITE_BUILD_EXAMPLES=ON
+cmake -S . -B build -DTFL_BUILD_EXAMPLES=ON
 cmake --build build --config Release
 
 ./build/bin/examples/01_basic_dag       # 基础 DAG
@@ -514,30 +529,28 @@ cmake --build build --config Release
 ./build/bin/examples/09_pipeline        # Map-Reduce 管线
 ```
 
-25 个示例完整索引见 [examples/README.md](examples/README.md)。
-
 ### 测试
 
 ```bash
-cmake -S . -B build -DTASKFLOWLITE_BUILD_TESTS=ON
+cmake -S . -B build -DTFL_BUILD_TESTS=ON
 cmake --build build --config Release
 
 # 全部
 ./build/bin/TaskflowLiteTest
-
-# 按标签
-./build/bin/TaskflowLiteTest "[flow]"
-./build/bin/TaskflowLiteTest "[queue]"
 
 # 单文件（按需构建）
 cmake --build build --target tfl_test_queue
 ./build/bin/tfl_test_queue
 ```
 
+> 测试依赖 Catch2 v3 amalgamated：`test/` 下已有则直接使用（离线、可复现）；
+> 没有时，在开启 `-DTFL_BUILD_TESTS=ON` 后自动下载（地址复用上面的 `TFL_GITHUB_MIRROR` 镜像）。
+> `TFL_BUILD_TESTS` 默认 OFF，需显式开启才会构建测试并触发下载。
+
 ### 基准
 
 ```bash
-cmake -S . -B build -DTASKFLOWLITE_BUILD_BENCHMARKS=ON
+cmake -S . -B build -DTFL_BUILD_BENCHMARKS=ON
 cmake --build build --config Release
 
 ./build/bin/bench_taskflowlite

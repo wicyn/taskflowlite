@@ -1,0 +1,20 @@
+# Build directories
+build/
+cmake-build-*/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# D2 output
+*.svg
+*.png
+!documentation/img/*.svg
+!documentation/img/*.png

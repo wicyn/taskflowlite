@@ -7,11 +7,11 @@
 /// @copyright Copyright (c) 2026 wicyn
 #pragma once
 
-#include <cstdint>
 #include <compare>
-#include <string>
-#include <ostream>
+#include <cstdint>
 #include <format>
+#include <ostream>
+#include <string>
 
 #include "core/work_factory.hpp"
 #include "core/runtime.hpp"
@@ -69,10 +69,8 @@ struct Version {
 /**
  * @brief 框架全局版本实例，编译期常量，ODR 安全。
  */
-inline constexpr Version version(
-    TASKFLOWLITE_VERSION_MAJOR,
-    TASKFLOWLITE_VERSION_MINOR,
-    TASKFLOWLITE_VERSION_PATCH
-    );
+inline constexpr Version version(TASKFLOWLITE_VERSION_MAJOR,
+                                 TASKFLOWLITE_VERSION_MINOR,
+                                 TASKFLOWLITE_VERSION_PATCH);
 
-} // namespace tfl
+}  // namespace tfl

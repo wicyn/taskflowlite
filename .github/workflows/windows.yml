@@ -1,0 +1,40 @@
+name: Windows
+
+on: [push, pull_request]
+
+jobs:
+
+  # Debug + ASan
+  debug-asan:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Configure
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=ASAN
+    - name: Build
+      run: cmake --build build --config Debug --parallel 4
+    - name: Copy ASan DLLs
+      shell: pwsh
+      run: |
+        $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+        $msvcVer = (Get-ChildItem "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).Name
+        $asanDir = "$vsPath\VC\Tools\MSVC\$msvcVer\bin\Hostx64\x64"
+        Copy-Item "$asanDir\clang_rt.asan*.dll" -Destination build\bin\Debug -Force
+    - name: Test
+      working-directory: build
+      # 单文件目标(tfl_test_*)默认 EXCLUDE_FROM_ALL，未被构建；用 -LE perfile 跳过它们，
+      # 只跑单体 TaskflowLiteTest(已覆盖全部用例)。
+      run: ctest -C Debug --output-on-failure -LE perfile
+
+  # Release
+  release:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Configure
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON
+    - name: Build
+      run: cmake --build build --config Release --parallel 4
+    - name: Test
+      working-directory: build
+      run: ctest -C Release --output-on-failure -LE perfile

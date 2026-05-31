@@ -268,7 +268,7 @@ protected:
         , m_gh_store{std::forward<U>(gh)} {}
 
     void dump(std::ostream& os) const override final {
-        const auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
+        const auto& graph = detail::to_graph(detail::borrow(m_gh_store));
         D2Renderer::render_graph(os, this, to_string(m_type), graph);
     }
 };
@@ -332,9 +332,9 @@ public:
             } else {
                 std::apply([this](auto&&... a) {
                     if constexpr (basic_invocable_plain<F, decltype(a)...>) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))...);
                     } else {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., _stop_token());
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., _stop_token());
                     }
                 }, m_args);
             }
@@ -396,9 +396,9 @@ public:
             } else {
                 std::apply([this, &branch](auto&&... a) {
                     if constexpr (branch_invocable_plain<F, decltype(a)...>) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., branch);
                     } else {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch, _stop_token());
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., branch, _stop_token());
                     }
                 }, m_args);
             }
@@ -459,9 +459,9 @@ public:
             } else {
                 std::apply([this, &branch](auto&&... a) {
                     if constexpr (multi_branch_invocable_plain<F, decltype(a)...>) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch);
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., branch);
                     } else {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., branch, _stop_token());
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., branch, _stop_token());
                     }
                 }, m_args);
             }
@@ -522,9 +522,9 @@ public:
             } else {
                 std::apply([this, &jmp](auto&&... a) {
                     if constexpr (jump_invocable_plain<F, decltype(a)...>) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., jmp);
                     } else {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp, _stop_token());
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., jmp, _stop_token());
                     }
                 }, m_args);
             }
@@ -585,9 +585,9 @@ public:
             } else {
                 std::apply([this, &jmp](auto&&... a) {
                     if constexpr (multi_jump_invocable_plain<F, decltype(a)...>) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp);
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., jmp);
                     } else {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., jmp, _stop_token());
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., jmp, _stop_token());
                     }
                 }, m_args);
             }
@@ -655,9 +655,9 @@ public:
                 } else {
                     std::apply([this, &rt](auto&&... a) {
                         if constexpr (runtime_invocable_plain<F, decltype(a)...>) {
-                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                            std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., rt);
                         } else {
-                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt, _stop_token());
+                            std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., rt, _stop_token());
                         }
                     }, m_args);
                 }
@@ -716,7 +716,7 @@ public:
         , m_pred{std::forward<V>(pred)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
+        auto& graph = detail::to_graph(detail::borrow(m_gh_store));
 
         // ── 首次进入：准入检查 + 子图初始化 ──────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -792,7 +792,7 @@ public:
                 std::invoke(m_func);
             } else {
                 std::apply([this](auto&&... a) {
-                    std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                    std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))...);
                 }, m_args);
             }
         } catch (...) {
@@ -835,7 +835,7 @@ public:
                     std::invoke(m_func, rt);
                 } else {
                     std::apply([this, &rt](auto&&... a) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., rt);
                     }, m_args);
                 }
             } catch (...) {
@@ -886,7 +886,7 @@ public:
         , m_callback{std::forward<W>(cb)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
+        auto& graph = detail::to_graph(detail::borrow(m_gh_store));
 
         // ── 首次进入：准入检查 + 子图初始化 ──────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -946,9 +946,9 @@ public:
                 } else {
                     std::apply([this](auto&&... a) {
                         if constexpr (basic_invocable_plain<F, decltype(a)...>) {
-                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                            std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))...);
                         } else {
-                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., _stop_token());
+                            std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., _stop_token());
                         }
                     }, m_args);
                 }
@@ -963,9 +963,9 @@ public:
                 } else {
                     m_promise.set_value(std::apply([this](auto&&... a) {
                         if constexpr (basic_invocable_plain<F, decltype(a)...>) {
-                            return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                            return std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))...);
                         } else {
-                            return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., _stop_token());
+                            return std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., _stop_token());
                         }
                     }, m_args));
                 }
@@ -1025,9 +1025,9 @@ public:
                     } else {
                         std::apply([this, &rt](auto&&... a) {
                             if constexpr (runtime_invocable_plain<F, decltype(a)...>) {
-                                std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                                std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., rt);
                             } else {
-                                std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt, _stop_token());
+                                std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., rt, _stop_token());
                             }
                         }, m_args);
                     }
@@ -1041,9 +1041,9 @@ public:
                     } else {
                         m_result.emplace(std::apply([this, &rt](auto&&... a) {
                             if constexpr (runtime_invocable_plain<F, decltype(a)...>) {
-                                return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                                return std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., rt);
                             } else {
-                                return std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt, _stop_token());
+                                return std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., rt, _stop_token());
                             }
                         }, m_args));
                     }
@@ -1115,7 +1115,7 @@ public:
         , m_promise{std::move(p)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
+        auto& graph = detail::to_graph(detail::borrow(m_gh_store));
 
         // ── 首次进入：准入检查 + 子图初始化 ─────────────────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -1186,9 +1186,9 @@ public:
             } else {
                 std::apply([this](auto&&... a) {
                     if constexpr (basic_invocable_plain<F, decltype(a)...>) {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))...);
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))...);
                     } else {
-                        std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., _stop_token());
+                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., _stop_token());
                     }
                 }, m_args);
             }
@@ -1257,9 +1257,9 @@ public:
                 } else {
                     std::apply([this, &rt](auto&&... a) {
                         if constexpr (runtime_invocable_plain<F, decltype(a)...>) {
-                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt);
+                            std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., rt);
                         } else {
-                            std::invoke(m_func, detail::unwrap(std::forward<decltype(a)>(a))..., rt, _stop_token());
+                            std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., rt, _stop_token());
                         }
                     }, m_args);
                 }
@@ -1324,7 +1324,7 @@ public:
         , m_callback{std::forward<W>(cb)} {}
 
     void invoke(Executor& exe, Worker& wr, Work*& cache) override final {
-        auto& graph = detail::to_graph(detail::unwrap(m_gh_store));
+        auto& graph = detail::to_graph(detail::borrow(m_gh_store));
 
         // ── 首次进入：准入检查 + 子图初始化 ──────────────────
         if ((m_implicit & Work::Implicit::PREEMPTED) == 0) {
@@ -1394,7 +1394,7 @@ public:
 template <typename Gh>
     requires graph_holder<Gh>
 inline void Runtime::cowait(Gh& gh) {
-    auto& graph = detail::to_graph(detail::unwrap(gh));
+    auto& graph = detail::to_graph(gh);
     if (graph.empty()) {
         return;
     }

@@ -1,4 +1,4 @@
-/// @file  async_task.hpp
+﻿/// @file  async_task.hpp
 /// @brief 异步任务句柄 AsyncTask —— 动态 Work 节点的引用计数式值类型包装。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -58,7 +58,7 @@ public:
     /// @param task  可调用对象。
     /// @param args  任务参数。
     template <typename T, typename... Args>
-        requires (capturable<T, Args...> && basic_invocable<T, Args...>)
+        requires (!any_async_task<std::remove_cvref_t<T>> && capturable<T, Args...> && basic_invocable<T, Args...>)
     explicit AsyncTask(T&& task, Args&&... args);
 
     /// @brief 用运行时可调用对象构造异步任务（可通过 Runtime 动态操纵图结构）。
@@ -68,7 +68,7 @@ public:
     /// @param task  可调用对象（签名为 void(Runtime&, Args...) 或其返回版）。
     /// @param args  任务参数。
     template <typename T, typename... Args>
-        requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
+        requires (!any_async_task<std::remove_cvref_t<T>> && capturable<T, Args...> && runtime_invocable<T, Args...>)
     explicit AsyncTask(T&& task, Args&&... args);
 
     /// @brief 用任务图构造，执行一次。
@@ -518,7 +518,7 @@ inline AsyncTask<Mode>::AsyncTask(Work* w) noexcept : m_work{w} {
 
 template <typename Mode>
 template <typename T, typename... Args>
-    requires (capturable<T, Args...> && basic_invocable<T, Args...>)
+    requires (!any_async_task<std::remove_cvref_t<T>> && capturable<T, Args...> && basic_invocable<T, Args...>)
 inline AsyncTask<Mode>::AsyncTask(T&& task, Args&&... args)
     : AsyncTask{make_attached_basic<anchor::none_t>(
           /*executor=*/ nullptr,
@@ -528,7 +528,7 @@ inline AsyncTask<Mode>::AsyncTask(T&& task, Args&&... args)
 
 template <typename Mode>
 template <typename T, typename... Args>
-    requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
+    requires (!any_async_task<std::remove_cvref_t<T>> && capturable<T, Args...> && runtime_invocable<T, Args...>)
 inline AsyncTask<Mode>::AsyncTask(T&& task, Args&&... args)
     : AsyncTask{make_attached_runtime<anchor::none_t>(
           /*executor=*/ nullptr,
@@ -562,7 +562,10 @@ template <typename Gh, typename C>
 inline AsyncTask<Mode>::AsyncTask(Gh&& gh, std::uint64_t num, C&& cb)
     : AsyncTask{std::forward<Gh>(gh),
                 [num, remaining = num]() mutable noexcept -> bool {
-                    if constexpr (std::same_as<Mode, task_mode::repeat_t>) {
+                    if constexpr (std::same_as<Mode, task_mode::nonrepeat_t>) {
+                        // nonrepeat_t: 单次递减，归零时停止
+                        return num-- == 0;
+                    } else if constexpr (std::same_as<Mode, task_mode::repeat_t>) {
                         // repeat_t: 每轮重置 remaining，循环复用
                         if (remaining-- == 0) [[unlikely]] {
                             remaining = num;
@@ -570,8 +573,7 @@ inline AsyncTask<Mode>::AsyncTask(Gh&& gh, std::uint64_t num, C&& cb)
                         }
                         return false;
                     } else {
-                        // nonrepeat_t: 单次递减，归零时停止
-                        return num-- == 0;
+                        static_assert(sizeof(Mode) == 0, "Unhandled task mode.");
                     }
                 },
                 std::forward<C>(cb)} {}
@@ -724,6 +726,9 @@ inline std::string AsyncTask<Mode>::dump(Direction dir) const {
 
 template <typename Mode>
 inline void AsyncTask<Mode>::dump(std::ostream& os, Direction dir) const {
+    if (!m_work) {
+        return;
+    }
     os << "direction: " << to_string(dir) << "\n\n";
     m_work->dump(os);
     os << "\n";
@@ -1080,7 +1085,7 @@ inline auto Executor::submit(T&& task, I first, S last)
         }
     } else {
         // 未来添加新 Mode 时的编译期提示
-        static_assert(sizeof(T) == 0, "Unhandled task mode");
+        static_assert(sizeof(T) == 0, "Unhandled task mode.");
     }
 
     // 公共段：每次 submit 都要重写 parent / implicit / explicit / executor
@@ -1154,7 +1159,7 @@ inline auto Runtime::submit(T&& task, I first, S last)
         }
     } else {
         // 未来添加新 Mode 时的编译期提示
-        static_assert(sizeof(T) == 0, "Unhandled task mode");
+        static_assert(sizeof(T) == 0, "Unhandled task mode.");
     }
 
     // 公共段：Runtime::submit 每次都要重写 parent / implicit / explicit / executor

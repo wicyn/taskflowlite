@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 #  TaskflowLite Examples
 # ============================================================================
 #
@@ -43,7 +43,7 @@ file(GLOB TFL_EXAMPLE_SOURCES
 list(SORT TFL_EXAMPLE_SOURCES)
 
 if(NOT TFL_EXAMPLE_SOURCES)
-    message(FATAL_ERROR "未找到任何 *.cpp 示例于 ${CMAKE_CURRENT_SOURCE_DIR}/")
+    message(FATAL_ERROR "[examples] 未找到任何 *.cpp 示例于 ${CMAKE_CURRENT_SOURCE_DIR}/")
 endif()
 
 # ----------------------------------------------------------------------------
@@ -131,14 +131,20 @@ endif()
 #  状态摘要
 # ----------------------------------------------------------------------------
 list(LENGTH TFL_EXAMPLE_SOURCES _n)
-message(STATUS "================ TaskflowLite Examples ================")
-message(STATUS "  示例源文件数    : ${_n} (自动发现 *.cpp)")
-message(STATUS "  目标命名        : tfl_ex_<name> (输出名保留原名)")
-message(STATUS "  纳入默认构建    : NOT ${TFL_EXAMPLES_EXCLUDE_FROM_ALL}")
-if(TFL_EXAMPLES_RUN_TARGETS)
-    message(STATUS "  逐例 run 目标   : run_example_<name> (已生成)")
+if(TFL_EXAMPLES_EXCLUDE_FROM_ALL)
+    set(_ex_in_all "否 (EXCLUDE_FROM_ALL)")
 else()
-    message(STATUS "  逐例 run 目标   : 关闭 (-DTFL_EXAMPLES_RUN_TARGETS=ON 开启)")
+    set(_ex_in_all "是")
 endif()
-message(STATUS "  可执行输出      : ${CMAKE_BINARY_DIR}/bin/examples/")
-message(STATUS "=======================================================")
+if(TFL_EXAMPLES_RUN_TARGETS)
+    set(_ex_run "run_example_<name> (已生成)")
+else()
+    set(_ex_run "关闭 (-DTFL_EXAMPLES_RUN_TARGETS=ON 开启)")
+endif()
+message(STATUS "── TaskflowLite Examples ──────────────────────")
+message(STATUS "  源文件        : ${_n} 个 (自动发现 *.cpp)")
+message(STATUS "  目标命名      : tfl_ex_<name> (输出名保留原名)")
+message(STATUS "  纳入默认构建  : ${_ex_in_all}")
+message(STATUS "  逐例 run 目标 : ${_ex_run}")
+message(STATUS "  可执行输出    : ${CMAKE_BINARY_DIR}/bin/examples/")
+message(STATUS "───────────────────────────────────────────────")

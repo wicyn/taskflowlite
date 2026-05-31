@@ -1,8 +1,9 @@
 # TaskflowLite
 
-[![Ubuntu](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml)
-[![macOS](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml)
-[![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
+[![CI](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
+[![Linux](https://img.shields.io/badge/Linux-passing-success?logo=linux&logoColor=white)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
+[![macOS](https://img.shields.io/badge/macOS-passing-success?logo=apple&logoColor=white)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
+[![Windows](https://img.shields.io/badge/Windows-passing-success?logo=windows&logoColor=white)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?logo=cplusplus)](https://en.cppreference.com/w/cpp/23)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Header Only](https://img.shields.io/badge/Header--Only-Yes-success)](#)
@@ -402,14 +403,29 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --parallel
 
 # With tests
-cmake -S . -B build -DTASKFLOWLITE_BUILD_TESTS=ON
+cmake -S . -B build -DTFL_BUILD_TESTS=ON
 cmake --build build
 ctest --test-dir build -C Release --output-on-failure
 
 # Sanitizer
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTASKFLOWLITE_SANITIZER=ASAN
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTASKFLOWLITE_SANITIZER=TSAN
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_SANITIZER=ASAN
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_SANITIZER=TSAN
 ```
+
+### Network / Mirror (for restricted regions)
+
+Enabling tests or benchmarks may fetch dependencies from GitHub (Catch2 for tests,
+Taskflow for benchmarks). If direct GitHub access is unreliable, switch the mirror
+at configure time (default is `direct`):
+
+```bash
+# choices: direct / ghfast.top / gh-proxy.com / ghproxy.net
+cmake -S . -B build -DTFL_BUILD_TESTS=ON -DTFL_GITHUB_MIRROR=ghfast.top
+```
+
+Advanced (under cmake-gui "Advanced"): `TFL_GITHUB_PREFIX` (custom prefix overriding
+the mirror), `TFL_GIT_PROXY` (route git through a local HTTP(S) proxy, e.g.
+`http://127.0.0.1:7890`).
 
 ### As a Dependency
 
@@ -421,7 +437,8 @@ target_link_libraries(your_app PRIVATE TaskflowLite::taskflowlite)
 # FetchContent
 include(FetchContent)
 FetchContent_Declare(taskflowlite
-    GIT_REPOSITORY https://github.com/wicyn/taskflowlite.git GIT_TAG main)
+    GIT_REPOSITORY https://github.com/wicyn/taskflowlite.git
+    GIT_TAG v1.2.0)   # pin a release tag rather than main for reproducibility
 FetchContent_MakeAvailable(taskflowlite)
 target_link_libraries(your_app PRIVATE TaskflowLite::taskflowlite)
 ```
@@ -504,7 +521,7 @@ TaskflowLite vs Taskflow — **same hardware, threads, topology, and total itera
 ### Examples
 
 ```bash
-cmake -S . -B build -DTASKFLOWLITE_BUILD_EXAMPLES=ON
+cmake -S . -B build -DTFL_BUILD_EXAMPLES=ON
 cmake --build build --config Release
 
 ./build/bin/examples/01_basic_dag       # Basic DAG
@@ -512,30 +529,29 @@ cmake --build build --config Release
 ./build/bin/examples/09_pipeline        # Map-Reduce pipeline
 ```
 
-Full index: [examples/README.md](examples/README.md) (Chinese).
-
 ### Tests
 
 ```bash
-cmake -S . -B build -DTASKFLOWLITE_BUILD_TESTS=ON
+cmake -S . -B build -DTFL_BUILD_TESTS=ON
 cmake --build build --config Release
 
 # All tests
 ./build/bin/TaskflowLiteTest
-
-# Filter by tag
-./build/bin/TaskflowLiteTest "[flow]"
-./build/bin/TaskflowLiteTest "[queue]"
 
 # Single file (build on demand)
 cmake --build build --target tfl_test_queue
 ./build/bin/tfl_test_queue
 ```
 
+> Tests depend on Catch2 v3 amalgamated: used directly if present under `test/`
+> (offline, reproducible); otherwise auto-downloaded once `-DTFL_BUILD_TESTS=ON`
+> is set (download reuses the `TFL_GITHUB_MIRROR` mirror above). `TFL_BUILD_TESTS`
+> defaults to OFF — tests are built (and the download triggered) only when enabled.
+
 ### Benchmarks
 
 ```bash
-cmake -S . -B build -DTASKFLOWLITE_BUILD_BENCHMARKS=ON
+cmake -S . -B build -DTFL_BUILD_BENCHMARKS=ON
 cmake --build build --config Release
 
 ./build/bin/bench_taskflowlite

@@ -47,9 +47,15 @@ public:
     //  std::future 接口转发
     // ========================================================================
 
-    /// @brief 阻塞等待结果并从 std::future 移动取出；仅可调用一次，调用后 valid() 返回 false。
+    /// @brief 阻塞等待结果并移动取出；仅可调用一次，调用后 valid() 返回 false。
+    ///        重复调用（或对 move-from / 已 share 的 Future 调用）抛 std::future_error。
     /// @return callable 的返回值 R（移动语义）。
-    R get() { return m_future.get(); }
+    R get() {
+        if (!m_future.valid()) {
+            throw std::future_error(std::future_errc::no_state);
+        }
+        return m_future.get();
+    }
 
     /// @brief 是否持有有效的共享状态，move-from 或已 get() 后返回 false。
     [[nodiscard]] bool valid() const noexcept { return m_future.valid(); }

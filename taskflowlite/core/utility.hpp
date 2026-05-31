@@ -1,4 +1,4 @@
-/// @file  utility.hpp
+﻿/// @file  utility.hpp
 /// @brief 框架基础工具集 —— CRTP 策略基类、安全类型转换、源码位置包装、向量映射等。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -70,27 +70,32 @@ inline constexpr std::size_t cache_line_size = 64;
 inline constexpr unsigned char_bits = std::numeric_limits<unsigned char>::digits;
 
 // ============================================================================
-//  ChunkLink —— 在已析构内存上 store/load 链接指针
+//  ChunkLink —— 在已析构内存上原子地 store/load 链接指针
 // ============================================================================
-
 /// @brief chunk-as-link 工具：在 chunk 的前 sizeof(void*) 字节做指针存取。
 ///
 /// 安全前提：
-///   1. chunk 处于"storage available, no object"状态（dtor 已返回 / 未构造）
+///   1. chunk 处于 "storage available, no object" 状态（dtor 已返回 / 未构造）
 ///   2. chunk 起始按 alignof(void*) 对齐 —— operator new 默认满足
 ///   3. chunk 容量 >= sizeof(void*) —— 由 size class policy 的最小档保证
 ///
-/// 用 memcpy 而不是 reinterpret_cast：避开 strict aliasing 顾虑，-O2 下
-/// 编译为单条 mov，零开销。
+/// 为什么用 std::atomic_ref 而非 memcpy：
+///   FreeStack(Treiber 栈) 的 pop() 会在 CAS 成功前"投机"读取节点的 link 字段，
+///   此时该节点可能已被另一线程 pop 走并交给用户写入——非原子 memcpy 读 + 用户写
+///   构成数据竞争(UB), TSan 报 race。改用 atomic_ref relaxed 后, 该读成为
+///   well-defined 的原子读: 投机读到的值仍会被随后失败的 CAS 丢弃, 语义不变,
+///   但不再是数据竞争。relaxed 足够: 节点间的可见性由 m_head 的 acq/rel 建立。
 struct ChunkLink {
     TFL_FORCE_INLINE static void store(void* chunk, void* next) noexcept {
-        std::memcpy(chunk, &next, sizeof(void*));
+        std::atomic_ref<void*> link{*static_cast<void**>(chunk)};
+        link.store(next, std::memory_order_relaxed);
     }
 
     [[nodiscard]] TFL_FORCE_INLINE static void* load(const void* chunk) noexcept {
-        void* next;
-        std::memcpy(&next, chunk, sizeof(void*));
-        return next;
+        // chunk 内容此刻是裸 storage，对其首 void* 做原子读
+        std::atomic_ref<void*> link{
+                                     *static_cast<void**>(const_cast<void*>(chunk))};
+        return link.load(std::memory_order_relaxed);
     }
 };
 

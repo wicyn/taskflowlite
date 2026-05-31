@@ -1,4 +1,4 @@
-/// @file test_concepts.cpp
+﻿/// @file test_concepts.cpp
 /// @brief Compile-time concept verification — accept models, reject non-models.
 ///
 /// All callable types are named structs (not inline lambdas) to avoid relying on
@@ -20,7 +20,7 @@
 ///   sem_count_sequence<Ts...>   ✓
 ///   anchor_tag<T>               ✓
 ///   detail::is_reference_wrapper ✓
-///   detail::wrap / unwrap       ✓
+///   detail::capture / borrow       ✓
 ///   pack CTAD                   ✓
 
 #include "test_common.hpp"
@@ -311,36 +311,38 @@ TEST_CASE("Concepts: detail::is_reference_wrapper_after_decay_v", "[concepts][de
 }
 
 // ============================================================================
-// SECTION 15: detail::wrap / unwrap runtime functions
+// SECTION 15: detail::capture / borrow runtime functions
 // ============================================================================
 
-/// @test [concepts][detail] detail::wrap 与 detail::unwrap
-TEST_CASE("Concepts: detail::wrap/unwrap runtime", "[concepts][detail]") {
+/// @test [concepts][detail] detail::capture 与 detail::borrow
+TEST_CASE("Concepts: detail::capture/borrow runtime", "[concepts][detail]") {
     SECTION("wrap lvalue produces reference_wrapper") {
         int x = 42;
-        auto w = tfl::detail::wrap(x);
+        auto w = tfl::detail::capture(x);
         STATIC_REQUIRE(std::same_as<decltype(w), std::reference_wrapper<int>>);
         REQUIRE(w.get() == 42);
     }
 
     SECTION("wrap rvalue forwards as-is") {
-        auto w = tfl::detail::wrap(42);
+        auto w = tfl::detail::capture(42);
         STATIC_REQUIRE(std::same_as<decltype(w), int>);
         REQUIRE(w == 42);
     }
 
-    SECTION("unwrap reference_wrapper returns reference") {
+    SECTION("borrow reference_wrapper returns reference") {
         int x = 100;
         auto ref = std::ref(x);
-        decltype(auto) u = tfl::detail::unwrap(ref);
+        decltype(auto) u = tfl::detail::borrow(ref);
         STATIC_REQUIRE(std::same_as<decltype(u), int&>);
         REQUIRE(u == 100);
     }
 
-    SECTION("unwrap non-wrapper forwards as-is") {
-        decltype(auto) u = tfl::detail::unwrap(42);
-        STATIC_REQUIRE(std::same_as<decltype(u), int&&>);
-        REQUIRE(u == 42);
+    SECTION("borrow rvalue forwards as lvalue reference") {
+        // borrow(右值) 返回 int&，该引用绑定到调用处的临时量；
+        // 不能存进具名引用后跨语句使用（临时量已析构 → use-after-scope）。
+        // 故仅做类型检查；值检查在同一完整表达式内完成，不留悬垂引用。
+        STATIC_REQUIRE(std::same_as<decltype(tfl::detail::borrow(42)), int&>);
+        REQUIRE(tfl::detail::borrow(42) == 42);   // 同一表达式内读取，临时量此刻仍存活
     }
 }
 
@@ -384,5 +386,5 @@ TEST_CASE("Concepts: pack CTAD deduction", "[concepts][pack]") {
 //   sem_count_sequence    ✓ "Concepts: sem_count_sequence<Ts...>"
 //   anchor_tag            ✓ "Concepts: anchor_tag<T>"
 //   detail::is_reference_wrapper ✓ "Concepts: detail::is_reference_wrapper_v"
-//   detail::wrap/unwrap    ✓ "Concepts: detail::wrap/unwrap runtime"
+//   detail::capture/borrow    ✓ "Concepts: detail::capture/borrow runtime"
 //   pack CTAD              ✓ "Concepts: pack CTAD deduction"

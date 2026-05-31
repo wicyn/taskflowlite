@@ -696,6 +696,9 @@ inline std::string Task::dump(Direction dir) const {
 }
 
 inline void Task::dump(std::ostream& os, Direction dir) const {
+    if (!m_work) {
+        return;
+    }
     os << "direction: " << to_string(dir) << "\n\n";
     m_work->dump(os);
     os << "\n";

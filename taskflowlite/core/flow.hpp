@@ -7,14 +7,16 @@
 /// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
+
 #include <sstream>
 
-#include "traits.hpp"
+#include "d2_render.hpp"
 #include "graph.hpp"
 #include "task.hpp"
+#include "traits.hpp"
 #include "work.hpp"
 #include "work_factory_fwd.hpp"
-#include "d2_render.hpp"
+
 namespace tfl {
 
 /// @brief DAG 构建器 —— 声明式任务图编辑器。
@@ -325,9 +327,9 @@ inline auto Flow::emplace(Packs&&... task_packs) {
             [this]<typename... Args>(Args&&... args) {
                 return this->emplace(std::forward<Args>(args)...);
             },
-            std::forward<Packs>(task_packs).data  // ← 取 .data（decay 后的 tuple）
-            )...
-        );
+            std::forward<Packs>(task_packs).data
+        )...
+    );
 }
 
 // ============================================================================
@@ -425,18 +427,18 @@ inline const Graph& Flow::graph() const noexcept {
     return m_graph;
 }
 
-inline std::ostream& operator << (std::ostream& os, const Flow& task) {
+inline std::ostream& operator<<(std::ostream& os, const Flow& task) {
     task.dump(os);
     return os;
 }
 
-} // namespace tfl
+}  // namespace tfl
 
 namespace std {
 template <>
 struct hash<tfl::Flow> {
-    inline auto operator() (const tfl::Flow& f) const noexcept {
+    inline auto operator()(const tfl::Flow& f) const noexcept {
         return f.hash_value();
     }
 };
-} // namespace std
+}  // namespace std
