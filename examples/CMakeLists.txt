@@ -43,7 +43,7 @@ file(GLOB TFL_EXAMPLE_SOURCES
 list(SORT TFL_EXAMPLE_SOURCES)
 
 if(NOT TFL_EXAMPLE_SOURCES)
-    message(FATAL_ERROR "[examples] 未找到任何 *.cpp 示例于 ${CMAKE_CURRENT_SOURCE_DIR}/")
+    message(FATAL_ERROR "[examples] No *.cpp examples found in ${CMAKE_CURRENT_SOURCE_DIR}/")
 endif()
 
 # ----------------------------------------------------------------------------
@@ -97,7 +97,7 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${TFL_EXAMPLE_SOURCES})
 add_custom_target(run_all_examples
     COMMAND ${CMAKE_COMMAND} -E echo "Running all examples..."
     USES_TERMINAL
-    COMMENT "构建并依次运行所有示例"
+    COMMENT "Build and run all examples in sequence"
 )
 set_target_properties(run_all_examples PROPERTIES FOLDER "Run")
 
@@ -132,19 +132,19 @@ endif()
 # ----------------------------------------------------------------------------
 list(LENGTH TFL_EXAMPLE_SOURCES _n)
 if(TFL_EXAMPLES_EXCLUDE_FROM_ALL)
-    set(_ex_in_all "否 (EXCLUDE_FROM_ALL)")
+    set(_ex_in_all "no (EXCLUDE_FROM_ALL)")
 else()
-    set(_ex_in_all "是")
+    set(_ex_in_all "yes")
 endif()
 if(TFL_EXAMPLES_RUN_TARGETS)
-    set(_ex_run "run_example_<name> (已生成)")
+    set(_ex_run "run_example_<name> (generated)")
 else()
-    set(_ex_run "关闭 (-DTFL_EXAMPLES_RUN_TARGETS=ON 开启)")
+    set(_ex_run "off (-DTFL_EXAMPLES_RUN_TARGETS=ON to enable)")
 endif()
-message(STATUS "── TaskflowLite Examples ──────────────────────")
-message(STATUS "  源文件        : ${_n} 个 (自动发现 *.cpp)")
-message(STATUS "  目标命名      : tfl_ex_<name> (输出名保留原名)")
-message(STATUS "  纳入默认构建  : ${_ex_in_all}")
-message(STATUS "  逐例 run 目标 : ${_ex_run}")
-message(STATUS "  可执行输出    : ${CMAKE_BINARY_DIR}/bin/examples/")
-message(STATUS "───────────────────────────────────────────────")
+message(STATUS "-- TaskflowLite Examples ----------------------")
+message(STATUS "  Sources       : ${_n} (auto-discovered *.cpp)")
+message(STATUS "  Target naming : tfl_ex_<name> (output keeps original name)")
+message(STATUS "  In ALL build  : ${_ex_in_all}")
+message(STATUS "  Per-ex run    : ${_ex_run}")
+message(STATUS "  Output dir    : ${CMAKE_BINARY_DIR}/bin/examples/")
+message(STATUS "-----------------------------------------------")

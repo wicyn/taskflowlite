@@ -19,13 +19,13 @@ find_package(Git REQUIRED)
 # 独立构建 benchmarks(不经过根 CMake)时的兜底默认:
 if(NOT DEFINED TFL_EFFECTIVE_PREFIX)
     set(TFL_GITHUB_MIRROR "direct" CACHE STRING
-        "GitHub 访问方式: direct / ghfast.top / gh-proxy.com / ghproxy.net")
+        "GitHub access: direct / ghfast.top / gh-proxy.com / ghproxy.net")
     set_property(CACHE TFL_GITHUB_MIRROR PROPERTY STRINGS
         direct ghfast.top gh-proxy.com ghproxy.net)
-    set(TFL_GITHUB_PREFIX "" CACHE STRING "自定义 GitHub 前缀(非空时覆盖 TFL_GITHUB_MIRROR)")
+    set(TFL_GITHUB_PREFIX "" CACHE STRING "Custom GitHub prefix (overrides TFL_GITHUB_MIRROR when non-empty)")
     set(TFL_GIT_PROXY     "" CACHE STRING "git HTTP(S) proxy, e.g. http://127.0.0.1:7890")
-    option(TFL_PARTIAL_CLONE "用 --filter=blob:none 部分克隆" ON)
-    option(TFL_UPDATE_DEPS   "重新 configure 时把已克隆依赖更新到分支最新提交" OFF)
+    option(TFL_PARTIAL_CLONE "Partial clone via --filter=blob:none" ON)
+    option(TFL_UPDATE_DEPS   "Update cloned deps to latest on re-configure" OFF)
     if(TFL_GITHUB_PREFIX)
         set(TFL_EFFECTIVE_PREFIX "${TFL_GITHUB_PREFIX}")
     elseif(TFL_GITHUB_MIRROR STREQUAL "direct")
@@ -55,20 +55,25 @@ function(tfl_sparse_clone _name _repo _branch _subdir _outdir)
     # 镜像前缀(已在上面解析): https://ghfast.top/ + https://github.com/...
     set(_url "${TFL_EFFECTIVE_PREFIX}${_repo}")
 
-    if(EXISTS "${_outdir}/.git")
+    # 有效缓存判断：检查关键头文件是否存在，而非仅看目录在不在。
+    # 这样空目录 / 上次中断留下的半截克隆，会因缺 ${_subdir}/taskflow.hpp 被判为无效，
+    # 触发重新克隆；目录非空且头文件齐全才直接复用。
+    # 注：删 .git 后无法再 fetch/reset，TFL_UPDATE_DEPS 刷新改为整目录重克隆。
+    if(EXISTS "${_outdir}/${_subdir}/taskflow.hpp")
         if(TFL_UPDATE_DEPS)
-            message(STATUS "[taskflow] 更新到 ${_branch} 最新提交 ...")
-            execute_process(
-                COMMAND "${GIT_EXECUTABLE}" ${_proxy} ${_speed} -C "${_outdir}" fetch --depth 1 origin "${_branch}")
-            execute_process(
-                COMMAND "${GIT_EXECUTABLE}" -C "${_outdir}" reset --hard FETCH_HEAD)
+            message(STATUS "[${_name}] refresh requested, removing cache to re-clone ...")
+            file(REMOVE_RECURSE "${_outdir}")
         else()
-            message(STATUS "[${_name}] 使用已缓存克隆 (加 -DTFL_UPDATE_DEPS=ON 可刷新)")
+            message(STATUS "[${_name}] using cached checkout (add -DTFL_UPDATE_DEPS=ON to refresh)")
+            return()
         endif()
-        return()
+    elseif(EXISTS "${_outdir}")
+        # 目录在但头文件缺失（空壳 / 半截克隆）→ 清掉，走下面的全新克隆
+        message(STATUS "[${_name}] cached dir incomplete (missing ${_subdir}/taskflow.hpp), re-cloning ...")
+        file(REMOVE_RECURSE "${_outdir}")
     endif()
 
-    message(STATUS "[${_name}] 稀疏克隆 ${_subdir}/ @ ${_branch} → ${_outdir}")
+    message(STATUS "[${_name}] sparse clone ${_subdir}/ @ ${_branch} -> ${_outdir}")
     message(STATUS "[${_name}] URL: ${_url}")
 
     # partial clone 开关: 烂网络/镜像下卡 promisor 时, 配置加 -DTFL_PARTIAL_CLONE=OFF
@@ -84,7 +89,7 @@ function(tfl_sparse_clone _name _repo _branch _subdir _outdir)
 
     # partial clone 失败(常见: 镜像不支持 promisor 协议) → 清残留, 不带 --filter 完整重试一次
     if(NOT _rc EQUAL 0 AND _filter)
-        message(STATUS "[${_name}] partial clone 失败, 清理后改用完整 depth-1 重试 ...")
+        message(STATUS "[${_name}] partial clone failed, retrying with full depth-1 ...")
         file(REMOVE_RECURSE "${_outdir}")
         execute_process(
             COMMAND "${GIT_EXECUTABLE}" ${_proxy} ${_speed} clone --depth 1 --sparse
@@ -95,33 +100,68 @@ function(tfl_sparse_clone _name _repo _branch _subdir _outdir)
     if(NOT _rc EQUAL 0)
         file(REMOVE_RECURSE "${_outdir}")   # 清掉坏的半成品, 下次 configure 干净重试
         message(FATAL_ERROR
-            "[${_name}] git clone 失败 (rc=${_rc}). "
-            "多半是连不上 github: 给 git 设全局代理/镜像, 或用 ${_name}_LOCAL_PATH 指向本地源码.")
+            "[${_name}] git clone failed (rc=${_rc}). "
+            "Likely cannot reach github: set a global git proxy/mirror, or point ${_name}_LOCAL_PATH to a local source tree.")
     endif()
 
+    # --no-cone：仅检出指定子目录，连仓库根目录的散文件(README/LICENSE/CMakeLists 等)
+    # 都不要——cone 模式默认会保留根文件，no-cone 才能做到"只有 ${_subdir}/ 一个目录"。
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" -C "${_outdir}" sparse-checkout set "${_subdir}"
+        COMMAND "${GIT_EXECUTABLE}" -C "${_outdir}" sparse-checkout set --no-cone "${_subdir}"
         RESULT_VARIABLE _rc2)
     if(NOT _rc2 EQUAL 0)
         file(REMOVE_RECURSE "${_outdir}")
-        message(FATAL_ERROR "[${_name}] sparse-checkout set ${_subdir} 失败 (rc=${_rc2})")
+        message(FATAL_ERROR "[${_name}] sparse-checkout set ${_subdir} failed (rc=${_rc2})")
     endif()
+
+    # 仅作 header-only 基线，不需要 git 历史：删掉 .git/ 省体积，并清掉残留的根散文件，
+    # 使 ${_outdir}/ 下最终只剩 ${_subdir}/ 一个目录。
+    file(REMOVE_RECURSE "${_outdir}/.git")
+    file(GLOB _stray LIST_DIRECTORIES true "${_outdir}/*")
+    foreach(_p ${_stray})
+        if(NOT _p STREQUAL "${_outdir}/${_subdir}")
+            file(REMOVE_RECURSE "${_p}")
+        endif()
+    endforeach()
 endfunction()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Taskflow (header-only, 对比基线) —— 只取 taskflow/ 目录, 跟随 master 最新
+# Taskflow (header-only, 对比基线) —— 跟随 master 最新
+# 本地优先（与 test/catch2/ 对称）。注意 include 根：Taskflow 内部用
+# #include <taskflow/taskflow.hpp>，故 include 根目录下必须有一个名为 taskflow/ 的子目录。
+#   ① -DTASKFLOW_LOCAL_PATH=<include根> 显式指定（其下需有 taskflow/taskflow.hpp）
+#   ② benchmarks/taskflow/（本目录约定放置点；该目录本身即 <taskflow/>，include 根是 benchmarks/）
+#   ③ 仓库同级 ../taskflow（其下有 taskflow/taskflow.hpp，include 根是 ../）
+#   ④ 都没有 → 联网稀疏克隆到 build/third_party/taskflow（include 根为该目录）
+# taskflow_SOURCE_DIR 统一表示“include 根”（其直接子目录里有 taskflow/）。
 # ──────────────────────────────────────────────────────────────────────────────
-set(TASKFLOW_LOCAL_PATH "" CACHE PATH "Local path to Taskflow source (备用)")
+set(TASKFLOW_LOCAL_PATH "" CACHE PATH "Local Taskflow include root (must contain taskflow/taskflow.hpp)")
 
-if(NOT TASKFLOW_LOCAL_PATH AND EXISTS "${CMAKE_SOURCE_DIR}/../taskflow/taskflow/taskflow.hpp")
-    set(TASKFLOW_LOCAL_PATH "${CMAKE_SOURCE_DIR}/../taskflow")
+set(taskflow_SOURCE_DIR "")
+set(TFL_TASKFLOW_SOURCE "")
+
+# ① 显式指定：其下须有 taskflow/taskflow.hpp
+if(TASKFLOW_LOCAL_PATH AND EXISTS "${TASKFLOW_LOCAL_PATH}/taskflow/taskflow.hpp")
+    set(taskflow_SOURCE_DIR "${TASKFLOW_LOCAL_PATH}")
+    set(TFL_TASKFLOW_SOURCE "local(-DTASKFLOW_LOCAL_PATH)")
 endif()
 
-if(TASKFLOW_LOCAL_PATH)
-    set(TFL_TASKFLOW_SOURCE "local")
-    message(STATUS "[taskflow] 使用本地源码: ${TASKFLOW_LOCAL_PATH}")
-    set(taskflow_SOURCE_DIR "${TASKFLOW_LOCAL_PATH}")
+# ② benchmarks/taskflow/ —— 该目录本身就是 <taskflow/>，故 include 根为 benchmarks/ (= 本目录)
+if(NOT taskflow_SOURCE_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/taskflow/taskflow.hpp")
+    set(taskflow_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set(TFL_TASKFLOW_SOURCE "local(benchmarks/taskflow/)")
+endif()
+
+# ③ 仓库同级 ../taskflow —— 其下有 taskflow/taskflow.hpp，include 根为 ..
+if(NOT taskflow_SOURCE_DIR AND EXISTS "${CMAKE_SOURCE_DIR}/../taskflow/taskflow/taskflow.hpp")
+    set(taskflow_SOURCE_DIR "${CMAKE_SOURCE_DIR}/../taskflow")
+    set(TFL_TASKFLOW_SOURCE "local(../taskflow)")
+endif()
+
+if(taskflow_SOURCE_DIR)
+    message(STATUS "[taskflow] using local source -> ${taskflow_SOURCE_DIR}/taskflow/")
 else()
+    # ④ 联网稀疏克隆：include 根 = third_party/taskflow，其下 taskflow/ 子目录由 sparse-checkout 取得
     set(TFL_TASKFLOW_SOURCE "cloned(master)")
     set(taskflow_SOURCE_DIR "${CMAKE_BINARY_DIR}/third_party/taskflow")
     tfl_sparse_clone(taskflow
@@ -205,9 +245,9 @@ set_target_properties(run_all_benchmarks PROPERTIES FOLDER "Run")
 # ──────────────────────────────────────────────────────────────────────────────
 # 状态摘要
 # ──────────────────────────────────────────────────────────────────────────────
-message(STATUS "── TaskflowLite Benchmarks ────────────────────")
-message(STATUS "  对比目标      : bench_taskflowlite / bench_taskflow")
-message(STATUS "  Taskflow 来源 : ${TFL_TASKFLOW_SOURCE}")
-message(STATUS "  Taskflow 路径 : ${taskflow_SOURCE_DIR}")
-message(STATUS "  一键运行      : run_all_benchmarks")
-message(STATUS "───────────────────────────────────────────────")
+message(STATUS "-- TaskflowLite Benchmarks --------------------")
+message(STATUS "  Targets       : bench_taskflowlite / bench_taskflow")
+message(STATUS "  Taskflow src  : ${TFL_TASKFLOW_SOURCE}")
+message(STATUS "  Taskflow path : ${taskflow_SOURCE_DIR}")
+message(STATUS "  Run all       : run_all_benchmarks")
+message(STATUS "-----------------------------------------------")
