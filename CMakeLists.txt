@@ -31,7 +31,7 @@ find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
     set(CMAKE_C_COMPILER_LAUNCHER   "${CCACHE_PROGRAM}")
     set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-    message(STATUS "[deps] ccache 已启用")
+    message(STATUS "[deps] ccache enabled")
 endif()
 
 # ==============================================================================
@@ -74,19 +74,19 @@ endif()
 #   direct        = 直连 github.com
 #   ghfast.top 等 = 加速镜像（国内连不上 github 时选；改默认值可永久生效）
 set(TFL_GITHUB_MIRROR "direct" CACHE STRING
-    "【依赖下载】GitHub 访问方式：direct=直连；其余为国内加速镜像，连不上 github 时选")
+    "[deps] GitHub access: direct=connect directly; others are CN mirrors when github is unreachable")
 set_property(CACHE TFL_GITHUB_MIRROR PROPERTY STRINGS
     direct ghfast.top gh-proxy.com ghproxy.net)
 
 # --- 进阶：自定义前缀 / 代理 / 克隆策略（默认收进 Advanced，不常调） ---
 set(TFL_GITHUB_PREFIX "" CACHE STRING
-    "【进阶】自定义 GitHub 前缀，非空时覆盖上面的镜像下拉（拼在 github URL 前）")
+    "[advanced] Custom GitHub prefix; when non-empty overrides the mirror dropdown (prepended to github URL)")
 set(TFL_GIT_PROXY     "" CACHE STRING
-    "【进阶】git 走本地 HTTP(S) 代理，如 http://127.0.0.1:7890")
+    "[advanced] git via local HTTP(S) proxy, e.g. http://127.0.0.1:7890")
 option(TFL_PARTIAL_CLONE
-    "【进阶】用 --filter=blob:none 部分克隆依赖（省流量；镜像卡 promisor 时关掉）" ON)
+    "[advanced] Partial clone via --filter=blob:none (saves bandwidth; turn off if mirror stalls on promisor)" ON)
 option(TFL_UPDATE_DEPS
-    "【进阶】重新 configure 时把已克隆依赖更新到分支最新提交" OFF)
+    "[advanced] On re-configure, update cloned deps to the latest commit on the branch" OFF)
 
 # 解析出最终生效前缀：自定义 PREFIX > 下拉镜像 > 直连
 if(TFL_GITHUB_PREFIX)
@@ -96,10 +96,12 @@ elseif(TFL_GITHUB_MIRROR STREQUAL "direct")
 else()
     set(TFL_EFFECTIVE_PREFIX "https://${TFL_GITHUB_MIRROR}/")
 endif()
-message(STATUS "[deps] GitHub 访问: mirror=${TFL_GITHUB_MIRROR}, prefix='${TFL_EFFECTIVE_PREFIX}', proxy='${TFL_GIT_PROXY}'")
+# Note: the resolved-prefix log is intentionally NOT printed here — at this point
+# the user has not yet confirmed the mirror in cmake-gui. The deps log is emitted
+# later, only when a dependency is actually fetched (test/benchmarks subdirs).
 
 # ==============================================================================
-# 构建选项与依赖
+# Build options & dependencies
 # ==============================================================================
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     set(TFL_IS_TOP_LEVEL ON)
@@ -107,24 +109,41 @@ else()
     set(TFL_IS_TOP_LEVEL OFF)
 endif()
 
+# ------------------------------------------------------------------------------
+# Banner (top-level build only)
+# ------------------------------------------------------------------------------
+if(TFL_IS_TOP_LEVEL)
+    message("***********************************")
+    message("*                                 *")
+    message("*      _____ _____ _              *")
+    message("*     |_   _|  ___| |             *")
+    message("*       | | | |_  | |             *")
+    message("*       | | |  _| | |___          *")
+    message("*       |_| |_|   |_____|         *")
+    message("*                                 *")
+    message("*      TaskflowLite  by wicyn     *")
+    message("*                                 *")
+    message("***********************************")
+endif()
+
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 
 # --- 常用：构建哪些组件 ---
-option(TFL_BUILD_EXAMPLES "【构建】编译 examples 示例" ${TFL_IS_TOP_LEVEL})
-option(TFL_BUILD_BENCHMARKS "【构建】编译 benchmarks 基准（需联网克隆 Taskflow 对比基线）" OFF)
+option(TFL_BUILD_EXAMPLES "[build] Build examples" ${TFL_IS_TOP_LEVEL})
+option(TFL_BUILD_BENCHMARKS "[build] Build benchmarks (clones Taskflow baseline over network)" OFF)
 # 默认 OFF（与 benchmarks 对称的 opt-in 闸门）：
 # tests 子目录在本开关为 ON 时才被加入；其内部"本地缺失则下载 Catch2"的逻辑
 # 也只在那时才会执行。这样默认 configure 不会进入 test、不会触发任何下载，
 # 想跑测试时显式 -DTFL_BUILD_TESTS=ON（CI 已带该参数）。
-option(TFL_BUILD_TESTS "【构建】编译单元测试（开启后本地缺失会下载 Catch2）" OFF)
+option(TFL_BUILD_TESTS "[build] Build unit tests (downloads Catch2 if not present locally)" OFF)
 
 # --- 常用：Sanitizer 三态开关 OFF / ASAN / TSAN (CI 核心) ---
 # Why: ASan 和 TSan 不能同时启用 (运行时互斥)，且各自捕获完全不同类别的 bug，
 #      所以必须独立成 job 才能完整覆盖。
 set(TFL_SANITIZER "OFF" CACHE STRING
-    "【检测】Sanitizer 模式：OFF=关；ASAN=内存错误+UB；TSAN=数据竞争（二者互斥，分别构建）")
+    "[detect] Sanitizer mode: OFF=none; ASAN=memory errors+UB; TSAN=data races (mutually exclusive, build separately)")
 set_property(CACHE TFL_SANITIZER PROPERTY STRINGS OFF ASAN TSAN)
 
 # 向后兼容旧的布尔开关 TASKFLOWLITE_ENABLE_SANITIZER
@@ -348,13 +367,13 @@ install(FILES
 # 打印配置信息
 # ==============================================================================
 if(TFL_IS_TOP_LEVEL)
-    message(STATUS "── TaskflowLite Configuration ─────────────────")
-    message(STATUS "  版本          : ${PROJECT_VERSION}")
-    message(STATUS "  编译器        : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
-    message(STATUS "  C++ 标准      : C++${CMAKE_CXX_STANDARD}")
+    message(STATUS "-- TaskflowLite Configuration -----------------")
+    message(STATUS "  Version       : ${PROJECT_VERSION}")
+    message(STATUS "  Compiler      : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+    message(STATUS "  C++ Standard  : C++${CMAKE_CXX_STANDARD}")
     message(STATUS "  Examples      : ${TFL_BUILD_EXAMPLES}")
     message(STATUS "  Tests         : ${TFL_BUILD_TESTS}")
     message(STATUS "  Benchmarks    : ${TFL_BUILD_BENCHMARKS}")
     message(STATUS "  Sanitizer     : ${TFL_SANITIZER}")
-    message(STATUS "───────────────────────────────────────────────")
+    message(STATUS "-----------------------------------------------")
 endif()

@@ -81,22 +81,35 @@ file(GLOB TFL_TEST_SOURCES
 )
 if(NOT TFL_TEST_SOURCES)
     message(FATAL_ERROR
-        "[tests] 未找到任何 test_*.cpp 文件于 ${CMAKE_CURRENT_SOURCE_DIR}/")
+        "[tests] No test_*.cpp files found in ${CMAKE_CURRENT_SOURCE_DIR}/")
 endif()
 
 # ============================================================================
 #  Catch2 amalgamated 来源决议：本地优先，缺失则自动下载（复用根镜像前缀）
+#  本地搜索顺序：① test/catch2/ 子目录  ② test/ 根目录  ③ 都没有 → 下载
 # ============================================================================
-set(_local_src "${CMAKE_CURRENT_SOURCE_DIR}/catch_amalgamated.cpp")
-set(_local_hdr "${CMAKE_CURRENT_SOURCE_DIR}/catch_amalgamated.hpp")
-
-if(EXISTS "${_local_src}" AND EXISTS "${_local_hdr}")
-    # ---- 本地存在：直接用 ----
+set(_local_found OFF)
+# ① 优先：test/catch2/ 子目录
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/catch2/catch_amalgamated.cpp"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/catch2/catch_amalgamated.hpp")
+    set(TFL_CATCH2_SOURCE "local(catch2/)")
+    set(CATCH2_SRC     "${CMAKE_CURRENT_SOURCE_DIR}/catch2/catch_amalgamated.cpp")
+    set(CATCH2_INC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/catch2")
+    set(_local_found ON)
+# ② 其次：test/ 根目录
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/catch_amalgamated.cpp"
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/catch_amalgamated.hpp")
     set(TFL_CATCH2_SOURCE "local")
-    set(CATCH2_SRC     "${_local_src}")
+    set(CATCH2_SRC     "${CMAKE_CURRENT_SOURCE_DIR}/catch_amalgamated.cpp")
     set(CATCH2_INC_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set(_local_found ON)
+endif()
+
+if(_local_found)
+    # ---- 本地存在：直接用 ----
+    message(STATUS "[catch2] using local source (${TFL_CATCH2_SOURCE}) -> ${CATCH2_INC_DIR}")
 else()
-    # ---- 本地缺失：自动下载，复用根 CMake 已选的镜像前缀 ----
+    # ---- ③ 本地缺失：自动下载，复用根 CMake 已选的镜像前缀 ----
     set(TFL_CATCH2_SOURCE "downloaded(${TFL_CATCH2_REF})")
     set(_dl_dir "${CMAKE_BINARY_DIR}/third_party/catch2")
     file(MAKE_DIRECTORY "${_dl_dir}")
@@ -104,11 +117,11 @@ else()
     set(_raw "https://raw.githubusercontent.com/catchorg/Catch2/${TFL_CATCH2_REF}/extras")
     set(_base "${TFL_EFFECTIVE_PREFIX}${_raw}")
 
-    message(STATUS "[catch2] 本地缺失，自动下载 amalgamated (ref=${TFL_CATCH2_REF}, prefix='${TFL_EFFECTIVE_PREFIX}')")
+    message(STATUS "[catch2] not found locally, downloading amalgamated (ref=${TFL_CATCH2_REF}, prefix='${TFL_EFFECTIVE_PREFIX}')")
 
     foreach(_f catch_amalgamated.cpp catch_amalgamated.hpp)
         if(NOT EXISTS "${_dl_dir}/${_f}")
-            message(STATUS "[catch2] 下载 ${_f} ...")
+            message(STATUS "[catch2] downloading ${_f} ...")
             file(DOWNLOAD
                 "${_base}/${_f}"
                 "${_dl_dir}/${_f}"
@@ -121,18 +134,18 @@ else()
                 list(GET _dl_status 1 _dl_msg)
                 file(REMOVE "${_dl_dir}/${_f}")
                 message(FATAL_ERROR
-                    "[catch2] 下载失败: ${_f}\n"
-                    "  URL : ${_base}/${_f}\n"
-                    "  错误: ${_dl_msg}\n"
-                    "  解决: 换个 TFL_GITHUB_MIRROR 重试，或手动把 "
-                    "catch_amalgamated.cpp/.hpp 放到 ${CMAKE_CURRENT_SOURCE_DIR}/")
+                    "[catch2] download failed: ${_f}\n"
+                    "  URL   : ${_base}/${_f}\n"
+                    "  error : ${_dl_msg}\n"
+                    "  fix   : try another TFL_GITHUB_MIRROR, or manually place "
+                    "catch_amalgamated.cpp/.hpp into ${CMAKE_CURRENT_SOURCE_DIR}/catch2/")
             endif()
         endif()
     endforeach()
 
     set(CATCH2_SRC     "${_dl_dir}/catch_amalgamated.cpp")
     set(CATCH2_INC_DIR "${_dl_dir}")
-    message(STATUS "[catch2] 就绪 → ${_dl_dir}")
+    message(STATUS "[catch2] ready -> ${_dl_dir}")
 endif()
 
 # ============================================================================
@@ -175,7 +188,7 @@ function(tfl_setup_test_target _tgt)
         endif()
     else()
         message(STATUS
-            "[tests] TaskflowLite::taskflowlite 不可用，${_tgt} 回退到 include 路径模式")
+            "[tests] TaskflowLite::taskflowlite unavailable, ${_tgt} falls back to include-path mode")
         target_include_directories(${_tgt}
             PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
         target_link_libraries(${_tgt} PRIVATE Threads::Threads)
@@ -292,7 +305,7 @@ add_custom_target(run_all_tests
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DEPENDS TaskflowLiteTest
     USES_TERMINAL
-    COMMENT "运行所有 TaskflowLite 单元测试..."
+    COMMENT "Running all TaskflowLite unit tests..."
 )
 set_target_properties(run_all_tests PROPERTIES FOLDER "Run")
 
@@ -317,14 +330,14 @@ endif()
 #  状态摘要
 # ============================================================================
 list(LENGTH TFL_TEST_SOURCES _nfiles)
-message(STATUS "── TaskflowLite Tests ─────────────────────────")
-message(STATUS "  源文件        : ${_nfiles} 个 (test_*.cpp)")
-message(STATUS "  Catch2 来源   : ${TFL_CATCH2_SOURCE}")
-message(STATUS "  单体二进制    : TaskflowLiteTest")
-message(STATUS "  单文件目标    : ${_nfiles} 个 (tfl_test_*, 默认构建=${TFL_TEST_PER_FILE_DEFAULT})")
-message(STATUS "  C++ 标准      : C++${CMAKE_CXX_STANDARD}")
+message(STATUS "-- TaskflowLite Tests -------------------------")
+message(STATUS "  Sources       : ${_nfiles} (test_*.cpp)")
+message(STATUS "  Catch2 source : ${TFL_CATCH2_SOURCE}")
+message(STATUS "  Monolithic    : TaskflowLiteTest")
+message(STATUS "  Per-file      : ${_nfiles} (tfl_test_*, in ALL=${TFL_TEST_PER_FILE_DEFAULT})")
+message(STATUS "  C++ Standard  : C++${CMAKE_CXX_STANDARD}")
 if(NOT MSVC)
     message(STATUS "  ASan / TSan   : ${TFL_TEST_ENABLE_ASAN} / ${TFL_TEST_ENABLE_TSAN}")
 endif()
-message(STATUS "  可执行输出    : ${CMAKE_BINARY_DIR}/bin/")
-message(STATUS "───────────────────────────────────────────────")
+message(STATUS "  Output dir    : ${CMAKE_BINARY_DIR}/bin/")
+message(STATUS "-----------------------------------------------")
