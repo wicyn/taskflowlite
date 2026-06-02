@@ -379,6 +379,10 @@ std::cout << d2;
 - **蓝色连线** — 条件分支
 - **红色虚线** — Jump 跳转回边
 
+渲染效果示例：
+
+![TaskflowLite DAG 可视化示例](documentation/img/d2.svg)
+
 ---
 
 ## 编译与集成

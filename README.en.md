@@ -379,6 +379,10 @@ Paste the output into the [D2 Playground](https://play.d2lang.com) to render. Le
 - **Blue line** — Conditional branch
 - **Red dashed line** — Jump back-edge
 
+Example render:
+
+![TaskflowLite DAG visualization](documentation/img/d2.svg)
+
 ---
 
 ## Build & Integration
