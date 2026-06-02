@@ -385,16 +385,28 @@ Paste the output into the [D2 Playground](https://play.d2lang.com) to render. Le
 
 ### Requirements
 
-| Compiler | Minimum Version |
-|----------|----------------|
-| GCC | 12+ |
-| Clang | 15+ |
-| MSVC | 2022+ (17.0+) |
-| Apple Clang | 15+ (Xcode 15+) |
+| Compiler | Minimum Version | Notes |
+|----------|----------------|-------|
+| GCC | 12+ | libstdc++ provides `std::stop_token` |
+| Clang | 15+ | requires libstdc++ 11+ or libc++ 18+ |
+| MSVC | 2022+ (17.0+) | |
+| Apple Clang | ⚠️ Not supported | Apple's libc++ does not implement `std::stop_token` / `std::jthread` (P0660); use Homebrew LLVM on macOS |
 
 - **C++ Standard**: C++23
 - **CMake**: 3.21+
-- **Dependencies**: C++ standard library + pthread (Unix)
+- **Dependencies**: C++ standard library (must provide `<stop_token>`) + pthread (Unix)
+
+> **macOS note:** This library's cancellation mechanism relies on `std::stop_token`,
+> which Apple's bundled Apple Clang / libc++ still does not provide, so it cannot be
+> compiled with the default macOS toolchain. Install Homebrew LLVM and point CMake at it:
+>
+> ```bash
+> brew install llvm
+> cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+>   -DCMAKE_C_COMPILER="$(brew --prefix llvm)/bin/clang" \
+>   -DCMAKE_CXX_COMPILER="$(brew --prefix llvm)/bin/clang++"
+> cmake --build build --parallel
+> ```
 
 ### CMake
 
@@ -470,7 +482,7 @@ taskflowlite/
 ├── test/                                  # 23 test files (Catch2 v3)
 ├── examples/                              # 25 examples
 ├── benchmarks/                            # Performance comparison (vs Taskflow)
-├── .github/workflows/ci.yml               # CI matrix
+├── .github/workflows/                     # CI: ubuntu/windows/macos build+test + codeql + lint (ci.yml)
 ├── CMakeLists.txt
 ├── LICENSE (MIT)
 └── README.md
@@ -481,39 +493,50 @@ taskflowlite/
 ## Benchmark Results
 
 TaskflowLite vs Taskflow — **same hardware, threads, topology, and total iterations**.
+Task bodies are **empty function calls**, so the figures measure **pure scheduling
+overhead** (excluding per-node computation/atomics); correctness is verified separately
+by a counter-based suite.
 
 **Test Environment:** Intel Core i7-9750H @ 2.60GHz (6C/12T), Windows 11, MSVC 2022 /O2
 
 | # | Scenario | Config | TaskflowLite | Taskflow | Speedup |
 |--:|---------|------|--------:|------------:|------:|
-| 01 | 32 parallel | 8 thr · 500k | 1009 ms | 1479 ms | **1.47×** |
-| 02 | 32 serial | 1 thr · 1M | 662 ms | 1323 ms | **2.00×** |
-| 03 | Diamond DAG | 2 thr · 1M | 255 ms | 400 ms | **1.57×** |
-| 04a | 4×2 full | 2 thr · 1M | 504 ms | 663 ms | **1.32×** |
-| 04b | 6×4 full | 4 thr · 500k | 1737 ms | 1964 ms | **1.13×** |
-| 04c | 8×8 full | 8 thr · 100k | 1076 ms | 1309 ms | **1.22×** |
-| 04d | 8×16 full | 8 thr · 50k | 1250 ms | 1531 ms | **1.22×** |
-| 04e | 8×32 full | 8 thr · 20k | 1210 ms | 1795 ms | **1.48×** |
-| 04f | 6×100 full | 8 thr · 2k | 516 ms | 778 ms | **1.51×** |
-| 05 | Binary tree | 8 thr · 500k | 1969 ms | 3278 ms | **1.66×** |
-| 06 | 1→256→1 fan | 8 thr · 100k | 3395 ms | 4167 ms | **1.23×** |
-| 07 | 16 pipelines | 8 thr · 200k | 911 ms | 2591 ms | **2.84×** |
-| 08 | 16×16 grid | 8 thr · 100k | 1228 ms | 2978 ms | **2.43×** |
-| 09 | Sparse DAG | 8 thr · 500k | 2508 ms | 4042 ms | **1.61×** |
-| 10 | Jump loop | 1 thr · 1M | 30 ms | 53 ms | **1.77×** |
-| 11 | MultiJump loop | 4 thr · 200k | 58 ms | 82 ms | **1.41×** |
-| 12 | Subflow once | 4 thr · 200k | 160 ms | 210 ms | **1.31×** |
-| 13 | Subflow loop | 2 thr · 500k | 105 ms | 168 ms | **1.60×** |
-| 14 | Empty task | 1 thr · 10M | 473 ms | 642 ms | **1.36×** |
-| 15 | Parallel for | 8 thr · 1024×10k | 734 ms | 1221 ms | **1.66×** |
-| 16 | Reduce tree | 8 thr · 127×50k | 465 ms | 828 ms | **1.78×** |
-| 17 | Scan chain | 1 thr · 128×100k | 235 ms | 570 ms | **2.43×** |
-| 18 | Wavefront | 8 thr · 210×10k | 115 ms | 262 ms | **2.28×** |
-| 19 | Heterogeneous | 8 thr · 18×100k | 851 ms | 878 ms | **1.03×** |
-| 20 | Memory stress | 8 thr · 2000×500 | 774 ms | 1144 ms | **1.48×** |
-| | **Geometric mean** | | | | **≈ 1.58×** |
+| 01 | 32 parallel | 8 thr · 500k | 893 ms | 1321 ms | **1.48×** |
+| 02 | 32 serial | 1 thr · 1M | 483 ms | 1223 ms | **2.53×** |
+| 03 | Diamond DAG | 2 thr · 1M | 219 ms | 357 ms | **1.63×** |
+| 04a | 4×2 full | 2 thr · 1M | 429 ms | 611 ms | **1.42×** |
+| 04b | 6×4 full | 4 thr · 500k | 1435 ms | 1779 ms | **1.24×** |
+| 04c | 8×8 full | 8 thr · 100k | 933 ms | 1258 ms | **1.35×** |
+| 04d | 8×16 full | 8 thr · 50k | 1080 ms | 1496 ms | **1.39×** |
+| 04e | 8×32 full | 8 thr · 20k | 1115 ms | 1627 ms | **1.46×** |
+| 04f | 6×100 full | 8 thr · 2k | 548 ms | 715 ms | **1.30×** |
+| 05 | Binary tree | 8 thr · 500k | 1349 ms | 2980 ms | **2.21×** |
+| 06 | 1→256→1 fan | 8 thr · 100k | 3181 ms | 4096 ms | **1.29×** |
+| 07 | 16 pipelines | 8 thr · 200k | 389 ms | 2452 ms | **6.30×** |
+| 08 | 16×16 grid | 8 thr · 100k | 653 ms | 2722 ms | **4.17×** |
+| 09 | Sparse DAG | 8 thr · 500k | 1815 ms | 3799 ms | **2.09×** |
+| 10 | Jump loop | 1 thr · 1M | 25 ms | 50 ms | **2.00×** |
+| 11 | MultiJump loop | 4 thr · 200k | 49 ms | 75 ms | **1.53×** |
+| 12 | Subflow once | 4 thr · 200k | 130 ms | 183 ms | **1.41×** |
+| 13 | Subflow loop | 2 thr · 500k | 94 ms | 159 ms | **1.69×** |
+| 14 | Empty task | 1 thr · 10M | 406 ms | 633 ms | **1.56×** |
+| 15 | Parallel for | 8 thr · 1024×10k | 580 ms | 1159 ms | **2.00×** |
+| 16 | Reduce tree | 8 thr · 127×50k | 346 ms | 693 ms | **2.00×** |
+| 17 | Scan chain | 1 thr · 128×100k | 170 ms | 488 ms | **2.87×** |
+| 18 | Wavefront | 8 thr · 210×10k | 68 ms | 236 ms | **3.47×** |
+| 19 | Heterogeneous | 8 thr · 18×100k | 746 ms | 873 ms | **1.17×** |
+| 20 | Memory stress | 8 thr · 2000×500 | 786 ms | 1115 ms | **1.42×** |
+| | **Geometric mean** | | | | **≈ 1.85×** |
+
+**Summary:** All 25 scenarios favor TaskflowLite, geometric mean ≈ **1.85×**. Because task
+bodies are empty, these figures measure pure scheduling overhead — ratios run higher than
+workload-heavy runs, where shared per-task computation dilutes the ratio toward 1.0. The
+largest gains are in dependency-dense topologies: pipelines (07, 6.30×), grid (08, 4.17×),
+wavefront (18, 3.47×), scan chain (17, 2.87×); the closest is heterogeneous load (19, 1.17×).
 
 > Full benchmark source code in [benchmarks/](benchmarks/).
+> Figures are for empty task bodies (pure scheduling overhead); the atomic-counter
+> correctness suite is in the benchmark source.
 
 ---
 
