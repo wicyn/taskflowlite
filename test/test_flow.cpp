@@ -246,3 +246,18 @@ TEST_CASE("Flow: dump outputs D2 text", "[flow][dump]") {
     REQUIRE(out.find("A") != std::string::npos);
     REQUIRE(out.find("B") != std::string::npos);
 }
+
+/// @section std-cref-readonly —— std::cref 只读引用：可读外部，不可写回
+TEST_CASE("std::cref read-only reference binds to const") {
+	TestEnv env;
+    tfl::Flow flow;
+    int outside = 7;
+    int seen = 0;
+    flow.emplace([&seen](const int& r) {
+        seen = r;          // 能读到外部当前值
+        // r = 0;          // 若取消注释应编译失败：const 引用不可写
+    }, std::cref(outside));
+    env.executor.async(flow).wait();
+    REQUIRE(seen == 7);
+    REQUIRE(outside == 7); // 未被改动
+}

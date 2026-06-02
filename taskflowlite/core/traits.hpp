@@ -115,10 +115,24 @@ template <typename T>
 }
 } // namespace detail
 
+/// @brief 单个类型能否被框架安全持久化存储（capturable 的逐参数原子）。
+///
+/// 满足以下任一条件即可：
+///   1. 已被 std::ref/std::cref 显式包装(引用捕获)；
+///   2. 是右值且 decay 后可移动构造(接管临时对象所有权)；
+///   3. 是左值引用且 decay 后可拷贝构造(拷贝活对象)。
+///
+/// @note 这是 `capturable<Ts...>` 的单参数构件。单独暴露便于其它 concept
+///       复用，也为将来的逐参数诊断留出接口。
+template <typename T>
+concept capturable_one =
+    detail::is_reference_wrapper_after_decay_v<T> ||
+    (!std::is_lvalue_reference_v<T> && std::is_move_constructible_v<std::decay_t<T>>) ||
+    ( std::is_lvalue_reference_v<T> && std::is_copy_constructible_v<std::decay_t<T>>);
 
 /// @brief 可安全持久化存储的参数包约束。
 ///
-/// 包中每个 T 满足以下任一条件:
+/// 包中每个 T 满足 `capturable_one<T>`：
 ///   1. 已被 std::ref/std::cref 显式包装(引用捕获)
 ///   2. 是右值且 decay 后可移动构造(接管临时对象所有权)
 ///   3. 是左值引用且 decay 后可拷贝构造(拷贝活对象)
@@ -130,12 +144,10 @@ template <typename T>
 /// - `capturable<std::string&&>`        → true  (情形 2)
 /// - `capturable<std::ref_wrapper<int>>`→ true  (情形 1)
 /// - `capturable<std::unique_ptr<int>&>`→ false (不可拷贝构造)
+///
+/// @note 行为与拆分前完全一致（对 capturable_one 的 && 折叠）。
 template <typename... Ts>
-concept capturable = ((
-                          detail::is_reference_wrapper_after_decay_v<Ts> ||
-                          (!std::is_lvalue_reference_v<Ts> && std::is_move_constructible_v<std::decay_t<Ts>>) ||
-                          ( std::is_lvalue_reference_v<Ts> && std::is_copy_constructible_v<std::decay_t<Ts>>)
-                          ) && ...);
+concept capturable = (capturable_one<Ts> && ...);
 
 /// @brief 检查是否为有效的谓词类型
 template <typename P, typename... Args>
