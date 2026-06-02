@@ -6,6 +6,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# 注意：Apple 自带的 Apple Clang / libc++ 不提供 std::stop_token / std::jthread
+# (P0660 至今未进 Apple 的 libc++)，本库用到了它，故 macOS 上必须改用 Homebrew
+# 的上游 LLVM（其 libc++ 自 LLVM 18 起带 <stop_token>）。
+env:
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
 jobs:
 
   # Debug + ASan/UBSan
@@ -13,15 +19,20 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
+    - name: Install LLVM
+      run: brew install llvm
     - name: Configure
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=ASAN
+      run: |
+        LLVM="$(brew --prefix llvm)"
+        cmake -S . -B build \
+          -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=ASAN \
+          -DCMAKE_C_COMPILER="$LLVM/bin/clang" \
+          -DCMAKE_CXX_COMPILER="$LLVM/bin/clang++" \
+          -DCMAKE_EXE_LINKER_FLAGS="-L$LLVM/lib/c++ -Wl,-rpath,$LLVM/lib/c++"
     - name: Build
-      # macOS 无 nproc，用 sysctl 读核心数
       run: cmake --build build --parallel $(sysctl -n hw.ncpu)
     - name: Test
       working-directory: build
-      # 单文件目标(tfl_test_*)默认 EXCLUDE_FROM_ALL，用 -LE perfile 跳过，
-      # 只跑单体 TaskflowLiteTest（已覆盖全部用例）。
       run: ctest --output-on-failure -LE perfile
 
   # Debug + TSan
@@ -29,16 +40,22 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
+    - name: Install LLVM
+      run: brew install llvm
     - name: Configure
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=TSAN
+      run: |
+        LLVM="$(brew --prefix llvm)"
+        cmake -S . -B build \
+          -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=TSAN \
+          -DCMAKE_C_COMPILER="$LLVM/bin/clang" \
+          -DCMAKE_CXX_COMPILER="$LLVM/bin/clang++" \
+          -DCMAKE_EXE_LINKER_FLAGS="-L$LLVM/lib/c++ -Wl,-rpath,$LLVM/lib/c++"
     - name: Build
       run: cmake --build build --parallel $(sysctl -n hw.ncpu)
     - name: Test
       working-directory: build
       run: |
         mkdir -p bin
-        # suppressions: 仅压制"非本库"的已知 sanitizer / 框架噪音，绝不盖本库竞争。
-        # 本库代码栈顶是 tfl::xxx，匹配不上这些规则，真竞争仍会照常报出。
         printf 'race:__sanitizer::IsAccessibleMemoryRange\nrace:Catch::RunContext\nrace:Catch::Detail\n' > bin/tsan_suppressions.txt
         export TSAN_OPTIONS="suppressions=$(pwd)/bin/tsan_suppressions.txt halt_on_error=1 second_deadlock_stack=1 history_size=7"
         ctest --output-on-failure -LE perfile
@@ -48,8 +65,16 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
+    - name: Install LLVM
+      run: brew install llvm
     - name: Configure
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON
+      run: |
+        LLVM="$(brew --prefix llvm)"
+        cmake -S . -B build \
+          -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON \
+          -DCMAKE_C_COMPILER="$LLVM/bin/clang" \
+          -DCMAKE_CXX_COMPILER="$LLVM/bin/clang++" \
+          -DCMAKE_EXE_LINKER_FLAGS="-L$LLVM/lib/c++ -Wl,-rpath,$LLVM/lib/c++"
     - name: Build
       run: cmake --build build --parallel $(sysctl -n hw.ncpu)
     - name: Test
