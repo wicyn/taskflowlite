@@ -1,4 +1,4 @@
-/// @file  d2_render.hpp
+﻿/// @file  d2_render.hpp
 /// @brief D2 可视化渲染器 D2Renderer —— Work / Graph 的图形导出。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -212,7 +212,6 @@ inline void D2Renderer::format_id(std::ostream& os, const void* p) {
 }
 
 // ---- 信号量药丸写入器 -------------------------------------------------
-
 inline void D2Renderer::write_sem_pill_grid(std::ostream& os, SemReqs reqs, const char* tag) {
     os << "  " << tag[0] << "_bar: \"\" {\n"
                             "    style.fill: transparent\n"
@@ -220,19 +219,14 @@ inline void D2Renderer::write_sem_pill_grid(std::ostream& os, SemReqs reqs, cons
                             "    grid-rows: 1\n"
                             "    grid-gap: 6\n\n";
 
-    char sid[32];
     for (std::size_t i = 0; i < reqs.size(); ++i) {
         const auto& req = reqs[i];
-        std::snprintf(sid, sizeof(sid), "sem_%zx",
-                      reinterpret_cast<std::uintptr_t>(req.sem));
         const auto pal = format_palette(req.sem);
 
-        os << "    " << tag[0] << i << ": \""
-           << tag << ":[" << sid
-           << "] [" << req.count << '/' << req.sem->max_value()
-           << "] [";
+        os << "    " << tag[0] << i << ": \"" << tag << ":[";
         write_quoted_escaped(os, req.sem->name());
-        os << "]\" {\n"
+        os << "][" << req.count << '/' << req.sem->max_value()
+           << "]\" {\n"
               "      shape: rectangle\n"
               "      style.border-radius: 12\n"
               "      style.fill: \""       << pal.bg << "\"\n"
@@ -246,10 +240,7 @@ inline void D2Renderer::write_sem_pill_grid(std::ostream& os, SemReqs reqs, cons
 }
 
 inline void D2Renderer::write_sem_pill_row(std::ostream& os, SemReqs reqs, const char* tag) {
-    char sid[32];
     for (const auto& req : reqs) {
-        std::snprintf(sid, sizeof(sid), "sem_%zx",
-                      reinterpret_cast<std::uintptr_t>(req.sem));
         const auto pal = format_palette(req.sem);
 
         os << "  <span style=\"background-color:" << pal.bg
@@ -257,11 +248,10 @@ inline void D2Renderer::write_sem_pill_row(std::ostream& os, SemReqs reqs, const
            << "; border-radius:8px"
               "; padding:1px 6px"
               "; font-size:9px;\">"
-           << tag << ":[" << sid
-           << "] [" << req.count << '/' << req.sem->max_value()
-           << "] [";
+           << tag << ":[";
         write_html_escaped(os, req.sem->name());
-        os << "]</span> ";
+        os << "][" << req.count << '/' << req.sem->max_value()
+           << "]</span> ";
     }
     os << "<br/>\n";
 }
