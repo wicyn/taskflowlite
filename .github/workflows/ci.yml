@@ -25,12 +25,11 @@ jobs:
         fetch-depth: 0
     - name: Install clang-format
       run: sudo apt-get install -y -qq clang-format-18
-    - name: Run clang-format (changed files only, advisory)
+    - name: Run clang-format (changed files, gating)
       run: |
         git diff origin/main --name-only --diff-filter=AM \
           'taskflowlite/**/*.hpp' 'taskflowlite/**/*.cpp' 'test/**/*.cpp' 'examples/**/*.cpp' | \
-        xargs -r clang-format-18 --dry-run --Wno-error
-
+        xargs -r clang-format-18 --dry-run --Werror
   # clang-tidy (PR only)
   clang-tidy:
     name: clang-tidy

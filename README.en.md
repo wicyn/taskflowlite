@@ -1,9 +1,10 @@
 # TaskflowLite
 
-[![CI](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
-[![Linux](https://img.shields.io/badge/Linux-passing-success?logo=linux&logoColor=white)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
-[![macOS](https://img.shields.io/badge/macOS-passing-success?logo=apple&logoColor=white)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
-[![Windows](https://img.shields.io/badge/Windows-passing-success?logo=windows&logoColor=white)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
+[![Ubuntu](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml)
+[![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
+[![macOS](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml)
+[![CodeQL](https://github.com/wicyn/taskflowlite/actions/workflows/codeql-analysis.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/codeql-analysis.yml)
+[![Lint](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?logo=cplusplus)](https://en.cppreference.com/w/cpp/23)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Header Only](https://img.shields.io/badge/Header--Only-Yes-success)](#)

@@ -2,6 +2,10 @@ name: macOS
 
 on: [push, pull_request]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
 
   # Debug + ASan/UBSan
@@ -9,24 +13,15 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Select latest Xcode (for C++20 <stop_token>)
-      run: |
-        LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -Vr | head -1)
-        if [ -n "$LATEST" ]; then
-          sudo xcode-select -s "$LATEST"
-          echo "Switched to $(xcode-select -p)"
-        else
-          echo "No Xcode found, using default: $(xcode-select -p)"
-        fi
-        clang++ --version
     - name: Configure
       run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=ASAN
     - name: Build
-      run: cmake --build build --parallel $(sysctl -n hw.logicalcpu)
+      # macOS 无 nproc，用 sysctl 读核心数
+      run: cmake --build build --parallel $(sysctl -n hw.ncpu)
     - name: Test
       working-directory: build
-      # 单文件目标(tfl_test_*)默认 EXCLUDE_FROM_ALL，未被构建；用 -LE perfile 跳过它们，
-      # 只跑单体 TaskflowLiteTest 与按标签的 tfl.* 子测试（内容等价，无需重复）。
+      # 单文件目标(tfl_test_*)默认 EXCLUDE_FROM_ALL，用 -LE perfile 跳过，
+      # 只跑单体 TaskflowLiteTest（已覆盖全部用例）。
       run: ctest --output-on-failure -LE perfile
 
   # Debug + TSan
@@ -34,32 +29,17 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Select latest Xcode (for C++20 <stop_token>)
-      run: |
-        LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -Vr | head -1)
-        if [ -n "$LATEST" ]; then
-          sudo xcode-select -s "$LATEST"
-          echo "Switched to $(xcode-select -p)"
-        else
-          echo "No Xcode found, using default: $(xcode-select -p)"
-        fi
-        clang++ --version
     - name: Configure
       run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=TSAN
     - name: Build
-      run: cmake --build build --parallel $(sysctl -n hw.logicalcpu)
+      run: cmake --build build --parallel $(sysctl -n hw.ncpu)
     - name: Test
       working-directory: build
       run: |
         mkdir -p bin
-        # suppressions: 压制非本库的已知 TSan 噪音(测试框架 / 标准库线程启动路径)。
-        # - race:__thread_proxy  新版 libc++ std::thread 启动路径(thread.h __thread_proxy)
-        #   被 TSan 标为 atomic-write vs read 的竞争, 实为标准库内部线程生命周期管理,
-        #   非本库数据竞争; test_allocator.cpp 起多线程时触发, 无法也不应改标准库, 故压制。
-        # - race:Catch::*  Catch2 运行时的已知噪音。
-        printf 'race:__thread_proxy\nrace:Catch::RunContext\nrace:Catch::Detail\nrace:__sanitizer::IsAccessibleMemoryRange\n' > bin/tsan_suppressions.txt
-        # 用绝对路径: ctest 运行测试时工作目录是 build/bin, 相对路径会被叠加成 build/bin/bin/... 而读不到。
-        # 显式指定 suppressions, 以本文件为准(覆盖环境里可能存在的其它 supp 来源)。
+        # suppressions: 仅压制"非本库"的已知 sanitizer / 框架噪音，绝不盖本库竞争。
+        # 本库代码栈顶是 tfl::xxx，匹配不上这些规则，真竞争仍会照常报出。
+        printf 'race:__sanitizer::IsAccessibleMemoryRange\nrace:Catch::RunContext\nrace:Catch::Detail\n' > bin/tsan_suppressions.txt
         export TSAN_OPTIONS="suppressions=$(pwd)/bin/tsan_suppressions.txt halt_on_error=1 second_deadlock_stack=1 history_size=7"
         ctest --output-on-failure -LE perfile
 
@@ -68,20 +48,10 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Select latest Xcode (for C++20 <stop_token>)
-      run: |
-        LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -Vr | head -1)
-        if [ -n "$LATEST" ]; then
-          sudo xcode-select -s "$LATEST"
-          echo "Switched to $(xcode-select -p)"
-        else
-          echo "No Xcode found, using default: $(xcode-select -p)"
-        fi
-        clang++ --version
     - name: Configure
       run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON
     - name: Build
-      run: cmake --build build --parallel $(sysctl -n hw.logicalcpu)
+      run: cmake --build build --parallel $(sysctl -n hw.ncpu)
     - name: Test
       working-directory: build
       run: ctest --output-on-failure -LE perfile
