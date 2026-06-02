@@ -99,8 +99,7 @@ protected:
         : Work{TaskType::Noop, std::forward<Xs>(xs)...} {}
 
     void dump(std::ostream& os) const override final {
-        D2Renderer::render_work(os, this, "circle",
-                                "#e5e7eb", "#9ca3af", "#374151", "8", "3");
+        D2Renderer::render_work(os, this, "circle", "#e5e7eb", "#9ca3af", "#374151", "8", "3");
     }
 };
 
@@ -121,8 +120,7 @@ protected:
         : Work{TaskType::Basic, std::forward<Xs>(xs)...} {}
 
     void dump(std::ostream& os) const override final {
-        D2Renderer::render_work(os, this, "rectangle",
-                                "#f5f5f5", "#9ca3af", "#1f2937", "8");
+        D2Renderer::render_work(os, this, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
     }
 };
 
@@ -144,8 +142,7 @@ protected:
         : Work{TaskType::Runtime, std::forward<Xs>(xs)...} {}
 
     void dump(std::ostream& os) const override final {
-        D2Renderer::render_work(os, this, "rectangle",
-                                "#fce4ec", "#e57373", "#6d1b1b", "30");
+        D2Renderer::render_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
     }
 };
 
@@ -166,8 +163,7 @@ protected:
         : Work{TaskType::Branch, std::forward<Xs>(xs)...} {}
 
     void dump(std::ostream& os) const override final {
-        D2Renderer::render_work(os, this, "diamond",
-                                "#dbeafe", "#3b82f6", "#1e3a5f", "8");
+        D2Renderer::render_work(os, this, "diamond", "#dbeafe", "#3b82f6", "#1e3a5f", "8");
     }
 };
 
@@ -189,8 +185,7 @@ protected:
         : Work{TaskType::MultiBranch, std::forward<Xs>(xs)...} {}
 
     void dump(std::ostream& os) const override final {
-        D2Renderer::render_work(os, this, "hexagon",
-                                "#bfdbfe", "#2563eb", "#1e3a5f", "8");
+        D2Renderer::render_work(os, this, "hexagon", "#bfdbfe", "#2563eb", "#1e3a5f", "8");
     }
 };
 
@@ -213,8 +208,7 @@ protected:
         : Work{TaskType::Jump, std::forward<Xs>(xs)...} {}
 
     void dump(std::ostream& os) const override final {
-        D2Renderer::render_work(os, this, "diamond",
-                                "#fee2e2", "#ef4444", "#7f1d1d", "8", "5");
+        D2Renderer::render_work(os, this, "diamond", "#fee2e2", "#ef4444", "#7f1d1d", "8", "5");
     }
 };
 
@@ -236,8 +230,7 @@ protected:
         : Work{TaskType::MultiJump, std::forward<Xs>(xs)...} {}
 
     void dump(std::ostream& os) const override final {
-        D2Renderer::render_work(os, this, "hexagon",
-                                "#fecaca", "#dc2626", "#7f1d1d", "8", "5");
+        D2Renderer::render_work(os, this, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5");
     }
 };
 
