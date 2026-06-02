@@ -9,7 +9,7 @@
 #include <vector>
 
 static std::atomic<int> g_counter{0};
-static void add_one() { g_counter.fetch_add(1, std::memory_order_relaxed); }
+static void add_one() { /*g_counter.fetch_add(1, std::memory_order_relaxed);*/ }
 
 class Timer {
 public:
