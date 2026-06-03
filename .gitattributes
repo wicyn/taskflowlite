@@ -1,9 +1,25 @@
-# Mark third-party and build artifacts as vendored / excluded from stats
-benchmarks/taskflow/* linguist-vendored
-build/* linguist-vendored
-documentation/img/* linguist-vendored
+# ── 行尾规范化 ──────────────────────────────────────────────
+# 所有文本文件在仓库内统一存为 LF，签出时按属性处理。
+# 杜绝 Windows 贡献者引入 CRLF 导致的 clang-format 行尾 diff。
+* text=auto eol=lf
 
-# C++ source files
+# Windows 批处理必须 CRLF，否则可能无法执行
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# ── 二进制文件（禁止行尾/编码转换、不参与 diff）──────────────
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+
+# ── 第三方与构建产物：排除出语言统计 ─────────────────────────
+benchmarks/taskflow/** linguist-vendored
+build/**               linguist-vendored
+documentation/img/**   linguist-vendored
+
+# ── 语言标注 ────────────────────────────────────────────────
 *.cpp linguist-language=C++
 *.hpp linguist-language=C++
-*.h linguist-language=C++
+*.h   linguist-language=C++
