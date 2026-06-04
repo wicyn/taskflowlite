@@ -1,4 +1,4 @@
-/// @file  graph.hpp
+﻿/// @file  graph.hpp
 /// @brief 任务图容器 Graph —— Work 节点的物理存储与生命周期管理。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -83,11 +83,7 @@ public:
 
     /// @brief D2 可视化导出。
     ///
-    /// 将图中所有节点及其边以 D2 格式输出。根据边类型应用不同样式:
-    ///   - Jump/MultiJump: 红色虚线
-    ///   - Branch/MultiBranch: 蓝色粗线
-    ///   - 普通边: 灰色
-    ///
+    /// 将图中所有节点及其边以 D2 格式输出。
     /// @param ostream 输出流。
     void dump(std::ostream& ostream) const;
 

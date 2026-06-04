@@ -23,8 +23,14 @@
 #include <concepts>
 #include <functional>
 #include <type_traits>
+#include <version>
 
 #include "forward.hpp"
+
+#if !defined(__cpp_lib_jthread) || __cpp_lib_jthread < 201911L
+#  error "TaskflowLite requires P0660 (std::jthread / std::stop_token / std::stop_source). Use a stdlib that provides it: libstdc++ 11+, libc++ 18+, or MSVC STL; on macOS use Homebrew LLVM if Apple Clang lacks it."
+#endif
+
 
 namespace tfl {
 
