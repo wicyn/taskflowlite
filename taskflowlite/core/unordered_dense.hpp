@@ -1272,7 +1272,7 @@ private:
         auto dist_and_fingerprint = dist_and_fingerprint_from_hash(hash);
         auto bucket_idx = bucket_idx_from_hash(hash);
 
-        while (true) {
+        for (;;) {
             auto* bucket = &at(m_buckets, bucket_idx);
             if (dist_and_fingerprint == bucket->m_dist_and_fingerprint) {
                 if (m_equal(key, get_key(m_values[bucket->m_value_idx]))) {
@@ -1317,7 +1317,7 @@ private:
         bucket_idx = next(bucket_idx);
         bucket = &at(m_buckets, bucket_idx);
 
-        while (true) {
+        for (;;) {
             if (dist_and_fingerprint == bucket->m_dist_and_fingerprint) {
                 if (m_equal(key, get_key(m_values[bucket->m_value_idx]))) {
                     return begin() + static_cast<difference_type>(bucket->m_value_idx);
@@ -1617,7 +1617,7 @@ public:
             auto bucket_idx = bucket_idx_from_hash(hash);
 
             bool key_found = false;
-            while (true) {
+            for (;;) {
                 auto const& bucket = at(m_buckets, bucket_idx);
                 if (dist_and_fingerprint > bucket.m_dist_and_fingerprint) {
                     break;

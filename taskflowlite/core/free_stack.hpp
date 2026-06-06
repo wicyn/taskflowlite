@@ -48,7 +48,7 @@ public:
     /// @param p 待推入 chunk 起始地址; 必须满足 ChunkLink 的安全前提。
     TFL_FORCE_INLINE void push(void* p) noexcept {
         Tagged curr = m_head.load(std::memory_order_relaxed);
-        while (true) {
+        for (;;) {
             ChunkLink::store(p, curr.ptr);
             const Tagged next{p, curr.tag + 1};
             if (m_head.compare_exchange_weak(curr, next, std::memory_order_release, std::memory_order_relaxed)) {

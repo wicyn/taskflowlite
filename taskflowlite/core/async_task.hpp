@@ -1060,7 +1060,7 @@ inline auto Executor::submit(T&& task, I first, S last)
         }
     } else if constexpr (repeat_async_task<T>) {
         // repeat: 允许 Finished → Running 转换，但禁止 Running 并发提交
-        while (true) {
+        for (;;) {
             auto cur = topo->m_state.load(std::memory_order_acquire);
             if (cur == Topology::State::Running) [[unlikely]] {
                 throw Exception("AsyncTask Error: Task is already running.");
@@ -1135,7 +1135,7 @@ inline auto Runtime::submit(T&& task, I first, S last)
             throw Exception("AsyncTask Error: Task is not in Idle state.");
         }
     } else if constexpr (repeat_async_task<T>) {
-        while (true) {
+        for (;;) {
             auto cur = topo->m_state.load(std::memory_order_acquire);
             if (cur == Topology::State::Running) [[unlikely]] {
                 throw Exception("AsyncTask Error: Task is already running.");
