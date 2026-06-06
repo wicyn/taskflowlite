@@ -127,7 +127,7 @@ public:
 
         std::uint64_t state = m_state.load(std::memory_order_seq_cst);
 
-        while (true) {
+        for (;;) {
             // 目标轮次尚未到来：存在更早进入 prepare 的线程尚未完成
             if (std::int64_t((state & k_epoch_mask) - epoch) < 0) {
                 std::this_thread::yield();
@@ -176,7 +176,7 @@ public:
 
         std::uint64_t state = m_state.load(std::memory_order_relaxed);
 
-        while (true) {
+        for (;;) {
             if (std::int64_t((state & k_epoch_mask) - epoch) < 0) {
                 std::this_thread::yield();
                 state = m_state.load(std::memory_order_relaxed);
@@ -211,7 +211,7 @@ public:
         std::atomic_thread_fence(std::memory_order_seq_cst);
         std::uint64_t state = m_state.load(std::memory_order_acquire);
 
-        while (true) {
+        for (;;) {
             // 无等待者
             if ((state & k_stack_mask) == k_stack_mask && (state & k_prewaiter_mask) == 0) {
                 return;
@@ -254,7 +254,7 @@ public:
         std::atomic_thread_fence(std::memory_order_seq_cst);
         std::uint64_t state = m_state.load(std::memory_order_acquire);
 
-        while (true) {
+        for (;;) {
             if ((state & k_stack_mask) == k_stack_mask && (state & k_prewaiter_mask) == 0) {
                 return;
             }

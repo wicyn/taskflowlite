@@ -170,7 +170,7 @@ using std::unreachable;
     __builtin_unreachable();
 #   endif
     // Why: 即使编译器不支持上述扩展,无限空循环也构成合法 C++ UB,起到类似提示作用。
-    while (true) {
+    for (;;) {
     }
 }
 #endif

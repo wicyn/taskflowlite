@@ -1,4 +1,4 @@
-/// @file  executor.hpp
+﻿/// @file  executor.hpp
 /// @brief 任务调度器 —— Work-Stealing 并行执行引擎，框架唯一的 OS 线程持有者。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -612,7 +612,7 @@ inline void Executor::_spawn(std::size_t num_workers) {
             m_handler->on_start(wr);
 
             Work* w = nullptr;
-            while (true) {
+            for (;;) {
                 // 本地队列优先：LIFO 顺序，缓存命中率最高
                 while (w) {
                     try {
@@ -661,7 +661,7 @@ explore:
     std::size_t const yield_limit = nw * wr.m_adaptive_factor + wr.m_max_steals;
 
     // 阶段一：窃取
-    while (true) {
+    for (;;) {
         Work* w = (vtm < nw)
         ? m_workers[vtm].m_wslq.steal()
         : m_shared_buffers[vtm - nw].queue.steal();
@@ -977,7 +977,7 @@ inline void Executor::_process_dependent(Work* w, I first, S last, std::size_t& 
 
         auto& state = work->m_topology->m_state;
 
-        while (true) {
+        for (;;) {
             // 1. 每次循环开头，直接获取内存中的最新状态
             auto target = state.load(std::memory_order_acquire);
 
