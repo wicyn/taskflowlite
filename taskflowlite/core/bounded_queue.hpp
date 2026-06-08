@@ -1,4 +1,4 @@
-/// @file  bounded_queue.hpp
+﻿/// @file  bounded_queue.hpp
 /// @brief Chase-Lev 无锁有界双端队列 —— Worker 本地任务队列的核心数据结构。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -127,20 +127,17 @@ private:
     ///
     /// 元素为 std::atomic<Tp>。alignas(2 * cache_line_size) 将 buffer
     /// 与 bottom/top 所在 cache line 物理隔离，消除伪共享。
-    alignas(2 * cache_line_size)
-        std::atomic<Tp> m_buf[cap];
+    alignas(2 * cache_line_size) std::atomic<Tp> m_buf[cap];
 
     /// @brief 头部索引 —— 仅 Stealer 通过 CAS 写入。
     ///
     /// 独占 2x cache line 对齐区域，与 m_bottom 物理隔离。
-    alignas(2 * cache_line_size)
-        std::atomic<std::int64_t> m_top{0};
+    alignas(2 * cache_line_size) std::atomic<std::int64_t> m_top{0};
 
     /// @brief 尾部索引 —— 仅 Owner 线程写入。
     ///
     /// Owner 用 release store 写入新 bottom 值作为"元素发布"的同步点。
-    alignas(2 * cache_line_size)
-        std::atomic<std::int64_t> m_bottom{0};
+    alignas(2 * cache_line_size) std::atomic<std::int64_t> m_bottom{0};
 };
 
 // ---------------------------------------------------------------------------
@@ -269,6 +266,70 @@ void BoundedQueue<Tp, cap>::push(Iterator first, std::size_t n, C&& on_full) {
     }
 }
 
+#if 0
+
+// ---------------------------------------------------------------------------
+// pop: Owner 端 LIFO 弹出
+// ---------------------------------------------------------------------------
+template <typename Tp, std::size_t cap>
+    requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
+Tp BoundedQueue<Tp, cap>::pop() noexcept {
+    return steal();
+}
+
+// ---------------------------------------------------------------------------
+// steal: Stealer 端 FIFO 窃取
+// ---------------------------------------------------------------------------
+template <typename Tp, std::size_t cap>
+    requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
+Tp BoundedQueue<Tp, cap>::steal() noexcept {
+    std::int64_t top = m_top.load(std::memory_order_relaxed);
+    std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
+
+    Tp val{nullptr};
+    if (top < bottom) [[likely]] {
+        // relaxed: 该 slot 此时尚未被"认领"，多 stealer 均可能读取相同元素
+        val = m_buf[static_cast<std::size_t>(top) & k_mask].load(std::memory_order_relaxed);
+
+        // seq_cst CAS: 多 stealer 竞争递增 top
+        // 成功 (acq_rel): 该 stealer 获得元素所有权
+        // 失败 (relaxed): 其他 stealer 先一步 —— 返回 nullptr，不重试
+        if (!m_top.compare_exchange_strong(top, top + 1,
+                                           std::memory_order_acq_rel, std::memory_order_relaxed)) [[unlikely]] {
+            return nullptr;
+        }
+    }
+
+    return val;
+}
+
+// ---------------------------------------------------------------------------
+// steal(num_empty_steals): 窃取 + 空窃取计数
+// ---------------------------------------------------------------------------
+template <typename Tp, std::size_t cap>
+    requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
+Tp BoundedQueue<Tp, cap>::steal(std::size_t& num_empty_steals) noexcept {
+    std::int64_t top = m_top.load(std::memory_order_relaxed);
+    std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
+
+    Tp val{nullptr};
+    if (top < bottom) [[likely]] {
+        // 看到队列中有元素，重置空窃取计数器
+        num_empty_steals = 0;
+        val = m_buf[static_cast<std::size_t>(top) & k_mask].load(std::memory_order_relaxed);
+
+        if (!m_top.compare_exchange_strong(top, top + 1,
+                                           std::memory_order_acq_rel, std::memory_order_relaxed)) [[unlikely]] {
+            return nullptr;
+        }
+    } else {
+        // 队列为空：递增计数器，上层调度器据此调整退避策略
+        ++num_empty_steals;
+    }
+
+    return val;
+}
+#else
 // ---------------------------------------------------------------------------
 // pop: Owner 端 LIFO 弹出
 // ---------------------------------------------------------------------------
@@ -318,8 +379,7 @@ Tp BoundedQueue<Tp, cap>::pop() noexcept {
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
 Tp BoundedQueue<Tp, cap>::steal() noexcept {
-    // acquire: 同步 owner 的 release store(m_bottom)，确保看到最新的元素写入
-    std::int64_t top = m_top.load(std::memory_order_acquire);
+    std::int64_t top = m_top.load(std::memory_order_relaxed);
     // seq_cst fence: 强制 top 读取先于 bottom 读取完成
     // 防止 CPU 将 bottom 的加载重排到 top 加载之前 —— 若先看到新 bottom
     // 再看到旧 top，会误判队列有元素而读到垃圾数据
@@ -349,7 +409,7 @@ Tp BoundedQueue<Tp, cap>::steal() noexcept {
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
 Tp BoundedQueue<Tp, cap>::steal(std::size_t& num_empty_steals) noexcept {
-    std::int64_t top = m_top.load(std::memory_order_acquire);
+    std::int64_t top = m_top.load(std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_seq_cst);
     std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
 
@@ -370,5 +430,6 @@ Tp BoundedQueue<Tp, cap>::steal(std::size_t& num_empty_steals) noexcept {
 
     return val;
 }
+#endif
 
 } // namespace tfl

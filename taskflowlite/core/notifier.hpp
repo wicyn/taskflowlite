@@ -1,4 +1,4 @@
-/// @file  notifier.hpp
+﻿/// @file  notifier.hpp
 /// @brief 原子 wait/notify 唤醒原语 —— 两阶段协议消除 Lost Wake-up。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -121,9 +121,7 @@ public:
 
         // 还原目标 Epoch：基于 prepare 时捕获的快照计算期望轮次
         // epoch' = (snapshot & epoch_mask) + ((snapshot & prewaiter_mask) >> 16 << 32)
-        std::uint64_t epoch =
-            (w->epoch & k_epoch_mask) +
-            (((w->epoch & k_prewaiter_mask) >> k_prewaiter_shift) << k_epoch_shift);
+        std::uint64_t epoch = (w->epoch & k_epoch_mask) + (((w->epoch & k_prewaiter_mask) >> k_prewaiter_shift) << k_epoch_shift);
 
         std::uint64_t state = m_state.load(std::memory_order_seq_cst);
 
