@@ -111,14 +111,6 @@ public:
     /// @return 窃取的元素，队列空或 CAS 竞争失败返回 nullptr。
     [[nodiscard]] Tp steal() noexcept;
 
-    /// @brief 窃取元素并统计连续空窃取次数。
-    ///
-    /// 成功窃取时重置 @p num_empty_steals 为 0，空窃取时递增。
-    /// 上层调度器使用此计数决定退避策略（yield 频率 / sleep 时长）。
-    ///
-    /// @param num_empty_steals [in,out] 连续空窃取计数器
-        [[nodiscard]] Tp steal(std::size_t& num_empty_steals) noexcept;
-
 private:
     /// @brief 位掩码 = cap - 1，将索引映射到缓冲区范围。
     static constexpr std::size_t k_mask = cap - 1;
@@ -266,70 +258,6 @@ void BoundedQueue<Tp, cap>::push(Iterator first, std::size_t n, C&& on_full) {
     }
 }
 
-#if 0
-
-// ---------------------------------------------------------------------------
-// pop: Owner 端 LIFO 弹出
-// ---------------------------------------------------------------------------
-template <typename Tp, std::size_t cap>
-    requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
-Tp BoundedQueue<Tp, cap>::pop() noexcept {
-    return steal();
-}
-
-// ---------------------------------------------------------------------------
-// steal: Stealer 端 FIFO 窃取
-// ---------------------------------------------------------------------------
-template <typename Tp, std::size_t cap>
-    requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
-Tp BoundedQueue<Tp, cap>::steal() noexcept {
-    std::int64_t top = m_top.load(std::memory_order_relaxed);
-    std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
-
-    Tp val{nullptr};
-    if (top < bottom) [[likely]] {
-        // relaxed: 该 slot 此时尚未被"认领"，多 stealer 均可能读取相同元素
-        val = m_buf[static_cast<std::size_t>(top) & k_mask].load(std::memory_order_relaxed);
-
-        // seq_cst CAS: 多 stealer 竞争递增 top
-        // 成功 (acq_rel): 该 stealer 获得元素所有权
-        // 失败 (relaxed): 其他 stealer 先一步 —— 返回 nullptr，不重试
-        if (!m_top.compare_exchange_strong(top, top + 1,
-                                           std::memory_order_acq_rel, std::memory_order_relaxed)) [[unlikely]] {
-            return nullptr;
-        }
-    }
-
-    return val;
-}
-
-// ---------------------------------------------------------------------------
-// steal(num_empty_steals): 窃取 + 空窃取计数
-// ---------------------------------------------------------------------------
-template <typename Tp, std::size_t cap>
-    requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
-Tp BoundedQueue<Tp, cap>::steal(std::size_t& num_empty_steals) noexcept {
-    std::int64_t top = m_top.load(std::memory_order_relaxed);
-    std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
-
-    Tp val{nullptr};
-    if (top < bottom) [[likely]] {
-        // 看到队列中有元素，重置空窃取计数器
-        num_empty_steals = 0;
-        val = m_buf[static_cast<std::size_t>(top) & k_mask].load(std::memory_order_relaxed);
-
-        if (!m_top.compare_exchange_strong(top, top + 1,
-                                           std::memory_order_acq_rel, std::memory_order_relaxed)) [[unlikely]] {
-            return nullptr;
-        }
-    } else {
-        // 队列为空：递增计数器，上层调度器据此调整退避策略
-        ++num_empty_steals;
-    }
-
-    return val;
-}
-#else
 // ---------------------------------------------------------------------------
 // pop: Owner 端 LIFO 弹出
 // ---------------------------------------------------------------------------
@@ -354,10 +282,9 @@ Tp BoundedQueue<Tp, cap>::pop() noexcept {
         // 最后一个元素：owner 与 stealer 可能同时操作
         if (top == bottom) [[unlikely]] {
             // seq_cst CAS: 尝试原子地将 top 从 top 改为 top + 1
-            // - 成功 (acq_rel): owner 获得元素所有权
+            // - 成功 (seq_cst): owner 获得元素所有权
             // - 失败 (relaxed): stealer 已抢先窃取，放弃并还原 bottom
-            if (!m_top.compare_exchange_strong(top, top + 1,
-                                               std::memory_order_seq_cst, std::memory_order_relaxed)) [[unlikely]] {
+            if (!m_top.compare_exchange_strong(top, top + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) [[unlikely]] {
                 // 还原 bottom: stealer 已拿走元素
                 m_bottom.store(bottom + 1, std::memory_order_relaxed);
                 return nullptr;
@@ -392,44 +319,14 @@ Tp BoundedQueue<Tp, cap>::steal() noexcept {
         val = m_buf[static_cast<std::size_t>(top) & k_mask].load(std::memory_order_relaxed);
 
         // seq_cst CAS: 多 stealer 竞争递增 top
-        // 成功 (acq_rel): 该 stealer 获得元素所有权
+        // 成功 (seq_cst): 该 stealer 获得元素所有权
         // 失败 (relaxed): 其他 stealer 先一步 —— 返回 nullptr，不重试
-        if (!m_top.compare_exchange_strong(top, top + 1,
-                                           std::memory_order_seq_cst, std::memory_order_relaxed)) [[unlikely]] {
+        if (!m_top.compare_exchange_strong(top, top + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) [[unlikely]] {
             return nullptr;
         }
     }
 
     return val;
 }
-
-// ---------------------------------------------------------------------------
-// steal(num_empty_steals): 窃取 + 空窃取计数
-// ---------------------------------------------------------------------------
-template <typename Tp, std::size_t cap>
-    requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
-Tp BoundedQueue<Tp, cap>::steal(std::size_t& num_empty_steals) noexcept {
-    std::int64_t top = m_top.load(std::memory_order_relaxed);
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
-
-    Tp val{nullptr};
-    if (top < bottom) [[likely]] {
-        // 看到队列中有元素，重置空窃取计数器
-        num_empty_steals = 0;
-        val = m_buf[static_cast<std::size_t>(top) & k_mask].load(std::memory_order_relaxed);
-
-        if (!m_top.compare_exchange_strong(top, top + 1,
-                                           std::memory_order_seq_cst, std::memory_order_relaxed)) [[unlikely]] {
-            return nullptr;
-        }
-    } else {
-        // 队列为空：递增计数器，上层调度器据此调整退避策略
-        ++num_empty_steals;
-    }
-
-    return val;
-}
-#endif
 
 } // namespace tfl
