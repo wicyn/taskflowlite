@@ -1,9 +1,14 @@
 ﻿/// @file test_queue.cpp
 /// @brief BoundedQueue / UnboundedQueue 无锁队列测试 —— 最核心的并发数据结构。
 ///
+/// 注意：UnboundedQueue 现已移除 pop()，为 steal-only（仅窃取，FIFO 语义）。
+///       所有原先依赖 UnboundedQueue::pop() 的用例改为用 steal() 验证 FIFO。
+///       BoundedQueue 仍保留 owner pop()（LIFO）。
+///       steal(std::size_t&) 空计数重载已从两个队列移除，相关用例删除。
+///
 /// 覆盖的不变量 (see references/invariants-catalog.md):
 ///   Q1  ✓ "push 满/未满的返回值" —— try_push / push on_full
-///   Q2  ✓ "pop LIFO 语义" —— owner LIFO 验证
+///   Q2  ✓ "pop LIFO 语义" —— owner LIFO 验证 (BoundedQueue)
 ///   Q3  ✓ "steal FIFO 语义" —— stealer FIFO 验证
 ///   Q4  ✓ "push N 后 size == N" —— 容量不溢出
 ///   Q5  ✓ "被消费 ≤ 被 push" —— 性质式 fuzz
@@ -31,11 +36,11 @@ using tfl_test::TestEnv;
 
 namespace {
 
-    /// @brief Test payload: encodes index + checksum to detect corruption
-    struct Payload {
-        std::uintptr_t index;
-        std::uintptr_t checksum;  // ~index  for simple corruption detection
-    };
+/// @brief Test payload: encodes index + checksum to detect corruption
+struct Payload {
+    std::uintptr_t index;
+    std::uintptr_t checksum;  // ~index  for simple corruption detection
+};
 
 }  // namespace
 
@@ -108,13 +113,13 @@ TEST_CASE("BoundedQueue: push with on_full callback", "[queue][bounded][unit][st
         // Fill queue
         for (int i = 0; i < 8; ++i) {
             q.push(reinterpret_cast<int*>(static_cast<std::uintptr_t>(i + 1)),
-                [] { FAIL("should not overflow yet"); });
+                   [] { FAIL("should not overflow yet"); });
         }
         REQUIRE(q.size() == 8);
 
         bool overflow_called = false;
         q.push(reinterpret_cast<int*>(static_cast<std::uintptr_t>(999)),
-            [&] { overflow_called = true; });
+               [&] { overflow_called = true; });
         REQUIRE(overflow_called);
         REQUIRE(q.size() == 8);  // element not pushed
     }
@@ -122,7 +127,7 @@ TEST_CASE("BoundedQueue: push with on_full callback", "[queue][bounded][unit][st
     SECTION("on_full NOT called when space available") {
         for (int i = 0; i < 4; ++i) {
             q.push(reinterpret_cast<int*>(static_cast<std::uintptr_t>(i + 1)),
-                [] { FAIL("unexpected overflow"); });
+                   [] { FAIL("unexpected overflow"); });
         }
         REQUIRE(q.size() == 4);
     }
@@ -140,7 +145,7 @@ TEST_CASE("BoundedQueue: batch push with overflow callback", "[queue][bounded][u
         q.push(items.begin(), 8, [](auto, std::size_t) { FAIL("unexpected overflow"); });
         REQUIRE(q.size() == 8);
 
-        // Verify LIFO
+                // Verify LIFO
         for (std::uintptr_t expected = 8; expected >= 1; --expected) {
             auto got = q.pop();
             REQUIRE(got != nullptr);
@@ -157,10 +162,10 @@ TEST_CASE("BoundedQueue: batch push with overflow callback", "[queue][bounded][u
         std::size_t overflow_count = 0;
         auto overflow_first = items.begin();
         q.push(items.begin(), 24,
-            [&](auto it, std::size_t n) {
-                overflow_count = n;
-                overflow_first = it;
-            });
+               [&](auto it, std::size_t n) {
+                   overflow_count = n;
+                   overflow_first = it;
+               });
         REQUIRE(q.size() == 16);
         REQUIRE(overflow_count > 0);
         REQUIRE(static_cast<std::size_t>(q.size()) + overflow_count == 24);
@@ -193,32 +198,6 @@ TEST_CASE("BoundedQueue: single stealer FIFO order", "[queue][bounded][unit][st]
     SECTION("steal from empty returns nullptr") {
         REQUIRE(q.steal() == nullptr);
     }
-
-    SECTION("steal with empty counter") {
-        constexpr std::size_t N = 10;
-        for (std::size_t i = 1; i <= N; ++i) {
-            REQUIRE(q.try_push(reinterpret_cast<int*>(i)));
-        }
-
-        std::size_t empty_count = 0;
-
-        // First steal: should reset counter
-        auto v1 = q.steal(empty_count);
-        REQUIRE(v1 != nullptr);
-        REQUIRE(empty_count == 0);  // reset on success
-
-        // Steal rest
-        for (std::size_t i = 0; i < N - 1; ++i) {
-            q.steal(empty_count);
-        }
-        REQUIRE(empty_count == 0);
-
-        // Now empty: should increment
-        q.steal(empty_count);
-        REQUIRE(empty_count == 1);
-        q.steal(empty_count);
-        REQUIRE(empty_count == 2);
-    }
 }
 
 // ============================================================================
@@ -226,10 +205,11 @@ TEST_CASE("BoundedQueue: single stealer FIFO order", "[queue][bounded][unit][st]
 // ============================================================================
 
 /// @test [queue][bounded][stress][mt] Q6+Q7: 不重复 / 不丢失
-/// @details 1 owner push + pop，N stealers steal。用 UnboundedQueue 排除容量限制干扰。
-///          改用 CHECK + 守卫子句替代裸 REQUIRE，确保多线程下的安全退出。
+/// @details 1 owner push + N stealers steal。用 UnboundedQueue 排除容量限制干扰。
+///          UnboundedQueue 现为 steal-only：owner 仅生产，全部消费由 stealer 完成。
+///          所有会抛的 Catch2 宏均在 join() 之后触发，杜绝 joinable 线程析构 terminate。
 TEST_CASE("BoundedQueue: stress — no duplicate, no loss",
-    "[queue][bounded][stress][mt]")
+          "[queue][bounded][stress][mt]")
 {
     auto seed = GENERATE(take(3, random(0u, UINT32_MAX)));
     auto n_stealers = GENERATE(1u, 2u, 4u, 8u);
@@ -241,6 +221,7 @@ TEST_CASE("BoundedQueue: stress — no duplicate, no loss",
     std::vector<std::atomic<bool>> seen(kN);
     std::atomic<std::size_t> consumed{ 0 };
     std::atomic<bool> error{ false };  // 多线程错误标志
+    std::atomic<bool> hung{ false };   // 超时标志，join 后再断言
 
     auto check_consume = [&](int* p) {
         auto v = reinterpret_cast<std::uintptr_t>(p);
@@ -257,15 +238,15 @@ TEST_CASE("BoundedQueue: stress — no duplicate, no loss",
             return;
         }
         consumed.fetch_add(1, std::memory_order_relaxed);
-        };
+    };
 
-    // Stealer 线程
+            // Stealer 线程
     std::vector<std::thread> stealers;
     for (std::size_t i = 0; i < n_stealers; ++i) {
         stealers.emplace_back([&, idx = i] {
             std::mt19937 rng(seed ^ idx);
             while (consumed.load(std::memory_order_relaxed) < kN
-                && !error.load(std::memory_order_relaxed)) {
+                   && !error.load(std::memory_order_relaxed)) {
                 if (auto* p = q.steal(); p != nullptr) {
                     check_consume(p);
                 }
@@ -273,30 +254,31 @@ TEST_CASE("BoundedQueue: stress — no duplicate, no loss",
                     std::this_thread::yield();
                 }
             }
-            });
+        });
     }
 
-    // Owner: 推入全部
+            // Owner: 推入全部（steal-only：owner 仅生产，不消费）
     for (std::uintptr_t i = 1; i <= kN; ++i) {
         q.push(reinterpret_cast<int*>(i));
     }
 
-    // Owner: 也参与 pop
+            // 等待 stealer 排空
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (consumed.load(std::memory_order_relaxed) < kN
-        && !error.load(std::memory_order_relaxed)) {
-        if (auto* p = q.pop(); p != nullptr) {
-            check_consume(p);
-        }
+           && !error.load(std::memory_order_relaxed)) {
         if (std::chrono::steady_clock::now() > deadline) {
-            FAIL("stress hung at " << consumed.load() << "/" << kN
-                << "  top≈" << q.size());
+            hung.store(true, std::memory_order_relaxed);
+            error.store(true, std::memory_order_relaxed);  // 让 stealer 退出循环
+            break;
         }
         std::this_thread::yield();
     }
 
-    for (auto& t : stealers) t.join();
+    for (auto& t : stealers) t.join();  // 任何断言之前必须先 join
 
+    if (hung.load()) {
+        FAIL("stress hung at " << consumed.load() << "/" << kN);
+    }
     REQUIRE_FALSE(error.load());
     REQUIRE(consumed.load() == kN);
     for (std::size_t i = 0; i < kN; ++i) {
@@ -387,7 +369,7 @@ TEST_CASE("BoundedQueue: destructor releases buffer", "[queue][bounded][unit]") 
         tfl::BoundedQueue<int*, 256> q;
         for (int i = 0; i < 200; ++i) {
             q.push(reinterpret_cast<int*>(static_cast<std::uintptr_t>(i + 1)),
-                [] {});
+                   [] {});
         }
         // Pop half
         for (int i = 0; i < 100; ++i) {
@@ -409,19 +391,19 @@ TEST_CASE("BoundedQueue: static assertions on template parameters", "[queue][bou
     STATIC_REQUIRE((tfl::BoundedQueue<int*, 64>::capacity() == 64));
     STATIC_REQUIRE((tfl::BoundedQueue<int*, 1024>::capacity() == 1024));
 
-    // Type must be a pointer
+            // Type must be a pointer
     STATIC_REQUIRE(std::is_pointer_v<typename tfl::BoundedQueue<int*, 64>::value_type>);
 
-    // BoundedQueue must be immovable
+            // BoundedQueue must be immovable
     STATIC_REQUIRE_FALSE(std::is_copy_constructible_v<tfl::BoundedQueue<int*, 64>>);
     STATIC_REQUIRE_FALSE(std::is_move_constructible_v<tfl::BoundedQueue<int*, 64>>);
 
-    // Noexcept destructor
+            // Noexcept destructor
     STATIC_REQUIRE(std::is_nothrow_destructible_v<tfl::BoundedQueue<int*, 64>>);
 }
 
 // ============================================================================
-// SECTION 6: UnboundedQueue 单元测试 (Q8)
+// SECTION 6: UnboundedQueue 单元测试 (Q8) —— steal-only
 // ============================================================================
 
 /// @test [queue][unbounded][unit][st] Q8: push 超过初始 capacity 自动 resize
@@ -432,7 +414,7 @@ TEST_CASE("UnboundedQueue: resize on overflow", "[queue][unbounded][unit][st]") 
         auto initial_cap = q.capacity();
         REQUIRE(initial_cap >= 8);
 
-        // Push more than initial capacity
+                // Push more than initial capacity
         constexpr std::size_t N = 100;
         for (std::uintptr_t i = 1; i <= N; ++i) {
             q.push(reinterpret_cast<int*>(i));
@@ -440,9 +422,9 @@ TEST_CASE("UnboundedQueue: resize on overflow", "[queue][unbounded][unit][st]") 
         REQUIRE(q.size() == N);
         REQUIRE(q.capacity() >= static_cast<std::int64_t>(N));
 
-        // All elements should be recoverable via pop (LIFO)
-        for (std::uintptr_t expected = N; expected >= 1; --expected) {
-            auto got = q.pop();
+                // All elements should be recoverable via steal (FIFO)
+        for (std::uintptr_t expected = 1; expected <= N; ++expected) {
+            auto got = q.steal();
             REQUIRE(got != nullptr);
             REQUIRE(reinterpret_cast<std::uintptr_t>(got) == expected);
         }
@@ -459,21 +441,16 @@ TEST_CASE("UnboundedQueue: resize on overflow", "[queue][unbounded][unit][st]") 
         REQUIRE(q.capacity() >= 200);
     }
 
-    SECTION("empty state after push+pop all") {
+    SECTION("empty state after push+steal all") {
         for (std::uintptr_t i = 1; i <= 50; ++i) {
             q.push(reinterpret_cast<int*>(i));
         }
         for (std::uintptr_t i = 0; i < 50; ++i) {
-            REQUIRE(q.pop() != nullptr);
+            REQUIRE(q.steal() != nullptr);
         }
         REQUIRE(q.empty());
         REQUIRE(q.size() == 0);
-        REQUIRE(q.pop() == nullptr);
-    }
-
-    SECTION("pop from empty fixed-size queue returns nullptr") {
-        tfl::UnboundedQueue<int*> empty_q(16);
-        REQUIRE(empty_q.pop() == nullptr);
+        REQUIRE(q.steal() == nullptr);
     }
 
     SECTION("steal from empty fixed-size queue returns nullptr") {
@@ -491,7 +468,7 @@ TEST_CASE("UnboundedQueue: steal FIFO with resize", "[queue][unbounded][unit][st
         q.push(reinterpret_cast<int*>(i));
     }
 
-    // Steal in FIFO order
+            // Steal in FIFO order
     for (std::uintptr_t expected = 1; expected <= N; ++expected) {
         INFO("FIFO expected " << expected << " after resize");
         auto got = q.steal();
@@ -509,8 +486,9 @@ TEST_CASE("UnboundedQueue: steal FIFO with resize", "[queue][unbounded][unit][st
 /// @test [queue][unbounded][stress][mt] Q9: resize during concurrent steal
 /// @details Forces resize by starting with tiny capacity, then pushing many items
 ///          while concurrent stealers consume them. No duplicates, no loss.
+///          UnboundedQueue 为 steal-only：owner 仅生产，全部消费由 stealer 完成。
 TEST_CASE("UnboundedQueue: concurrent resize stress — no duplicate, no loss",
-    "[queue][unbounded][stress][mt]")
+          "[queue][unbounded][stress][mt]")
 {
     auto seed = GENERATE(take(3, random(0u, UINT32_MAX)));
     auto n_stealers = GENERATE(1u, 2u, 4u);
@@ -523,6 +501,7 @@ TEST_CASE("UnboundedQueue: concurrent resize stress — no duplicate, no loss",
     std::atomic<std::size_t> consumed{ 0 };
 
     std::atomic<bool> check_error{ false };
+    std::atomic<bool> hung{ false };
 
     auto check = [&](int* p) {
         auto v = reinterpret_cast<std::uintptr_t>(p);
@@ -536,9 +515,9 @@ TEST_CASE("UnboundedQueue: concurrent resize stress — no duplicate, no loss",
             return;
         }
         consumed.fetch_add(1, std::memory_order_relaxed);
-        };
+    };
 
-    // Start stealers before pushing to test concurrent resize
+            // Start stealers before pushing to test concurrent resize
     std::vector<std::thread> stealers;
     std::atomic<bool> start_push{ false };
     for (std::size_t i = 0; i < n_stealers; ++i) {
@@ -548,34 +527,41 @@ TEST_CASE("UnboundedQueue: concurrent resize stress — no duplicate, no loss",
                 std::this_thread::yield();
             }
             std::mt19937 rng(seed ^ (idx + 1000));
-            while (consumed.load(std::memory_order_relaxed) < kN) {
+            while (consumed.load(std::memory_order_relaxed) < kN
+                   && !check_error.load(std::memory_order_relaxed)) {
                 if (auto* p = q.steal(); p != nullptr) check(p);
                 if (std::uniform_int_distribution<int>(0, 31)(rng) == 0) {
                     std::this_thread::yield();
                 }
             }
-            });
+        });
     }
 
-    // Start pushing and signal stealers
+            // Start pushing and signal stealers
     start_push.store(true, std::memory_order_relaxed);
 
     for (std::uintptr_t i = 1; i <= kN; ++i) {
         q.push(reinterpret_cast<int*>(i));
     }
 
-    // Owner also pops
+            // 等待 stealer 排空（steal-only：owner 仅生产，不消费）
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    while (consumed.load(std::memory_order_relaxed) < kN) {
-        if (auto* p = q.pop(); p != nullptr) check(p);
+    while (consumed.load(std::memory_order_relaxed) < kN
+           && !check_error.load(std::memory_order_relaxed)) {
         if (std::chrono::steady_clock::now() > deadline) {
-            FAIL("stress hung at " << consumed.load() << "/" << kN
-                << " cap=" << q.capacity());
+            hung.store(true, std::memory_order_relaxed);
+            check_error.store(true, std::memory_order_relaxed);  // 让 stealer 退出循环
+            break;
         }
+        std::this_thread::yield();
     }
 
-    for (auto& t : stealers) t.join();
+    for (auto& t : stealers) t.join();  // 任何断言之前必须先 join
 
+    if (hung.load()) {
+        FAIL("stress hung at " << consumed.load() << "/" << kN
+                               << " cap=" << q.capacity());
+    }
     REQUIRE_FALSE(check_error.load());
     REQUIRE(consumed.load() == kN);
     for (std::size_t i = 0; i < kN; ++i) {
@@ -592,7 +578,7 @@ TEST_CASE("UnboundedQueue: concurrent resize stress — no duplicate, no loss",
 
 /// @test [queue][unbounded][unit] Q12: 析构释放所有 buffer 包括 garbage (ASan 验证)
 TEST_CASE("UnboundedQueue: destructor releases all buffers including garbage",
-    "[queue][unbounded][unit]")
+          "[queue][unbounded][unit]")
 {
     // Force multiple resizes to accumulate garbage buffers
     for (int trial = 0; trial < 10; ++trial) {
@@ -601,9 +587,9 @@ TEST_CASE("UnboundedQueue: destructor releases all buffers including garbage",
         for (std::uintptr_t i = 1; i <= 1000; ++i) {
             q.push(reinterpret_cast<int*>(i));
         }
-        // Pop some to leave items in old buffers referenced
+        // Steal some to leave items in old buffers referenced
         for (int i = 0; i < 500; ++i) {
-            q.pop();
+            q.steal();
         }
         // Destructor should release current buffer + all garbage buffers
     }
@@ -629,7 +615,7 @@ TEST_CASE("UnboundedQueue: static assertions", "[queue][unbounded][compile]") {
 /// @test [queue][bounded][property][st] Q5+Q6: 随机 push/pop 序列与 reference stack 对照
 /// @details 生成随机操作序列，对 BoundedQueue 执行并与 std::stack 对照 LIFO 语义
 TEST_CASE("BoundedQueue: random push/pop sequence matches std::stack",
-    "[queue][bounded][property][st]")
+          "[queue][bounded][property][st]")
 {
     auto seed = GENERATE(take(5, random(0u, UINT32_MAX)));
     INFO("seed = " << seed);
@@ -653,22 +639,23 @@ TEST_CASE("BoundedQueue: random push/pop sequence matches std::stack",
             std::uintptr_t expected = ref.empty() ? 0 : ref.back();
             if (!ref.empty()) ref.pop_back();
             INFO("step=" << step << " got=" << reinterpret_cast<std::uintptr_t>(got)
-                << " expected=" << expected);
+                         << " expected=" << expected);
             REQUIRE(reinterpret_cast<std::uintptr_t>(got) == expected);
         }
     }
 }
 
-/// @test [queue][unbounded][property][st] Q5+Q6: 随机 push/pop 序列与 reference 对照 (resize path)
-TEST_CASE("UnboundedQueue: random push/pop sequence matches reference",
-    "[queue][unbounded][property][st]")
+/// @test [queue][unbounded][property][st] Q5+Q6: 随机 push/steal 序列与 reference 对照 (FIFO, resize path)
+/// @details UnboundedQueue 为 steal-only：用 FIFO 队列（front 出队）作为对照。
+TEST_CASE("UnboundedQueue: random push/steal sequence matches reference (FIFO)",
+          "[queue][unbounded][property][st]")
 {
     auto seed = GENERATE(take(5, random(0u, UINT32_MAX)));
     INFO("seed = " << seed);
     std::mt19937 rng(seed);
 
     tfl::UnboundedQueue<int*> q(8);
-    std::vector<std::uintptr_t> ref;
+    std::deque<std::uintptr_t> ref;  // reference FIFO queue
     std::uintptr_t next = 1;
 
     for (int step = 0; step < 5000; ++step) {
@@ -680,10 +667,10 @@ TEST_CASE("UnboundedQueue: random push/pop sequence matches reference",
             ++next;
         }
         else {
-            // Pop (owner LIFO)
-            auto got = q.pop();
-            std::uintptr_t expected = ref.empty() ? 0 : ref.back();
-            if (!ref.empty()) ref.pop_back();
+            // Steal (FIFO: 从队首出)
+            auto got = q.steal();
+            std::uintptr_t expected = ref.empty() ? 0 : ref.front();
+            if (!ref.empty()) ref.pop_front();
             INFO("step=" << step);
             REQUIRE(reinterpret_cast<std::uintptr_t>(got) == expected);
         }
@@ -693,7 +680,7 @@ TEST_CASE("UnboundedQueue: random push/pop sequence matches reference",
 /// @test [queue][bounded][property][st] Q6: 单线程连续 push/pop 不重复消费
 /// @details Simple property: push then pop all, each value seen exactly once
 TEST_CASE("BoundedQueue: push-pop cycle — each value consumed exactly once",
-    "[queue][bounded][property][st]")
+          "[queue][bounded][property][st]")
 {
     auto seed = GENERATE(take(5, random(0u, UINT32_MAX)));
     INFO("seed = " << seed);
@@ -706,12 +693,12 @@ TEST_CASE("BoundedQueue: push-pop cycle — each value consumed exactly once",
         auto n = std::uniform_int_distribution<std::size_t>(1, kCap)(rng);
         std::vector<bool> seen(n + 1, false);
 
-        // Push n items
+                // Push n items
         for (std::size_t i = 1; i <= n; ++i) {
             REQUIRE(q.try_push(reinterpret_cast<int*>(i)));
         }
 
-        // Pop n items, verify each seen exactly once
+                // Pop n items, verify each seen exactly once
         for (std::size_t i = 0; i < n; ++i) {
             auto got = q.pop();
             REQUIRE(got != nullptr);
@@ -723,7 +710,7 @@ TEST_CASE("BoundedQueue: push-pop cycle — each value consumed exactly once",
         }
         REQUIRE(q.pop() == nullptr);
 
-        // All must have been seen
+                // All must have been seen
         for (std::size_t i = 1; i <= n; ++i) {
             INFO("trial=" << trial << " value=" << i);
             REQUIRE(seen[i]);
@@ -768,7 +755,7 @@ TEST_CASE("BoundedQueue: minimum capacity (2) edge cases", "[queue][bounded][uni
                 steal_got.store(true);
                 value_from_steal.store(static_cast<int>(reinterpret_cast<std::uintptr_t>(p)));
             }
-            });
+        });
 
         auto p = q.pop();
         if (p) {
@@ -777,7 +764,7 @@ TEST_CASE("BoundedQueue: minimum capacity (2) edge cases", "[queue][bounded][uni
         }
         stealer.join();
 
-        // Exactly one should have gotten it
+                // Exactly one should have gotten it
         REQUIRE(pop_got.load() != steal_got.load());
         if (pop_got.load()) REQUIRE(value_from_pop.load() == 99);
         if (steal_got.load()) REQUIRE(value_from_steal.load() == 99);
@@ -799,7 +786,7 @@ TEST_CASE("BoundedQueue: minimum capacity (2) edge cases", "[queue][bounded][uni
 //   Q4  ✓ "BoundedQueue: single-thread owner LIFO and capacity bounds"
 //         SECTION "push N (N < Cap) then size() == N"
 //   Q5  ✓ "BoundedQueue: random push/pop sequence matches std::stack"
-//         "UnboundedQueue: random push/pop sequence matches reference"
+//         "UnboundedQueue: random push/steal sequence matches reference (FIFO)"
 //   Q6  ✓ "BoundedQueue: stress — no duplicate, no loss"
 //         "BoundedQueue: push-pop cycle — each value consumed exactly once"
 //   Q7  ✓ "BoundedQueue: stress — no duplicate, no loss"
