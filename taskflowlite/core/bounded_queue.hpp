@@ -281,10 +281,10 @@ Tp BoundedQueue<Tp, cap>::pop() noexcept {
 
         // 最后一个元素：owner 与 stealer 可能同时操作
         if (top == bottom) [[unlikely]] {
-            // seq_cst CAS: 尝试原子地将 top 从 top 改为 top + 1
-            // - 成功 (seq_cst): owner 获得元素所有权
+            // acq_rel CAS: 尝试原子地将 top 从 top 改为 top + 1
+            // - 成功 (acq_rel): owner 获得元素所有权
             // - 失败 (relaxed): stealer 已抢先窃取，放弃并还原 bottom
-            if (!m_top.compare_exchange_strong(top, top + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) [[unlikely]] {
+            if (!m_top.compare_exchange_strong(top, top + 1, std::memory_order_acq_rel, std::memory_order_relaxed)) [[unlikely]] {
                 // 还原 bottom: stealer 已拿走元素
                 m_bottom.store(bottom + 1, std::memory_order_relaxed);
                 return nullptr;
