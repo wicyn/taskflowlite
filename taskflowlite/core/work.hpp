@@ -1,4 +1,4 @@
-/// @file  work.hpp
+﻿/// @file  work.hpp
 /// @brief DAG 任务节点基类 Work —— 框架最核心的内部数据结构。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -15,6 +15,7 @@
 #include <memory>
 #include <stack>
 #include <future>
+#include <unordered_set>
 #include <cmath>
 #include <climits>
 
@@ -26,7 +27,6 @@
 #include "topology.hpp"
 #include "semaphore.hpp"
 #include "small_vector.hpp"
-#include "unordered_dense.hpp"
 #include "object_pool.hpp"
 
 namespace tfl {
@@ -633,7 +633,7 @@ inline bool Work::_has_path_without_jump(const Work* from, const Work* to) const
 
     // 显式指定底层使用 vector, 保留连续内存的 L1 缓存预取优势
     std::stack<const Work*, std::vector<const Work*>> dfs_stack;
-    unordered_dense::set<const Work*> visited;
+    std::unordered_set<const Work*> visited;
 
     // 预分配容量, 避免扩容开销
     visited.reserve(64);
