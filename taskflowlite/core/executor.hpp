@@ -332,6 +332,10 @@ private:
     template <worker_handle H>
     static auto _make_handler_ptr(H&& handler) -> WorkerHandlerPtr;
 
+    /// @brief 构造期容量校验：保证 n 落在 16-bit 字段 + 0xFFFF 哨兵的可用范围内。
+    /// @throws tfl::Exception  n 为 0 或 n >= capacity()(65535，可用上限 65534)
+    static std::size_t _check_worker_count(std::size_t n);
+
     /// @brief 创建并启动 num_workers 个工作线程，同时填充 m_tid_to_worker 映射表供 _this_worker() 查询。
     /// @param num_workers 要创建的线程数，已由构造函数保证 >= 1。
     void _spawn(std::size_t num_workers);
@@ -518,16 +522,24 @@ inline auto Executor::_make_handler_ptr(H&& handler) -> WorkerHandlerPtr {
     }
 }
 
+// 容量校验:与 Notifier::_check_capacity 同一上界
+inline std::size_t Executor::_check_worker_count(std::size_t n) {
+    if (n == 0) {
+        throw Exception("Executor must define at least one worker.");
+    }
+    if (n >= Notifier::capacity()) {   // capacity()==65535 → 等价于 n < 65535,可用上限 65534
+        throw Exception("Executor worker count exceeds Notifier 16-bit capacity (max 65534).");
+    }
+    return n;
+}
+
 // 真实构造体：字段初始化 + _spawn 启动 worker
 inline Executor::Executor(WorkerHandlerPtr handler, std::size_t num_workers)
-    : m_workers{num_workers}
+    : m_workers{_check_worker_count(num_workers)}        // ← 先校验,早于 m_notifier 构造
     , m_shared_buffers{static_cast<std::size_t>(std::bit_width(num_workers))}
     , m_notifier{num_workers}
     , m_handler{std::move(handler)}
 {
-    if (num_workers == 0) {
-        throw Exception("Executor must define at least one worker.");
-    }
     _spawn(num_workers);
 }
 
