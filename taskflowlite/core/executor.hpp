@@ -13,7 +13,6 @@
 #include "flow.hpp"
 #include "future.hpp"
 #include "worker.hpp"
-#include "unordered_dense.hpp"
 #include "unbounded_queue.hpp"
 
 namespace tfl {
@@ -317,8 +316,7 @@ private:
     std::vector<Buffer>                             m_shared_buffers;   ///< 分片共享队列，溢出目标
     Notifier                                        m_notifier;         ///< 两阶段 park 唤醒器
     WorkerHandlerPtr                                m_handler;          ///< WorkerHandler 生命周期管理
-    unordered_dense::map<std::thread::id, Worker*>  m_worker_by_tid;    ///< thread_id → Worker* 快速查找
-
+    std::unordered_map<std::thread::id, Worker*>    m_tid_to_worker;    ///< thread_id → Worker* 快速查找
 
     /// @brief 真实初始化入口：字段构造 + _spawn 启动 worker。
     ///
@@ -334,7 +332,7 @@ private:
     template <worker_handle H>
     static auto _make_handler_ptr(H&& handler) -> WorkerHandlerPtr;
 
-    /// @brief 创建并启动 num_workers 个工作线程，同时填充 m_worker_by_tid 映射表供 _this_worker() 查询。
+    /// @brief 创建并启动 num_workers 个工作线程，同时填充 m_tid_to_worker 映射表供 _this_worker() 查询。
     /// @param num_workers 要创建的线程数，已由构造函数保证 >= 1。
     void _spawn(std::size_t num_workers);
 
@@ -636,7 +634,7 @@ inline void Executor::_spawn(std::size_t num_workers) {
             m_handler->on_stop(wr);
         });
 
-        m_worker_by_tid.emplace(wr.m_thread.get_id(), std::addressof(wr));
+        m_tid_to_worker.emplace(wr.m_thread.get_id(), std::addressof(wr));
     }
 }
 
@@ -1243,8 +1241,8 @@ inline void Executor::_decrement_topology() noexcept {
 }
 
 inline Worker* Executor::_this_worker() {
-    auto itr = m_worker_by_tid.find(std::this_thread::get_id());
-    return itr == m_worker_by_tid.end() ? nullptr : itr->second;
+    auto itr = m_tid_to_worker.find(std::this_thread::get_id());
+    return itr == m_tid_to_worker.end() ? nullptr : itr->second;
 }
 
 /// @brief 任务执行入口（链式执行优化）。
