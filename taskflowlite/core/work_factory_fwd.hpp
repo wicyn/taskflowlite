@@ -1,4 +1,4 @@
-/// @file work_factory_fwd.hpp
+﻿/// @file work_factory_fwd.hpp
 /// @brief Work 节点工厂函数族 —— 仅声明，与 work_factory.hpp 配对。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -10,6 +10,7 @@
 #pragma once
 #include <cmath>
 #include <cstring>
+#include <future>
 #include "work.hpp"
 namespace tfl {
 
