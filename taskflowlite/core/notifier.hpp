@@ -220,6 +220,26 @@ public:
     static constexpr std::uint64_t k_epoch_mask      = ((1ULL << k_epoch_bits) - 1) << k_epoch_shift; // 0xFFFFFFFF'0000'0000 (18446744069414584320)
     static constexpr std::uint64_t k_epoch_inc       = 1ULL << k_epoch_shift;                      // 0x0000'0001'0000'0000 (4294967296)
 
+
+
+    // // ========================================================================
+    // //  状态字位操作常量 (布局: [ Epoch (24bit) | Prewaiter (20bit) | Stack (20bit) ])
+    // // ========================================================================
+    // // stack 字段：低 20 bit，存 m_waiters 索引；全 1（0xFFFFF）作"空栈"哨兵
+    // static constexpr std::uint64_t k_stack_bits      = 20;
+    // static constexpr std::uint64_t k_stack_mask      = (1ULL << k_stack_bits) - 1;                 // 0x0000'0000'000F'FFFF (1048575)
+
+    // // prewaiter 字段：中 20 bit，记录"已 prepare 但尚未 commit/cancel"的线程数
+    // static constexpr std::uint64_t k_prewaiter_bits  = 20;
+    // static constexpr std::uint64_t k_prewaiter_shift = k_stack_bits;                               // 20
+    // static constexpr std::uint64_t k_prewaiter_mask  = ((1ULL << k_prewaiter_bits) - 1) << k_prewaiter_shift; // 0x0000'00FF'FFF0'0000
+    // static constexpr std::uint64_t k_prewaiter_inc   = 1ULL << k_prewaiter_shift;                  // 0x0000'0000'0010'0000 (1048576)
+
+    // // epoch 字段：高 24 bit，全局轮次票号；只增不减，允许回绕（序列号算术）
+    // static constexpr std::uint64_t k_epoch_bits      = 24;
+    // static constexpr std::uint64_t k_epoch_shift     = k_stack_bits + k_prewaiter_bits;            // 40
+    // static constexpr std::uint64_t k_epoch_mask      = ((1ULL << k_epoch_bits) - 1) << k_epoch_shift; // 0xFFFF'FF00'0000'0000
+    // static constexpr std::uint64_t k_epoch_inc       = 1ULL << k_epoch_shift;                      // 0x0000'0100'0000'0000 (1099511627776)
 public:
     // ========================================================================
     //  Construction（构造 / 析构）
@@ -323,10 +343,6 @@ public:
             }
 
             // release：栈链接（next + state 复位）完成前，本节点对唤醒线程不可见。
-            // REVIEW: 此处仅 release（失败序 relaxed），唤醒侧仅 acquire。多于一个
-            //         睡眠者的栈遍历依赖跨节点 happens-before，单 release/acquire
-            //         在弱内存（ARM）下可能不足。规范设计应为 acq_rel —— 详见对话
-            //         末尾 review。x86 TSO 会掩盖此问题。
             if (m_state.compare_exchange_weak(state, new_state, std::memory_order_release)) {
                 break;
             }
@@ -423,7 +439,6 @@ public:
             }
 
             // REVIEW: 仅 acquire（无 release）。pop 之后若有线程 re-push 并 read-from
-            //         本次 RMW，跨节点 happens-before 链不完整；规范设计应 acq_rel。
             if (m_state.compare_exchange_weak(state, new_state, std::memory_order_acquire)) {
                 if (num_pre) {
                     return; // prewaiter 已被"唤醒"（无需 futex）
@@ -459,7 +474,6 @@ public:
                 ((state & k_epoch_mask) + (k_epoch_inc * num_pre)) | k_stack_mask;
 
             // REVIEW: 同 notify_one，acquire 单侧。整条链的跨节点遍历对内存序最敏感，
-            //         弱内存下尤需 acq_rel —— 见末尾 review。
             if (m_state.compare_exchange_weak(state, new_state, std::memory_order_acquire)) {
                 if ((state & k_stack_mask) == k_stack_mask) {
                     return; // 只有 prewaiter，无栈节点可 unpark
@@ -515,7 +529,6 @@ public:
                 consumed = 1;
             }
 
-            // REVIEW: 同前两者，acquire 单侧；弱内存下应 acq_rel。
             if (m_state.compare_exchange_weak(state, new_state, std::memory_order_acquire)) {
                 n -= consumed;                 // 仅成功时扣减剩余配额
                 if (num_pre == 0) {

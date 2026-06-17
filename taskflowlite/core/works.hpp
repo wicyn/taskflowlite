@@ -1387,6 +1387,7 @@ public:
 template <typename Gh>
     requires graph_holder<Gh>
 inline void Runtime::cowait(Gh& gh) {
+    _assert_owner();
     auto& graph = detail::to_graph(gh);
     if (graph.empty()) {
         return;

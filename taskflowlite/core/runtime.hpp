@@ -7,6 +7,8 @@
 /// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
+#include <cassert>
+#include <thread>
 
 #include "executor.hpp"
 namespace tfl {
@@ -280,6 +282,20 @@ private:
 
     explicit Runtime(Work& work, Worker& wr, Executor& exec) noexcept
         : m_work{work}, m_worker{wr}, m_executor{exec} {}
+
+    /// @brief Debug 期断言:当前线程必须是本 Runtime 绑定的 owner worker 线程。
+    ///
+    /// Runtime 线程私有,调度 API 直接操作 m_worker 的 Chase-Lev 本地队列
+    /// (single-producer)与 cowait 窃取循环,仅 owner 线程可安全调用。误用形式:
+    /// 把 Runtime& 递给另一并发线程同时调用。本断言在 debug 下把底层 deque
+    /// 数据竞争提前转化为可读报错;release(-DNDEBUG)零开销。
+    ///
+    /// @note 仅覆盖"活体跨线程"。回调返回后 rt 已析构,事后误用是 UAF,
+    ///       对象已不存在,本断言无法捕获。
+    void _assert_owner() const noexcept {
+        assert(std::this_thread::get_id() == m_worker.m_thread.get_id()
+               && "Runtime used off its owner worker thread (thread-affine handle)");
+    }
 };
 
 // ============================================================================
@@ -324,6 +340,7 @@ inline void Runtime::detach(Gh&& gh, P&& pred) {
 template <anchor_tag A, typename Gh, typename P, typename C>
     requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
 inline void Runtime::detach(Gh&& gh, P&& pred, C&& cb) {
+    _assert_owner();
     Work* work = make_detached_flow<A>(
         std::addressof(m_executor),
         std::addressof(m_work),
@@ -338,6 +355,7 @@ inline void Runtime::detach(Gh&& gh, P&& pred, C&& cb) {
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
 inline void Runtime::detach(T&& task, Args&&... args) {
+    _assert_owner();
     Work* work = make_detached_basic<A>(
         std::addressof(m_executor),
         std::addressof(m_work),
@@ -351,6 +369,7 @@ inline void Runtime::detach(T&& task, Args&&... args) {
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
 inline void Runtime::detach(T&& task, Args&&... args) {
+    _assert_owner();
     Work* work = make_detached_runtime<A>(
         std::addressof(m_executor),
         std::addressof(m_work),
@@ -397,6 +416,7 @@ inline Future<void> Runtime::async(Gh&& gh, P&& pred) {
 template <anchor_tag A, graph_holder Gh, typename P, typename C>
     requires (capturable<P, C> && predicate<P> && callback<C>)
 inline Future<void> Runtime::async(Gh&& gh, P&& pred, C&& cb) {
+    _assert_owner();
     std::promise<void> promise;
     std::future<void>  std_future = promise.get_future();
 
@@ -425,6 +445,7 @@ inline Future<void> Runtime::async(Gh&& gh, P&& pred, C&& cb) {
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && basic_invocable<T, Args...>)
 inline auto Runtime::async(T&& task, Args&&... args) -> Future<basic_return_t<T, Args...>> {
+    _assert_owner();
     using R = basic_return_t<T, Args...>;
 
     std::promise<R> promise;
@@ -455,6 +476,7 @@ inline auto Runtime::async(T&& task, Args&&... args) -> Future<basic_return_t<T,
 template <anchor_tag A, typename T, typename... Args>
     requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
 inline auto Runtime::async(T&& task, Args&&... args) -> Future<runtime_return_t<T, Args...>> {
+    _assert_owner();
     using R = runtime_return_t<T, Args...>;
 
     std::promise<R> promise;
@@ -492,6 +514,7 @@ inline bool Runtime::has_exception() const noexcept {
 ///   - 父节点不可为 @c nullptr —— 拒绝顶级孤立任务（无法占位）。
 ///   - 违反任一约束抛出 @c Exception。
 inline void Runtime::submit(Task task) {
+    _assert_owner();
     auto* w = task.m_work;
 
     // 兄弟关系校验：task 与 m_work 必须共享同一非空父节点
@@ -512,6 +535,7 @@ inline void Runtime::submit(Task task) {
 template <typename Gh>
     requires graph_holder<Gh>
 inline void Runtime::submit(Gh& gh) {
+    _assert_owner();
     auto& graph = detail::to_graph(gh);
     if (graph.empty()) {
         return;
@@ -520,6 +544,7 @@ inline void Runtime::submit(Gh& gh) {
 }
 
 inline void Runtime::cowait() {
+    _assert_owner();
     auto pred = [this]() noexcept {
         return m_work.m_join_counter.load(std::memory_order_acquire) == 1;
     };
@@ -535,6 +560,7 @@ inline void Runtime::cowait() {
 
 template <predicate Pred>
 inline void Runtime::cowait_until(Pred&& pred) {
+    _assert_owner();
     m_executor._cowait_until(m_worker, std::forward<Pred>(pred));
 }
 
