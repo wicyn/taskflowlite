@@ -52,28 +52,26 @@ enum class TaskType : std::int32_t
     Jump        = 6,   ///< 跳转任务：跳转至图中指定的绝对索引节点执行
     MultiJump   = 7,   ///< 多路跳转：同时跳转至多个指定的绝对索引节点
     Graph       = 8    ///< 子图任务：封装了另一个完整的 Taskflow 拓扑
-
 };
 
 /// @brief 返回 TaskType 对应的 C 字符串常量。
 constexpr const char* to_string(TaskType type) noexcept {
     switch (type) {
-    case TaskType::None:        return "none";
-    case TaskType::Noop:        return "noop";
-    case TaskType::Basic:       return "basic";
-    case TaskType::Runtime:     return "runtime";
-    case TaskType::Branch:      return "branch";
-    case TaskType::MultiBranch: return "multi_branch";
-    case TaskType::Jump:        return "jump";
-    case TaskType::MultiJump:   return "multi_jump";
-    case TaskType::Graph:       return "graph";
-    default:                    return "unknown";
+        case TaskType::None:        return "none";
+        case TaskType::Noop:        return "noop";
+        case TaskType::Basic:       return "basic";
+        case TaskType::Runtime:     return "runtime";
+        case TaskType::Branch:      return "branch";
+        case TaskType::MultiBranch: return "multi_branch";
+        case TaskType::Jump:        return "jump";
+        case TaskType::MultiJump:   return "multi_jump";
+        case TaskType::Graph:       return "graph";
+        default:                    return "unknown";
     }
 }
 
 /// @brief 返回 TaskType 对应的 string_view（零拷贝）。
-constexpr std::string_view to_string_view(TaskType type) noexcept
-{
+constexpr std::string_view to_string_view(TaskType type) noexcept {
     return to_string(type);
 }
 
@@ -82,13 +80,12 @@ namespace impl {
 template <>
 struct EnumMaxImpl<TaskType>
 {
-    static constexpr std::int32_t Value = 8;
+    static constexpr std::int32_t Value = 9;
 };
 } // namespace impl
 
 /// @brief 将 TaskType 写入 ostream（格式同 to_string）。
-inline std::ostream& operator<<(std::ostream& os, TaskType type)
-{
+inline std::ostream& operator<<(std::ostream& os, TaskType type) {
     return os << to_string(type);
 }
 
@@ -110,17 +107,16 @@ enum class Direction : std::uint8_t
 /// @brief 将 Direction 转换为字符串。
 constexpr const char* to_string(Direction dir) noexcept {
     switch (dir) {
-    case Direction::Down:  return "down";
-    case Direction::Right: return "right";
-    case Direction::Up:    return "up";
-    case Direction::Left:  return "left";
-    default:               return "down";
+        case Direction::Down:  return "down";
+        case Direction::Right: return "right";
+        case Direction::Up:    return "up";
+        case Direction::Left:  return "left";
+        default:               return "unknown";
     }
 }
 
 /// @brief 将 Direction 转换为 string_view。
-constexpr std::string_view to_string_view(Direction dir) noexcept
-{
+constexpr std::string_view to_string_view(Direction dir) noexcept {
     return to_string(dir);
 }
 
@@ -134,8 +130,7 @@ struct EnumMaxImpl<Direction>
 } // namespace impl
 
 /// @brief 将 Direction 写入 ostream（格式同 to_string）。
-inline std::ostream& operator<<(std::ostream& os, Direction dir)
-{
+inline std::ostream& operator<<(std::ostream& os, Direction dir) {
     return os << to_string(dir);
 }
 
