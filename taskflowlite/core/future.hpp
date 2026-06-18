@@ -13,6 +13,7 @@
 #include <stop_token>
 
 #include "utility.hpp"
+#include "exception.hpp"
 namespace tfl {
 
 /// @brief 任务返回值句柄 —— 组合 std::future<R> 并附加协作式停止控制。
@@ -51,8 +52,8 @@ public:
     ///        重复调用（或对 move-from / 已 share 的 Future 调用）抛 std::future_error。
     /// @return callable 的返回值 R（移动语义）。
     R get() {
-        if (!m_future.valid()) {
-            throw std::future_error(std::future_errc::no_state);
+        if (!m_future.valid()) [[unlikely]] {
+            throw Exception("Future::get: no associated state.");
         }
         return m_future.get();
     }
