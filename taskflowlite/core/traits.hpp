@@ -24,6 +24,7 @@
 #include <functional>
 #include <type_traits>
 #include <version>
+#include <coroutine>
 
 #include "forward.hpp"
 
@@ -181,13 +182,13 @@ concept callback = std::invocable<std::decay_t<C>&>;
 ///      - `const Graph& graph() const`
 template <typename Gh>
 concept graph_holder = std::derived_from<std::remove_cvref_t<Gh>, Graph> || (
-                           requires(std::remove_cvref_t<Gh>& gh) {
-                               { gh.graph() } -> std::convertible_to<Graph&>;
-                           } &&
-                           requires(const std::remove_cvref_t<Gh>& gh) {
-                               { gh.graph() } -> std::convertible_to<const Graph&>;
-                           }
-                           );
+                                                                                requires(std::remove_cvref_t<Gh>& gh) {
+                                                                                    { gh.graph() } -> std::convertible_to<Graph&>;
+                                                                                } &&
+                                                                                requires(const std::remove_cvref_t<Gh>& gh) {
+                                                                                    { gh.graph() } -> std::convertible_to<const Graph&>;
+                                                                                }
+                                                                                );
 
 namespace detail {
 
@@ -216,83 +217,6 @@ template <graph_holder Gh>
 }
 
 }
-// ============================================================================
-//  Concepts — 任务节点类型约束
-//
-//  Args 经 std::unwrap_ref_decay_t 处理，与框架实际存储/传递 callable 参数
-//  的类型一致。
-//
-//  每个 concept 拆为两个独立实现：
-//    _plain     : f(args..., [Tail&])
-//    _stoppable : f(args..., [Tail&], std::stop_token)
-//  顶层 concept = _plain || _stoppable，便于 invoker 用
-//  `if constexpr (xxx_stoppable<...>)` 精确分派。
-//
-//  Why: stop_token 是 shared_ptr 语义；用值接收 + std::move 进 invoke
-//       省一次 atomic ref-count，与 std::jthread 惯例一致。
-// ============================================================================
-
-/// @brief `f(args...)` 可调用 —— 普通同步任务签名。
-template <typename T, typename... Args>
-concept basic_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>;
-/// @brief `f(args..., stop_token)` 可调用 —— 普通同步任务（带停止令牌）。
-template <typename T, typename... Args>
-concept basic_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., std::stop_token>;
-/// @brief 普通同步任务：plain 或 stoppable 至少满足其一。
-template <typename T, typename... Args>
-concept basic_invocable = basic_invocable_plain<T, Args...> || basic_invocable_stoppable<T, Args...>;
-
-/// @brief `f(args..., Branch&)` 可调用 —— 单目标条件分支任务签名。
-template <typename T, typename... Args>
-concept branch_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>;
-/// @brief `f(args..., Branch&, stop_token)` 可调用 —— 条件分支任务（带停止令牌）。
-template <typename T, typename... Args>
-concept branch_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&, std::stop_token>;
-/// @brief 条件分支任务：plain 或 stoppable 至少满足其一。
-template <typename T, typename... Args>
-concept branch_invocable = branch_invocable_plain<T, Args...> || branch_invocable_stoppable<T, Args...>;
-
-/// @brief `f(args..., MultiBranch&)` 可调用 —— 多目标广播分支任务签名。
-template <typename T, typename... Args>
-concept multi_branch_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>;
-/// @brief `f(args..., MultiBranch&, stop_token)` 可调用 —— 多分支任务（带停止令牌）。
-template <typename T, typename... Args>
-concept multi_branch_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&, std::stop_token>;
-/// @brief 多目标广播分支任务：plain 或 stoppable 至少满足其一。
-template <typename T, typename... Args>
-concept multi_branch_invocable = multi_branch_invocable_plain<T, Args...> || multi_branch_invocable_stoppable<T, Args...>;
-
-/// @brief `f(args..., Jump&)` 可调用 —— 单目标强制跳转任务签名。
-template <typename T, typename... Args>
-concept jump_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>;
-/// @brief `f(args..., Jump&, stop_token)` 可调用 —— 跳转任务（带停止令牌）。
-template <typename T, typename... Args>
-concept jump_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&, std::stop_token>;
-/// @brief 强制跳转任务：plain 或 stoppable 至少满足其一。
-template <typename T, typename... Args>
-concept jump_invocable = jump_invocable_plain<T, Args...> || jump_invocable_stoppable<T, Args...>;
-
-/// @brief `f(args..., MultiJump&)` 可调用 —— 多目标广播跳转任务签名。
-template <typename T, typename... Args>
-concept multi_jump_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>;
-/// @brief `f(args..., MultiJump&, stop_token)` 可调用 —— 多跳转任务（带停止令牌）。
-template <typename T, typename... Args>
-concept multi_jump_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&, std::stop_token>;
-/// @brief 多目标广播跳转任务：plain 或 stoppable 至少满足其一。
-template <typename T, typename... Args>
-concept multi_jump_invocable = multi_jump_invocable_plain<T, Args...> || multi_jump_invocable_stoppable<T, Args...>;
-
-/// @brief `f(args..., Runtime&)` 可调用 —— 运行时动态调度任务签名。
-template <typename T, typename... Args>
-concept runtime_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>;
-/// @brief `f(args..., Runtime&, stop_token)` 可调用 —— 运行时任务（带停止令牌）。
-template <typename T, typename... Args>
-concept runtime_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&, std::stop_token>;
-/// @brief 运行时动态调度任务：plain 或 stoppable 至少满足其一。
-template <typename T, typename... Args>
-concept runtime_invocable = runtime_invocable_plain<T, Args...> || runtime_invocable_stoppable<T, Args...>;
-
-
 
 // ============================================================================
 //  返回类型推导
@@ -308,9 +232,25 @@ concept runtime_invocable = runtime_invocable_plain<T, Args...> || runtime_invoc
 //
 //  Why _plain 优先：与 invoker 端 `if constexpr (..._stoppable<...>)` 的
 //      分派策略保持一致，避免 return_t 与运行时签名错位。
+//
+//  Why 上移：普通 concept 顶层要用 `*_return_t` 做协程排除（见 coro_returning），
+//      故返回类型别名必须先于 concept 可见。
 // ============================================================================
 
 namespace detail {
+
+/// @brief 探测返回类型是否为协程返回对象（带成员 promise_type）。
+///
+/// @details 含 co_await / co_return / co_yield 的函数，其返回类型 R 被语言
+///   强制满足协程协议：默认 `std::coroutine_traits<R>::promise_type` 即转发
+///   到 `R::promise_type`。因此「R 暴露 promise_type」⇔「R 是协程返回类型」。
+///
+///   用途：普通任务 concept（basic/branch/.../runtime）反向排除协程。协程被
+///   普通签名 std::invocable 接纳，但 invoke 只构造协程帧、不跑函数体——
+///   「调了但没跑」的静默 bug。这里在编译期把它挡在普通任务路径之外。
+
+template <typename R>
+concept coro_returning =  requires { typename std::coroutine_traits<std::remove_cvref_t<R>>::promise_type; };
 
 /// @brief 尾参标签包：编码各分类追加在 Args... 之后的 framework 形参。
 ///
@@ -346,22 +286,122 @@ struct invocable_return<T, tail_pack<Tail...>, Args...> {
 
 /// @brief `basic_invocable<T, Args...>` 的返回类型 —— `f(args...)` 或 `f(args..., stop_token)`。
 template <typename T, typename... Args>
-using basic_return_t        = typename detail::invocable_return<T, detail::tail_pack<>,            Args...>::type;
+using basic_return_t        = typename detail::invocable_return<T, detail::tail_pack<>, Args...>::type;
 /// @brief `branch_invocable<T, Args...>` 的返回类型。
 template <typename T, typename... Args>
-using branch_return_t       = typename detail::invocable_return<T, detail::tail_pack<Branch&>,     Args...>::type;
+using branch_return_t       = typename detail::invocable_return<T, detail::tail_pack<Branch&>, Args...>::type;
 /// @brief `multi_branch_invocable<T, Args...>` 的返回类型。
 template <typename T, typename... Args>
-using multi_branch_return_t = typename detail::invocable_return<T, detail::tail_pack<MultiBranch&>,Args...>::type;
+using multi_branch_return_t = typename detail::invocable_return<T, detail::tail_pack<MultiBranch&>, Args...>::type;
 /// @brief `jump_invocable<T, Args...>` 的返回类型。
 template <typename T, typename... Args>
-using jump_return_t         = typename detail::invocable_return<T, detail::tail_pack<Jump&>,       Args...>::type;
+using jump_return_t         = typename detail::invocable_return<T, detail::tail_pack<Jump&>, Args...>::type;
 /// @brief `multi_jump_invocable<T, Args...>` 的返回类型。
 template <typename T, typename... Args>
-using multi_jump_return_t   = typename detail::invocable_return<T, detail::tail_pack<MultiJump&>,  Args...>::type;
+using multi_jump_return_t   = typename detail::invocable_return<T, detail::tail_pack<MultiJump&>, Args...>::type;
 /// @brief `runtime_invocable<T, Args...>` 的返回类型。
 template <typename T, typename... Args>
-using runtime_return_t      = typename detail::invocable_return<T, detail::tail_pack<Runtime&>,    Args...>::type;
+using runtime_return_t      = typename detail::invocable_return<T, detail::tail_pack<Runtime&>, Args...>::type;
+
+
+// ============================================================================
+//  Concepts — 任务节点类型约束
+//
+//  Args 经 std::unwrap_ref_decay_t 处理，与框架实际存储/传递 callable 参数
+//  的类型一致。
+//
+//  每个 concept 拆为两个独立实现：
+//    _plain     : f(args..., [Tail&])
+//    _stoppable : f(args..., [Tail&], std::stop_token)
+//  顶层 concept = (_plain || _stoppable) && !coro_returning<*_return_t>。
+//  便于 invoker 用 `if constexpr (xxx_stoppable<...>)` 精确分派。
+//
+//  Why: stop_token 是 shared_ptr 语义；用值接收 + std::move 进 invoke
+//       省一次 atomic ref-count，与 std::jthread 惯例一致。
+//
+//  ── 协程排除（!coro_returning）─────────────────────────────────────────
+//  协程被普通签名 std::invocable 接纳，但 invoke 只构造协程帧、不跑函数体
+//  ——「调了但没跑」的静默 bug。故在每个普通顶层 concept 反向排除「返回类型
+//  暴露 promise_type」者，把协程挡在普通任务路径之外，交由专门的协程入口处理。
+//
+//  SFINAE 安全：concept 合取短路——左侧 (_plain || _stoppable) 为 false 时，
+//      右侧 *_return_t<T,Args...> 根本不被替换，bad type 不会硬错（已实测）。
+//      又因左侧为 true ⟺ invocable_return 的某偏特化命中 ⟺ ::type 必存在，
+//      被求值路径上 *_return_t 永不替换失败。
+// ============================================================================
+
+/// @brief `f(args...)` 可调用 —— 普通同步任务签名。
+template <typename T, typename... Args>
+concept basic_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>
+                                && !detail::coro_returning<basic_return_t<T, Args...>>;
+/// @brief `f(args..., stop_token)` 可调用 —— 普通同步任务（带停止令牌）。
+template <typename T, typename... Args>
+concept basic_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., std::stop_token>
+                                    && !detail::coro_returning<basic_return_t<T, Args...>>;
+/// @brief 普通同步任务：plain 或 stoppable 至少满足其一，且非协程。
+template <typename T, typename... Args>
+concept basic_invocable = basic_invocable_plain<T, Args...> || basic_invocable_stoppable<T, Args...>;
+
+/// @brief `f(args..., Branch&)` 可调用 —— 单目标条件分支任务签名。
+template <typename T, typename... Args>
+concept branch_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>
+                                 && !detail::coro_returning<branch_return_t<T, Args...>>;
+/// @brief `f(args..., Branch&, stop_token)` 可调用 —— 条件分支任务（带停止令牌）。
+template <typename T, typename... Args>
+concept branch_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&, std::stop_token>
+                                     && !detail::coro_returning<branch_return_t<T, Args...>>;
+/// @brief 条件分支任务：plain 或 stoppable 至少满足其一，且非协程。
+template <typename T, typename... Args>
+concept branch_invocable = branch_invocable_plain<T, Args...> || branch_invocable_stoppable<T, Args...>;
+
+/// @brief `f(args..., MultiBranch&)` 可调用 —— 多目标广播分支任务签名。
+template <typename T, typename... Args>
+concept multi_branch_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>
+                                       && !detail::coro_returning<multi_branch_return_t<T, Args...>>;
+/// @brief `f(args..., MultiBranch&, stop_token)` 可调用 —— 多分支任务（带停止令牌）。
+template <typename T, typename... Args>
+concept multi_branch_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&, std::stop_token>
+                                           && !detail::coro_returning<multi_branch_return_t<T, Args...>>;
+/// @brief 多目标广播分支任务：plain 或 stoppable 至少满足其一，且非协程。
+template <typename T, typename... Args>
+concept multi_branch_invocable = multi_branch_invocable_plain<T, Args...> || multi_branch_invocable_stoppable<T, Args...>;
+
+/// @brief `f(args..., Jump&)` 可调用 —— 单目标强制跳转任务签名。
+template <typename T, typename... Args>
+concept jump_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>
+                               && !detail::coro_returning<jump_return_t<T, Args...>>;
+/// @brief `f(args..., Jump&, stop_token)` 可调用 —— 跳转任务（带停止令牌）。
+template <typename T, typename... Args>
+concept jump_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&, std::stop_token>
+                                   && !detail::coro_returning<jump_return_t<T, Args...>>;
+/// @brief 强制跳转任务：plain 或 stoppable 至少满足其一，且非协程。
+template <typename T, typename... Args>
+concept jump_invocable = jump_invocable_plain<T, Args...> || jump_invocable_stoppable<T, Args...>;
+
+/// @brief `f(args..., MultiJump&)` 可调用 —— 多目标广播跳转任务签名。
+template <typename T, typename... Args>
+concept multi_jump_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>
+                                     && !detail::coro_returning<multi_jump_return_t<T, Args...>>;
+/// @brief `f(args..., MultiJump&, stop_token)` 可调用 —— 多跳转任务（带停止令牌）。
+template <typename T, typename... Args>
+concept multi_jump_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&, std::stop_token>
+                                         && !detail::coro_returning<multi_jump_return_t<T, Args...>>;
+/// @brief 多目标广播跳转任务：plain 或 stoppable 至少满足其一，且非协程。
+template <typename T, typename... Args>
+concept multi_jump_invocable = multi_jump_invocable_plain<T, Args...> || multi_jump_invocable_stoppable<T, Args...>;
+
+/// @brief `f(args..., Runtime&)` 可调用 —— 运行时动态调度任务签名。
+template <typename T, typename... Args>
+concept runtime_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>
+                                  && !detail::coro_returning<runtime_return_t<T, Args...>>;
+/// @brief `f(args..., Runtime&, stop_token)` 可调用 —— 运行时任务（带停止令牌）。
+template <typename T, typename... Args>
+concept runtime_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&, std::stop_token>
+                                      && !detail::coro_returning<runtime_return_t<T, Args...>>;
+/// @brief 运行时动态调度任务：plain 或 stoppable 至少满足其一，且非协程。
+template <typename T, typename... Args>
+concept runtime_invocable = runtime_invocable_plain<T, Args...> || runtime_invocable_stoppable<T, Args...>;
+
 
 /// @brief 约束 `Ts...` 为 `{Semaphore, count, Semaphore, count, ...}` 交替序列。
 template <typename... Ts>
@@ -391,10 +431,10 @@ struct pack {
 
     tuple_type data;
 
-    /// @brief 构造并自动 decay 所有参数。
-    ///
-    /// @param args 任务的可调用对象和参数，第一个通常是 callable，
-    ///             后续是传给 callable 的参数（支持 std::ref）。
+            /// @brief 构造并自动 decay 所有参数。
+            ///
+            /// @param args 任务的可调用对象和参数，第一个通常是 callable，
+            ///             后续是传给 callable 的参数（支持 std::ref）。
     constexpr pack(Ts&&... args)
         : data(std::forward<Ts>(args)...) {}
 };
@@ -547,4 +587,3 @@ concept worker_handle = std::derived_from<std::remove_cvref_t<H>, WorkerHandler>
                         (std::is_lvalue_reference_v<H> || std::constructible_from<std::remove_cvref_t<H>, H>);
 
 } // namespace tfl
-
