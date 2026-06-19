@@ -36,12 +36,12 @@ TEST_CASE("Future: get returns result", "[future][basic]") {
     REQUIRE(f.get() == 42);
 }
 
-/// @test [future][basic] get 仅可调一次，再次调抛 future_error
-TEST_CASE("Future: double get throws future_error", "[future][basic]") {
+/// @test [future][basic] get 仅可调一次，再次调抛 Exception
+TEST_CASE("Future: double get throws Exception", "[future][basic]") {
     TestEnv env;
     auto f = env.executor.async([] { return 99; });
     REQUIRE(f.get() == 99);
-    REQUIRE_THROWS_AS(f.get(), std::future_error);
+    REQUIRE_THROWS_AS(f.get(), tfl::Exception);
 }
 
 /// @test [future][basic] valid() 反映共享状态
