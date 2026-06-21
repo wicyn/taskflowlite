@@ -1,4 +1,4 @@
-/// @file  jump.hpp
+﻿/// @file  jump.hpp
 /// @brief 强制跳转控制器 Jump / MultiJump —— DAG 内的运行时抢占式路由。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -315,6 +315,9 @@ public:
     ///
     /// @warning 不同于 MultiBranch::reset: MultiJump 的 reset 后没有"常规路径" ——
     ///          所有后继都不会被调度, 这条分支在此节点终止。
+    MultiJump& unselect_all() noexcept;
+
+    /// @brief 清空所有放行意图 —— unselect_all() 的语义别名。
     MultiJump& reset() noexcept;
 
     /// @brief 基于谓词批量点亮所有符合条件的后继。
@@ -415,8 +418,13 @@ inline MultiJump& MultiJump::select_all() {
     return *this;
 }
 
-inline MultiJump& MultiJump::reset() noexcept {
+inline MultiJump& MultiJump::unselect_all() noexcept {
     m_targets.clear();
+    return *this;
+}
+
+inline MultiJump& MultiJump::reset() noexcept {
+    unselect_all();
     return *this;
 }
 

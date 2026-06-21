@@ -1,4 +1,4 @@
-/// @file  branch.hpp
+﻿/// @file  branch.hpp
 /// @brief 条件分支控制器 Branch / MultiBranch —— DAG 内的运行时动态路由。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -305,9 +305,15 @@ public:
     /// @post 全部后继被加入选择集合。
     MultiBranch& select_all();
 
-    /// @brief 清空所有放行意图。
+    /// @brief 一键移除所有下游后继 (select_all 的反向动作)。
+    /// 语义上等价于 reset(): 后者作为本函数的别名保留, 用于跨 Branch/
+    /// MultiBranch 两类提供统一的"清空"动词 (单选的 Branch 无 all 概念)。
+    ///
     /// @return *this, 支持链式调用。
-    /// @post 本次分支不调度任何后继。
+    /// @post m_targets 为空, 本次分支不调度任何后继。
+    MultiBranch& unselect_all() noexcept;
+
+    /// @brief 清空所有放行意图 —— unselect_all() 的语义别名。
     MultiBranch& reset() noexcept;
 
     /// @brief 基于谓词批量点亮所有符合条件的后继。
@@ -408,8 +414,13 @@ inline MultiBranch& MultiBranch::select_all() {
     return *this;
 }
 
-inline MultiBranch& MultiBranch::reset() noexcept {
+inline MultiBranch& MultiBranch::unselect_all() noexcept {
     m_targets.clear();
+    return *this;
+}
+
+inline MultiBranch& MultiBranch::reset() noexcept {
+    unselect_all();
     return *this;
 }
 
