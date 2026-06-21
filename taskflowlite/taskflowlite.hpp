@@ -29,7 +29,7 @@
 // ==============================================================================
 #define TASKFLOWLITE_VERSION_MAJOR 2
 #define TASKFLOWLITE_VERSION_MINOR 1
-#define TASKFLOWLITE_VERSION_PATCH 1
+#define TASKFLOWLITE_VERSION_PATCH 2
 
 namespace tfl {
 
@@ -60,7 +60,7 @@ struct Version {
         return std::format("{}.{}.{}", major, minor, patch);
     }
 
-    /// @brief 流输出操作符 —— 格式与 `to_string()` 一致
+            /// @brief 流输出操作符 —— 格式与 `to_string()` 一致
     friend std::ostream& operator<<(std::ostream& stream, const Version& ver) {
         return stream << ver.major << '.' << ver.minor << '.' << ver.patch;
     }
