@@ -18,6 +18,7 @@
 #include "jump.hpp"
 #include "executor.hpp"
 #include "d2_render.hpp"
+
 namespace tfl {
 
 /// @details
@@ -125,28 +126,6 @@ protected:
 };
 
 // ============================================================================
-//  TaskType::Runtime 家族
-// ============================================================================
-
-/// @brief 注入 `Runtime&` 的运行时任务基类 —— `TaskType::Runtime`。
-///
-/// @details
-/// 与 `BasicWork` 的区别仅在于节点类型标签和 D2 渲染配色。
-/// 派生类 `RuntimeInvoker` 在 `invoke()` 中构造 `Runtime` 句柄，
-/// 授予用户在工作线程上动态创建子任务的能力。
-///
-class RuntimeWork : public Work {
-protected:
-    template <typename... Xs>
-    explicit RuntimeWork(Xs&&... xs) noexcept
-        : Work{TaskType::Runtime, std::forward<Xs>(xs)...} {}
-
-    void dump(std::ostream& os) const override final {
-        D2Renderer::render_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
-    }
-};
-
-// ============================================================================
 //  TaskType::Branch (diamond)
 // ============================================================================
 
@@ -231,6 +210,28 @@ protected:
 
     void dump(std::ostream& os) const override final {
         D2Renderer::render_work(os, this, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5");
+    }
+};
+
+// ============================================================================
+//  TaskType::Runtime 家族
+// ============================================================================
+
+/// @brief 注入 `Runtime&` 的运行时任务基类 —— `TaskType::Runtime`。
+///
+/// @details
+/// 与 `BasicWork` 的区别仅在于节点类型标签和 D2 渲染配色。
+/// 派生类 `RuntimeInvoker` 在 `invoke()` 中构造 `Runtime` 句柄，
+/// 授予用户在工作线程上动态创建子任务的能力。
+///
+class RuntimeWork : public Work {
+protected:
+    template <typename... Xs>
+    explicit RuntimeWork(Xs&&... xs) noexcept
+        : Work{TaskType::Runtime, std::forward<Xs>(xs)...} {}
+
+    void dump(std::ostream& os) const override final {
+        D2Renderer::render_work(os, this, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
     }
 };
 
@@ -658,8 +659,6 @@ public:
                 _process_exception();
             }
 
-            _notify_after(wr);
-
             // Last-arriver 仲裁：
             //   fetch_sub 返回 1 → counter 已归 0，无在飞 child，fallthrough 走 tear_down
             //   否则            → counter > 0，仍有 child，return 让步；最后完成的 child
@@ -669,6 +668,8 @@ public:
             }
             // Fallthrough：没有在飞 child，继续走到 tear_down
         }
+
+        _notify_after(wr);
 
         // ── 第二次进入
         m_implicit &= ~(Work::Implicit::PREEMPTED | Work::Implicit::ANCHORED);
@@ -1236,7 +1237,6 @@ public:
             m_implicit |= Work::Implicit::PREEMPTED;
             m_join_counter.fetch_add(1, std::memory_order_release);
 
-
             _notify_before(wr);
 
             Runtime rt(*this, wr, exe);
@@ -1260,8 +1260,6 @@ public:
                 _process_exception();
             }
 
-            _notify_after(wr);
-
             // Last-arriver 仲裁：
             //   fetch_sub 返回 1 → counter 已归 0，无在飞 child，fallthrough 走 tear_down
             //   否则            → counter > 0，仍有 child，return 让步；最后完成的 child
@@ -1271,6 +1269,8 @@ public:
             }
             // Fallthrough：没有在飞 child，继续走到 tear_down
         }
+
+        _notify_after(wr);
 
         // ── 第二次进入
         m_implicit &= ~Work::Implicit::PREEMPTED;
