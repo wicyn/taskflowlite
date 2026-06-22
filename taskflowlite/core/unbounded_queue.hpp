@@ -309,37 +309,49 @@ void UnboundedQueue<Tp>::push(Iterator first, std::size_t n) {
 
     m_bottom.store(bottom + static_cast<std::int64_t>(n), std::memory_order_release);
 }
-
 template <typename Tp>
     requires std::is_pointer_v<Tp>
 Tp UnboundedQueue<Tp>::steal() noexcept {
-    // 1. 读取当前的头指针（Stealer 端）
+    // 1. 读取头指针 top（Stealer 端）
+    // relaxed 足够：top 仅由本/其他 stealer 的 CAS 推进，单变量竞争由下方
+    // CAS 的 RMW 原子性兜底。relaxed 至多读到偏小的陈旧 top，使 t<b 判断偏
+    // 保守（少偷一次），绝不会越界；最终 CAS 以最新 top 重新校验。
     std::int64_t top = m_top.load(std::memory_order_relaxed);
 
-    // 2. 读取当前的尾指针（Owner 端）
+    // 2. 读取尾指针 bottom（Owner 端）
+    // acquire 与 owner push() 的 m_bottom.store(release) 配对：一旦本线程
+    // 观察到新的 bottom，即经由 happens-before 看到 owner 在此之前写入的
+    // slot 数据，以及 resize 后的新 m_buf。这是 slot 可见性的唯一来源。
     std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
 
     // 3. 判断队列是否有任务
-    // 使用 [[likely]] 引导编译器：我们期望窃取时大概率是有任务的，让这段机器码紧凑排列
+    // [[likely]]：窃取时大概率有任务，引导编译器紧凑排列热路径机器码。
     if (top < bottom) [[likely]] {
+        // 4. 必须在 CAS 之前加载数据！
+        // 一旦 CAS 成功推进 top，owner 随时可能 push 覆盖该 slot 的内存。
+        //
+        // m_buf 用 acquire（而非 consume）：consume 在所有主流编译器上都会被
+        // 提升为 acquire，标准亦不建议使用；其依赖语义仅覆盖经由该指针派生的
+        // 访问，过于脆弱。acquire 语义明确、与编译器实际行为一致，且能接住
+        // resize 时 _array.store(release) 发布的新 buffer——更稳健、面向未来。
+        // 注：slot 内层 load 用 relaxed，其可见性已由上方 bottom 的 acquire 链承担。
+        Tp tmp = m_buf.load(std::memory_order_acquire)->load(top);
 
-        // Why: 必须在 CAS 之前加载数据！
-        // 因为一旦 m_top 的 CAS 成功，Owner 线程随时可能推入新任务并覆盖这个位置的内存。
-        Tp tmp = m_buf.load(std::memory_order_consume)->load(top);
-
-        // 4. 尝试用强 CAS 抢占该元素的归属权
-        // Why: CAS 失败即返回 nullptr,不做死循环重试。若竞争丢失,
-        // 说明有其他 Stealer 或 Owner 抢先抢占,继续等待会引发缓存行风暴。
+        // 5. 强 CAS 抢占该元素的归属权
+        // 成功序 acq_rel：无 pop()，top 与 bottom 之间无 Dekker 互斥需求，
+        //   纯 stealer-vs-stealer 单变量争用，release/acquire 即可串起 top 的
+        //   修改序（modification order），无需进入 seq_cst 全序 S。
+        // 失败序 relaxed：失败未发布任何 claim，无需定序。
+        // 失败即返回 nullptr，不死循环重试：竞争丢失说明已被他人抢占，
+        //   继续自旋只会引发 m_top 的缓存行风暴（cache-line contention）。
         if (!m_top.compare_exchange_strong(top, top + 1,
                                            std::memory_order_acq_rel,
                                            std::memory_order_relaxed)) [[unlikely]] {
-            return nullptr;  // CAS 失败：竞争丢失，让出 CPU 去窃取其他队列
+            return nullptr;  // 竞争丢失：让出 CPU 去窃取其他队列
         }
-
-        return tmp;  // 成功窃取到元素！
+        return tmp;  // 成功窃取到元素
     }
-
-    return nullptr;  // 队列为空，直接返回
+    return nullptr;  // 队列为空
 }
 
 } // namespace tfl
