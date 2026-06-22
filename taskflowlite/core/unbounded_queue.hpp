@@ -63,14 +63,14 @@ public:
     /// @param bottom 当前队尾位置
     /// @param top 当前队头位置
     /// @return 新缓冲区指针
-    [[nodiscard]] TFL_FORCE_INLINE AtomicRingBuffer* resize(std::int64_t bottom, std::int64_t top) const;
+    [[nodiscard]] TFL_FORCE_INLINE AtomicRingBuffer* resize(std::int64_t bottom, std::int64_t top) const; // NOLINT(bugprone-easily-swappable-parameters)
 
     /// @brief 扩容：创建足够容纳额外元素的新缓冲区
     /// @param bottom 当前队尾位置
     /// @param top 当前队头位置
     /// @param n 额外需要容纳的元素数量
     /// @return 新缓冲区指针
-    [[nodiscard]] TFL_FORCE_INLINE AtomicRingBuffer* resize(std::int64_t bottom, std::int64_t top, std::size_t n) const;
+    [[nodiscard]] TFL_FORCE_INLINE AtomicRingBuffer* resize(std::int64_t bottom, std::int64_t top, std::size_t n) const; // NOLINT(bugprone-easily-swappable-parameters)
 
 private:
     std::int64_t m_cap;    ///< 实际容量（2 的倍数）
@@ -93,7 +93,7 @@ public:
 
     /// @brief 构造函数，创建指定初始容量的队列
     /// @param cap 初始容量（默认 2 倍默认队列大小）
-    explicit UnboundedQueue(std::int64_t cap = 2 * TFL_DEFAULT_QUEUE_SIZE);
+    explicit UnboundedQueue(std::int64_t cap = 2LL * TFL_DEFAULT_QUEUE_SIZE);
 
     /// @brief 析构函数，释放当前缓冲区和历史缓冲区
     ~UnboundedQueue() noexcept;
@@ -186,7 +186,7 @@ TFL_FORCE_INLINE Tp AtomicRingBuffer<Tp>::load(std::int64_t index) const noexcep
 
 template <typename Tp>
     requires std::is_pointer_v<Tp>
-TFL_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize(
+TFL_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize( // NOLINT(bugprone-easily-swappable-parameters)
     std::int64_t bottom, std::int64_t top) const {
     auto* ptr = new AtomicRingBuffer{2 * m_cap};
     for (std::int64_t i = top; i != bottom; ++i) {
@@ -197,7 +197,7 @@ TFL_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize(
 
 template <typename Tp>
     requires std::is_pointer_v<Tp>
-TFL_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize(
+TFL_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize( // NOLINT(bugprone-easily-swappable-parameters)
     std::int64_t bottom, std::int64_t top, std::size_t n) const {
     // 确保新容量为 2 的幂次方且足够容纳现有元素 + 新增元素
     std::int64_t const new_cap = std::bit_ceil(m_cap + n);
