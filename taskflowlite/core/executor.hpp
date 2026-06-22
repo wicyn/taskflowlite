@@ -306,7 +306,7 @@ private:
     /// 分片数量 = bit_width(num_workers)，随 worker 数对数增长。
     struct alignas(2 * cache_line_size) Buffer {
         std::mutex mutex;
-        UnboundedQueue<Work*> queue{2 * TFL_DEFAULT_QUEUE_SIZE};
+        UnboundedQueue<Work*> queue{2LL * TFL_DEFAULT_QUEUE_SIZE};
     };
 
     // 2x cache line 对齐：防止多线程修改 m_num_topologies 时产生伪共享
