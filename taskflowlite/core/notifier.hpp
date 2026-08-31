@@ -253,14 +253,14 @@ public:
         : m_state{k_stack_mask}  // 初态空栈：stack_top = FFFF，epoch=0，prewaiter=0
         , m_waiters(n)
     {
-        assert(n < (1ULL << k_prewaiter_bits) - 1);
+        TFL_ASSERT(n < (1ULL << k_prewaiter_bits) - 1);
     }
 
     /// @brief 析构。
     /// @pre  析构时栈必须为空、无残留 prewaiter（所有 worker 已退出协议）。
     ///       故意**不校验 epoch** —— epoch 回绕是合法的，其绝对值无意义。
     ~Notifier() noexcept {
-        assert((m_state.load() & (k_stack_mask | k_prewaiter_mask)) == k_stack_mask);
+        TFL_ASSERT((m_state.load() & (k_stack_mask | k_prewaiter_mask)) == k_stack_mask);
     }
 
     // ========================================================================
@@ -328,7 +328,7 @@ public:
             }
 
             // 分支三：epoch == target，正好轮到我。此刻计数里至少有我自己。
-            assert((state & k_prewaiter_mask) != 0);
+            TFL_ASSERT((state & k_prewaiter_mask) != 0);
 
             // 结算：prewaiter 转正为 epoch 轮次（p--、e++），并把栈顶设为自己 wid。
             std::uint64_t new_state = state - k_prewaiter_inc + k_epoch_inc;
@@ -384,7 +384,7 @@ public:
             }
 
             // 分支三：正好轮到我。此刻计数里至少有我自己。
-            assert((state & k_prewaiter_mask) != 0);
+            TFL_ASSERT((state & k_prewaiter_mask) != 0);
 
             // 撤销：减掉自己的 prewaiter 计数（p--）+ 推进 epoch（e++），栈不动。
             // relaxed 正确且最优 —— 无节点发布，仅调整两个计数字段。
@@ -492,7 +492,9 @@ public:
     /// @details prewaiter 批量消费（一次 CAS 抵消 min(n, num_pre) 个），栈节点
     ///          逐个弹出。CAS 失败时 n 不减、state 刷新后重算。
     void notify_n(std::size_t n) noexcept {
-        if (n == 0) return;
+        if (n == 0) [[unlikely]] {
+            return;
+        }
 
         if (n >= m_waiters.size()) {
             notify_all();
@@ -513,7 +515,7 @@ public:
 
             if (num_pre) {
                 // 批量消费 prewaiter：一次 CAS 抵消 min(n, num_pre) 个。
-                consumed = std::min(n, static_cast<std::size_t>(num_pre));
+                consumed = (std::min)(n, static_cast<std::size_t>(num_pre));
                 new_state = state
                             + (k_epoch_inc * consumed)
                             - (k_prewaiter_inc * consumed);

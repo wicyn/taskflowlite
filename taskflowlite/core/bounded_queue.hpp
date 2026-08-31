@@ -1,5 +1,5 @@
-﻿/// @file  bounded_queue.hpp
-/// @brief Chase-Lev 无锁有界双端队列 —— Worker 本地任务队列的核心数据结构。
+﻿/// @file bounded_queue.hpp
+/// @brief 单 Owner、多 Stealer 的有界工作窃取队列。
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-05-28
@@ -19,23 +19,25 @@
 
 namespace tfl {
 
-/// @brief Chase-Lev 无锁有界双端队列 —— Owner LIFO 推入/弹出，Stealer FIFO 窃取。
+/// @brief 保存非拥有指针的固定容量单 Owner、多 Stealer 工作窃取队列。
 ///
-/// Owner 单线程 push/pop，Stealer 多线程 steal。通过 acquire/release 配对
-/// 与单元素 seq_cst CAS 保证无锁安全。容量编译期固定为 2 的幂。
-/// @tparam Tp  必须为指针类型
-/// @tparam cap 容量，必须为 2 的幂且 > 1
+/// 唯一 Owner 从尾部执行 push/pop，多个 Stealer 可并发从头部 steal；队列满时
+/// 不扩容，由调用方处理溢出。索引查询只是并发瞬时快照，队列也不管理指针目标的生命周期。
+///
+/// @tparam Tp 存入槽位的指针类型。
+/// @tparam cap 大于 1 的二次幂固定容量。
+/// @warning push/pop 系列只能由同一个 Owner 线程调用，销毁时不得仍有并发访问。
 template <typename Tp, std::size_t cap = TFL_DEFAULT_QUEUE_SIZE>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
 class BoundedQueue : public Immovable<BoundedQueue<Tp, cap>> {
 public:
-    /// @brief 元素类型别名。
+
     using value_type = Tp;
 
     /// @brief 创建空队列，环形 buffer 槽位和 top/bottom 索引全部零初始化。
     constexpr BoundedQueue() noexcept;
 
-    /// @brief 析构函数（默认）。
+
     ~BoundedQueue() noexcept = default;
 
     /// @brief 返回编译期容量 2 的幂值。
@@ -52,26 +54,27 @@ public:
     /// @return max(bottom - top, 0)，不小于零。
     [[nodiscard]] std::int64_t ssize() const noexcept;
 
-    /// @brief 判断队列是否为空，top >= bottom 时无元素可消费。
-    /// @return true 若所有已推入元素均已被消费。
+    /// @brief 根据两次 relaxed 读取判断队列是否为空。
+    /// @return 该近似快照中 `top >= bottom` 时返回 true。
     [[nodiscard]] bool empty() const noexcept;
 
     /// @brief 尝试非阻塞推入（仅 Owner 线程调用，single-producer）。
     ///
     /// 队列满时返回 false，不阻塞，不调用溢出回调。
     ///
-    /// @memory_order
-    /// - top: acquire load —— 必须看到 stealer 的最新进度；
-    /// - buf[idx]: relaxed store —— 此时尚未对 stealer 可见；
-    /// - bottom: release store —— 元素发布点，synchronizes-with stealer 的 acquire。
+    /// @param val 要推入的指针值。
+    /// @return 成功发布元素时返回 true；队列满时返回 false。
+    /// @note 内存序：`top` 使用 acquire 读取；槽位使用 relaxed 写入；
+    /// `bottom` 的 release 写入发布元素，并与 stealer 对 `bottom` 的 acquire 读取配对。
     [[nodiscard]] bool try_push(Tp val) noexcept;
 
     /// @brief 推入元素，队列满时调用溢出回调 on_full()（仅 Owner 线程）。
     ///
     /// 典型实现：将溢出元素推入全局 UnboundedQueue。
     ///
-    /// @tparam C  可调用类型，`void()` 签名
-    /// @param on_full  队列满时的回调
+    /// @tparam C 队列满时调用的 `void()` callable 类型。
+    /// @param val 要推入的指针值。
+    /// @param on_full 队列满时调用一次的回调；函数不会保存它。
     template <typename C>
         requires (std::invocable<C&&> && std::same_as<std::invoke_result_t<C&&>, void>)
     void push(Tp val, C&& on_full);
@@ -80,11 +83,11 @@ public:
     ///
     /// 一次 release store 发布所有已写入元素以减少原子操作次数。
     ///
-    /// @tparam Iterator  随机访问迭代器，解引用结果可转为 Tp
-    /// @tparam C         可调用类型 `void(Iterator, size_t)`
-    /// @param first      起始迭代器
-    /// @param n          待推入总数
-    /// @param on_full    溢出回调，接收剩余元素的起始迭代器和数量
+    /// @tparam Iterator  随机访问迭代器，解引用结果可转为 Tp。
+    /// @tparam C         可调用类型 `void(Iterator, size_t)`。
+    /// @param first      起始迭代器。
+    /// @param n          待推入总数。
+    /// @param on_full    溢出回调，接收剩余元素的起始迭代器和数量。
     template <std::random_access_iterator Iterator, typename C>
         requires (std::convertible_to<std::iter_reference_t<Iterator>, Tp> &&
                  std::invocable<C&&, Iterator, std::size_t> &&
@@ -97,7 +100,7 @@ public:
     /// 1. 预占位置 bottom = bottom - 1
     /// 2. seq_cst fence 确保 bottom 写在 top 读之前完成
     /// 3. 若 top <= bottom，读取 slot 元素
-    /// 4. 若 top == bottom（最后一个元素），seq_cst CAS 与 stealer 竞争
+    /// 4. 若 top == bottom（最后一个元素），acq_rel CAS 与 stealer 竞争
     ///
     /// @return 弹出元素的指针，队列空或竞争失败返回 nullptr。
     ///
@@ -118,12 +121,12 @@ private:
     /// @brief 环形缓冲区。
     ///
     /// 元素为 std::atomic<Tp>。alignas(2 * cache_line_size) 将 buffer
-    /// 与 bottom/top 所在 cache line 物理隔离，消除伪共享。
+    /// 与 bottom/top 分开对齐，以降低伪共享概率。
     alignas(2 * cache_line_size) std::atomic<Tp> m_buf[cap];
 
-    /// @brief 头部索引 —— 仅 Stealer 通过 CAS 写入。
+    /// @brief 头部索引 —— Stealer 以及弹出最后一个元素的 Owner 通过 CAS 写入。
     ///
-    /// 独占 2x cache line 对齐区域，与 m_bottom 物理隔离。
+    /// 使用 2 倍缓存行对齐，与 `m_bottom` 分隔以降低伪共享概率。
     alignas(2 * cache_line_size) std::atomic<std::int64_t> m_top{0};
 
     /// @brief 尾部索引 —— 仅 Owner 线程写入。
@@ -132,9 +135,9 @@ private:
     alignas(2 * cache_line_size) std::atomic<std::int64_t> m_bottom{0};
 };
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // 实现部分
-// ---------------------------------------------------------------------------
+// ============================================================================
 
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
@@ -158,31 +161,31 @@ std::size_t BoundedQueue<Tp, cap>::size() const noexcept {
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
 std::int64_t BoundedQueue<Tp, cap>::ssize() const noexcept {
-    // relaxed 读取 bottom/top 获得的是一致性快照，非线性化精确值
+    // relaxed 分别读取 bottom/top，结果不是一致或线性化快照。
     // 在 owner 线程中调用时 bottom 是最新的（该线程独占修改），
     // 跨线程使用时仅作容量估计参考
     std::int64_t const bottom = m_bottom.load(std::memory_order_relaxed);
     std::int64_t const top = m_top.load(std::memory_order_relaxed);
-    return std::max(bottom - top, std::int64_t{0});
+    return (std::max)(bottom - top, std::int64_t{0});
 }
 
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
 bool BoundedQueue<Tp, cap>::empty() const noexcept {
-    // top >= bottom 等价于队列为空 —— 所有已 push 元素均被消费
+    // 两次 relaxed 读取只提供瞬时近似判断；并发修改后结果可能立即过时。
     std::int64_t const bottom = m_bottom.load(std::memory_order_relaxed);
     std::int64_t const top = m_top.load(std::memory_order_relaxed);
     return top >= bottom;
 }
 
-// ---------------------------------------------------------------------------
-// try_push: Owner 端非阻塞推入
-// ---------------------------------------------------------------------------
+// ============================================================================
+// try_push：Owner 端非阻塞推入
+// ============================================================================
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
 bool BoundedQueue<Tp, cap>::try_push(Tp val) noexcept {
     std::int64_t const bottom = m_bottom.load(std::memory_order_relaxed);
-    // acquire: 必须看到 stealer 的最新 top，否则可能错判为"未满"而覆盖未读元素
+    // acquire 获取跨线程发布的 top 进度；陈旧的较小值只会保守地判定队列已满。
     std::int64_t const top = m_top.load(std::memory_order_acquire);
 
     // (bottom - top) 为当前队列中元素数，+1 为推入后元素数
@@ -194,14 +197,14 @@ bool BoundedQueue<Tp, cap>::try_push(Tp val) noexcept {
     // relaxed: 元素写入 buffer 此时仅 owner 可见
     m_buf[static_cast<std::size_t>(bottom) & k_mask].store(val, std::memory_order_relaxed);
     // release: 发布点 —— 确保 buffer 写入先于 bottom 更新对所有线程可见
-    // synchronizes-with: stealer 的 acquire load(m_top)
+    // 与 stealer 对 m_bottom 的 acquire load 配对。
     m_bottom.store(bottom + 1, std::memory_order_release);
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// push(val, on_full): Owner 端带溢出回调的推入
-// ---------------------------------------------------------------------------
+// ============================================================================
+// push(val, on_full)：Owner 端带溢出回调的推入
+// ============================================================================
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
              template <typename C>
@@ -220,9 +223,9 @@ void BoundedQueue<Tp, cap>::push(Tp val, C&& on_full) {
     m_bottom.store(bottom + 1, std::memory_order_release);
 }
 
-// ---------------------------------------------------------------------------
-// push(first, n, on_full): Owner 端批量推入
-// ---------------------------------------------------------------------------
+// ============================================================================
+// push(first, n, on_full)：Owner 端批量推入
+// ============================================================================
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
              template <std::random_access_iterator Iterator, typename C>
@@ -240,7 +243,7 @@ void BoundedQueue<Tp, cap>::push(Iterator first, std::size_t n, C&& on_full) {
     }
 
     std::size_t const count = static_cast<std::size_t>(
-        std::min(static_cast<std::int64_t>(n), available)
+        (std::min)(static_cast<std::int64_t>(n), available)
         );
 
     // 批量写入：所有 relaxed store，在最后一次性 release publish
@@ -258,9 +261,9 @@ void BoundedQueue<Tp, cap>::push(Iterator first, std::size_t n, C&& on_full) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// pop: Owner 端 LIFO 弹出
-// ---------------------------------------------------------------------------
+// ============================================================================
+// pop：Owner 端 LIFO 弹出
+// ============================================================================
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
 Tp BoundedQueue<Tp, cap>::pop() noexcept {
@@ -268,9 +271,8 @@ Tp BoundedQueue<Tp, cap>::pop() noexcept {
     std::int64_t const bottom = m_bottom.load(std::memory_order_relaxed) - 1;
     m_bottom.store(bottom, std::memory_order_relaxed);
 
-    // seq_cst fence: 强制 bottom 写操作先于下方 top 读操作完成
-    // 若没有这个屏障，CPU 可能将 top 读取重排到 bottom 变更之前，
-    // 导致在"看起来有元素"时读到旧元素的 race
+    // seq_cst fence 建立 Chase-Lev 最后一个元素竞争协议所需的全序关系，
+    // 防止 bottom 写与随后 top 读在该协议中被观察为相反顺序。
     std::atomic_thread_fence(std::memory_order_seq_cst);
 
     std::int64_t top = m_top.load(std::memory_order_relaxed);
@@ -289,27 +291,26 @@ Tp BoundedQueue<Tp, cap>::pop() noexcept {
                 m_bottom.store(bottom + 1, std::memory_order_relaxed);
                 return nullptr;
             }
-            // CAS 成功: 还原 bottom 为 top+1（队列空的状态）
+            // CAS 成功： 还原 bottom 为 top+1（队列空的状态）
             m_bottom.store(bottom + 1, std::memory_order_relaxed);
         }
         return val;
     }
 
-    // 队列为空: 还原 bottom 到原始值
+    // 队列为空： 还原 bottom 到原始值
     m_bottom.store(bottom + 1, std::memory_order_relaxed);
     return nullptr;
 }
 
-// ---------------------------------------------------------------------------
-// steal: Stealer 端 FIFO 窃取
-// ---------------------------------------------------------------------------
+// ============================================================================
+// steal：Stealer 端 FIFO 窃取
+// ============================================================================
 template <typename Tp, std::size_t cap>
     requires std::is_pointer_v<Tp> && (cap > 1) && ((cap & (cap - 1)) == 0)
 Tp BoundedQueue<Tp, cap>::steal() noexcept {
-    std::int64_t top = m_top.load(std::memory_order_relaxed);
-    // seq_cst fence: 强制 top 读取先于 bottom 读取完成
-    // 防止 CPU 将 bottom 的加载重排到 top 加载之前 —— 若先看到新 bottom
-    // 再看到旧 top，会误判队列有元素而读到垃圾数据
+    std::int64_t top = m_top.load(std::memory_order_acquire);
+    // seq_cst fence 建立 Chase-Lev 窃取路径与 Owner 弹出路径所需的全序关系，
+    // 使 top/bottom 的竞争判断与最后一个元素的所有权裁决保持一致。
     std::atomic_thread_fence(std::memory_order_seq_cst);
     std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
 

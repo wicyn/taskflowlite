@@ -1,4 +1,4 @@
-﻿/// @file  branch.hpp
+﻿/// @file branch.hpp
 /// @brief 条件分支控制器 Branch / MultiBranch —— DAG 内的运行时动态路由。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -10,29 +10,29 @@
 
 #include <cstddef>
 #include <concepts>
+#include <functional>
+
 #include "task.hpp"
 #include "small_vector.hpp"
+#include "context.hpp"
 
 namespace tfl {
 
 // ============================================================================
-//  Branch —— 单目标分支选择器 (互斥 / 末次写入胜出)
+// Branch 单目标分支
 // ============================================================================
 
-/// @brief 单目标分支选择器 —— DAG 节点内的"if/else 路由权杖"。
+/// @brief 在分支 callable 执行期间记录唯一一个待调度后继。
 ///
-/// 由 BranchWork::invoke 在 Worker 栈上构造，用户闭包通过 Branch& 形参拿
-/// 到它。调用 select(i) / select_if(pred) 决定本次执行后哪个后继被放行。
-/// 语义为 Last-Write-Wins（互斥单选），不被选中的后继不接收递减、自然阻塞。
-/// 走独立的 _tear_down_branch_task 而非通用 _tear_down_task 路径。
+/// 选择目标来自当前 `Work` 的后继列表；后续选择会覆盖先前结果，未选择或取消
+/// 选择时本次分支不调度后继。对象及其执行上下文均由框架临时注入。
 ///
-/// @note 严格栈帧绑定：闭包返回即销毁，禁止逃逸到外部线程或异步上下文。
-class Branch : public Immovable<Branch> {
+/// @warning 仅可在当前 callable 和 Worker 线程内使用，不得保存或跨线程传递。
+class Branch final : public Context {
     friend class Work;
     friend class Flow;
     friend class Executor;
     friend class Worker;
-    friend class Runtime;
 
     TFL_WORK_SUBCLASS_FRIENDS;
 
@@ -40,13 +40,10 @@ public:
 
     // ==================== 单索引下标代理 ====================
 
-    /// @brief 下标赋值代理, 支持 branch[i] = true/false 语法。
+    /// @brief 将一次下标布尔赋值转发为指定后继的选择或取消选择。
     ///
-    /// - = true  : 等价于 select(i)
-    /// - = false : 等价于 unselect(i) (仅当前选中正好是 i 时清除)
-    ///
-    /// 这种"非对称的反向操作"是 Branch 单选语义的自然结果:
-    /// 用户不能"取消别人的选择", 只能取消自己刚做的选择。
+    /// 代理不保存独立选择状态，只借用所属 `Branch` 和索引；true 选择该位置，
+    /// false 仅在该位置当前被选中时取消选择。
     class Proxy {
         friend class Branch;
         Branch&     m_br;
@@ -54,7 +51,7 @@ public:
         Proxy(Branch& br, std::size_t idx) noexcept : m_br{br}, m_idx{idx} {}
 
     public:
-        /// @brief 赋值: true 选中, false 条件清除。
+        /// @brief 根据布尔值选择或取消选择当前索引。
         Branch& operator=(bool on) noexcept {
             if (on) {
                 m_br.select(m_idx);
@@ -67,84 +64,71 @@ public:
 
     // ==================== 选择动作 ====================
 
-    /// @brief 按索引显式选择后继, O(1)。
-    /// @tparam I 整数类型 (排除 bool, 避免与隐式转换混淆)。
-    /// @param index 目标后继在后继数组中的绝对位置 (0-based)。
-    /// @return *this, 支持链式调用。
-    /// @post 若 index 在合法范围内则选中对应后继; 越界则安全清除 (等价于 reset)。
+    /// @brief 按索引选择一个后继。
+    /// @tparam I 除 bool 外的整数类型。
+    /// @param index 后继列表中的零基索引。
+    /// @return `*this`，用于链式调用。
+    /// @post 索引有效时选择对应后继；否则清除当前选择。
     template <std::integral I>
         requires (!std::same_as<std::remove_cvref_t<I>, bool>)
     Branch& select(I index) noexcept;
 
-    /// @brief 按谓词动态评估并选择首个满足条件的后继 (短路)。
-    /// @tparam Pred 满足 predicate<TaskView> 概念的闭包类型。
-    /// @param pred 接受只读 TaskView 并返回 bool 的可调用对象。
-    /// @return *this, 支持链式调用。
-    /// @post 首个令谓词返回 true 的后继被选中; 若无匹配则清除选择。
+    /// @brief 选择首个使谓词返回 true 的后继。
+    /// @tparam Pred 接受 `TaskView` 并返回 bool 的谓词类型。
+    /// @param pred 用于测试后继的谓词。
+    /// @return `*this`，用于链式调用。
+    /// @post 没有后继匹配时清除当前选择。
     template <predicate<TaskView> Pred>
     Branch& select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
 
-    /// @brief 条件清除当前选择 —— 仅当前选中正好是 i 时才生效。
-    ///
-    /// 与 reset() 的区别: reset() 无条件清空; unselect(i) 只在
-    /// 当前选中的就是 i 时才清空, 其他情况静默无操作。
-    ///
-    /// 设计动机: 单选语义下, "取消第 i 项选择"只在你刚选了 i 时才有意义。
-    /// 如果你已经 select(2) 之后又改成了 select(5), 再调 unselect(2)
-    /// 不应该有任何影响 —— 否则就破坏了 last-write-wins 语义。
-    ///
-    /// @tparam I 整数类型 (排除 bool)。
-    /// @param index 要条件清除的索引。
-    /// @return *this, 支持链式调用。
+    /// @brief 仅当当前选择等于指定索引时清除选择。
+    /// @tparam I 除 bool 外的整数类型。
+    /// @param index 要取消选择的后继索引。
+    /// @return `*this`，用于链式调用。
+    /// @post 索引无效或未被选中时不改变当前选择。
     template <std::integral I>
         requires (!std::same_as<std::remove_cvref_t<I>, bool>)
     Branch& unselect(I index) noexcept;
 
     /// @brief 无条件清除当前选择。
-    /// @return *this, 支持链式调用。
-    /// @post m_target = nullptr, 本次分支不调度任何后继。
+    /// @return `*this`，用于链式调用。
+    /// @post 本次分支不调度任何后继。
     Branch& reset() noexcept;
 
     // ==================== 函数调用语法 ====================
 
-    /// @brief 函数调用语法: branch(i) —— 等价 branch.select(i)。
-    ///
-    /// 设计动机:
-    /// - 与 MultiBranch::operator() 形成对偶, API 风格一致
-    /// - 比 branch.select(i) 更短, 便于在简单条件分支里使用
-    /// - 单参数: Branch 是互斥单选, 多参数没有语义
-    ///
-    /// @tparam I 整数类型 (排除 bool)。
-    /// @param index 目标后继索引。
-    /// @return *this, 支持链式调用。
+    /// @brief 选择指定索引，等价于 `select(index)`。
+    /// @tparam I 除 bool 外的整数类型。
+    /// @param index 后继列表中的零基索引。
+    /// @return `*this`，用于链式调用。
     template <std::integral I>
         requires (!std::same_as<std::remove_cvref_t<I>, bool>)
     Branch& operator()(I index) noexcept;
 
     // ==================== 下标语法 ====================
 
-    /// @brief 下标赋值: branch[i] = true 选中, branch[i] = false 条件清除。
-    /// @param index 后继索引 (0-based)。
-    /// @return 赋值代理对象 Proxy。
+    /// @brief 返回支持 `branch[index] = true/false` 的赋值代理。
+    /// @param index 后继列表中的零基索引。
+    /// @return 绑定该索引的 Proxy。
     [[nodiscard]] Proxy operator[](std::size_t index) noexcept;
 
     // ==================== 查询接口 ====================
 
-    /// @brief 获取当前分支节点所连接的后继总数。
-    /// @return 出边数量 (即 precede 调用次数)。
+    /// @brief 获取当前分支节点的后继数量。
+    /// @return 出边数量。
     [[nodiscard]] std::size_t size() const noexcept;
 
 private:
-    Work& m_work;
-    /// @brief 暂存被选中的后继指针, 供 invoke 结束后 Executor 执行额外的 join_counter 递减。
+    /// @brief 当前选中的后继；nullptr 表示未选择。
     Work* m_target{nullptr};
 
-    explicit Branch(Work& work) noexcept : m_work{work} {}
+    explicit Branch(Work& work, Worker& worker, Executor& executor) noexcept
+        : Context{work, worker, executor} {}
 };
 
-// ============================================================
-//  Branch 内联实现
-// ============================================================
+// ============================================================================
+// Branch 内联实现
+// ============================================================================
 
 template <std::integral I>
     requires (!std::same_as<std::remove_cvref_t<I>, bool>)
@@ -159,7 +143,7 @@ inline Branch& Branch::select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>)
     m_target = nullptr;
     const std::size_t sz = m_work.m_num_successors;
     for (std::size_t i = 0; i < sz; ++i) {
-        if (std::invoke_r<bool>(pred, TaskView{*m_work.m_edges[i]})) {
+        if (std::invoke(pred, TaskView{*m_work.m_edges[i]})) {
             m_target = m_work.m_edges[i];
             return *this;
         }
@@ -197,22 +181,20 @@ inline std::size_t Branch::size() const noexcept {
 }
 
 // ============================================================================
-//  MultiBranch —— 多目标分支选择器 (累积 / 并发广播)
+// MultiBranch 多目标分支
 // ============================================================================
 
-/// @brief 多目标分支选择器 —— "广播 / 多条件并发路由"权杖。
+/// @brief 在多分支 callable 执行期间记录零个或多个待调度后继。
 ///
-/// 与 Branch 互斥选择不同，MultiBranch 允许同时点亮 N 条下游链路。
-/// 多次 select 累积生效，内部用 SmallVector<Work*> 去重集合（扇出低时
-/// 线性扫描优于哈希）。走独立的 _tear_down_multi_branch_task 路径。
+/// 每个目标来自当前 `Work` 的后继列表，可独立选择或取消；callable 返回后，
+/// 框架仅调度仍处于选中状态的目标。对象及其执行上下文均为临时借用。
 ///
-/// @note 严格栈帧绑定：闭包返回即销毁，禁止逃逸。
-class MultiBranch : public Immovable<MultiBranch> {
+/// @warning 仅可在当前 callable 和 Worker 线程内使用，不得保存或跨线程传递。
+class MultiBranch final : public Context {
     friend class Work;
     friend class Flow;
     friend class Executor;
     friend class Worker;
-    friend class Runtime;
 
     TFL_WORK_SUBCLASS_FRIENDS;
 
@@ -220,11 +202,9 @@ public:
 
     // ==================== 单索引下标代理 ====================
 
-    /// @brief 单索引赋值代理: mb[i] = true/false。
+    /// @brief 将一次下标布尔赋值转发为指定后继的选择或取消选择。
     ///
-    /// - = true  : 等价于 select(i) (加入放行集合, 去重)
-    /// - = false : 等价于 unselect(i) (从放行集合移除)
-    /// - 越界索引: 静默忽略 (不抛异常, 符合"宽松边界"的实用主义)
+    /// 代理只借用所属 `MultiBranch` 和索引，不拥有上下文或目标节点。
     class Proxy {
         friend class MultiBranch;
         MultiBranch& m_mb;
@@ -232,7 +212,8 @@ public:
         Proxy(MultiBranch& mb, std::size_t idx) noexcept : m_mb{mb}, m_idx{idx} {}
 
     public:
-        /// @brief 赋值: true 加入, false 移除 (越界静默忽略)。
+        /// @brief 根据布尔值添加或移除当前索引。
+        /// @note 越界索引不会改变选择集合。
         MultiBranch& operator=(bool on) noexcept {
             if (m_idx >= m_mb.m_work.m_num_successors) return m_mb;
             Work* w = m_mb.m_work.m_edges[m_idx];
@@ -245,25 +226,21 @@ public:
         }
     };
 
-    /// @brief 单索引下标: mb[i] = true/false。
-    /// @tparam I 整数类型 (排除 bool)。
-    /// @param index 后继索引。
-    /// @return 赋值代理对象。
+    /// @brief 返回支持 `mb[index] = true/false` 的赋值代理。
+    /// @tparam I 除 bool 外的整数类型。
+    /// @param index 后继列表中的零基索引。
+    /// @return 绑定该索引的 Proxy。
     template <std::integral I>
         requires (!std::same_as<std::remove_cvref_t<I>, bool>)
     [[nodiscard]] Proxy operator[](I index) noexcept;
 
     // ==================== 函数调用语法 ====================
 
-    /// @brief 函数调用语法: mb(i, j, k) —— 等价 mb.select(i, j, k)。
-    ///
-    /// 与 Branch::operator() 对偶, 但接受变参 (MultiBranch 是累积式)。
-    ///
-    /// @note 仅累积式插入, 不会清除已有选择。需要重置请先 reset()。
-    ///
-    /// @tparam Is 整数索引类型 (至少一个, 排除 bool)。
-    /// @param indices 要加入放行集合的索引列表。
-    /// @return *this, 支持链式调用。
+    /// @brief 将一个或多个索引加入选择集合。
+    /// @tparam Is 除 bool 外的整数类型。
+    /// @param indices 要选择的后继索引。
+    /// @return `*this`，用于链式调用。
+    /// @note 本操作不清除既有选择。
     template <typename... Is>
         requires (sizeof...(Is) >= 1)
                 && (std::integral<Is> && ...)
@@ -272,58 +249,44 @@ public:
 
     // ==================== 选择动作 ====================
 
-    /// @brief 按索引集批量加入放行集合。
-    /// @tparam Is 可转换为 std::size_t 的变参索引类型 (至少一个, 排除 bool)。
-    /// @param indices 一组要放行的后继索引。
-    /// @return *this, 支持链式调用。
-    /// @post 所有有效索引对应的后继被加入放行集合, 越界索引自动忽略, 重复索引去重。
+    /// @brief 将一个或多个索引加入选择集合。
+    /// @tparam Is 除 bool 外的整数类型。
+    /// @param indices 要选择的后继索引。
+    /// @return `*this`，用于链式调用。
+    /// @post 忽略越界索引，并对重复索引去重。
     template <typename... Is>
         requires (sizeof...(Is) >= 1)
                 && (std::integral<Is> && ...)
                 && (!std::same_as<std::remove_cvref_t<Is>, bool> && ...)
     MultiBranch& select(Is... indices);
 
-    /// @brief 按索引集批量从放行集合移除 (select 的反向动作)。
-    ///
-    /// 与 select(...) 完全对偶:
-    /// - select(0, 2)   -> 把 0/2 加入放行集合
-    /// - unselect(0, 2) -> 把 0/2 从放行集合移除
-    ///
-    /// 不在集合中的索引、越界索引均静默忽略, 不抛异常。
-    ///
-    /// @tparam Is 整数索引类型 (至少一个, 排除 bool)。
-    /// @param indices 一组要从放行集合移除的索引。
-    /// @return *this, 支持链式调用。
+    /// @brief 从选择集合移除一个或多个索引。
+    /// @tparam Is 除 bool 外的整数类型。
+    /// @param indices 要取消选择的后继索引。
+    /// @return `*this`，用于链式调用。
+    /// @post 忽略越界索引和未被选择的索引。
     template <typename... Is>
         requires (sizeof...(Is) >= 1)
                 && (std::integral<Is> && ...)
                 && (!std::same_as<std::remove_cvref_t<Is>, bool> && ...)
     MultiBranch& unselect(Is... indices) noexcept;
 
-    /// @brief 一键选中所有下游后继 (广播模式)。
-    /// @return *this, 支持链式调用。
-    /// @post 全部后继被加入选择集合。
+    /// @brief 将全部后继加入选择集合。
+    /// @return `*this`，用于链式调用。
     MultiBranch& select_all();
 
-    /// @brief 一键移除所有下游后继 (select_all 的反向动作)。
-    /// 语义上等价于 reset(): 后者作为本函数的别名保留, 用于跨 Branch/
-    /// MultiBranch 两类提供统一的"清空"动词 (单选的 Branch 无 all 概念)。
-    ///
-    /// @return *this, 支持链式调用。
-    /// @post m_targets 为空, 本次分支不调度任何后继。
+    /// @brief 清空选择集合。
+    /// @return `*this`，用于链式调用。
     MultiBranch& unselect_all() noexcept;
 
-    /// @brief 清空所有放行意图 —— unselect_all() 的语义别名。
+    /// @brief 清空选择集合，等价于 `unselect_all()`。
+    /// @return `*this`，用于链式调用。
     MultiBranch& reset() noexcept;
 
-    /// @brief 基于谓词批量点亮所有符合条件的后继。
-    ///
-    /// 与 Branch::select_if 不同: 不是只选首个匹配, 而是选中所有满足谓词的后继。
-    ///
-    /// @tparam Pred 满足 predicate<TaskView> 概念的闭包类型。
-    /// @param pred 接受只读 TaskView 并返回 bool 的可调用对象。
-    /// @return *this, 支持链式调用。
-    /// @post 凡是促使谓词评估为 true 的节点均并入放行集合。
+    /// @brief 将所有使谓词返回 true 的后继加入选择集合。
+    /// @tparam Pred 接受 `TaskView` 并返回 bool 的谓词类型。
+    /// @param pred 用于测试后继的谓词。
+    /// @return `*this`，用于链式调用。
     template <predicate<TaskView> Pred>
     MultiBranch& select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
 
@@ -334,13 +297,13 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
 
 private:
-    Work&               m_work;
-    /// @brief 内置轻量缓冲区的去重集合, 供 invoke 返回后 Executor 遍历做额外递减。
+    /// @brief 保存已选择后继的去重集合。
     SmallVector<Work*>  m_targets;
 
-    explicit MultiBranch(Work& work) noexcept : m_work{work} {}
+    explicit MultiBranch(Work& work, Worker& worker, Executor& executor) noexcept
+        : Context{work, worker, executor} {}
 
-    /// @brief 去重插入 —— 线性扫描优于哈希常数开销 (扇出极低时)。
+    /// @brief 以线性扫描去重后插入目标；适用于预期较小的后继集合。
     /// @param w 待插入的后继 Work 指针。
     void _insert(Work* w) {
         if (m_targets.size() >= m_work.m_num_successors) return;
@@ -350,7 +313,7 @@ private:
         m_targets.push_back(w);
     }
 
-    /// @brief 线性查找移除 —— swap-and-pop, O(1) 删除, 顺序无关。
+    /// @brief 线性查找目标，找到后使用 swap-and-pop 常数时间移除；整体复杂度为 O(n)。
     /// @param w 待移除的后继 Work 指针。
     void _erase(Work* w) noexcept {
         for (auto it = m_targets.begin(); it != m_targets.end(); ++it) {
@@ -363,9 +326,9 @@ private:
     }
 };
 
-// ============================================================
-//  MultiBranch 内联实现
-// ============================================================
+// ============================================================================
+// MultiBranch 内联实现
+// ============================================================================
 
 template <std::integral I>
     requires (!std::same_as<std::remove_cvref_t<I>, bool>)
@@ -387,7 +350,7 @@ template <typename... Is>
             && (!std::same_as<std::remove_cvref_t<Is>, bool> && ...)
 inline MultiBranch& MultiBranch::select(Is... indices) {
     const std::size_t sz = m_work.m_num_successors;
-    /// @brief IIFE + 折叠表达式, 编译期展开变参, 运行期零成本越界屏蔽。
+    // 使用折叠表达式依次处理索引，越界项被忽略。
     ([&](std::size_t idx) {
         if (idx < sz) _insert(m_work.m_edges[idx]);
     }(static_cast<std::size_t>(indices)), ...);
@@ -428,7 +391,7 @@ template <predicate<TaskView> Pred>
 inline MultiBranch& MultiBranch::select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
     const std::size_t sz = m_work.m_num_successors;
     for (std::size_t i = 0; i < sz; ++i) {
-        if (std::invoke_r<bool>(pred, TaskView{*m_work.m_edges[i]})) {
+        if (std::invoke(pred, TaskView{*m_work.m_edges[i]})) {
             _insert(m_work.m_edges[i]);
         }
     }

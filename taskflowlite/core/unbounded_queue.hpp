@@ -1,5 +1,5 @@
-﻿/// @file  unbounded_queue.hpp
-/// @brief 无锁无界双端队列 —— 运行期自适应扩容的 Chase-Lev 变体。
+﻿/// @file unbounded_queue.hpp
+/// @brief 可扩容双端队列 —— 运行期自适应扩容的 Chase-Lev 变体。
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-05-28
@@ -23,140 +23,158 @@
 
 namespace tfl {
 
-/// @brief 原子环形缓冲区 —— UnboundedQueue 的底层定长存储。
+/// @brief 为 `UnboundedQueue` 提供容量为二次幂的原子指针槽位数组。
 ///
-/// 容量 2 的幂，用位掩码替代取模。关键能力是 resize(bottom, top) 分配 2x 新 buffer
-/// 拷贝 [top, bottom) 区间。旧 buffer 不立即释放（stealer 可能还在读），由
-/// UnboundedQueue 在析构时统一清理。
-/// @tparam Tp 必须为指针类型
+/// 缓冲区拥有槽位存储但不拥有指针目标；扩容会创建并返回新缓冲区，旧缓冲区的
+/// 延迟回收由外层队列负责。该类型是内部存储组件，不单独管理队列索引或并发协议。
+///
+/// @tparam Tp 存入槽位的指针类型。
 template <typename Tp>
     requires std::is_pointer_v<Tp>
 class AtomicRingBuffer : public Immovable<AtomicRingBuffer<Tp>> {
 public:
-    /// @brief 构造函数，创建指定容量的缓冲区
-    /// @param cap 初始容量
+    /// @brief 创建容量向上调整为至少 2 的幂的原子环形缓冲区。
+    /// @param cap 请求初始容量；小于 2 时按 2 处理。
+    /// @throws std::bad_alloc 原子槽位数组分配失败。
     explicit AtomicRingBuffer(std::int64_t cap);
 
     /// @brief 析构时释放内部环形缓冲区内存。
     ~AtomicRingBuffer();
 
+    /// @brief 缓冲区地址会发布给并发读取者，因此禁止复制构造。
     AtomicRingBuffer(const AtomicRingBuffer&) = delete;
+
+    /// @brief 禁止复制赋值。
     AtomicRingBuffer& operator=(const AtomicRingBuffer&) = delete;
+
+    /// @brief 缓冲区地址必须稳定，因此禁止移动构造。
     AtomicRingBuffer(AtomicRingBuffer&&) = delete;
+
+    /// @brief 禁止移动赋值。
     AtomicRingBuffer& operator=(AtomicRingBuffer&&) = delete;
 
-    /// @brief 返回缓冲区容量
-    /// @return 最大容量
+    /// @brief 返回缓冲区容量。
+    /// @return 最大容量。
     [[nodiscard]] TFL_FORCE_INLINE std::int64_t capacity() const noexcept;
 
-    /// @brief 在指定索引位置存储元素（自动循环取模）
-    /// @param index 索引（可为负数或超过容量）
-    /// @param val 待存储的元素
+    /// @brief 在指定索引位置存储元素，并按容量循环取模。
+    /// @param index 索引（可为负数或超过容量）。
+    /// @param val 待存储的元素。
     TFL_FORCE_INLINE void store(std::int64_t index, Tp val) noexcept;
 
-    /// @brief 从指定索引位置加载元素
-    /// @param index 索引
-    /// @return 元素值
+    /// @brief 从指定索引位置加载元素。
+    /// @param index 索引。
+    /// @return 元素值。
     [[nodiscard]] TFL_FORCE_INLINE Tp load(std::int64_t index) const noexcept;
 
-    /// @brief 扩容：创建容量翻倍的新缓冲区并迁移数据
-    /// @param bottom 当前队尾位置
-    /// @param top 当前队头位置
-    /// @return 新缓冲区指针
+    /// @brief 创建容量翻倍的新缓冲区并迁移数据。
+    /// @param bottom 当前队尾位置。
+    /// @param top 当前队头位置。
+    /// @return 新缓冲区指针；调用方接管所有权并负责延迟回收旧缓冲区。
+    /// @throws std::bad_alloc 新缓冲区分配失败。
     [[nodiscard]] TFL_FORCE_INLINE AtomicRingBuffer* resize(std::int64_t bottom, std::int64_t top) const; // NOLINT(bugprone-easily-swappable-parameters)
 
-    /// @brief 扩容：创建足够容纳额外元素的新缓冲区
-    /// @param bottom 当前队尾位置
-    /// @param top 当前队头位置
-    /// @param n 额外需要容纳的元素数量
-    /// @return 新缓冲区指针
+    /// @brief 创建足以容纳额外元素的新缓冲区。
+    /// @param bottom 当前队尾位置。
+    /// @param top 当前队头位置。
+    /// @param n 额外需要容纳的元素数量。
+    /// @return 足以容纳现有区间和额外 n 项的新缓冲区；调用方接管所有权。
+    /// @throws std::bad_alloc 新缓冲区分配失败。
     [[nodiscard]] TFL_FORCE_INLINE AtomicRingBuffer* resize(std::int64_t bottom, std::int64_t top, std::size_t n) const; // NOLINT(bugprone-easily-swappable-parameters)
 
 private:
-    std::int64_t m_cap;    ///< 实际容量（2 的倍数）
-    std::int64_t m_mask;   ///< 位掩码（容量 - 1），用于高效取模
-    std::atomic<Tp>* m_buf; ///< 存储数组
+    std::int64_t m_cap;    ///< 实际容量（2 的幂）。
+    std::int64_t m_mask;   ///< 位掩码（容量 - 1），用于循环取模。
+    std::atomic<Tp>* m_buf; ///< 存储数组。
 };
 
 
-/// @brief 自适应扩容的无锁工作窃取队列 —— Executor 全局共享 buffer。
+/// @brief 保存非拥有指针的可扩容单 Owner、多 Stealer 工作窃取队列。
 ///
-/// 与 BoundedQueue 同源但支持运行期扩容：push 满时自动 resize 到 2x 容量。
-/// 旧 buffer 进垃圾列表，析构时统一释放（扩容期间 stealer 仍可安全读取）。
-/// 适用于外部线程提交速率不可预测的场景。
-/// @tparam Tp 必须为指针类型
+/// 唯一 Owner 向尾部发布任务，多个 Stealer 可并发从头部窃取；扩容时原子发布
+/// 新环形缓冲区，并保留旧缓冲区直到队列析构，避免并发读取者访问已释放存储。
+///
+/// @tparam Tp 存入槽位的指针类型。
+/// @note 队列拥有全部环形缓冲区，但不拥有其中的指针目标；容量和元素数量查询仅为瞬时快照。
+/// @warning push 系列只能由同一个 Owner 线程调用，析构时不得仍有并发访问。
 template <typename Tp>
     requires std::is_pointer_v<Tp>
 class UnboundedQueue : public Immovable<UnboundedQueue<Tp>> {
 public:
     using value_type = Tp;
 
-    /// @brief 构造函数，创建指定初始容量的队列
-    /// @param cap 初始容量（默认 2 倍默认队列大小）
+    /// @brief 创建指定初始容量的队列。
+    /// @param cap 初始容量（默认 2 倍默认队列大小）。
     explicit UnboundedQueue(std::int64_t cap = 2LL * TFL_DEFAULT_QUEUE_SIZE);
 
-    /// @brief 析构函数，释放当前缓冲区和历史缓冲区
+    /// @brief 析构函数，释放当前缓冲区和历史缓冲区。
+    /// @pre 析构期间不得有并发访问。
     ~UnboundedQueue() noexcept;
 
-    /// @brief 返回队列中的近似元素数量
-    /// @return 元素数量（近似值）
+    /// @brief 返回队列中的近似元素数量。
+    /// @return 元素数量（近似值）。
     [[nodiscard]] std::size_t size() const noexcept;
 
-    /// @brief 返回队列中的可能带符号的元素数量
-    /// @return 队列大小（可能为负数，表示并发冲突）
+    /// @brief 返回队列中非负的近似元素数量，int64_t 版本。
+    /// @return `max(bottom - top, 0)`；不会返回负数。
     [[nodiscard]] std::int64_t ssize() const noexcept;
 
-    /// @brief 返回当前缓冲区的最大容量
-    /// @return 容量
+    /// @brief 返回一次 relaxed 快照所观察到的当前缓冲区容量。
+    /// @return 容量。
     [[nodiscard]] std::int64_t capacity() const noexcept;
 
-    /// @brief 检查队列是否为空
-    /// @return 空返回 true
+    /// @brief 根据两次 relaxed 读取近似判断队列是否为空。
+    /// @return 空返回 true。
     [[nodiscard]] bool empty() const noexcept;
 
-    /// @brief 将元素推入队列尾部，容量不足时自动扩容
-    /// @param val 待推送元素
+    /// @brief 由唯一 Owner 将元素推入队列尾部，容量不足时自动扩容。
+    /// @param val 待推送的非拥有指针值。
+    /// @throws std::bad_alloc 扩容或历史缓冲区记录分配失败。
+    /// @pre 同一时刻只能有一个 Owner 调用 push 系列函数。
     void push(Tp val);
 
-    /// @brief 批量将元素推入队列尾部
-    /// @param first 元素范围起始迭代器
-    /// @param n 元素数量
+    /// @brief 由唯一 Owner 批量将元素推入队列尾部。
+    /// @tparam Iterator 随机访问迭代器，元素可转换为 Tp。
+    /// @param first 至少包含 n 个元素的输入范围起点。
+    /// @param n 要推入的元素数量；0 表示不执行操作。
+    /// @throws std::bad_alloc 扩容或历史缓冲区记录分配失败。
+    /// @pre 同一时刻只能有一个 Owner 调用 push 系列函数。
     template <std::random_access_iterator Iterator>
         requires std::convertible_to<std::iter_reference_t<Iterator>, Tp>
     void push(Iterator first, std::size_t n);
 
-    /// @brief 从队列头部窃取元素
-    /// @return 成功窃取返回元素，队列空返回 nullptr
-    /// @note 供其他线程调用，可能因并发冲突重试
+    /// @brief 从队列头部窃取元素。
+    /// @return 成功窃取返回元素，队列空返回 nullptr。
+    /// @note 供 Stealer 调用；CAS 冲突时直接返回 nullptr，不在函数内重试。
     [[nodiscard]] Tp steal() noexcept;
 
 private:
     static constexpr std::size_t k_garbage_reserve = 64;
 
-    // Why: 使用 2 倍缓存行大小对齐，防止伪共享
+    // 使用 2 倍缓存行大小对齐，以降低 top 与 bottom 之间的伪共享概率。
     alignas(2 * cache_line_size) std::atomic<std::int64_t> m_top;
     alignas(2 * cache_line_size) std::atomic<std::int64_t> m_bottom;
 
-    // Why: 使用原子指针因为缓冲区可能被替换
+    // 缓冲区扩容时会替换，因此通过原子指针发布。
     std::atomic<AtomicRingBuffer<Tp>*> m_buf;
 
-    // Why: 垃圾回收机制
+    // 保存扩容前的缓冲区，统一延迟到析构回收。
     // 扩容时旧缓冲区不能立即释放，因为可能正有 Stealer 线程读取
     // 将旧缓冲区存入垃圾向量，等待析构时统一释放
     std::vector<std::unique_ptr<AtomicRingBuffer<Tp>>> m_garbage;
 };
 
 // ============================================================================
-// AtomicRingBuffer Implementation
+// AtomicRingBuffer 实现
 // ============================================================================
 
 template <typename Tp>
     requires std::is_pointer_v<Tp>
 AtomicRingBuffer<Tp>::AtomicRingBuffer(std::int64_t cap)
-    // Why: std::bit_ceil 自动将容量向上对齐到 2 的幂次方
+    // 将容量向上调整到 2 的幂。
     // 例如传入 100 会得到 128，使后续可用位运算 & m_mask 替代 % 取模
     : m_cap{static_cast<std::int64_t>(
-          std::max<std::size_t>(2, std::bit_ceil(static_cast<std::size_t>(cap))))}
+          (std::max<std::size_t>)(2, std::bit_ceil(static_cast<std::size_t>(cap))))}
     , m_mask{m_cap - 1}
     , m_buf{new std::atomic<Tp>[static_cast<std::size_t>(m_cap)]} {}
 
@@ -209,7 +227,7 @@ TFL_FORCE_INLINE AtomicRingBuffer<Tp>* AtomicRingBuffer<Tp>::resize( // NOLINT(b
 }
 
 // ============================================================================
-// UnboundedQueue Implementation
+// UnboundedQueue 实现
 // ============================================================================
 
 template <typename Tp>
@@ -239,7 +257,7 @@ template <typename Tp>
 std::int64_t UnboundedQueue<Tp>::ssize() const noexcept {
     std::int64_t const bottom = m_bottom.load(std::memory_order_relaxed);
     std::int64_t const top = m_top.load(std::memory_order_relaxed);
-    return std::max(bottom - top, std::int64_t{0});
+    return (std::max)(bottom - top, std::int64_t{0});
 }
 
 template <typename Tp>
@@ -267,8 +285,8 @@ void UnboundedQueue<Tp>::push(Tp val) {
     if (buf->capacity() < (bottom - top) + 1) [[unlikely]] {
         auto* bigger = buf->resize(bottom, top);
 
-        // Why: 使用 lambda 和 std::exchange 原子地替换缓冲区
-        // 旧缓冲区自动移入垃圾向量
+        // std::exchange 仅转移局部指针；下方 m_buf.store 才向 Stealer 原子发布
+        // 新缓冲区。旧缓冲区的所有权移入垃圾向量。
         [&]() noexcept {
             m_garbage.emplace_back(std::exchange(buf, bigger));
         }();
@@ -325,7 +343,7 @@ Tp UnboundedQueue<Tp>::steal() noexcept {
     std::int64_t const bottom = m_bottom.load(std::memory_order_acquire);
 
     // 3. 判断队列是否有任务
-    // [[likely]]：窃取时大概率有任务，引导编译器紧凑排列热路径机器码。
+
     if (top < bottom) [[likely]] {
         // 4. 必须在 CAS 之前加载数据！
         // 一旦 CAS 成功推进 top，owner 随时可能 push 覆盖该 slot 的内存。
@@ -333,7 +351,7 @@ Tp UnboundedQueue<Tp>::steal() noexcept {
         // m_buf 用 acquire（而非 consume）：consume 在所有主流编译器上都会被
         // 提升为 acquire，标准亦不建议使用；其依赖语义仅覆盖经由该指针派生的
         // 访问，过于脆弱。acquire 语义明确、与编译器实际行为一致，且能接住
-        // resize 时 _array.store(release) 发布的新 buffer——更稳健、面向未来。
+        // resize 时 m_buf.store(release) 发布的新 buffer。
         // 注：slot 内层 load 用 relaxed，其可见性已由上方 bottom 的 acquire 链承担。
         Tp tmp = m_buf.load(std::memory_order_acquire)->load(top);
 

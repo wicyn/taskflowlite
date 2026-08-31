@@ -1,5 +1,5 @@
-﻿/// @file  utility.hpp
-/// @brief 框架基础工具集 —— CRTP 策略基类、安全类型转换、源码位置包装、向量映射等。
+﻿/// @file utility.hpp
+/// @brief 框架使用的基础类型、策略基类和源码位置包装工具。
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-05-28
@@ -17,14 +17,18 @@
 #include <typeinfo>
 #include <vector>
 #include <utility>
+#include <optional>
+#include <bit>
+#include <cstddef>
+#include <type_traits>
 
-// 替换原来的 #include <stacktrace>
-#if __has_include(<stacktrace>)
-#  include <stacktrace>
-#endif
+#include <cstddef>
+#include <type_traits>
+#include <version>
 
-// 放到 macros.hpp 或 utility.hpp 顶部皆可
+
 #if defined(__cpp_lib_stacktrace) && __cpp_lib_stacktrace >= 202011L
+#  include <stacktrace>
 #  define TFL_HAS_STACKTRACE 1
 #else
 #  define TFL_HAS_STACKTRACE 0
@@ -34,33 +38,33 @@
 
 namespace tfl {
 
-// 跨平台且规避 Clang 陷阱的缓存行大小推导
+/// @brief 编译目标使用的缓存行大小估计值。
 #if defined(__cpp_lib_hardware_interference_size) && !defined(__GNUC__)
-    // 1. 如果编译器和标准库完整支持 C++17 特性，优先使用标准库
+    // 优先使用标准库提供的硬件干扰大小。
 inline constexpr std::size_t cache_line_size = std::hardware_destructive_interference_size;
 #else
-    // 2. 否则，根据编译器宏和目标架构进行精细化推导
+    // 标准库常量不可用时按目标架构选择。
 #if defined(__APPLE__) && defined(__aarch64__)
-    // 重要补充：Apple Silicon (M1/M2/M3) 的 L1 缓存行大小是 128 字节！
+    // Apple Silicon 使用 128 字节。
 inline constexpr std::size_t cache_line_size = 128;
 #elif defined(__powerpc64__)
-    // PowerPC64 (如 Power7) 的 L1 D-cache 缓存行大小
+    // PowerPC64 使用 128 字节。
 inline constexpr std::size_t cache_line_size = 128;
 #elif defined(__s390x__)
-    // IBM z/Architecture 通常是 256 字节
+    // IBM z/Architecture 使用 256 字节。
 inline constexpr std::size_t cache_line_size = 256;
 #elif defined(__arm__)
-    // 32位 ARM 处理器的兼容处理
+    // 32 位 ARM 按架构版本选择。
 #if defined(__ARM_ARCH_5T__)
 inline constexpr std::size_t cache_line_size = 32;
 #else
 inline constexpr std::size_t cache_line_size = 64;
 #endif
 #elif defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
-    // x86 和 x86_64 架构（包含 MSVC 的宏 _M_IX86 / _M_X64）绝大多数是 64 字节
+    // x86 与 x64 使用 64 字节。
 inline constexpr std::size_t cache_line_size = 64;
 #else
-    // 3. 合理的默认猜测：高估会浪费一点内存，低估则会导致伪共享浪费大量时间
+    // 未识别的架构使用 64 字节。
 inline constexpr std::size_t cache_line_size = 64;
 #endif
 #endif
@@ -69,90 +73,84 @@ inline constexpr std::size_t cache_line_size = 64;
 /// @brief 每字节的二进制位数，等价于 C 的 CHAR_BIT。
 inline constexpr unsigned char_bits = std::numeric_limits<unsigned char>::digits;
 
-// ============================================================================
-//  ChunkLink —— 在已析构内存上原子地 store/load 链接指针
-// ============================================================================
-/// @brief chunk-as-link 工具：在 chunk 的前 sizeof(void*) 字节做指针存取。
-///
-/// 安全前提：
-///   1. chunk 处于 "storage available, no object" 状态（dtor 已返回 / 未构造）
-///   2. chunk 起始按 alignof(void*) 对齐 —— operator new 默认满足
-///   3. chunk 容量 >= sizeof(void*) —— 由 size class policy 的最小档保证
-///
-/// 为什么用 std::atomic_ref 而非 memcpy：
-///   FreeStack(Treiber 栈) 的 pop() 会在 CAS 成功前"投机"读取节点的 link 字段，
-///   此时该节点可能已被另一线程 pop 走并交给用户写入——非原子 memcpy 读 + 用户写
-///   构成数据竞争(UB), TSan 报 race。改用 atomic_ref relaxed 后, 该读成为
-///   well-defined 的原子读: 投机读到的值仍会被随后失败的 CAS 丢弃, 语义不变,
-///   但不再是数据竞争。relaxed 足够: 节点间的可见性由 m_head 的 acq/rel 建立。
-struct ChunkLink {
-    TFL_FORCE_INLINE static void store(void* chunk, void* next) noexcept {
-        std::atomic_ref<void*> link{*static_cast<void**>(chunk)};
-        link.store(next, std::memory_order_relaxed);
-    }
 
-    [[nodiscard]] TFL_FORCE_INLINE static void* load(const void* chunk) noexcept {
-        // chunk 内容此刻是裸 storage，对其首 void* 做原子读
-        std::atomic_ref<void*> link{
-                                     *static_cast<void**>(const_cast<void*>(chunk))};
-        return link.load(std::memory_order_relaxed);
-    }
-};
-
-/// @brief CRTP 空基类：禁止拷贝与移动，保证构造后地址不变。
+/// @brief 为需要稳定对象地址的 CRTP 派生类型统一禁用复制和移动。
 ///
-/// 禁掉全部四种特殊成员。模板化 CRTP 避免多重继承冲突，EBO 不增加派生类大小。
-/// @tparam CRTP 派生类类型
+/// 该空基类不持有资源，只通过删除四个特殊成员限制派生类型的值语义。
+///
+/// @tparam CRTP 尚未完成定义的派生类型。
 template <typename CRTP>
 struct Immovable {
-    // CRTP 模式在基类实例化时派生类必定为不完整类型，此断言防止非 CRTP 误用
+    // 拒绝将完整类型作为 CRTP 参数。
     static_assert(!requires { sizeof(CRTP); }, "sizeof(CRTP) must not be a complete type");
+    /// @brief 允许派生类默认构造不可移动基类。
     constexpr Immovable() = default;
+
+    /// @brief 基类析构不持有资源。
     constexpr ~Immovable() = default;
 
+    /// @brief 禁止复制构造。
     constexpr Immovable(const Immovable&) = delete;
+
+    /// @brief 禁止复制赋值。
     constexpr Immovable& operator=(const Immovable&) = delete;
 
+    /// @brief 禁止移动构造，以保持派生对象地址稳定。
     constexpr Immovable(Immovable &&) noexcept = delete;
+
+    /// @brief 禁止移动赋值。
     constexpr Immovable& operator=(Immovable &&) noexcept = delete;
 };
 
 static_assert(std::is_empty_v<Immovable<void>>);
 
-/// @brief CRTP 空基类: 允许移动语义但禁止拷贝。
+/// @brief 为独占资源的 CRTP 派生类型禁用复制并保留默认移动语义。
 ///
-/// 适用于需要转移所有权的对象（如 Flow 或 AsyncTask）。
+/// 该空基类不持有资源；实际移动是否可用及其效果仍由派生类型的成员决定。
 ///
-/// @tparam CRTP 派生类类型。
+/// @tparam CRTP 尚未完成定义的派生类型。
 template <typename CRTP>
 struct MoveOnly {
     static_assert(!requires { sizeof(CRTP); }, "sizeof(CRTP) must not be a complete type");
+    /// @brief 允许派生类默认构造移动专用基类。
     constexpr MoveOnly() = default;
+
+    /// @brief 基类析构不持有资源。
     constexpr ~MoveOnly() noexcept = default;
 
+    /// @brief 禁止复制构造。
     constexpr MoveOnly(const MoveOnly&) = delete;
+
+    /// @brief 禁止复制赋值。
     constexpr MoveOnly& operator=(const MoveOnly&) = delete;
 
+    /// @brief 允许派生类使用默认移动构造。
     constexpr MoveOnly(MoveOnly&&) noexcept = default;
+
+    /// @brief 允许派生类使用默认移动赋值。
     constexpr MoveOnly& operator=(MoveOnly&&) noexcept = default;
 };
 
 static_assert(std::is_empty_v<MoveOnly<void>>);
 
-
-/// @brief 自动绑定源码位置的值包装器。
+/// @brief 按值保存一个输入对象，并在常量求值构造时记录调用点源码位置。
 ///
-/// 用于在编译期捕获对象构造（即调用点）的源文件和行号信息，常用于异常处理或日志。
+/// 包装器拥有 `T` 和 `source_location` 快照，主要用于让异常构造同时接收格式串
+/// 与其来源位置；访问器返回的引用随包装器销毁而失效。
 ///
-/// @tparam T 被包装的基础类型。
+/// @tparam T 被包装并按值拥有的类型。
 template <class T>
 struct Located {
 private:
-    T m_inner;                    ///< 实际存储的值
-    std::source_location m_loc;   ///< 对象构造时的源码位置
+    T m_inner;                    ///< 实际存储的值。
+    std::source_location m_loc;   ///< 对象构造时的源码位置。
 
 public:
-    /// @brief 构造并自动捕获调用点的源码位置。
+    /// @brief 构造包装值并捕获调用点源码位置。
+    /// @tparam U 用于构造 T 的输入类型。
+    /// @tparam Loc 可构造 `std::source_location` 的位置类型。
+    /// @param inner 要保存的值。
+    /// @param loc 源码位置，默认在调用点由 `current()` 生成。
     template <class U, class Loc = std::source_location>
         requires std::constructible_from<T, U> &&
                      std::constructible_from<std::source_location, Loc>
@@ -170,20 +168,25 @@ public:
     constexpr const std::source_location& location() const noexcept { return m_loc; }
 };
 
-/// @brief 带有堆栈跟踪与源码位置的值包装器。
-///
-/// 继承自 `Located` 并额外附加 `std::stacktrace`。适用于需要完整调用链诊断信息的场景。
-///
-/// @tparam T 被包装的基础类型。
-/// @note 捕获堆栈涉及运行时栈回溯开销，仅应在异常或诊断错误路径使用。
 #if TFL_HAS_STACKTRACE
+/// @brief 在 `Located<T>` 的值和源码位置之外按值保存调用栈快照。
+///
+/// 该类型仅在平台支持 `std::stacktrace` 时定义，捕获到的帧受平台和优化设置影响。
+///
+/// @tparam T 被包装并按值拥有的类型。
 template <class T>
 struct Traced : Located<T> {
 private:
-    std::stacktrace m_trace;   ///< 构造时的调用栈信息
+    std::stacktrace m_trace;   ///< 构造时的调用栈信息。
 
 public:
-    /// @brief 构造并自动捕获调用点源码位置与堆栈信息。
+    /// @brief 构造包装值并捕获调用点源码位置与堆栈信息。
+    /// @tparam U 用于构造 T 的输入类型。
+    /// @tparam Loc 源码位置类型。
+    /// @tparam Trace 堆栈快照类型。
+    /// @param inner 要保存的值。
+    /// @param loc 调用点源码位置。
+    /// @param trace 调用栈快照。
     template <class U, class Loc = std::source_location, class Trace = std::stacktrace>
         requires std::constructible_from<T, U> &&
                      std::constructible_from<std::source_location, Loc> &&
@@ -197,9 +200,123 @@ public:
         , m_trace{std::forward<Trace>(trace)}
     {}
 
-    /// @brief 获取该包装器构造时自动捕获的完整调用栈快照。
-    /// @return std::stacktrace 对象的常量引用，包含从 throw 点到 main 的调用链。
+    /// @brief 获取该包装器构造时捕获的调用栈快照。
+    /// @return 实现捕获到的 `std::stacktrace` 快照；优化和平台限制可能省略帧。
     constexpr const std::stacktrace& stacktrace() const noexcept { return m_trace; }
 };
 #endif
+
+
+
+/// @brief 将整数向上舍入到指定 2 的幂对齐边界。
+/// @param n 原始大小或偏移。
+/// @param alignment 对齐值，必须是非零的 2 的幂。
+/// @return 不小于 n 的最小 alignment 倍数。
+///
+/// @pre alignment != 0。
+/// @pre std::has_single_bit(alignment)。
+/// @pre n <= SIZE_MAX - (alignment - 1)。
+[[nodiscard]] inline constexpr std::size_t align_up(std::size_t n, std::size_t alignment) noexcept {
+    return (n + alignment - 1) & ~(alignment - 1);
+}
+
+/// @brief 默认前缀及其后 payload 的基础对齐。
+inline constexpr std::size_t k_default_prefix_alignment = __STDCPP_DEFAULT_NEW_ALIGNMENT__;
+static_assert(std::has_single_bit(k_default_prefix_alignment));
+/// @brief 描述“固定前缀值 + 对齐 payload”的原始内存布局和地址转换。
+///
+/// 该无状态工具通过 `memcpy` 读写前缀，不分配、不构造也不释放 payload；调用方
+/// 必须提供满足大小、对齐和来源配对要求的原始存储。
+///
+/// @tparam T 写入前缀的平凡可复制值类型。
+/// @tparam Alignment payload 的非零二次幂对齐值。
+template <typename T, std::size_t Alignment = k_default_prefix_alignment>
+struct ValuePrefix {
+    using value_type = T;
+
+    static_assert(std::is_trivially_copyable_v<value_type>);
+    static_assert(Alignment != 0);
+    static_assert(std::has_single_bit(Alignment));
+
+    // raw 必须至少能够安全存放 value_type。
+    static_assert(Alignment >= alignof(value_type));
+    static_assert(Alignment % alignof(value_type) == 0);
+
+    // 防止下面 align_up() 在常量求值时溢出。
+    static_assert(sizeof(value_type) <= std::numeric_limits<std::size_t>::max() - (Alignment - 1));
+
+    /// @brief 前缀对齐。
+    static constexpr std::size_t alignment = Alignment;
+
+    /// @brief 包含 padding 的前缀大小。
+    static constexpr std::size_t size = align_up(sizeof(value_type), alignment);
+
+    /// @brief 从原始分配地址越过前缀得到可修改 payload 地址。
+    /// @param raw 指向至少 size 字节前缀及后续 payload 的地址。
+    /// @return `raw + size`。
+    /// @pre raw 不得为 nullptr。
+    [[nodiscard]] static void* payload_from_raw(void* raw) noexcept {
+        return static_cast<std::byte*>(raw) + size;
+    }
+
+    /// @brief 从只读原始分配地址得到只读 payload 地址。
+    /// @param raw 原始分配地址。
+    /// @return `raw + size`。
+    /// @pre raw 不得为 nullptr。
+    [[nodiscard]] static const void* payload_from_raw(const void* raw) noexcept {
+        return static_cast<const std::byte*>(raw) + size;
+    }
+
+    /// @brief 从可修改 payload 地址恢复原始分配地址。
+    /// @param payload 先前由 `payload_from_raw()` 得到的地址。
+    /// @return `payload - size`。
+    /// @pre payload 不得为 nullptr。
+    [[nodiscard]] static void* raw_from_payload(void* payload) noexcept {
+        return static_cast<std::byte*>(payload) - size;
+    }
+
+    /// @brief 从只读 payload 地址恢复只读原始分配地址。
+    /// @param payload 先前由 `payload_from_raw()` 得到的地址。
+    /// @return `payload - size`。
+    /// @pre payload 不得为 nullptr。
+    [[nodiscard]] static const void* raw_from_payload(const void* payload) noexcept {
+        return static_cast<const std::byte*>(payload) - size;
+    }
+
+    /// @brief 通过 memcpy 把平凡可复制值写入前缀。
+    /// @param raw 可写原始分配地址。
+    /// @param value 要保存的前缀值。
+    /// @pre raw 至少提供 `sizeof(value_type)` 个可写字节。
+    static void store(void* raw, const value_type& value) noexcept {
+        std::memcpy(raw, &value, sizeof(value_type));
+    }
+
+    /// @brief 通过 memcpy 从原始地址读取前缀值。
+    /// @param raw 先前写入前缀值的原始地址。
+    /// @return 按值复制出的前缀内容。
+    [[nodiscard]] static value_type load_from_raw(const void* raw) noexcept {
+        value_type value;
+        std::memcpy(&value, raw, sizeof(value_type));
+        return value;
+    }
+
+    /// @brief 从 payload 地址回退到 raw 并读取前缀值。
+    /// @param payload 对应原始分配的 payload 地址。
+    /// @return 按值复制出的前缀内容。
+    [[nodiscard]] static value_type load_from_payload(const void* payload) noexcept {
+        return load_from_raw(raw_from_payload(payload));
+    }
+};
+
+/// @brief 保存一个 owner 指针的前缀。
+template <typename T>
+using PointerPrefix = ValuePrefix<T*>;
+
+/// @brief 保存真实内存容量的前缀。
+using SizePrefix = ValuePrefix<std::size_t>;
+
+using Int32Prefix = ValuePrefix<std::int32_t>;
+
+using Int64Prefix = ValuePrefix<std::int64_t>;
+
 } // namespace tfl

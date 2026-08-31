@@ -1,5 +1,5 @@
-﻿/// @file  executor.hpp
-/// @brief 任务调度器 —— Work-Stealing 并行执行引擎，框架唯一的 OS 线程持有者。
+﻿/// @file executor.hpp
+/// @brief Executor —— Worker 线程、任务队列、拓扑生命周期与 work-stealing 调度器。
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-05-28
@@ -8,549 +8,781 @@
 
 #pragma once
 
+#include <algorithm>
+#include <atomic>
+#include <bit>
 #include <cassert>
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <functional>
+#include <iterator>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-#include "flow.hpp"
-#include "future.hpp"
+#include "graph.hpp"
+#include "traits.hpp"
+#include "async_future.hpp"
+#include "work_factory_fwd.hpp"
 #include "worker.hpp"
+#include "random.hpp"
+#include "notifier.hpp"
 #include "unbounded_queue.hpp"
 
 namespace tfl {
 
-/// @brief 任务调度器 —— Work-Stealing 并行执行引擎。
+/// @brief 拥有 Worker 线程、调度队列和通知设施，并负责执行任务图及异步任务。
 ///
-/// 持有 N 个 Worker 线程、共享队列和 Notifier。所有 Flow / AsyncTask / Runtime
-/// 最终通过 Executor 落地执行。不可拷贝/移动，析构时等待所有在飞任务完成。
+/// Executor 构造时创建固定数量的 Worker，并通过 Worker 本地 work-stealing 队列、
+/// 分片共享队列和 Notifier 协同完成任务发布、窃取、休眠与唤醒。
 ///
-/// 调度算法：本地 LIFO pop → 随机 FIFO steal → Notifier 两阶段 park。
-/// 提交路径自适应：当前线程是 worker 则推本地队列，否则推共享队列。
+/// 每个顶层 detach / async / run 执行链通过 `m_num_topologies` 参与 Executor
+/// 生命周期管理；析构会先等待该计数归零，再通知 Worker 退出并回收线程。
 ///
-/// @note 构造完成后所有 public API 可从任意线程并发调用。
+/// Executor 不拥有以借用方式提交的外部对象，例如左值 Graph/Flow 和 WorkerHandler；
+/// 调用方必须保证这些对象在框架仍可能访问期间保持有效。
+///
+/// @note 不同顶层任务可由多个线程并发提交；同一图结构的修改、同一 AsyncTask 的启动
+///       以及其他具有独占配置语义的操作仍须遵守各自接口契约。
+/// @warning `Executor` 不可复制或移动，且不得在其 Worker 或回调仍可能访问它时销毁。
 class Executor : public Immovable<Executor> {
+    friend class Context;
     friend class Runtime;
+    friend class SubFlow;
+    friend class Work;
+    friend class TaskGroup;
+
     template <typename> friend class AsyncTask;
     TFL_WORK_SUBCLASS_FRIENDS;
 
 public:
-    // ========================================================================
-    //  构造与析构
-    // ========================================================================
+    // ============================================================================
+    // 构造与析构
+    // ============================================================================
 
-    /// @brief 创建调度器并启动工作线程（使用默认 DefaultWorkerHandler）。
-    /// @param num_workers 工作线程数量，默认值为 std::thread::hardware_concurrency()。
-    /// @throw Exception 若 num_workers == 0。
+    /// @brief 创建不绑定 WorkerHandler 的 Executor 并立即启动工作线程。
+    /// @param num_workers Worker 数量，默认使用 `std::thread::hardware_concurrency()`。
+    /// @throws Exception num_workers 为 0 或达到 / 超过 Notifier 可表示的容量上限。
     explicit Executor(std::size_t num_workers = std::thread::hardware_concurrency());
 
-    /// @brief 创建调度器并启动工作线程（使用用户自定义 handler）。
+    /// @brief 创建 Executor、启动工作线程，并为所有 Worker 借用同一个 WorkerHandler。
     ///
-    /// @tparam H 满足 worker_handle concept，支持以下传递方式：
-    ///           - 值传递或右值 MyHandler{} / std::move(h) → 拷贝/移动到堆，
-    ///             Executor 拥有生命周期；
-    ///           - std::ref(h) / std::cref(h) → 借用语义，调用方保证 h 生命周期。
-    /// @param handler   用户自定义的 WorkerHandler 派生对象。
-    /// @param num_workers 工作线程数量，默认值为 std::thread::hardware_concurrency()。
-    /// @throw Exception 若 num_workers == 0。
-    template <worker_handle H>
-    explicit Executor(H&& handler, std::size_t num_workers = std::thread::hardware_concurrency());
+    /// Executor 不取得 @p handler 的所有权。Worker 启动、停止以及兜底异常路径
+    /// 均可能访问该对象，因此其生命周期必须覆盖整个 Executor 生命周期。
+    ///
+    /// @param handler 外部拥有并由 Executor 借用的 WorkerHandler。
+    /// @param num_workers Worker 数量，默认使用 `std::thread::hardware_concurrency()`。
+    /// @throws Exception num_workers 为 0 或达到 / 超过 Notifier 可表示的容量上限。
+    explicit Executor(WorkerHandler& handler, std::size_t num_workers = std::thread::hardware_concurrency());
 
-    /// @brief 等待所有已提交任务完成、停止工作线程并释放资源。
+    /// @brief 等待当前活跃顶层拓扑完成，停止所有 Worker 并回收线程资源。
     ///
-    /// 内部调用 wait_for_all() 阻塞至 m_num_topologies 归零，然后设置每
-    /// 个 worker 的 terminate flag（release 语义），notify_all 唤醒所有
-    /// 等待中的线程，最后 join 回收。
+    /// 析构首先通过 `wait_for_all()` 等待 `m_num_topologies` 归零，随后以 release
+    /// 语义设置每个 Worker 的终止标志，唤醒可能阻塞在 Notifier 上的线程，
+    /// 最后逐一 join。
+    ///
+    /// @note 析构开始后不得再从其他线程向该 Executor 提交新任务。
     ~Executor() noexcept;
 
-    // ========================================================================
-    //  任务派发 API —— 接受游离态的 AsyncTask，在本执行器内启动
-    // ========================================================================
+    // ============================================================================
+    // 任务派发 API —— 接受游离态 AsyncTask，在本执行器内启动
+    // ============================================================================
 
-    /// @brief 将已构造的 AsyncTask 派发到本执行器，并指定上游依赖。
+    /// @brief 在当前 Executor 中启动一个尚未执行的 AsyncTask，并可附加动态前置依赖。
     ///
-    /// 派发前检查任务内部 Work 节点状态：nonrepeat 模式要求 Idle→Running CAS，
-    /// repeat 模式允许 Finished→Running 转换。依赖列表中的每个 AsyncTask 完成
-    /// 后，通过动态依赖协议（Topology::State Locking CAS）递减当前任务的
-    /// join_counter。
+    /// `task` 通过其 Topology 控制字竞争一次性的 Idle -> Running 启动权。
+    /// 对每个仍未完成的有效依赖，框架把 `task` 注册到该前驱的动态后继表；
+    /// `task.m_join_counter` 记录尚未满足的依赖数，归零后才进入调度队列。
     ///
-    /// @tparam T    任意 AsyncTask<Mode>（可为 lvalue 或 rvalue 引用）。
-    /// @tparam Deps 必须为 AsyncTask<nonrepeat_t> 或其引用：仅 nonrepeat 任务
-    ///              可作为依赖，因为可重复任务的状态机不保证确定性的完成语义。
-    /// @param task  待派发的任务句柄。内部 Work 节点必须处于 Idle 状态（nonrepeat）
-    ///              或非 Running 状态（repeat）。
-    /// @param deps  上游依赖列表。task 将在所有 deps 完成后被调度。
-    /// @return      若 task 为 lvalue 引用则返回该引用，否则返回值类型（支持链式）。
-    /// @throw Exception 若 task 为空、已处于 Running 状态，或不处于合法状态。
+    /// 空依赖以及 `task` 自身不会建立动态边，而是立即抵消对应的初始 join 计数；
+    /// 已经 Finished 的依赖同样视为已经满足。
     ///
-    /// @note 派发后 topology->m_executor 被填入 *this，任务由本执行器独占调度。
-    /// @note deps 中包含空任务或 self 时，对应的依赖边被跳过（直接 decrement counter）。
-    template <typename T, typename... Deps>
-        requires (any_async_task<T> && (nonrepeat_async_task<Deps> && ...))
-    auto submit(T&& task, Deps&&... deps) -> std::conditional_t<std::is_lvalue_reference_v<T>, std::remove_reference_t<T>&, std::remove_cvref_t<T>>;
+    /// @tparam T AsyncTask 句柄类型，保留调用实参的值类别。
+    /// @tparam Deps 前置 AsyncTask 依赖类型包。
+    /// @param task 待启动句柄，必须非空且尚未成功启动过。
+    /// @param deps 前置依赖列表。
+    /// @return task 为左值时返回原引用；为右值时按值返回移动后的句柄。
+    /// @throws Exception task 为空或已经离开 Idle 状态。
+    ///
+    /// @note 启动成功后 task 所属 Topology 的 Executor 被绑定为当前 Executor。
+    template <async_task T, async_task... Deps>
+    auto run(T&& task, Deps&&... deps) -> forward_return_t<T>;
 
-    /// @brief 将已构造的 AsyncTask 派发到本执行器，使用迭代器范围指定上游依赖。
-    ///
-    /// @tparam T 任意 AsyncTask<Mode>。
-    /// @tparam I 输入迭代器，其 value_type 必须为 AsyncTask<nonrepeat_t>。
-    /// @tparam S I 的 sentinel 类型。
-    /// @param task   待派发的任务句柄。
-    /// @param first  依赖列表起始迭代器。
-    /// @param last   依赖列表结束哨兵。
-    /// @return       若 task 为 lvalue 引用则返回该引用，否则返回值类型。
-    /// @throw Exception 若 task 为空或不处于合法状态。
-    template <typename T, std::input_iterator I, std::sentinel_for<I> S>
-        requires (any_async_task<T> && nonrepeat_async_task<std::iter_value_t<I>>)
-    auto submit(T&& task, I first, S last) -> std::conditional_t<std::is_lvalue_reference_v<T>, std::remove_reference_t<T>&, std::remove_cvref_t<T>>;
+    // ============================================================================
+    // 即发即弃 API —— 提交任务并立即返回，不提供结果获取途径
+    // ============================================================================
 
-    // ========================================================================
-    //  即发即弃 API —— 提交任务并立即返回，不提供结果获取途径
-    // ========================================================================
-
-    /// @brief 提交任务图执行一次（即发即弃）。
+    /// @brief 提交任务图执行一次（即发即弃）；给了 @p cb 则完成后执行。
     /// @tparam Gh 满足 graph_holder concept 的图持有者类型。
+    /// @tparam C  完成回调类型，默认 noop_callback（无回调）。
     /// @param gh  任务图持有者（Flow 或其他 graph_holder）。
-    template <typename Gh>
-        requires graph_holder<Gh>
-    void detach(Gh&& gh);
+    /// @param cb  完成回调，省略则不回调。若任务抛异常，cb 仍会被调用。
+    template <graph_holder Gh, callback C = noop_callback>
+        requires capturable<C>
+    void detach(Gh&& gh, C&& cb = C{});
 
-    /// @brief 提交任务图执行一次，完成后执行回调（即发即弃）。
-    /// @tparam Gh 满足 graph_holder concept。
-    /// @tparam C  满足 callback concept 的可调用对象。
-    /// @param gh  任务图持有者。
-    /// @param cb  完成回调。若任务抛异常，cb 仍会被调用。
-    template <typename Gh, typename C>
-        requires (capturable<C> && graph_holder<Gh> && callback<C>)
-    void detach(Gh&& gh, C&& cb);
-
-    /// @brief 提交任务图循环执行指定次数（即发即弃）。
+    /// @brief 提交任务图循环执行 @p num 次（即发即弃）；给了 @p cb 则完成后执行。
     /// @tparam Gh  满足 graph_holder concept。
+    /// @tparam C   完成回调类型，默认 noop_callback（无回调）。
     /// @param gh   任务图持有者。
-    /// @param num  循环次数。内部转换为谓词 [num]() mutable { return num-- == 0; }。
-    template <typename Gh>
-        requires graph_holder<Gh>
-    void detach(Gh&& gh, std::uint64_t num);
+    /// @param num  循环次数。0 表示不执行；内部谓词不会对无符号计数产生回绕。
+    /// @param cb   完成回调，省略则不回调。
+    template <graph_holder Gh, callback C = noop_callback>
+        requires capturable<C>
+    void detach(Gh&& gh, std::uint64_t num, C&& cb = C{});
 
-    /// @brief 提交任务图循环执行指定次数，完成后执行回调（即发即弃）。
-    /// @tparam Gh  满足 graph_holder concept。
-    /// @tparam C   满足 callback concept。
-    /// @param gh   任务图持有者。
-    /// @param num  循环次数。
-    /// @param cb   完成回调。
-    template <typename Gh, typename C>
-        requires (capturable<C> && graph_holder<Gh> && callback<C>)
-    void detach(Gh&& gh, std::uint64_t num, C&& cb);
-
-    /// @brief 提交任务图按谓词条件循环执行（即发即弃）。
+    /// @brief 提交任务图按谓词条件循环执行（即发即弃）；给了 @p cb 则完成后执行。
     /// @tparam Gh   满足 graph_holder concept。
     /// @tparam P    满足 predicate concept 的可调用对象。
+    /// @tparam C    完成回调类型，默认 noop_callback（无回调）。
     /// @param gh    任务图持有者。
     /// @param pred  循环谓词。返回 true 时停止，返回 false 时继续下一轮。
-    template <typename Gh, typename P>
-        requires (capturable<P> && graph_holder<Gh> && predicate<P>)
-    void detach(Gh&& gh, P&& pred);
-
-    /// @brief 提交任务图按谓词循环执行，完成后执行回调（即发即弃）。
-    /// @tparam Gh   满足 graph_holder concept。
-    /// @tparam P    满足 predicate concept。
-    /// @tparam C    满足 callback concept。
-    /// @param gh    任务图持有者。
-    /// @param pred  循环谓词。
-    /// @param cb    完成回调。
-    template <typename Gh, typename P, typename C>
-        requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
-    void detach(Gh&& gh, P&& pred, C&& cb);
+    /// @param cb    完成回调，省略则不回调。
+    template <graph_holder Gh, predicate P, callback C = noop_callback>
+        requires capturable<P, C>
+    void detach(Gh&& gh, P&& pred, C&& cb = C{});
 
     /// @brief 即发即弃执行单个可调用任务。
-    /// @tparam T    满足 basic_invocable_plain concept 的任务体。
+    /// @tparam T    满足 basic_invocable concept 的任务体。
     /// @tparam Args 任务参数类型包。
     /// @param task  可调用对象。
     /// @param args  任务参数。
     template <typename T, typename... Args>
-        requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
+        requires (basic_invocable<T, Args...> && capturable<T, Args...>)
     void detach(T&& task, Args&&... args);
 
     /// @brief 即发即弃执行单个运行时任务（可通过 Runtime 动态操作图）。
-    /// @tparam T    满足 runtime_invocable_plain concept。
+    /// @tparam T    满足 runtime_invocable concept。
     /// @tparam Args 任务参数类型包。
     /// @param task  可调用对象（签名为 void(Runtime&, Args...)）。
     /// @param args  任务参数。
     template <typename T, typename... Args>
-        requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
+        requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
     void detach(T&& task, Args&&... args);
 
+    /// @brief 即发即弃执行可接收 `SubFlow&` 的动态子图 callable。
+    /// @tparam T 满足 subflow_invocable concept 的任务体。
+    /// @tparam Args 任务参数类型包。
+    /// @param task 要执行的 callable；框架在调用时注入栈绑定 `SubFlow&`。
+    /// @param args 按捕获规则保存并传入 task 的参数。
+    /// @warning callable 不得保存框架注入的 `SubFlow&`。
+    template <typename T, typename... Args>
+        requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
+    void detach(T&& task, Args&&... args);
 
-    // ========================================================================
-    //  异步返回 API —— 提交任务并返回 Future<R>，可阻塞等待结果
-    // ========================================================================
+    // ============================================================================
+    // 异步返回 API —— 提交任务并返回 AsyncFuture<R>，可阻塞等待结果
+    // ============================================================================
 
-    /// @brief 异步执行任务图一次，返回 Future<void> 用于等待完成。
+    /// @brief 异步执行任务图一次；给了 @p cb 则完成后回调。返回 AsyncFuture<void> 用于等待完成。
     /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam C  完成回调类型，默认 noop_callback（无回调）。
     /// @param gh  任务图持有者。
-    /// @return    Future<void>。调用 future.get() 可阻塞等待完成并传播异常。
-    template <graph_holder Gh>
-    [[nodiscard]] Future<void> async(Gh&& gh);
+    /// @param cb  完成回调，省略则不回调。回调中的异常会被归档到 AsyncFuture，通过 future.get() 可见。
+    /// @return    AsyncFuture<void>。调用 future.get() 可阻塞等待完成并传播异常。
+    template <graph_holder Gh, callback C = noop_callback>
+        requires capturable<C>
+    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, C&& cb = C{});
 
-    /// @brief 异步执行任务图一次，完成后回调，返回 Future<void>。
-    ///
-    /// @tparam Gh 满足 graph_holder concept。
-    /// @tparam C  满足 callback concept。
-    /// @param gh  任务图持有者。
-    /// @param cb  完成回调。回调中的异常会被归档到 Future，通过 future.get() 可见。
-    /// @return    Future<void>。
-    template <graph_holder Gh, typename C>
-        requires (capturable<C> && callback<C>)
-    [[nodiscard]] Future<void> async(Gh&& gh, C&& cb);
-
-    /// @brief 异步执行任务图指定次数，返回 Future<void>。
+    /// @brief 异步执行任务图 @p num 次；给了 @p cb 则完成后回调。返回 AsyncFuture<void>。
     /// @tparam Gh  满足 graph_holder concept。
+    /// @tparam C   完成回调类型，默认 noop_callback（无回调）。
     /// @param gh   任务图持有者。
     /// @param num  循环次数。
-    /// @return     Future<void>。
-    template <graph_holder Gh>
-    [[nodiscard]] Future<void> async(Gh&& gh, std::uint64_t num);
+    /// @param cb   完成回调，省略则不回调。
+    /// @return     AsyncFuture<void>。
+    template <graph_holder Gh, callback C = noop_callback>
+        requires capturable<C>
+    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, C&& cb = C{});
 
-    /// @brief 异步执行任务图指定次数，完成后回调，返回 Future<void>。
-    /// @tparam Gh  满足 graph_holder concept。
-    /// @tparam C   满足 callback concept。
-    /// @param gh   任务图持有者。
-    /// @param num  循环次数。
-    /// @param cb   完成回调。
-    /// @return     Future<void>。
-    template <graph_holder Gh, typename C>
-        requires (capturable<C> && callback<C>)
-    [[nodiscard]] Future<void> async(Gh&& gh, std::uint64_t num, C&& cb);
-
-    /// @brief 异步执行任务图按谓词条件循环，返回 Future<void>。
+    /// @brief 异步执行任务图按谓词条件循环；给了 @p cb 则完成后回调。返回 AsyncFuture<void>。
     /// @tparam Gh   满足 graph_holder concept。
     /// @tparam P    满足 predicate concept。
+    /// @tparam C    完成回调类型，默认 noop_callback（无回调）。
     /// @param gh    任务图持有者。
     /// @param pred  循环谓词。
-    /// @return      Future<void>。
-    template <graph_holder Gh, typename P>
-        requires (capturable<P> && predicate<P>)
-    [[nodiscard]] Future<void> async(Gh&& gh, P&& pred);
+    /// @param cb    完成回调，省略则不回调。
+    /// @return      AsyncFuture<void>。
+    template <graph_holder Gh, predicate P, callback C = noop_callback>
+        requires capturable<P, C>
+    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, C&& cb = C{});
 
-    /// @brief 异步执行任务图谓词循环 + 回调，返回 Future<void>。
-    /// @tparam Gh   满足 graph_holder concept。
-    /// @tparam P    满足 predicate concept。
-    /// @tparam C    满足 callback concept。
-    /// @param gh    任务图持有者。
-    /// @param pred  循环谓词。
-    /// @param cb    完成回调。
-    /// @return      Future<void>。
-    template <graph_holder Gh, typename P, typename C>
-        requires (capturable<P, C> && predicate<P> && callback<C>)
-    [[nodiscard]] Future<void> async(Gh&& gh, P&& pred, C&& cb);
-
-
-    /// @brief 异步执行单个可调用任务，返回 Future<R>。
+    /// @brief 异步执行单个可调用任务，返回 AsyncFuture<R>。
     ///
     /// @tparam T    满足 basic_invocable concept 的任务体。
     /// @tparam Args 任务参数类型包。
     /// @param task  可调用对象。
     /// @param args  任务参数。
-    /// @return      Future<basic_return_t<T, Args...>>。调用 future.get()
+    /// @return      AsyncFuture<basic_return_t<T, Args...>>。调用 future.get()
     ///              阻塞等待任务完成并返回结果；若任务抛异常则 future.get() 重抛。
     ///
-    /// @note 返回的 Future 持有 stop_source 的共享副本，确保 topology 析构后
-    ///       request_stop() 仍然合法。
+    /// @note 返回的 AsyncFuture 通过 Work 强引用保持任务状态存活，
+    ///       `request_stop()` 直接作用于该任务的独立 Topology。
     template <typename T, typename... Args>
-        requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-    [[nodiscard]] auto async(T&& task, Args&&... args) -> Future<basic_return_t<T, Args...>>;
+        requires (basic_invocable<T, Args...> && capturable<T, Args...>)
+    [[nodiscard]] auto async(T&& task, Args&&... args) -> AsyncFuture<basic_return_t<T, Args...>>;
 
-    /// @brief 异步执行单个运行时任务，返回 Future<R>。
+    /// @brief 异步执行单个运行时任务，返回 AsyncFuture<R>。
     ///
     /// @tparam T    满足 runtime_invocable concept 的任务体。
     /// @tparam Args 任务参数类型包。
     /// @param task  可调用对象（签名为 R(Runtime&, Args...)）。
     /// @param args  任务参数。
-    /// @return      Future<runtime_return_t<T, Args...>>。
+    /// @return      AsyncFuture<runtime_return_t<T, Args...>>。
     template <typename T, typename... Args>
-        requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-    [[nodiscard]] auto async(T&& task, Args&&... args) -> Future<runtime_return_t<T, Args...>>;
+        requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
+    [[nodiscard]] auto async(T&& task, Args&&... args) -> AsyncFuture<runtime_return_t<T, Args...>>;
 
-    // ========================================================================
-    //  同步与状态查询
-    // ========================================================================
+    /// @brief 异步执行可接收 `SubFlow&` 的 callable，并返回结果 AsyncFuture。
+    /// @tparam T 满足 subflow_invocable concept 的任务体。
+    /// @tparam Args 任务参数类型包。
+    /// @param task 要执行的 callable；框架在调用时注入栈绑定 `SubFlow&`。
+    /// @param args 按捕获规则保存并传入 task 的参数。
+    /// @return `AsyncFuture<R>`，其中 `R = subflow_return_t<T, Args...>`。
+    /// @warning callable 不得保存框架注入的 `SubFlow&`。
+    template <typename T, typename... Args>
+        requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
+    [[nodiscard]] auto async(T&& task, Args&&... args) -> AsyncFuture<subflow_return_t<T, Args...>>;
 
-    /// @brief 阻塞等待所有顶层任务完成。
+    // ============================================================================
+    // 同步与状态查询
+    // ============================================================================
+
+    /// @brief 阻塞等待当前观察到的所有活跃顶层拓扑完成。
     ///
-    /// 使用 m_num_topologies 原子变量的 acquire 加载 + wait 原语实现。
-    /// 底层 OS 挂起机制（Linux futex / Windows WaitOnAddress）保证低 CPU 占用。
+    /// 通过 `m_num_topologies` 的 acquire 加载和 `std::atomic::wait` 等待计数归零。
+    /// 最后一个顶层拓扑完成时 `_decrement_topology()` 负责 `notify_all()`。
+    ///
+    /// @note 本函数不是“禁止提交”的全局栅栏。若其他线程与返回边界并发提交新任务，
+    ///       新任务可能发生在本次等待观察范围之外。
     void wait_for_all() const noexcept;
 
-    /// @brief 返回构造时指定的工作线程数量，运行时恒定不变。
+    /// @brief 返回构造时指定的工作线程数量。
+    /// @return Worker 数组的固定长度，Executor 生命周期内不变。
     [[nodiscard]] std::size_t num_workers() const noexcept;
 
-    /// @brief 返回当前因无任务可执行而阻塞在 Notifier 上的 worker 线程数（瞬时快照）。
+    /// @brief 返回当前因无任务可执行而阻塞在 Notifier 上的 Worker 数量。
+    /// @return 调用瞬间的等待者计数；调度并发会使结果立即过时。
     [[nodiscard]] std::size_t num_waiters() const noexcept;
 
-    /// @brief 返回偷取阶段可探测的队列总数。
-    /// @return num_workers() + bit_width(num_workers)，等于 worker 本地队列数加共享分片数。
+    /// @brief 返回 Worker 在窃取阶段可选择的队列总数。
+    /// @return Worker 本地队列数量与共享分片数量之和，即
+    ///         `num_workers() + bit_width(num_workers())`。
     [[nodiscard]] std::size_t num_queues() const noexcept;
 
-    /// @brief 返回调用时 m_num_topologies 的 relaxed 瞬时值，反映未完成的 async/submit/detach 拓扑数量。
-    ///
-    /// @note relaxed 加载无同步语义，返回值可能包含已实际完成但尚未调用 _decrement_topology 的拓扑。
+    /// @brief 返回当前活跃顶层拓扑计数的瞬时值。
+    /// @return relaxed 加载得到的 `m_num_topologies`。
+    /// @note 该接口仅用于状态观察，不建立任何同步关系；返回后计数可能立即变化。
     [[nodiscard]] std::size_t num_topologies() const noexcept;
 
 private:
-    /// @brief 单字段 handler 存储：unique_ptr + 函数指针 deleter。
+    /// @brief 保存一条由互斥锁串行访问的共享调度队列分片。
     ///
-    /// deleter 编码"借用 vs 拥有"语义：
-    /// - 借用（lvalue handler）：noop deleter，不释放；
-    /// - 拥有（rvalue handler）：按真实类型 delete。
-    using WorkerHandlerPtr = std::unique_ptr<WorkerHandler, void(*)(WorkerHandler*)>;
-
-    /// @brief 共享队列分片：互斥锁 + 无界队列。
-    ///
-    /// 按 2x cache line 对齐（通常 128 字节）防止伪共享。
-    /// 分片数量 = bit_width(num_workers)，随 worker 数对数增长。
+    /// 分片拥有队列存储但不拥有其中的 `Work` 节点；用于接收跨线程提交
+    /// 和 Worker 本地队列溢出的任务。
     struct alignas(2 * cache_line_size) Buffer {
         std::mutex mutex;
         UnboundedQueue<Work*> queue{2LL * TFL_DEFAULT_QUEUE_SIZE};
     };
 
-    // 2x cache line 对齐：防止多线程修改 m_num_topologies 时产生伪共享
+    // 2 倍缓存行对齐，使高频修改的拓扑计数尽量独占缓存区域，降低与相邻成员的伪共享。
     alignas(2 * cache_line_size) std::atomic<std::size_t> m_num_topologies{0};
 
-    std::vector<Worker>                             m_workers;          ///< Worker 线程实体数组
-    std::vector<Buffer>                             m_shared_buffers;   ///< 分片共享队列，溢出目标
-    Notifier                                        m_notifier;         ///< 两阶段 park 唤醒器
-    WorkerHandlerPtr                                m_handler;          ///< WorkerHandler 生命周期管理
-    std::unordered_map<std::thread::id, Worker*>    m_tid_to_worker;    ///< thread_id → Worker* 快速查找
+    std::vector<Worker>                             m_workers;          ///< Worker 线程实体数组。
+    std::vector<Buffer>                             m_shared_buffers;   ///< 分片共享队列，接收跨线程提交和本地溢出任务。
+    Notifier                                        m_notifier;         ///< Worker 两阶段 park / wake 通知器。
+    WorkerHandler*                                  m_handler{nullptr}; ///< 外部拥有的 WorkerHandler；nullptr 表示未绑定处理器。
+    std::unordered_map<std::thread::id, Worker*>    m_tid_to_worker;    ///< Worker thread_id 到稳定 Worker 地址的只读运行期映射。
 
-    /// @brief 真实初始化入口：字段构造 + _spawn 启动 worker。
+    /// @brief 统一构造入口，完成成员初始化后创建并启动全部 Worker。
     ///
-    /// 两个 public 构造均委托至此。m_shared_buffers 数量按 bit_width 计算。
-    explicit Executor(WorkerHandlerPtr handler, std::size_t num_workers);
+    /// @param handler 可选的外部 WorkerHandler；nullptr 表示不启用生命周期和异常钩子。
+    /// @param num_workers Worker 数量，进入本构造函数前尚未校验。
+    ///
+    /// @note Executor 不拥有 handler；非空 handler 的生命周期由调用方负责。
+    Executor(WorkerHandler* handler, std::size_t num_workers);
 
-    /// @brief 根据 H 的值类别构造 WorkerHandlerPtr。
-    ///
-    /// - lvalue 引用 → 借用，deleter 为空操作；
-    /// - rvalue → 拥有，heap-allocate + 按真实类型 delete。
-    ///
-    /// @tparam H 满足 worker_handle concept。
-    template <worker_handle H>
-    static auto _make_handler_ptr(H&& handler) -> WorkerHandlerPtr;
-
-    /// @brief 构造期容量校验：保证 n 落在 16-bit 字段 + 0xFFFF 哨兵的可用范围内。
-    /// @throws tfl::Exception  n 为 0 或 n >= capacity()(65535，可用上限 65534)
+    /// @brief 校验 Worker 数量并原样返回合法值，供成员初始化列表直接使用。
+    /// @param n 请求创建的 Worker 数量。
+    /// @return 校验通过后的 n。
+    /// @throws Exception n 为 0 或 `n >= Notifier::capacity()`。
     static std::size_t _check_worker_count(std::size_t n);
 
-    /// @brief 创建并启动 num_workers 个工作线程，同时填充 m_tid_to_worker 映射表供 _this_worker() 查询。
-    /// @param num_workers 要创建的线程数，已由构造函数保证 >= 1。
+    /// @brief 初始化 Worker 调度参数、启动线程，并建立 thread_id 到 Worker 的映射。
+    /// @param num_workers 要启动的 Worker 数量。
+    /// @pre num_workers 已通过 `_check_worker_count()` 校验。
     void _spawn(std::size_t num_workers);
 
-    /// @brief 关闭：等待全部任务 -> 设置终止标志 -> 唤醒 -> join 线程。
+    /// @brief 执行 Executor 关闭序列：等待顶层拓扑归零、请求终止、统一唤醒并 join Worker。
     void _shutdown() noexcept;
 
-    /// @brief 任务执行入口：通过 cache 接力实现无调度开销的串行链。
+    /// @brief 发布一个顶层 Detached Work，并维护 Executor 活跃 topology 计数。
     ///
-    /// 任务 Work::invoke 完成后可能产出 ready 的后继（放入 cache）。
-    /// 本函数在 do-while 中连续执行 cache 链，避免反复入队/出队。
+    /// 发布前先增加 `m_num_topologies`；若调度在 Work 尚未成功发布前抛出异常，
+    /// 则撤销 topology 计数并销毁该 Detached Work。
+    ///
+    /// @param work 已完成构造、尚未发布的 Detached Work。
+    /// @pre work 非空，且 `_schedule()` 抛异常时保证 work 尚未被调度器发布。
+    void _schedule_detached(Work* work);
+
+    /// @brief 发布一个顶层 Joinable Work，并建立 Future 与执行生命周期引用。
+    ///
+    /// 返回的 Future 持有一份外部强引用；任务执行期间额外持有一份执行强引用。
+    /// 若调度在 Work 尚未成功发布前抛出异常，则撤销 topology 计数和执行引用；
+    /// 局部 Future 随栈展开释放其强引用，并在最后一个引用离开时销毁 Work。
+    ///
+    /// @tparam R 子任务结果类型。
+    /// @param work 已完成构造、尚未发布的 Joinable Work。
+    /// @param result 与 work 绑定的结果槽。
+    /// @return 关联该顶层任务的 AsyncFuture。
+    /// @pre work 与 result 均非空，且 `_schedule()` 抛异常时保证 work 尚未被调度器发布。
+    template <typename R>
+    [[nodiscard]] AsyncFuture<R> _schedule_joinable(Work* work, ResultSlot<R>* result);
+
+    /// @brief 执行一个 Work，并沿 `cache` 接力链连续执行后续就绪任务。
+    ///
+    /// `Work::invoke()` 可以把一个立即就绪且适合当前线程继续执行的节点写入 cache。
+    /// 本函数直接在当前调用栈中消费该节点，直到没有新的 cache，从而减少队列 push/pop、
+    /// Notifier 唤醒以及再次窃取的调度成本。
+    ///
+    /// @param wr 当前执行 Worker。
+    /// @param w 首个待执行 Work；必须非空。
     void _invoke(Worker& wr, Work* w);
 
-    /// @brief 自适应三阶段 work-stealing：自旋窃取 → 退避让出 → 阻塞等待。
+    /// @brief 在当前 Worker 无本地任务时执行自适应 work-stealing 与阻塞等待。
     ///
-    /// @param wr 当前 worker 的上下文。
-    /// @return   获取到的 Work*，或 nullptr（仅终止时）。
+    /// 调度分为三阶段：持续探测可窃取队列；超过快速窃取阈值后通过 yield 退避；
+    /// 达到本轮上限后进入 Notifier 的 prepare / recheck / commit 两阶段等待协议，
+    /// 以避免任务发布与休眠之间发生 lost wake-up。
+    ///
+    /// @param wr 当前 Worker。
+    /// @return 获取到的 Work；仅观察到终止请求时返回 nullptr。
     [[nodiscard]] Work* _wait_for_work(Worker& wr) noexcept;
 
-    /// @brief 重置子图所有节点到下一轮执行的初始状态。
+    /// @brief 为一次 Graph 执行建立节点上下文、静态 join weight、运行期计数和 source 分区。
     ///
-    /// 对每个节点：注入 topology/parent 上下文 → 清除 EXCEPTION+CAUGHT 标记位
-    /// → 重算 join_weight 并初始化 join_counter → 零入度节点 swap 到 data 前段。
+    /// 每个节点都会重新绑定到 @p parent 及其 Topology，清除上一轮异常传播状态，
+    /// 根据 strong predecessor 重新计算静态 join weight，并为非 source 节点初始化
+    /// `m_join_counter`。零物理入度节点被原地交换到 `m_works` 前段。
     ///
-    /// 使用单次 fetch_and 同时清位 + 读旧值，比 load + fetch_and 少一次 RMW。
+    /// source 的判定依据物理前驱数量，而不是 strong join weight：即使某个前驱属于
+    /// weak dependency，只要物理边存在，该节点仍不能作为本轮初始 source。
     ///
-    /// @return 零入度源节点数量。调用方按此值批量调度 data[0..n) 区间。
-    [[nodiscard]] std::size_t _set_up_graph(Graph& g, Topology* topo, Work* parent) noexcept;
+    /// 异常状态通过一次 `fetch_and` 同时完成清位和旧值探测；只有上一轮真正持有
+    /// `EXCEPTION_CAUGHT` 的归档节点需要释放 `m_exception_ptr`。
+    ///
+    /// @param g 要建立运行期状态的 Graph。
+    /// @param parent 本次 Graph 执行所属父 Work。
+    /// @return 零物理入度 source 数量；这些节点位于 `m_works[0, n)`。
+    /// @pre 本轮执行尚未发布，不存在 Worker 并发执行 g 内节点。
+    [[nodiscard]] std::size_t _set_up_graph(Graph& g, Work& parent) noexcept;
 
-    /// @brief 任务完成后的依赖传播 —— 通过 cache 接力实现零调度开销的串行链。
+    /// @brief 在 Graph 再次执行前，把非 source 节点的运行期 join_counter 恢复为静态权重。
     ///
-        /// w 在被调度时已占 parent 的 1 个 slot。本函数退出前必须二选一：
-    /// 1) 把这个 slot 平移给某个就绪后继（放入 cache 接力执行）；
-    /// 2) 通过 _schedule_parent 把 slot 归还给 parent。
-    void _tear_down_task(Work* w, Worker& wr, Work*& cache);
-
-    /// @brief Branch 任务完成：将缓存的任务接力给 target 后继。
+    /// `_set_up_graph()` 已把零物理入度 source 聚集到 `[0, num_sources)`；
+    /// source 不通过 predecessor join 进入本轮调度，因此这里只检查其后的节点。
     ///
-    /// 逻辑与 _tear_down_task 类似，但后继固定为单个 target（condition
-    /// 节点的选中分支）。优先走"target 单前驱"快路径。
-    void _tear_down_branch_task(Work* w, Worker& wr, Work*& cache, Work* target);
-
-    /// @brief MultiBranch 任务完成：向多个 target 传播完成信号。
+    /// Branch / MultiBranch 等控制流可能使某些路径在上一轮未真正执行，但其
+    /// `m_join_counter` 已被部分前驱递减。本函数以 `_join_weight()` 为基准纠正
+    /// 这些残留计数，避免下一轮继承上一轮的部分到达状态。
     ///
-    /// n==1 时等价于 _tear_down_branch_task。n>=2 时第一个 ready 的 target
-    /// 继承 slot，其余各占新 slot。
-    void _tear_down_multi_branch_task(Work* w, Worker& wr, Work*& cache, const SmallVector<Work*>& targets);
+    /// @param g 要恢复运行期依赖状态的 Graph。
+    /// @param num_sources `_set_up_graph()` 得到的 source 数量。
+    /// @pre 上一轮 Graph 已完全结束，不存在 Worker 仍在访问 g 内节点。
+    void _reset_graph_join_counters(Graph& g, std::size_t num_sources) noexcept;
 
-    /// @brief Jump 任务完成：store(0) 强制清零 target 的 join_counter，
-    ///        绕过正常计数协议。
+    /// @brief 完成普通静态节点的依赖传播，并把一个就绪后继通过 cache 接力执行。
     ///
-    /// store(0) 等价于"所有前驱都到齐"。slot 平移 w→target，parent counter 不动。
-    void _tear_down_jump_task(Work* w, Worker& wr, Work*& cache, Work* target);
-
-    /// @brief MultiJump 任务完成：对每个 target store(0) 强制触发。
+    /// @p w 被调度时已经占用 parent 的一个 join slot。tear-down 后该 slot 必须保持守恒：
+    /// 若存在 ready 后继，第一个 ready 节点直接继承该 slot；额外 ready 后继在发布前
+    /// 各自为 parent 增加一个 slot；若没有任何 ready 后继，则把原 slot 归还给 parent。
     ///
-    /// 不变量：最后一个留在 cache 的 target 继承 w 的 parent slot，
-    /// 其余被挤出者各自 fetch_add 占新 slot 后入队。
-    void _tear_down_multi_jump_task(Work* w, Worker& wr, Work*& cache, const SmallVector<Work*>& targets);
-
-    /// @brief 动态任务（无依赖）完成：归还 parent slot 或 decrement topology，
-    ///        然后销毁 Work 节点。
-    void _tear_down_async_task(Work* w, Worker& wr, Work*& cache);
-
-    /// @brief 动态任务依赖设置：将 first..last 中的每个 AsyncTask 注册为 w 的前驱。
+    /// 对具有 strong predecessor 的节点，执行结束后先通过 fetch_add 恢复自身静态
+    /// join weight，再传播后继，以支持循环路径在当前 tear-down 尚未结束时提前到达。
     ///
-        /// 使用 Topology::State 的 CAS 状态机防止数据竞争：
-    /// - Running  → Locking（当前线程加锁成功，可安全插入依赖边）
-    /// - Locking  → 自旋等待（被其他线程持有，不触发 CAS 减少总线竞争）
-    /// - Finished → 目标已完成，跳过（直接 decrement counter）
-    /// - Locking  → Running（释放锁，恢复原状态）
-    template <typename I, typename S>
-        requires std::sentinel_for<S, I>
-    void _process_dependent(Work* w, I first, S last, std::size_t& num_predecessors);
+    /// @param w 已完成执行的普通静态 Work。
+    /// @param wr 当前 Worker。
+    /// @param cache 当前 cache 接力槽，可为空。
+    void _tear_down_task(Work& w, Worker& wr, Work*& cache);
 
-    /// @brief 动态依赖任务完成：Running→Finished 状态转移 → 唤醒等待者 →
-    ///        传播完成信号给所有后继 → 引用计数管理。
+    /// @brief 完成 Branch 节点，并仅向本次选中的 target 传播一次 strong dependency 到达。
     ///
-    /// 支持跨调度器传播：若后继的 executor 不同于当前 executor，
-    /// 则通过目标 executor 的 _schedule 推送。
-    void _tear_down_dep_async_task(Work* w, Worker& wr, Work*& cache);
+    /// Branch 先恢复自身静态 join weight；无 target 或异常时直接归还 parent slot。
+    /// 有效 target 通过 `fetch_sub(1)` 参与统一 join 协议，最后一个到达者使其 ready，
+    /// 并让 target 通过 cache 继承当前 slot。
+    ///
+    /// @param w 已完成的 Branch Work。
+    /// @param wr 当前 Worker。
+    /// @param cache cache 接力槽。
+    /// @param target 本次分支选择的目标；nullptr 表示没有后续目标。
+    void _tear_down_branch_task(Work& w, Worker& wr, Work*& cache, Work* target);
 
-    /// @brief 将一个 Work* 压入哈希选中的共享分片队列，try_lock 线性探测，所有分片均忙时阻塞等锁。
-    /// @param val 待入队的 Work 节点指针。
+    /// @brief 完成 MultiBranch 节点，并向本次选中的多个 target 传播 strong dependency 到达。
+    ///
+    /// 第一个 ready target 继承当前 parent slot 并进入 cache；其余 ready target
+    /// 原地压缩到 targets 前段，在统一增加 parent slot 后批量调度。
+    ///
+    /// @param w 已完成的 MultiBranch Work。
+    /// @param wr 当前 Worker。
+    /// @param cache cache 接力槽。
+    /// @param targets 本次分支选择出的目标集合，可为空。
+    void _tear_down_multi_branch_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets);
+
+    /// @brief 完成 Jump 节点，并通过清零 target join_counter 绕过普通 strong join 屏障。
+    ///
+    /// Jump 不等待 target 的其余 strong predecessor，而是直接把其运行期 join_counter
+    /// 置为 0，使 target 进入可执行状态并继承当前 parent slot。
+    ///
+    /// @param w 已完成的 Jump Work。
+    /// @param wr 当前 Worker。
+    /// @param cache cache 接力槽。
+    /// @param target 跳转目标；nullptr 表示本次不跳转。
+    void _tear_down_jump_task(Work& w, Worker& wr, Work*& cache, Work* target);
+
+    /// @brief 完成 MultiJump 节点，并强制激活本次选择的全部 target。
+    ///
+    /// 每个 target 的 join_counter 都直接置零。最后一个 target 通过 cache 继承当前
+    /// parent slot，其余 target 各增加一个额外 slot 后批量发布。
+    ///
+    /// @param w 已完成的 MultiJump Work。
+    /// @param wr 当前 Worker。
+    /// @param cache cache 接力槽。
+    /// @param targets 要强制激活的目标集合，可为空。
+    void _tear_down_multi_jump_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets);
+
+    /// @brief 完成 Detached Work，销毁节点并结束其父 slot 或顶层 topology 生命周期。
+    ///
+    /// Detached 没有外部 Future 强引用，执行结束后立即 `destroy_work()`；随后若存在
+    /// parent 则归还 parent slot，否则递减 Executor 的顶层拓扑计数。
+    ///
+    /// @param w 已完成的 Detached Work。
+    /// @param wr 当前 Worker。
+    /// @param cache cache 接力槽。
+    void _tear_down_detached_task(Work& w, Worker& wr, Work*& cache);
+
+
+    /// @brief 完成 Joinable Work，发布 Finished、唤醒 Future 等待者并释放执行强引用。
+    ///
+    /// Joinable 不接受运行期动态后继，因此完成路径无需与 LOCKED 插边竞争。
+    /// 执行引用释放后，若仍有 AsyncFuture 等外部强引用，Work 与 ResultStorage
+    /// 继续存活；否则立即销毁。
+    ///
+    /// @param w 已完成的 Joinable Work。
+    /// @param wr 当前 Worker。
+    /// @param cache cache 接力槽。
+    void _tear_down_joinable_task(Work& w, Worker& wr, Work*& cache);
+
+    /// @brief 将一组 AsyncTask 作为 @p w 的动态前驱，并修正尚未满足的依赖数量。
+    ///
+    /// 对每个有效且非自身的前驱，通过其 Topology `LOCKED` 位与完成路径串行化：
+    /// 若前驱已经 Finished，则直接递减 w 的 join_counter；否则在持锁期间把 w
+    /// 追加到前驱动态后继表。空前驱和 w 自身同样视为无需等待。
+    ///
+    /// @tparam I 前驱区间迭代器类型。
+    /// @tparam S 前驱区间哨兵类型。
+    /// @param w 正在建立动态依赖的目标 Work。
+    /// @param first 前驱区间起点。
+    /// @param last 前驱区间终点。
+    /// @param num_predecessors 输入为初始依赖数；输出为处理期间观察到的剩余依赖数。
+    template <std::forward_iterator I, std::sentinel_for<I> S>
+        requires std::convertible_to<std::iter_reference_t<I>, Work*>
+    void _link_predecessors(Work* w, I first, S last, std::size_t& num_predecessors);
+
+    /// @brief 完成 Attached AsyncTask，冻结动态后继表并向所有后继传播完成信号。
+    ///
+    /// 完成路径通过 CAS 与 `_link_predecessors()` 的 LOCKED 插边协议竞争，只有在
+    /// 未锁定 Running 状态下才能发布 Finished。成功后动态边表被冻结，随后逐个
+    /// 递减后继 join_counter；ready 后继按其所属 Executor 在本地 cache / 队列
+    /// 或跨 Executor 共享调度路径中发布。
+    ///
+    /// 最后释放执行期间持有的 Work 强引用，并归还 parent slot 或顶层 topology 计数。
+    ///
+    /// @param w 已完成的 Attached Work。
+    /// @param wr 当前 Worker。
+    /// @param cache cache 接力槽。
+    void _tear_down_attached_task(Work& w, Worker& wr, Work*& cache);
+
+    /// @brief 将单个 Work 发布到共享分片队列。
+    ///
+    /// 以 Work 地址哈希得到首选分片，从该位置循环线性探测 `try_lock()`；
+    /// 若全部分片均忙，则阻塞获取首选分片互斥锁后入队。
+    ///
+    /// @param val 待发布的 Work，必须非空。
     void _push_shared(Work* val);
 
-    /// @brief 批量将 [first, first+n) 区间的 Work* 压入同一共享分片队列，与单元素版相同 hash+try_lock 策略。
-    /// @param first 起始迭代器，指向待入队的 Work* 序列。
-    /// @param n     待入队元素数量。
+    /// @brief 将 `[first, first + n)` 的 Work 批量发布到同一个共享分片。
+    ///
+    /// 使用首个 Work 地址选择起始分片，并采用与单任务版本相同的 try_lock
+    /// 线性探测和最终阻塞回退策略。
+    ///
+    /// @tparam Iterator 随机访问迭代器类型。
+    /// @param first 待发布区间起点。
+    /// @param n 区间元素数量，必须非 0。
     template <std::random_access_iterator Iterator>
         requires std::convertible_to<std::iter_reference_t<Iterator>, Work*>
     void _push_shared(Iterator first, std::size_t n);
 
-    /// @brief 调度入口（worker 感知）：推入 worker 本地队列，溢出到共享队列。
+    /// @brief 从已知 Worker 上下文批量调度任务，优先发布到该 Worker 本地队列。
+    ///
+    /// 本地队列无法容纳的剩余任务由回调溢出到共享分片；发布完成后按 n 通知等待者。
     template <std::random_access_iterator Iterator>
     void _schedule(Worker& wr, Iterator first, std::size_t n);
 
-    /// @brief 调度入口（非 worker）：直接推入共享队列。
+    /// @brief 从非 Worker 上下文批量调度任务，直接发布到共享分片并通知等待者。
     template <std::random_access_iterator Iterator>
     void _schedule(Iterator first, std::size_t n);
 
-    /// @brief 调度入口（worker 感知，单任务）：推入 worker 本地队列。
+    /// @brief 从已知 Worker 上下文调度单个任务，优先进入本地队列，满时溢出到共享分片。
     void _schedule(Worker& wr, Work* w);
 
-    /// @brief 调度入口（非 worker，单任务）：直接推入共享队列。
+    /// @brief 从非 Worker 上下文调度单个任务，直接发布到共享分片。
     void _schedule(Work* w);
 
-    /// @brief 父任务完成处理（PREEMPTED 机制）。
+    /// @brief 归还一个 parent join slot，并在 PREEMPTED 父节点归零时恢复其执行。
     ///
-    /// 当子任务全部完成、父节点 join_counter 归零时：
-    /// - 普通父任务：等待后续调度（不在此处入队）。
-    /// - PREEMPTED 父任务：直接占据 cache 继续执行（抢占执行权，
-    ///   避免刚完成的子任务 worker 的 cache 上下文丢失）。
+    /// 当前子链完成时通过 `fetch_sub(1)` 归还一个 slot。若该操作使 parent 归零：
+    /// 普通父节点仅完成其等待条件，不在这里重新调度；PREEMPTED 父节点需要恢复
+    /// 被子任务挂起的执行，因此接管 cache。若 cache 已被占用，原 cache 先入队。
+    ///
+    /// @param parent 要归还 slot 的父 Work，必须非空。
+    /// @param wr 当前 Worker。
+    /// @param cache cache 接力槽。
     void _schedule_parent(Work* parent, Worker& wr, Work*& cache);
 
-    /// @brief 将信号量释放/回滚产生的 waiters 批量重新入队。
+    /// @brief 将 Semaphore 唤醒或回滚得到的 waiter 重新发布到各自所属 Executor。
     ///
-    /// 按 waiter 归属的 executor 分派：
-    /// - 同本 executor：走 worker-local deque 快路径（_schedule(worker, work)）。
-    /// - 跨 executor：推送到目标 executor 全局队列（target->_schedule(work)）。
+    /// waiter 与当前 Executor 相同时走当前 Worker 的本地调度快路径；跨 Executor
+    /// waiter 直接进入目标 Executor 的共享调度入口。
+    ///
+    /// @param w 当前 Worker。
+    /// @param waiters 已具备继续执行条件的 Work 集合。
     void _schedule_from_semaphore(Worker& w, SmallVector<Work*>& waiters);
 
-    /// @brief 协作式等待：等待谓词满足期间继续执行其他任务。
+    /// @brief 在当前 Worker 上协作执行其他任务，直到 @p pred 返回 true。
     ///
-    /// 用于避免线程阻塞导致死锁（如 Runtime::wait_until）。
-    /// 内部重用 work-stealing 逻辑：本地队列优先 → 窃取 → 退避。
+    /// 该等待不会阻塞 Worker：优先消费本地队列，本地为空时持续从全部可见队列
+    /// 窃取，并在连续失败后通过 yield 退避。每轮窃取过程中都会重新检查结束谓词。
     ///
-    /// @tparam Pred 满足 predicate concept 的可调用对象。
+    /// @tparam Pred 满足 predicate concept 的结束谓词类型。
+    /// @param worker 当前 Worker。
+    /// @param pred 返回 true 时结束协作等待的谓词。
     template <predicate Pred>
-    void _cowait_until(Worker& wr, Pred&& pred);
+    void _corun_until(Worker& worker, Pred&& pred);
 
-    /// @brief 展开执行子图并协作式等待其完成。
+    /// @brief 在当前 Worker 上启动一个 Graph，并协作执行直到该 Graph 占用的 parent slot 全部归还。
     ///
-    /// 用于 Runtime 内嵌子图的执行。设置子图节点、增加 parent counter、
-    /// 调度零入度节点，然后 _cowait_until parent counter 归零。
-    void _cowait_graph(Worker& wr, Graph& g, Work* parent);
+    /// 首先通过 `_set_up_graph()` 建立节点运行期状态并取得 source；若没有 source
+    /// 则直接返回。否则为每个 source 增加一个 parent join slot，批量发布 source，
+    /// 再通过 `_corun_until()` 持续执行可用任务直到 parent join_counter 归零。
+    ///
+    /// @param worker 当前 Worker。
+    /// @param graph 要执行的 Graph。
+    /// @param parent Graph 所属父 Work。
+    void _corun_graph(Graph& g, Work& parent, Worker& wr);
 
-    /// @brief 将 m_num_topologies 原子递增 1，使用 relaxed 序因为仅用作 wait_for_all 的计数信号，不传递其他数据。
+    /// @brief 为一个新启动的顶层执行链增加 Executor 活跃 topology 计数。
+    ///
+    /// 增量本身只负责生命周期计数，因此使用 relaxed；完成侧通过 release 序列发布结束。
     void _increment_topology() noexcept;
 
-    /// @brief 活跃拓扑计数 -1：归零时 notify_all 唤醒 wait_for_all。
+    /// @brief 结束一个顶层执行链；最后一个 topology 离开时唤醒全部 `wait_for_all()` 等待者。
+    ///
+    /// `fetch_sub` 使用 acq_rel；当旧值为 1 时新值变为 0，并调用 `notify_all()`。
     void _decrement_topology() noexcept;
 
-    /// @brief 通过 thread_id 查找当前线程对应的 Worker*。
-    /// @return 若当前线程是 worker 则返回其 Worker*，否则返回 nullptr。
+    /// @brief 根据当前 `std::thread::id` 查询是否运行在本 Executor 的 Worker 线程上。
+    /// @return 当前线程对应的 Worker；非本 Executor Worker 时返回 nullptr。
+    /// @note 映射在 Executor 构造阶段建立，正常运行期间只读。
     [[nodiscard]] Worker* _this_worker();
 
 };
 
 // ============================================================================
-//  内联实现
+// 内联实现
 // ============================================================================
-
-// 默认 handler 构造：委托到核心构造，借用进程级单例
-inline Executor::Executor(std::size_t num_workers)
-    : Executor(DefaultWorkerHandler{}, num_workers) {}
-
-// 用户 handler 构造：委托到核心构造，handler 形态由 helper 编码
-template <worker_handle H>
-inline Executor::Executor(H&& handler, std::size_t num_workers)
-    : Executor(_make_handler_ptr(std::forward<H>(handler)), num_workers) {}
-
-// Helper：按 H 的值类别构造 WorkerHandlerPtr
-// - lvalue → 借用，noop deleter，调用方保证生命周期
-// - rvalue → 拥有，heap-allocate + 按真实类型 delete
-template <worker_handle H>
-inline auto Executor::_make_handler_ptr(H&& handler) -> WorkerHandlerPtr {
-    using Raw = std::remove_cvref_t<H>;
-
-    if constexpr (std::is_lvalue_reference_v<H>) {
-        // 借用语义：lvalue，调用方保证生命周期
-        return WorkerHandlerPtr{
-            std::addressof(handler),
-            +[](WorkerHandler*) noexcept {}
-        };
-    } else {
-        // 拥有语义：rvalue，拷贝/移动到堆，按真实类型 delete
-        return WorkerHandlerPtr{
-            new Raw(std::forward<H>(handler)),
-            +[](WorkerHandler* p) noexcept {
-                delete static_cast<Raw*>(p);
-            }
-        };
-    }
-}
-
-// 容量校验:与 Notifier::_check_capacity 同一上界
 inline std::size_t Executor::_check_worker_count(std::size_t n) {
     if (n == 0) {
         throw Exception("Executor must define at least one worker.");
     }
-    if (n >= Notifier::capacity()) {   // capacity()==65535 → 等价于 n < 65535,可用上限 65534
+
+    if (n >= Notifier::capacity()) {
         throw Exception("Executor worker count exceeds Notifier 16-bit capacity (max 65534).");
     }
+
     return n;
 }
 
-// 真实构造体：字段初始化 + _spawn 启动 worker
-inline Executor::Executor(WorkerHandlerPtr handler, std::size_t num_workers)
-    : m_workers{_check_worker_count(num_workers)}        // ← 先校验,早于 m_notifier 构造
+inline Executor::Executor(WorkerHandler* handler, std::size_t num_workers)
+    : m_workers{_check_worker_count(num_workers)}
     , m_shared_buffers{static_cast<std::size_t>(std::bit_width(num_workers))}
     , m_notifier{num_workers}
-    , m_handler{std::move(handler)}
+    , m_handler{handler}
 {
     _spawn(num_workers);
 }
+
+inline Executor::Executor(std::size_t num_workers)
+    : Executor(nullptr, num_workers) {}
+
+inline Executor::Executor(WorkerHandler& handler, std::size_t num_workers)
+    : Executor(std::addressof(handler), num_workers) {}
 
 inline Executor::~Executor() noexcept {
     _shutdown();
 }
 
-/// @brief 阻塞等待所有拓扑任务完成。
-///
-/// 使用原子 wait 原语，底层由 OS 挂起机制（Linux futex / Windows WaitOnAddress）
-/// 实现，不占用 CPU 周期。
+// ============================================================================
+// Executor::run(AsyncTask)
+// ============================================================================
+
+template <async_task T, async_task... Deps>
+inline auto Executor::run(T&& task, Deps&&... deps) -> forward_return_t<T> {
+    task._start(*this, std::forward<Deps>(deps)...);
+    return std::forward<T>(task);
+}
+inline void Executor::_schedule_detached(Work* work) {
+    TFL_ASSERT(work);
+
+    _increment_topology();
+
+    try {
+        if (Worker* worker = _this_worker()) {
+            _schedule(*worker, work);
+        } else {
+            _schedule(work);
+        }
+    } catch (...) {
+        _decrement_topology();
+        destroy_work(work);
+        throw;
+    }
+}
+
+template <typename R>
+inline AsyncFuture<R> Executor::_schedule_joinable(Work* work, ResultSlot<R>* result) {
+    TFL_ASSERT(work);
+    TFL_ASSERT(result);
+
+    AsyncFuture<R> future{work, result};
+
+    // 执行生命周期额外持有一份强引用，由 Joinable tear-down 释放。
+    work->_increment_ref();
+    _increment_topology();
+
+    try {
+        if (Worker* worker = _this_worker()) {
+            _schedule(*worker, work);
+        } else {
+            _schedule(work);
+        }
+    } catch (...) {
+        _decrement_topology();
+
+        // 此时 future 仍持有一份强引用，因此释放执行引用不会提前销毁 work。
+        if (work->_decrement_ref()) {
+            destroy_work(work);
+        }
+
+        // throw 后局部 future 析构并释放其强引用；若它是最后一个引用则负责销毁。
+        throw;
+    }
+
+    return future;
+}
+
+// ============================================================================
+// Executor：独立顶层 fire-and-forget
+// ============================================================================
+
+template <graph_holder Gh, callback C>
+    requires capturable<C>
+inline void Executor::detach(Gh&& gh, C&& cb) {
+    detach(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
+}
+
+template <graph_holder Gh, callback C>
+    requires capturable<C>
+inline void Executor::detach(Gh&& gh, std::uint64_t num, C&& cb) {
+    detach(std::forward<Gh>(gh), [num]() mutable noexcept  -> bool { return num-- == 0; }, std::forward<C>(cb));
+}
+
+template <graph_holder Gh, predicate P, callback C>
+    requires capturable<P, C>
+inline void Executor::detach(Gh&& gh, P&& pred, C&& cb) {
+    Work* work = make_detached_module(*this, nullptr, nullptr, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
+    _schedule_detached(work);
+}
+
+template <typename T, typename... Args>
+    requires (basic_invocable<T, Args...> && capturable<T, Args...>)
+inline void Executor::detach(T&& task, Args&&... args) {
+    Work* work = make_detached_basic(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
+    _schedule_detached(work);
+}
+
+template <typename T, typename... Args>
+    requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
+inline void Executor::detach(T&& task, Args&&... args) {
+    Work* work = make_detached_runtime(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
+    _schedule_detached(work);
+}
+
+template <typename T, typename... Args>
+    requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
+inline void Executor::detach(T&& task, Args&&... args) {
+    Work* work = make_detached_subflow(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
+    _schedule_detached(work);
+}
+
+// ============================================================================
+// Executor：独立顶层带结果任务
+// ============================================================================
+
+template <graph_holder Gh, callback C>
+    requires capturable<C>
+inline AsyncFuture<void> Executor::async(Gh&& gh, C&& cb) {
+    return async(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
+}
+
+template <graph_holder Gh, callback C>
+    requires capturable<C>
+inline AsyncFuture<void> Executor::async(Gh&& gh, std::uint64_t num, C&& cb) {
+    return async(std::forward<Gh>(gh), [num]() mutable noexcept { return num-- == 0; }, std::forward<C>(cb));
+}
+
+template <graph_holder Gh, predicate P, callback C>
+    requires capturable<P, C>
+inline AsyncFuture<void> Executor::async(Gh&& gh, P&& pred, C&& cb) {
+    auto [work, result] = make_joinable_module(*this, nullptr, nullptr, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
+    return _schedule_joinable(work, result);
+}
+
+template <typename T, typename... Args>
+    requires (basic_invocable<T, Args...> && capturable<T, Args...>)
+inline auto Executor::async(T&& task, Args&&... args) -> AsyncFuture<basic_return_t<T, Args...>> {
+    auto [work, result] = make_joinable_basic(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
+    return _schedule_joinable(work, result);
+}
+
+template <typename T, typename... Args>
+    requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
+inline auto Executor::async(T&& task, Args&&... args) -> AsyncFuture<runtime_return_t<T, Args...>> {
+    auto [work, result] = make_joinable_runtime(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
+    return _schedule_joinable(work, result);
+}
+
+template <typename T, typename... Args>
+    requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
+inline auto Executor::async(T&& task, Args&&... args) -> AsyncFuture<subflow_return_t<T, Args...>> {
+    auto [work, result] = make_joinable_subflow(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
+    return _schedule_joinable(work, result);
+}
+
 inline void Executor::wait_for_all() const noexcept {
     std::size_t n = m_num_topologies.load(std::memory_order_acquire);
     while (n != 0) {
@@ -575,15 +807,11 @@ inline std::size_t Executor::num_topologies() const noexcept {
     return m_num_topologies.load(std::memory_order_relaxed);
 }
 
-/// @brief 优雅关闭：等待任务完成 → 设置终止标志 → 唤醒等待线程 → join 回收。
-///
-/// 对每个 worker 设置 terminate flag 使用 test_and_set(release)，
-/// 保证 worker 端的 acquire load 能看到终止信号（ARM/PowerPC 等弱一致性架构安全）。
 inline void Executor::_shutdown() noexcept {
     wait_for_all();
 
     for (auto& wr : m_workers) {
-        // release 保证 worker 端 acquire/relaxed load 可见 terminate flag
+        // release 发布终止请求；Worker 在调度循环中通过 acquire test() 观察该状态。
         wr.m_terminate.test_and_set(std::memory_order_release);
     }
 
@@ -598,95 +826,81 @@ inline void Executor::_shutdown() noexcept {
 
 
 // ============================================================================
-//  Work-Stealing 调度核心
+// Work-Stealing 调度循环
 // ============================================================================
-
-/// @brief 工作线程启动入口：初始化随机种子 → on_start 回调 → 主调度循环。
-///
-/// 1. 执行 cache 链（Work::invoke 产出的就绪后继原地接力执行）。
-/// 2. 本地队列 pop（LIFO，缓存友好）。
-/// 3. 窃取阶段（_wait_for_work 三阶段算法）。
-/// 4. 检查终止标志（acquire load）。
-///
-/// @note 异常处理：invoke 捕获的异常交给 handler->on_exception 裁决。
-///       若 handler 返回 false，线程退出循环（goto exit → on_stop）。
 inline void Executor::_spawn(std::size_t num_workers) {
+    const std::size_t num_queues = this->num_queues();
+
     for (std::size_t id = 0; id < num_workers; ++id) {
         auto& wr = m_workers[id];
         wr.m_id = id;
-        wr.m_vtm = id;
+        wr.m_vtm = (id + 1) % num_queues;
         wr.m_adaptive_factor = 4;
-        wr.m_max_steals = static_cast<std::uint32_t>(num_queues() * 2);
-        wr.m_thread = std::thread([this, &wr]() noexcept {
-            wr.m_rng.seed(std::hash<std::thread::id>{}(std::this_thread::get_id()), static_cast<std::uint32_t>(num_queues()));
-            m_handler->on_start(wr);
+        wr.m_max_steals = static_cast<std::uint32_t>(num_queues * 2);
+
+        wr.m_thread = std::thread([this, &wr, num_queues]() noexcept {
+            wr.m_rng.seed(std::hash<std::thread::id>{}(std::this_thread::get_id()), static_cast<std::uint32_t>(num_queues));
+
+            if (m_handler) {
+                m_handler->on_start(wr);
+            }
 
             Work* w = nullptr;
+
             for (;;) {
-                // 本地队列优先：LIFO 顺序，缓存命中率最高
                 while (w) {
                     try {
                         _invoke(wr, w);
                     } catch (...) {
-                        if (!m_handler->on_exception(wr, std::current_exception())) {
+                        // 普通任务异常应由 Work 自身归档；
+                        // 这里只处理逃逸出调度路径的兜底异常。
+                        if (m_handler && !m_handler->on_exception(wr, std::current_exception())) {
                             goto exit;
                         }
                     }
+
                     w = wr.m_wslq.pop();
                 }
 
-                // 窃取阶段
-                w = _wait_for_work(wr);
-
-                if (wr.m_terminate.test(std::memory_order_acquire)) [[unlikely]] {
+                if ((w = _wait_for_work(wr)) == nullptr) [[unlikely]] {
                     break;
                 }
             }
+
         exit:
-            m_handler->on_stop(wr);
+            if (m_handler) {
+                m_handler->on_stop(wr);
+            }
         });
 
         m_tid_to_worker.emplace(wr.m_thread.get_id(), std::addressof(wr));
     }
 }
 
-/// @brief 自适应三阶段 work-stealing 算法。
-///
-/// 1. 自旋窃取：SplitMix64 随机选 victim（worker 或 shared buffer），FIFO steal；
-///    成功则 adaptive_factor 递增（最多 8），尽快返回。
-/// 2. 退避让出：num_steals > max_steals 时 yield；超过 yield_limit 递减
-///    adaptive_factor（最少 1）并跳出。
-/// 3. 阻塞等待：prepare_wait → 二次确认（避免 lost wake-up）→ commit_wait；
-///    若确认有任务则 cancel_wait 并跳回 explore 重试。
-///
-/// @note 终止检查：每轮窃取后和阻塞前后均检查 terminate flag（acquire），
-///       保证及时响应 _shutdown。
 inline Work* Executor::_wait_for_work(Worker& wr) noexcept {
-    std::size_t const nw = m_workers.size();
-    std::size_t const nb = m_shared_buffers.size();
+    const std::size_t nw = m_workers.size();
+    const std::size_t nb = m_shared_buffers.size();
 
 explore:
     std::size_t vtm = wr.m_vtm;
     std::size_t num_steals = 0;
-    std::size_t const yield_limit = nw * wr.m_adaptive_factor + wr.m_max_steals;
+    const std::size_t yield_limit = nw * wr.m_adaptive_factor + wr.m_max_steals;
 
-    // 阶段一：窃取
+    // 阶段一：从上次 victim 起点开始持续窃取，并在每次失败后选择新的 victim。
     for (;;) {
-        Work* w = (vtm < nw)
-        ? m_workers[vtm].m_wslq.steal()
-        : m_shared_buffers[vtm - nw].queue.steal();
+        Work* w = (vtm < nw) ? m_workers[vtm].m_wslq.steal() : m_shared_buffers[vtm - nw].queue.steal();
 
         if (w) {
             wr.m_vtm = vtm;
-            wr.m_adaptive_factor = std::min(8u, wr.m_adaptive_factor + 1);
+            wr.m_adaptive_factor = (std::min)(8u, wr.m_adaptive_factor + 1);
             return w;
         }
 
-        // 阶段二：退让
+        // 阶段二：超过快速窃取预算后开始 yield；持续失败达到自适应上限后准备休眠。
         if (++num_steals > wr.m_max_steals) {
             std::this_thread::yield();
             if (num_steals > yield_limit) {
-                wr.m_adaptive_factor = std::max(1u, wr.m_adaptive_factor - 1);
+                wr.m_adaptive_factor = (std::max)(1u, wr.m_adaptive_factor - 1);
                 break;
             }
         }
@@ -698,11 +912,12 @@ explore:
         vtm = wr.m_rng();
     }
 
-    // 阶段三：阻塞等待
+    // 阶段三：进入 Notifier 两阶段等待；prepare 后必须重新检查所有可见队列。
     m_notifier.prepare_wait(wr.m_id);
 
-    // 二次确认：消除 lost wake-up（在 prepare_wait 和 commit_wait 之间
-    // 可能已有任务入队并 notify）
+    // 二次确认：prepare_wait 与 commit_wait 之间可能已有任务入队并 notify；
+    // 此处重新扫描共享队列和其他 Worker 本地队列，发现工作则 cancel_wait，
+    // 从而避免在已有可执行任务时错误进入休眠。
     for (std::size_t i = 0; i < nb; ++i) {
         if (!m_shared_buffers[i].queue.empty()) {
             m_notifier.cancel_wait(wr.m_id);
@@ -736,405 +951,576 @@ explore:
     goto explore;
 }
 
-TFL_FORCE_INLINE std::size_t Executor::_set_up_graph(Graph& g, Topology* topo, Work* parent) noexcept {
+TFL_FORCE_INLINE std::size_t Executor::_set_up_graph(Graph& g, Work& parent) noexcept {
     Work** const data = g.m_works.data();
-    std::size_t const size = g.m_works.size();
+    const std::size_t size = g.m_works.size();
     std::size_t n = 0;
+    auto* parent_ptr = std::addressof(parent);
+    auto* topology = parent.m_topology;
 
-    constexpr auto exc_mask = Work::Explicit::EXCEPTION | Work::Explicit::CAUGHT;
+    constexpr auto exc_mask = Work::Control::EXCEPTION | Work::Control::EXCEPTION_CAUGHT;
+
     for (std::size_t i = 0; i < size; ++i) {
         Work* w = data[i];
-        w->m_topology = topo;
-        w->m_parent = parent;
+        w->m_parent = parent_ptr;
+        w->m_topology = topology;
 
-        // 清异常位 + 探测是否为上轮归档点
-        // 单次 fetch_and 同时承担"清位"和"读旧值判断"两个职责
-        // 仅归档点（CAUGHT == 1）需要释放 m_exception_ptr；
-        // 路径节点（仅 EXCEPTION == 1）的 m_exception_ptr 本就为空
-        if (w->m_explicit.fetch_and(~exc_mask, std::memory_order_relaxed) & Work::Explicit::CAUGHT) [[unlikely]] {
+        // 清除上一轮异常传播位，并利用 fetch_and 返回的旧值判断是否持有异常归档。
+        // 只有 EXCEPTION_CAUGHT 节点实际保存 m_exception_ptr；仅带 EXCEPTION 的路径节点
+        // 只是传播标记，因此无需额外清理 exception_ptr。
+        if (w->m_control.fetch_and(~exc_mask, std::memory_order_relaxed) & Work::Control::EXCEPTION_CAUGHT) [[unlikely]] {
             w->m_exception_ptr = nullptr;
         }
 
-        // 重新计算入度（前驱权重之和）并初始化 join_counter 屏障
-        w->m_join_weight = w->_join_weight();
-        w->m_join_counter.store(w->m_join_weight, std::memory_order_relaxed);
+        // 重新计算静态 strong predecessor 数量，并写入 Properties 的 join-weight 低位。
+        const std::size_t join_weight = w->_compute_join_weight();
+        TFL_ASSERT(join_weight <= Work::Properties::JOIN_WEIGHT_MAX);
 
-        // 零入度节点 swap 到前段 [0, n)
-        // 调用方按返回值 n 批量调度这段连续区间
+        w->m_properties = (w->m_properties & Work::Properties::FLAG_MASK) | static_cast<Work::Properties::type>(join_weight);
+
+        // source 按“零物理入度”判定并原地聚集到 [0, n)。
+        // weak predecessor 虽不计入 join weight，但仍是物理前驱，因此存在 weak 前驱的节点
+        // 不能作为本轮初始 source。
         if (w->_num_predecessors() == 0) {
             std::swap(data[i], data[n++]);
+        } else {
+            w->m_join_counter.store(join_weight, std::memory_order_relaxed);
         }
     }
+
     return n;
 }
 
-TFL_FORCE_INLINE void Executor::_tear_down_task(Work* w, Worker& wr, Work*& cache) {
-    // 还原 w 自身 counter：供循环子图 / Jump 目标复用，counter 簿记不可省
-    w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
+TFL_FORCE_INLINE void Executor::_reset_graph_join_counters(Graph& g, std::size_t num_sources) noexcept {
+    Work** const data = g.m_works.data();
+    const std::size_t size = g.m_works.size();
 
-    auto* const parent = w->m_parent;
-    const std::size_t sz = w->m_num_successors;
+    TFL_ASSERT(num_sources <= size);
 
-    // 无后继 或 异常：不向后传播，直接归还 w 占用的 parent slot
-    if (sz == 0 || w->_has_exception()) [[unlikely]] {
+    for (std::size_t i = num_sources; i < size; ++i) {
+        Work* const w = data[i];
+        const auto join_weight = w->_join_weight();
+
+        if (w->m_join_counter.load(std::memory_order_relaxed) != join_weight) [[unlikely]] {
+            w->m_join_counter.store(join_weight, std::memory_order_relaxed);
+        }
+    }
+}
+
+
+TFL_FORCE_INLINE void Executor::_tear_down_task(Work& w, Worker& wr, Work*& cache) {
+    auto* const parent = w.m_parent;
+    const std::size_t sz = w.m_num_successors;
+    const auto join_weight = w._join_weight();
+
+    // 恢复当前节点下一次激活所需的 strong dependency join 计数。
+    //
+    // join_weight == 0：
+    //   当前节点没有 strong predecessor，不参与 join_counter 协议。
+    //
+    // join_weight > 0：
+    //   当前节点统一通过 fetch_sub 参与 strong dependency join；
+    //   最后一个 strong predecessor 将计数从 1 递减到 0 并获得执行权。
+    //   当前节点执行完成后重新加回静态 join weight，为下一次激活恢复计数。
+    //
+    // 必须使用 fetch_add 而不能 store：循环图中当前节点执行期间，
+    // 下一次激活的 strong predecessor 可能已经提前递减 join_counter。
+    // fetch_add 能保留这些已经发生的到达，而 store 会覆盖并丢失。
+    //
+    // 恢复必须发生在传播后继之前，否则后继可能沿循环路径重新激活
+    // 当前节点，并发访问尚未恢复的 join_counter。
+    if (join_weight != 0) [[likely]] {
+        w.m_join_counter.fetch_add(join_weight, std::memory_order_relaxed);
+    }
+
+    // 异常路径停止向后传播，归还当前 w 占用的 parent slot。
+    if (w._has_exception()) [[unlikely]] {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // 单后继路径
-    // 1) 若 suc 静态入度为 1，则当前 w 是其唯一前驱。
-    //    w 完成后 suc 必然 ready，可直接 store(0) + cache 接力。
-    // 2) 若 suc 静态入度 > 1，则必须走正常 fetch_sub 计数协议。
-    if (sz == 1) [[unlikely]] {
-        Work* const suc = w->m_edges[0];
+    // 第一个 ready 后继直接继承当前 w 的 parent slot 并进入 cache；
+    // 后续 ready 后继原地聚集到 m_edges 前段 [0, num_ready)，
+    // 最后统一增加额外 parent slot 并批量调度。
+    //
+    // 所有具有 strong predecessor 的后继统一通过 join_counter 同步：
+    //
+    // join_weight == 1：
+    //   唯一 strong predecessor 将计数从 1 递减到 0，并直接获得执行权。
+    //
+    // join_weight > 1：
+    //   每个 strong predecessor 递减一次计数，最后一个将计数从 1
+    //   递减到 0 的前驱负责激活该后继。
+    std::size_t num_ready = 0;
 
-        if (suc->_num_predecessors() == 1) [[unlikely]] {
-            suc->m_join_counter.store(0, std::memory_order_relaxed);
-            cache = suc;
-            return;
-        }
-
-        if (suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            cache = suc;
-            return;
-        }
-
-        _schedule_parent(parent, wr, cache);
-        return;
-    }
-
-    // 通用 fan-out
-    // 不变量：第一个 ready 的 suc 继承 w 的 parent slot；
-    //          后续 ready 的 suc 走 _schedule，各自占新 slot。
     for (std::size_t i = 0; i < sz; ++i) {
-        Work* const suc = w->m_edges[i];
+        Work* const suc = w.m_edges[i];
 
         if (suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             if (cache) {
-                parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
-                _schedule(wr, suc);
+                // 第一个 ready 已由 cache 接管，因此后续 ready 的聚集位置
+                // num_ready 始终位于当前扫描位置 i 之前，不会发生 self-swap。
+                std::swap(w.m_edges[i], w.m_edges[num_ready++]);
             } else {
+                // 第一个 ready 后继继承当前 w 的 parent slot。
                 cache = suc;
             }
         }
     }
 
-    // ready == 0：没人接班，w 占用的 parent slot 必须归还
-    if (!cache) [[unlikely]] {
+    // 没有任何后继 ready，当前 w 占用的 parent slot 无人继承。
+    if (!cache) {
         _schedule_parent(parent, wr, cache);
+        return;
+    }
+
+    // cache 已继承当前 w 的 parent slot，其余 ready 后继各占一个新的 parent slot。
+    //
+    // 必须先增加 parent 计数，再发布任务，避免后继快速完成导致
+    // parent 尚未建立完整计数就提前归零。
+    if (num_ready != 0) {
+        parent->m_join_counter.fetch_add(num_ready, std::memory_order_relaxed);
+
+        if (num_ready == 1) {
+            _schedule(wr, w.m_edges[0]);
+        } else {
+            _schedule(wr, w.m_edges.begin(), num_ready);
+        }
     }
 }
 
-TFL_FORCE_INLINE void Executor::_tear_down_branch_task(Work* w, Worker& wr, Work*& cache, Work* target) {
-    // 还原 w 自身 counter：为下一轮触发（循环子图 / 再调度）做准备
-    w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
-    auto* parent = w->m_parent;
-    // 异常 或 无 target
-    if (target == nullptr || w->_has_exception()) [[unlikely]] {
+TFL_FORCE_INLINE void Executor::_tear_down_branch_task(Work& w, Worker& wr, Work*& cache, Work* target) {
+    auto* const parent = w.m_parent;
+    const auto join_weight = w._join_weight();
+
+    // 恢复当前节点下一次激活所需的 strong dependency join 计数。
+    //
+    // join_weight == 0 的节点没有 strong predecessor，不参与 join_counter；
+    // join_weight > 0 的节点执行完成后重新加回静态 join weight。
+    //
+    // 使用 fetch_add 而不能 store，以保留当前节点执行期间可能已经提前
+    // 发生的下一次 strong predecessor 到达。
+    //
+    // 必须在传播 target 之前恢复，否则 target 可能沿循环路径重新激活
+    // 当前节点，并发访问尚未恢复的 join_counter。
+    if (join_weight != 0) [[likely]] {
+        w.m_join_counter.fetch_add(join_weight, std::memory_order_relaxed);
+    }
+
+    // 本次 Branch 未选择目标，当前 w 占用的 parent slot 无人继承。
+    if (!target) {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // Branch 串行接力快路径：
-    // target 只有当前 w 一个前驱，命中后必然 ready
-    if (target->_num_predecessors() == 1) [[unlikely]] {
-        target->m_join_counter.store(0, std::memory_order_relaxed);
-        cache = target;
+    // 异常路径停止向后传播。
+    if (w._has_exception()) [[unlikely]] {
+        _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // 通用路径：target 可能还有其他前驱，必须走计数协议
+    // target 统一通过 join_counter 参与 strong dependency join：
+    //
+    // join_weight == 1：
+    //   唯一 strong predecessor 将计数从 1 递减到 0 并获得执行权。
+    //
+    // join_weight > 1：
+    //   最后一个将计数从 1 递减到 0 的 strong predecessor
+    //   负责激活 target。
     if (target->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         cache = target;
         return;
     }
+
+    // target 尚未 ready，当前 w 的 parent slot 无人继承。
     _schedule_parent(parent, wr, cache);
 }
 
+TFL_FORCE_INLINE void Executor::_tear_down_multi_branch_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets) {
+    auto* const parent = w.m_parent;
+    const auto join_weight = w._join_weight();
 
-TFL_FORCE_INLINE void Executor::_tear_down_multi_branch_task(Work* w, Worker& wr, Work*& cache, const SmallVector<Work*>& targets) {
-    w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
-    auto* parent = w->m_parent;
+    // 恢复当前节点下一次激活所需的 strong dependency join 计数。
+    //
+    // join_weight == 0 的节点没有 strong predecessor，不参与 join_counter；
+    // join_weight > 0 的节点执行完成后重新加回静态 join weight。
+    //
+    // 使用 fetch_add 而不能 store，以保留当前节点执行期间可能已经提前
+    // 发生的下一次 strong predecessor 到达。
+    //
+    // 必须在传播 targets 之前恢复，否则某个 target 可能沿循环路径
+    // 重新激活当前节点，并发访问尚未恢复的 join_counter。
+    if (join_weight != 0) [[likely]] {
+        w.m_join_counter.fetch_add(join_weight, std::memory_order_relaxed);
+    }
 
-    const std::size_t n = targets.size();
-    // 无目标 或 异常：归还 slot
-    if (n == 0 || w->_has_exception()) [[unlikely]] {
+    // 异常路径停止向后传播。
+    if (w._has_exception()) [[unlikely]] {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // 单目标快路径
-    // MultiBranch 本次只命中 1 个 target，且 target 静态入度为 1，
-    // 说明这个 target 只有当前 w 一个前驱，本次必然 ready。
-    if (n == 1) [[unlikely]] {
-        Work* const target = targets[0];
+    // 第一个 ready target 继承当前 w 的 parent slot，并直接进入 cache；
+    // 后续 ready target 原地压缩到 targets 前段 [0, num_ready)，
+    // 最后统一增加额外 parent slot 并调度。
+    //
+    // 所有具有 strong predecessor 的 target 统一通过 join_counter 同步，
+    // 最后一个将计数从 1 递减到 0 的 strong predecessor 获得执行权。
+    std::size_t num_ready = 0;
 
-        if (target->_num_predecessors() == 1) [[unlikely]] {
-            // target 入度为 1 → 本次必然归零
-            // 直接 store(0)，省一次 acq_rel 原子递减。
-            target->m_join_counter.store(0, std::memory_order_relaxed);
-            cache = target;
-            return;
-        }
-
-        // 单目标但 target 还有其他前驱，必须走正常计数协议。
-        if(target->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            cache = target;
-            return;
-        }
-
-        _schedule_parent(parent, wr, cache);
-        return;
-    }
-
-    // 多目标通用路径
-    // 不变量：第一个 ready 的 target 继承 w 的 parent slot；
-    //          后续 ready 的 target 走 _schedule，各自占新 slot。
-    for (auto* target : targets) {
-        if(target->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    for (Work* const target : targets) {
+        if (target->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             if (cache) {
-                parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
-                _schedule(wr, target);
+                targets[num_ready++] = target;
             } else {
                 cache = target;
             }
         }
     }
 
-    // ready == 0，没人接班，w 占的 slot 必须归还
-    if (!cache) [[unlikely]] {
+    // 没有任何 target ready，当前 w 占用的 parent slot 无人继承。
+    if (!cache) {
         _schedule_parent(parent, wr, cache);
-    }
-}
-
-TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work* w, Worker& wr, Work*& cache, Work* target) {
-    // 还原 w 自身 counter：为下一轮触发（循环子图 / 再调度）做准备
-    w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
-
-    // 异常 或 无 target
-    if (target == nullptr || w->_has_exception()) [[unlikely]] {
-        _schedule_parent(w->m_parent, wr, cache);
         return;
     }
 
-    // 强制触发：store(0) 等价于"所有前驱都到齐"，绕过 fetch_sub 协议
-    // slot 平移 w → target，parent counter 不动，本 worker 通过 cache 接力执行
+    // cache 已继承当前 w 的 parent slot，因此只需为其余 num_ready 个
+    // ready target 增加新的 parent slot。
+    //
+    // 必须先增加 parent 计数，再发布任务，避免 target 快速完成导致
+    // parent 尚未建立完整计数就提前归零。
+    if (num_ready != 0) {
+        parent->m_join_counter.fetch_add(num_ready, std::memory_order_relaxed);
+
+        if (num_ready == 1) {
+            _schedule(wr, targets[0]);
+        } else {
+            _schedule(wr, targets.begin(), num_ready);
+        }
+    }
+}
+
+TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work& w, Worker& wr, Work*& cache, Work* target) {
+    auto* const parent = w.m_parent;
+    const auto join_weight = w._join_weight();
+
+    // 恢复当前节点下一次激活所需的 strong dependency join 计数。
+    //
+    // join_weight == 0 的节点没有 strong predecessor，不参与 join_counter；
+    // join_weight > 0 的节点执行完成后重新加回静态 join weight。
+    //
+    // 使用 fetch_add 而不能 store，以保留当前节点执行期间可能已经提前
+    // 发生的下一次 strong predecessor 到达。
+    if (join_weight != 0) [[likely]] {
+        w.m_join_counter.fetch_add(join_weight, std::memory_order_relaxed);
+    }
+
+    // 无目标或异常：不发生跳转，归还当前 parent slot。
+    if (target == nullptr || w._has_exception()) [[unlikely]] {
+        _schedule_parent(parent, wr, cache);
+        return;
+    }
+
+    // Jump 绕过 target 的普通 strong dependency join 屏障并强制激活。
+    //
+    // 普通依赖激活时，最后一个 strong predecessor 会将 join_counter
+    // 从 1 递减到 0；Jump 没有执行这次 fetch_sub，因此这里直接置零，
+    // 使 target 进入与普通 join 完成后相同的运行期状态。
+    //
+    // 对 join_weight == 0 的 target，该 relaxed store 只是重复写入零，
+    // 不改变节点语义。
     target->m_join_counter.store(0, std::memory_order_relaxed);
+
     cache = target;
 }
 
+TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets) {
+    auto* const parent = w.m_parent;
+    std::size_t n = targets.size();
+    const auto join_weight = w._join_weight();
 
-TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work* w, Worker& wr, Work*& cache, const SmallVector<Work*>& targets) {
-    w->m_join_counter.fetch_add(w->m_join_weight, std::memory_order_relaxed);
-    auto* parent = w->m_parent;
+    // 恢复当前节点下一次激活所需的 strong dependency join 计数。
+    //
+    // join_weight == 0 的节点没有 strong predecessor，不参与 join_counter；
+    // join_weight > 0 的节点执行完成后重新加回静态 join weight。
+    //
+    // 使用 fetch_add 而不能 store，以保留当前节点执行期间可能已经提前
+    // 发生的下一次 strong predecessor 到达。
+    if (join_weight != 0) [[likely]] {
+        w.m_join_counter.fetch_add(join_weight, std::memory_order_relaxed);
+    }
 
-    // 无目标 或 异常：归还 slot
-    if (targets.empty() || w->_has_exception()) [[unlikely]] {
+    // 无目标或异常：不发生跳转，归还当前 parent slot。
+    if (n == 0 || w._has_exception()) [[unlikely]] {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // 通用路径（覆盖 n == 1 和 n >= 2）
-    // 不变量：最后留在 cache 的 target 继承 w 的 parent slot；
-    //          其余被挤出 cache 的 target 走 _schedule，各自占新 slot
-    // - n == 1: cache 入口为 nullptr，if (cache) 跳过，直接 cache = target
-    //           等价于"slot 平移"，parent counter 不动
-    // - n >= 2: 前 n-1 次 fetch_add 占新 slot，最后一次平移 w 的 slot
-    //           parent counter 净增 (n-1)，严格变大，不会归零
-    for (auto* target : targets) {
+    // 所有 target 均由 MultiJump 强制激活，不经过普通 strong dependency join。
+    //
+    // 普通激活时最后一个 strong predecessor 会将 join_counter 递减至零；
+    // MultiJump 没有执行这些 fetch_sub，因此统一置零，使每个 target
+    // 进入与普通 join 完成后相同的运行期状态。
+    for (Work* const target : targets) {
         target->m_join_counter.store(0, std::memory_order_relaxed);
-        if (cache) {
-            // 之前的 cache 让位推队列，为它新占一个 parent slot
-            parent->m_join_counter.fetch_add(1, std::memory_order_relaxed);
-            _schedule(wr, target);
-        } else {
-            cache = target;
-        }
-
     }
-    // n >= 1 时循环至少进 1 次，cache 必非空，slot 已平移（n==1）或累计 (n-1) 个新 slot
-    // 不需要 _schedule_parent
+
+    // 最后一个 target 继承当前 w 已占用的 parent slot，并通过 cache 接力执行。
+    cache = targets[--n];
+
+    // 剩余 n 个 target 无法共享原 slot，因此每个 target 各占一个新的 parent slot。
+    //
+    // 必须先增加 parent 计数，再发布任务，避免 target 快速完成导致
+    // parent 尚未建立完整计数就提前归零。
+    if (n != 0) {
+        parent->m_join_counter.fetch_add(n, std::memory_order_relaxed);
+
+        if (n == 1) {
+            _schedule(wr, targets[0]);
+        } else {
+            _schedule(wr, targets.begin(), n);
+        }
+    }
 }
 
-TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work* w, Worker& wr, Work*& cache) {
 
-    if(auto parent = w->m_parent; parent) {
+/// @brief 完成 Detached 异步任务，立即销毁 Work，并结束所属父 slot 或顶层 topology。
+///
+/// Detached 不向调用方暴露结果句柄，因此执行完成后不需要为外部观察者保留 Work。
+/// 函数先缓存 parent，再销毁当前节点；之后若存在 parent 则归还一个 join slot，
+/// 否则递减 Executor 的顶层 topology 计数。
+TFL_FORCE_INLINE void Executor::_tear_down_detached_task(Work& w, Worker& wr, Work*& cache) {
+    Work* const parent = w.m_parent;
+
+    // parent 已提前保存；Detached 没有外部强引用，当前执行结束后即可立即回收 Work。
+    destroy_work(std::addressof(w));
+
+    if (parent) {
         _schedule_parent(parent, wr, cache);
     } else {
         _decrement_topology();
     }
-    destroy(w);
 }
 
-// ============================================================================
-//  动态依赖任务处理
-// ============================================================================
 
-template <typename I, typename S>
-    requires std::sentinel_for<S, I>
-inline void Executor::_process_dependent(Work* w, I first, S last, std::size_t& num_predecessors) {
+/// @brief 完成 Joinable 异步任务，发布 Finished、唤醒等待者并释放执行强引用。
+///
+/// Joinable 由 AsyncFuture 观察，不参与 AsyncTask 的运行期动态后继插入协议，因此完成时
+/// 不需要等待 Topology::Control::LOCKED。Finished 以 release 语义发布后立即 notify_all。
+///
+/// ResultStorage 与 Work 共生命周期；若仍存在 AsyncFuture 等外部强引用，结果继续保留。
+/// 若本次执行引用恰好是最后一个强引用，则当前线程立即销毁 Work。
+TFL_FORCE_INLINE void Executor::_tear_down_joinable_task(Work& w, Worker& wr, Work*& cache) {
+    Topology* const topology = w.m_topology;
+    Work* const parent = w.m_parent;
 
-    if (w->m_parent == nullptr) {
-        _increment_topology();
+    auto& control = topology->m_control;
+
+    const auto previous = control.fetch_or(Topology::Control::state_bits(Topology::Control::Status::Finished), std::memory_order_release);
+
+    TFL_ASSERT(Topology::Control::status(previous) == Topology::Control::Status::Running);
+    TFL_ASSERT(!Topology::Control::locked(previous));
+
+    control.notify_all();
+
+    // 释放本次执行持有的一份强引用。
+    //
+    // Future 等外部句柄仍然持有引用时，Work 和 ResultStorage 继续存活；
+    // 当前执行引用若是最后一份强引用，则由当前线程立即销毁。
+    if (w._decrement_ref()) {
+        destroy_work(std::addressof(w));
     }
 
+    // 上一步可能已经销毁 w，因此从这里开始禁止再次访问 w，只使用提前缓存的 parent。
+    if (parent) {
+        _schedule_parent(parent, wr, cache);
+    } else {
+        _decrement_topology();
+    }
+}
+
+template <std::forward_iterator I, std::sentinel_for<I> S>
+    requires std::convertible_to<std::iter_reference_t<I>, Work*>
+TFL_FORCE_INLINE void Executor::_link_predecessors(Work* w, I first, S last, std::size_t& num_predecessors) {
     for (; first != last; ++first) {
-        auto* work = first->m_work;
-        if (!work || w == work) {
+        Work* const work = *first;
+
+        if (!work || work == w) {
             num_predecessors = w->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) - 1;
             continue;
         }
 
-        auto& state = work->m_topology->m_state;
+        auto& control = work->m_topology->m_control;
+        auto current = control.load(std::memory_order_acquire);
 
         for (;;) {
-            // 1. 每次循环开头，直接获取内存中的最新状态
-            auto target = state.load(std::memory_order_acquire);
+            const auto status = Topology::Control::status(current);
 
-            // 2. 目标已完成，直接跳出
-            if (target == Topology::State::Finished) {
+            if (status == Topology::Control::Status::Finished) {
                 num_predecessors = w->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) - 1;
                 break;
             }
 
-            // 3. 锁被占用：我们只自旋等待，坚决不触发 CAS 操作（减少总线竞争）
-            if (target == Topology::State::Locking) {
-                continue;
-            }
+            TFL_ASSERT(status == Topology::Control::Status::Idle || status == Topology::Control::Status::Running);
 
-            // 4. 此时 target 必然是 Idle 或 Running，尝试原子加锁
-            if (state.compare_exchange_weak(target, Topology::State::Locking,
-                                            std::memory_order_acq_rel,
-                                            std::memory_order_acquire)) [[likely]] {
-                // 加锁成功！当前线程独占修改权限
-                work->m_edges.push_back(w);
-                ++work->m_num_successors;
+            // CAS 只允许从未锁定状态获取动态依赖锁。
+            current &= ~Topology::Control::LOCKED;
 
-                // 解锁并恢复为原状态（target 中存的是替换前的 Idle 或 Running）
-                state.store(target, std::memory_order_release);
+            if (control.compare_exchange_weak(current,
+                                              current | Topology::Control::LOCKED,
+                                              std::memory_order_acquire,
+                                              std::memory_order_acquire)) {
+                try {
+                    work->m_edges.push_back(w);
+                    ++work->m_num_successors;
+                } catch (...) {
+                    // push_back 可能因扩容抛出；必须在异常离开前释放 LOCKED，
+                    // 否则完成路径会永久等待该前驱解锁。
+                    control.fetch_and(~Topology::Control::LOCKED, std::memory_order_release);
+                    throw;
+                }
+
+                control.fetch_and(~Topology::Control::LOCKED, std::memory_order_release);
                 break;
             }
-            // 5. 如果加锁失败，说明恰好有其他线程抢先了。
-            // 循环会回到开头，重新 load 最新状态，完美闭环！
         }
     }
 }
 
-inline void Executor::_tear_down_dep_async_task(Work* w, Worker& wr, Work*& cache) {
-    auto* topo = w->m_topology;
+TFL_FORCE_INLINE void Executor::_tear_down_attached_task(Work& w, Worker& wr, Work*& cache) {
+    Topology* const topology = w.m_topology;
+    Work* const parent = w.m_parent;
+    auto& control = topology->m_control;
 
-    auto target = Topology::State::Running;
-    // 状态转移：Running → Finished
-    while (!topo->m_state.compare_exchange_weak(target, Topology::State::Finished,
-                                                std::memory_order_acq_rel,
-                                                std::memory_order_relaxed)) [[unlikely]] {
-        target = Topology::State::Running;
+    auto current = control.load(std::memory_order_acquire);
+
+    // 只能从未锁定的 Running 状态进入 Finished。
+    //
+    // 如果 _link_predecessors 正持有 LOCKED，CAS 会失败并把实际控制值
+    // 写回 current；下一轮清除 expected 中的 LOCKED 后继续等待解锁。
+    for (;;) {
+        current &= ~Topology::Control::LOCKED;
+
+        TFL_ASSERT(Topology::Control::status(current) == Topology::Control::Status::Running);
+
+        const auto finished = Topology::Control::set_status(current, Topology::Control::Status::Finished);
+
+        if (control.compare_exchange_weak(current,
+                                          finished,
+                                          std::memory_order_acq_rel,
+                                          std::memory_order_acquire)) {
+            break;
+        }
     }
 
-    // 唤醒等待者
-    topo->m_state.notify_all();
+    // Finished 已通过成功 CAS 的 release 部分发布；此后唤醒等待当前 Topology 的线程。
+    control.notify_all();
 
-    const std::size_t sz = w->m_num_successors;
-    for (std::size_t i = 0; i < sz; ++i) {
-        auto* suc = w->m_edges[i];
-        if ((suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1)) {
-            auto suc_exec = suc->m_topology->m_executor;
-            if (suc_exec == this) {
+    // 成功发布 Finished 后，_link_predecessors() 会直接把该前驱视为已完成，
+    // 因而不会再向当前 Work 追加动态后继；此刻动态后继前缀已经冻结。
+    const std::size_t num_successors = w.m_num_successors;
+
+    for (std::size_t i = 0; i < num_successors; ++i) {
+        Work* const successor = w.m_edges[i];
+
+        if (successor->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            Executor* const executor = successor->m_topology->m_executor;
+
+            if (executor == this) {
                 if (cache) {
-                    _schedule(wr, suc);
+                    _schedule(wr, successor);
                 } else {
-                    cache = suc;
+                    cache = successor;
                 }
             } else {
-                // 跨调度器调度
-                suc_exec->_schedule(suc);
+                executor->_schedule(successor);
             }
         }
     }
 
-    // parent == nullptr：顶级 async，由 topology 计数追踪生命周期
-    // parent != nullptr：嵌套 async，由 parent 的 join_counter 追踪，topology 不介入
-    if (auto parent = w->m_parent; parent) {
+    // 释放本次执行持有的一份强引用；若没有外部 AsyncTask 句柄继续持有，
+    // 当前线程可能成为最后一个引用释放者并立即销毁 Work。
+    if (w._decrement_ref()) {
+        destroy_work(std::addressof(w));
+    }
+
+    // 上一步可能已经销毁 w，因此从这里开始禁止再次访问 w，只使用提前缓存的 parent。
+    if (parent) {
         _schedule_parent(parent, wr, cache);
     } else {
         _decrement_topology();
     }
-
-    if (topo->_decref()) {
-        destroy(w);
-    }
 }
 
-
-/// @brief 将单个 Work* 压入分片共享队列。
-///
-/// 哈希选 buffer → try_lock 线性探测 → 兜底阻塞锁。分片策略减少锁竞争。
 inline void Executor::_push_shared(Work* val) {
     std::size_t const size = m_shared_buffers.size();
     std::size_t const b = detail::mulhi64(reinterpret_cast<std::uintptr_t>(val) * 11400714819323198485ULL, size);
 
-    // 快路径：从哈希位置开始线性探测 try_lock
+    // 快路径：从哈希首选分片开始环形线性探测，优先选择当前可立即取得的互斥锁。
     for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
         auto& buf = m_shared_buffers[curr_b];
         if (buf.mutex.try_lock()) {
+            std::lock_guard lock{buf.mutex, std::adopt_lock};
             buf.queue.push(val);
-            buf.mutex.unlock();
-            return;
-        }
-    }
-    for (std::size_t curr_b = 0; curr_b < b; ++curr_b) {
-        auto& buf = m_shared_buffers[curr_b];
-        if (buf.mutex.try_lock()) {
-            buf.queue.push(val);
-            buf.mutex.unlock();
             return;
         }
     }
 
-    // 所有分片均被占用，阻塞等待目标分片
-    std::lock_guard<std::mutex> lock(m_shared_buffers[b].mutex);
+    for (std::size_t curr_b = 0; curr_b < b; ++curr_b) {
+        auto& buf = m_shared_buffers[curr_b];
+        if (buf.mutex.try_lock()) {
+            std::lock_guard lock{buf.mutex, std::adopt_lock};
+            buf.queue.push(val);
+            return;
+        }
+    }
+
+    // 所有分片当前均被占用时，不再继续自旋，阻塞等待最初哈希得到的首选分片。
+    std::lock_guard lock(m_shared_buffers[b].mutex);
     m_shared_buffers[b].queue.push(val);
 }
 
 template <std::random_access_iterator Iterator>
     requires std::convertible_to<std::iter_reference_t<Iterator>, Work*>
 inline void Executor::_push_shared(Iterator first, std::size_t n) {
+    TFL_ASSERT(n != 0);
+
     std::size_t const size = m_shared_buffers.size();
     std::size_t const b = detail::mulhi64(reinterpret_cast<std::uintptr_t>(*first) * 11400714819323198485ULL, size);
 
-    // 快路径：从哈希位置开始线性探测 try_lock
+    // 快路径：从哈希首选分片开始环形线性探测，优先选择当前可立即取得的互斥锁。
     for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
         auto& buf = m_shared_buffers[curr_b];
+
         if (buf.mutex.try_lock()) {
+            std::lock_guard lock{buf.mutex, std::adopt_lock};
             buf.queue.push(first, n);
-            buf.mutex.unlock();
-            return;
-        }
-    }
-    for (std::size_t curr_b = 0; curr_b < b; ++curr_b) {
-        auto& buf = m_shared_buffers[curr_b];
-        if (buf.mutex.try_lock()) {
-            buf.queue.push(first, n);
-            buf.mutex.unlock();
             return;
         }
     }
 
-    // 所有分片均被占用，阻塞等待目标分片批量推送
-    std::lock_guard<std::mutex> lock(m_shared_buffers[b].mutex);
+    for (std::size_t curr_b = 0; curr_b < b; ++curr_b) {
+        auto& buf = m_shared_buffers[curr_b];
+
+        if (buf.mutex.try_lock()) {
+            std::lock_guard lock{buf.mutex, std::adopt_lock};
+            buf.queue.push(first, n);
+            return;
+        }
+    }
+
+    // 所有分片当前均被占用时，阻塞等待首选分片并一次性完成批量推送。
+    std::lock_guard lock(m_shared_buffers[b].mutex);
     m_shared_buffers[b].queue.push(first, n);
 }
 
 // ============================================================================
-//  任务调度入口
+// 任务调度入口
 // ============================================================================
 
 template <std::random_access_iterator Iterator>
 inline void Executor::_schedule(Worker& wr, Iterator first, std::size_t n) {
-    if (n == 0) [[unlikely]] {
-        return;
-    }
-    // 本地队列满时溢出到共享队列
+    // Worker 本地队列优先；无法继续容纳的尾部区间整体溢出到共享分片。
     wr.m_wslq.push(first, n, [&](Iterator remaining, std::size_t count) {
         _push_shared(remaining, count);
     });
@@ -1144,9 +1530,6 @@ inline void Executor::_schedule(Worker& wr, Iterator first, std::size_t n) {
 
 template <std::random_access_iterator Iterator>
 inline void Executor::_schedule(Iterator first, std::size_t n) {
-    if (n == 0) [[unlikely]] {
-        return;
-    }
     _push_shared(first, n);
     m_notifier.notify_n(n);
 }
@@ -1155,6 +1538,7 @@ inline void Executor::_schedule(Worker& wr, Work* w) {
     wr.m_wslq.push(w, [&]() {
         _push_shared(w);
     });
+
     m_notifier.notify_one();
 }
 
@@ -1163,60 +1547,64 @@ inline void Executor::_schedule(Work* w) {
     m_notifier.notify_one();
 }
 
-TFL_FORCE_INLINE void Executor::_schedule_parent(Work* parent, Worker& wr, Work*& cache) {
+inline void Executor::_schedule_parent(Work* parent, Worker& wr, Work*& cache) {
     if (parent->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        if (parent->m_implicit & Work::Implicit::PREEMPTED) {
+        if (parent->m_properties & Work::Properties::PREEMPTED) {
             if (cache) {
                 _schedule(wr, cache);
             }
+
             cache = parent;
         }
     }
 }
 
-TFL_FORCE_INLINE void Executor::_schedule_from_semaphore(Worker& w, SmallVector<Work*>& waiters) {
-    for (Work* t : waiters) {
-        auto target = t->m_topology->m_executor;
-        if (target == this) [[likely]] {
-            _schedule(w, t);            // 同 executor 走 worker-local 快路径
+inline void Executor::_schedule_from_semaphore(Worker& wr, SmallVector<Work*>& waiters) {
+    for (Work* work : waiters) {
+        Executor* const executor = work->m_topology->m_executor;
+
+        TFL_ASSERT(executor);
+
+        if (executor == this) [[likely]] {
+            _schedule(wr, work);
         } else {
-            target->_schedule(t);        // 跨 executor 走全局慢路径
+            executor->_schedule(work);
         }
     }
 }
+
 // ============================================================================
-//  协作式等待
+// 协作式等待
 // ============================================================================
 
 template <predicate Pred>
-inline void Executor::_cowait_until(Worker& wr, Pred&& pred) {
-    while (!std::invoke_r<bool>(pred)) {
+inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
+    while (!std::invoke(pred)) {
         if (auto* w = wr.m_wslq.pop()) [[likely]] {
             _invoke(wr, w);
             continue;
         }
 
-        std::size_t const nw = m_workers.size();
+        const std::size_t nw = m_workers.size();
         std::size_t num_steals = 0;
-        std::size_t const yield_limit = nw * wr.m_adaptive_factor + wr.m_max_steals;
+        const std::size_t yield_limit = nw * wr.m_adaptive_factor + wr.m_max_steals;
         std::size_t vtm = wr.m_vtm;
 
-        while (!std::invoke_r<bool>(pred)) {
-            Work* w = (vtm < nw)
-            ? m_workers[vtm].m_wslq.steal()
-            : m_shared_buffers[vtm - nw].queue.steal();;
+        while (!std::invoke(pred)) {
+            Work* w = (vtm < nw) ? m_workers[vtm].m_wslq.steal() : m_shared_buffers[vtm - nw].queue.steal();
 
             if (w) [[likely]] {
                 wr.m_vtm = vtm;
-                wr.m_adaptive_factor = std::min(8u, wr.m_adaptive_factor + 1);
+                wr.m_adaptive_factor = (std::min)(8u, wr.m_adaptive_factor + 1);
                 _invoke(wr, w);
                 break;
             }
 
             if (++num_steals > wr.m_max_steals) [[unlikely]] {
                 std::this_thread::yield();
+
                 if (num_steals > yield_limit) [[unlikely]] {
-                    wr.m_adaptive_factor = std::max(1u, wr.m_adaptive_factor - 1);
+                    wr.m_adaptive_factor = (std::max)(1u, wr.m_adaptive_factor - 1);
                     break;
                 }
             }
@@ -1226,20 +1614,23 @@ inline void Executor::_cowait_until(Worker& wr, Pred&& pred) {
     }
 }
 
+inline void Executor::_corun_graph(Graph& g, Work& parent, Worker& wr) {
+    const std::size_t num_sources = _set_up_graph(g, parent);
 
-inline void Executor::_cowait_graph(Worker& wr, Graph& g, Work* parent) {
-    auto num_srcs = _set_up_graph(g, parent->m_topology, parent);
-    if(num_srcs == 0) {
+    if (num_sources == 0) {
         return;
     }
-    parent->m_join_counter.fetch_add(num_srcs, std::memory_order_relaxed);
-    _schedule(wr, g.begin(), num_srcs);
 
-    _cowait_until(wr, [parent]() noexcept { return parent->m_join_counter.load(std::memory_order_acquire) == 0; });
+    parent.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
+    _schedule(wr, g.begin(), num_sources);
+
+    _corun_until(wr, [&parent]() noexcept {
+        return parent.m_join_counter.load(std::memory_order_acquire) == 0;
+    });
 }
 
 // ============================================================================
-//  拓扑计数管理
+// 拓扑计数管理
 // ============================================================================
 
 inline void Executor::_increment_topology() noexcept {
@@ -1257,240 +1648,12 @@ inline Worker* Executor::_this_worker() {
     return itr == m_tid_to_worker.end() ? nullptr : itr->second;
 }
 
-/// @brief 任务执行入口（链式执行优化）。
-///
-/// Work::invoke 执行完毕后可能产出满足条件的后继（放入 cache）。
-/// 本函数在 do-while 中连续执行 cache 链，避免后继任务再次入队/出队的开销。
 TFL_FORCE_INLINE void Executor::_invoke(Worker& wr, Work* w) {
     do {
         Work* cache{nullptr};
-        w->invoke(*this, wr, cache);
+        w->invoke(wr, *this, cache);
         w = cache;
     } while (w);
-}
-
-
-
-
-template <typename Gh>
-    requires graph_holder<Gh>
-inline void Executor::detach(Gh&& gh) {
-    return detach(std::forward<Gh>(gh), 1ULL);
-}
-
-template <typename Gh, typename C>
-    requires (capturable<C> && graph_holder<Gh> && callback<C>)
-inline void Executor::detach(Gh&& gh, C&& cb) {
-    return detach(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
-}
-
-template <typename Gh>
-    requires graph_holder<Gh>
-inline void Executor::detach(Gh&& gh, std::uint64_t num) {
-    return detach(std::forward<Gh>(gh), num, []() noexcept {});
-}
-
-template <typename Gh, typename C>
-    requires (capturable<C> && graph_holder<Gh> && callback<C>)
-inline void Executor::detach(Gh&& gh, std::uint64_t num, C&& cb) {
-    // 将次数转换为谓词：lambda 捕获 num，每次调用递减
-    return detach(std::forward<Gh>(gh)
-                        ,[num]() mutable noexcept { return num-- == 0; }
-                        ,std::forward<C>(cb));
-}
-
-template <typename Gh, typename P>
-    requires (capturable<P> && graph_holder<Gh> && predicate<P>)
-inline void Executor::detach(Gh&& gh, P&& pred) {
-    return detach(std::forward<Gh>(gh)
-                        ,std::forward<P>(pred)
-                        ,[]() noexcept {});
-}
-
-template <typename Gh, typename P, typename C>
-    requires (capturable<P, C> && graph_holder<Gh> && predicate<P> && callback<C>)
-inline void Executor::detach(Gh&& gh, P&& pred, C&& cb) {
-    Work* work = make_detached_flow<anchor::explicit_t>(
-        this,
-        /*parent=*/nullptr,
-        std::forward<Gh>(gh),
-        std::forward<P>(pred),
-        std::forward<C>(cb));
-
-    work->m_topology->m_executor = this;
-    _increment_topology();
-
-    // 上下文感知调度：worker 线程内提交走本地队列（零队列操作），
-    // 非 worker 线程走共享队列
-    if (Worker* wr = _this_worker(); wr) {
-        _schedule(*wr, work);
-    } else {
-        _schedule(work);
-    }
-}
-
-
-template <typename T, typename... Args>
-    requires (capturable<T, Args...> && basic_invocable_plain<T, Args...>)
-inline void Executor::detach(T&& task, Args&&... args) {
-    Work* work = make_detached_basic<anchor::explicit_t>(
-        this,
-        /*parent=*/nullptr,
-        std::forward<T>(task),
-        std::forward<Args>(args)...);
-
-    _increment_topology();
-
-    if (Worker* wr = _this_worker(); wr) {
-        _schedule(*wr, work);
-    } else {
-        _schedule(work);
-    }
-}
-
-template <typename T, typename... Args>
-    requires (capturable<T, Args...> && runtime_invocable_plain<T, Args...>)
-inline void Executor::detach(T&& task, Args&&... args) {
-    Work* work = make_detached_runtime<anchor::explicit_t>(
-        this,
-        /*parent=*/nullptr,
-        std::forward<T>(task),
-        std::forward<Args>(args)...);
-
-    _increment_topology();
-
-    if (Worker* wr = _this_worker(); wr) {
-        _schedule(*wr, work);
-    } else {
-        _schedule(work);
-    }
-}
-
-
-
-// ============================================================================
-//  Executor::async —— 任务图提交，返回 Future<void>
-// ============================================================================
-
-template <graph_holder Gh>
-inline Future<void> Executor::async(Gh&& gh) {
-    return async(std::forward<Gh>(gh), 1ULL);
-}
-
-template <graph_holder Gh, typename C>
-    requires (capturable<C> && callback<C>)
-inline Future<void> Executor::async(Gh&& gh, C&& cb) {
-    return async(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
-}
-
-template <graph_holder Gh>
-inline Future<void> Executor::async(Gh&& gh, std::uint64_t num) {
-    return async(std::forward<Gh>(gh), num, []() noexcept {});
-}
-
-template <graph_holder Gh, typename C>
-    requires (capturable<C> && callback<C>)
-inline Future<void> Executor::async(Gh&& gh, std::uint64_t num, C&& cb) {
-    return async(std::forward<Gh>(gh),
-                 [num]() mutable noexcept { return num-- == 0; },
-                 std::forward<C>(cb));
-}
-
-template <graph_holder Gh, typename P>
-    requires (capturable<P> && predicate<P>)
-inline Future<void> Executor::async(Gh&& gh, P&& pred) {
-    return async(std::forward<Gh>(gh),
-                 std::forward<P>(pred),
-                 []() noexcept {});
-}
-
-template <graph_holder Gh, typename P, typename C>
-    requires (capturable<P, C> && predicate<P> && callback<C>)
-inline Future<void> Executor::async(Gh&& gh, P&& pred, C&& cb) {
-    std::promise<void> promise;
-    std::future<void>  std_future = promise.get_future();
-
-    Work* work = make_promised_flow<anchor::explicit_t>(
-        this,
-        /*parent=*/nullptr,
-        std::forward<Gh>(gh),
-        std::forward<P>(pred),
-        std::forward<C>(cb),
-        std::move(promise));
-
-    // Why: 必须在 _schedule 之前抓拷贝。派发后 work 可能被其它 worker
-    //      立即执行并 tear_down，work->m_topology 变 use-after-free。
-    //      stop_source 是 shared_ptr 语义，拷贝即共享 control block。
-    std::stop_source ss = work->m_topology->m_stop_source;
-
-    _increment_topology();
-
-    // 上下文感知调度：worker 线程内提交走本地队列（零队列操作）
-    if (Worker* wr = _this_worker(); wr) {
-        _schedule(*wr, work);
-    } else {
-        _schedule(work);
-    }
-
-    return Future<void>{std::move(std_future), std::move(ss)};
-}
-
-template <typename T, typename... Args>
-    requires (capturable<T, Args...> && basic_invocable<T, Args...>)
-inline auto Executor::async(T&& task, Args&&... args) -> Future<basic_return_t<T, Args...>> {
-    using R = basic_return_t<T, Args...>;
-
-    std::promise<R> promise;
-    std::future<R> std_future = promise.get_future();
-
-    Work* work = make_promised_basic<anchor::explicit_t>(
-        this,
-        /*parent=*/nullptr,
-        std::forward<T>(task),
-        std::move(promise),
-        std::forward<Args>(args)...);
-
-    // Why: 必须在 _schedule 之前抓拷贝。派发后 work 可能被其它 worker
-    //      立即执行并 tear_down，work->m_topology 变 use-after-free。
-    //      stop_source 是 shared_ptr 语义，拷贝即共享 control block；
-    //      Future 端持有令其在 topology 析构后仍可安全调用 request_stop。
-    std::stop_source ss = work->m_topology->m_stop_source;
-
-    _increment_topology();
-    if (Worker* wr = _this_worker(); wr) {
-        _schedule(*wr, work);
-    } else {
-        _schedule(work);
-    }
-
-    return Future<R>{std::move(std_future), std::move(ss)};
-}
-
-template <typename T, typename... Args>
-    requires (capturable<T, Args...> && runtime_invocable<T, Args...>)
-inline auto Executor::async(T&& task, Args&&... args) -> Future<runtime_return_t<T, Args...>> {
-    using R = runtime_return_t<T, Args...>;
-
-    std::promise<R> promise;
-    std::future<R> std_future = promise.get_future();
-
-    Work* work = make_promised_runtime<anchor::explicit_t>(
-        this,
-        /*parent=*/nullptr,
-        std::forward<T>(task),
-        std::move(promise),
-        std::forward<Args>(args)...);
-
-    std::stop_source ss = work->m_topology->m_stop_source;
-
-    _increment_topology();
-    if (Worker* wr = _this_worker(); wr) {
-        _schedule(*wr, work);
-    } else {
-        _schedule(work);
-    }
-
-    return Future<R>{std::move(std_future), std::move(ss)};
 }
 
 } // namespace tfl

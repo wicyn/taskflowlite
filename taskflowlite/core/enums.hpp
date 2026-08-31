@@ -1,10 +1,5 @@
-﻿/// @file  enums.hpp
-/// @brief 定义框架核心枚举类型 —— TaskType 任务原子类型与 Direction 可视化布局方向。
-/// @details
-/// 两种枚举各自配套 to_string / to_string_view / operator<< / std::formatter
-/// 四件套，确保在任何诊断、日志、格式化场景下零开销地获得可读名称。
-/// 内部元编程辅助 EnumMax<T>() 用于驱动编译期枚举遍历 (如 TaskType switch 穷举校验)。
-///
+﻿/// @file enums.hpp
+/// @brief 定义任务类型与可视化布局方向枚举。
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-05-28
@@ -20,7 +15,7 @@
 
 namespace tfl {
 // ============================================================================
-//  枚举工具
+// 枚举工具
 // ============================================================================
 
 namespace impl {
@@ -28,55 +23,61 @@ template <typename T>
 struct EnumMaxImpl;
 } // namespace impl
 
+/// @brief 获取框架为枚举类型登记的枚举器数量。
+/// @tparam T 具有 `impl::EnumMaxImpl<T>` 特化的枚举类型。
+/// @return 对应特化的编译期 `Value`。
 template <typename T>
 constexpr std::int32_t EnumMax() noexcept {
     return impl::EnumMaxImpl<T>::Value;
 }
 
 // ============================================================================
-// TaskType - 任务原子类型
+// TaskType 任务类型
 // ============================================================================
 
-/// @brief 描述任务在异步任务图中的功能属性。
-///
-/// 不同的任务类型决定了调度器（Executor）在任务执行完毕后如何解释返回值，
-/// 以及如何激活后续的依赖节点。
+/// @brief 标识任务节点的调度语义。
 enum class TaskType : std::int32_t
 {
-    None        = 0,   ///< 未定义
-    Noop        = 1,   ///< 空操作任务:无用户逻辑,仅做后继分发(AnchorWork/NoopInvoker)
-    Basic       = 2,   ///< 标准任务：执行完成后自动激活所有后续节点
-    Runtime     = 3,   ///< 运行时任务：允许在执行期间通过 Runtime 接口动态派发新任务
-    Branch      = 4,   ///< 分支任务：根据返回值（int）激活特定索引的后续节点
-    MultiBranch = 5,   ///< 多路分支：根据返回值（vector<int>）同时激活多个特定后续节点
-    Jump        = 6,   ///< 跳转任务：跳转至图中指定的绝对索引节点执行
-    MultiJump   = 7,   ///< 多路跳转：同时跳转至多个指定的绝对索引节点
-    Graph       = 8    ///< 子图任务：封装了另一个完整的 Taskflow 拓扑
+    None        = 0,   ///< 未指定任务类型。
+    Placeholder = 1,   ///< 占位节点：无用户 callable，仅参与依赖传播。
+    Basic       = 2,   ///< 执行普通 callable，并通知所有后继。
+    Branch      = 3,   ///< 执行单目标条件分支，并通知选中的后继。
+    MultiBranch = 4,   ///< 执行多目标条件分支，并通知选中的后继。
+    Jump        = 5,   ///< 强制激活一个指定后继。
+    MultiJump   = 6,   ///< 强制激活多个指定后继。
+    Runtime     = 7,   ///< 通过 `Runtime` 在执行期间派发任务。
+    Graph       = 8    ///< 执行封装的子图。
 };
 
-/// @brief 返回 TaskType 对应的 C 字符串常量。
+/// @brief 将任务类型转换为稳定的英文标识符。
+/// @param type 要转换的任务类型。
+/// @return 指向静态字符串的指针；未知枚举值返回 `"unknown"`。
 constexpr const char* to_string(TaskType type) noexcept {
     switch (type) {
-        case TaskType::None:        return "none";
-        case TaskType::Noop:        return "noop";
-        case TaskType::Basic:       return "basic";
-        case TaskType::Runtime:     return "runtime";
-        case TaskType::Branch:      return "branch";
-        case TaskType::MultiBranch: return "multi_branch";
-        case TaskType::Jump:        return "jump";
-        case TaskType::MultiJump:   return "multi_jump";
-        case TaskType::Graph:       return "graph";
-        default:                    return "unknown";
+    case TaskType::None:        return "none";
+    case TaskType::Placeholder: return "placeholder";
+    case TaskType::Basic:       return "basic";
+    case TaskType::Branch:      return "branch";
+    case TaskType::MultiBranch: return "multi_branch";
+    case TaskType::Jump:        return "jump";
+    case TaskType::MultiJump:   return "multi_jump";
+    case TaskType::Runtime:     return "runtime";
+    case TaskType::Graph:       return "graph";
+    default:                    return "unknown";
     }
 }
 
-/// @brief 返回 TaskType 对应的 string_view（零拷贝）。
+/// @brief 将任务类型转换为不拥有字符数据的 string_view。
+/// @param type 要转换的任务类型。
+/// @return 引用静态字符串的视图，内容与 `to_string(type)` 相同。
 constexpr std::string_view to_string_view(TaskType type) noexcept {
     return to_string(type);
 }
 
 namespace impl {
-/// @brief 内部元编程辅助：TaskType 的枚举器数量。
+/// @brief 为 `TaskType` 登记包含 `None` 在内的有效枚举器数量。
+///
+/// 该特化只提供编译期常量，不验证任意整数是否为有效枚举值。
 template <>
 struct EnumMaxImpl<TaskType>
 {
@@ -84,44 +85,53 @@ struct EnumMaxImpl<TaskType>
 };
 } // namespace impl
 
-/// @brief 将 TaskType 写入 ostream（格式同 to_string）。
+/// @brief 将任务类型英文标识写入输出流。
+/// @param os 目标输出流。
+/// @param type 要输出的任务类型。
+/// @return os，支持连续插入。
 inline std::ostream& operator<<(std::ostream& os, TaskType type) {
     return os << to_string(type);
 }
 
 // ============================================================================
-// Direction - 可视化布局方向 (D2/Dot 渲染专用)
+// Direction 可视化布局方向
 // ============================================================================
 
 /// @brief 定义任务图在进行自动布局渲染时的生长方向。
 enum class Direction : std::uint8_t
 {
-    Down    = 0,   ///< 自上而下
-    Right   = 1,   ///< 自左向右
-    Up      = 2,   ///< 自下而上
-    Left    = 3,   ///< 自右向左
+    Down    = 0,   ///< 自上而下。
+    Right   = 1,   ///< 自左向右。
+    Up      = 2,   ///< 自下而上。
+    Left    = 3,   ///< 自右向左。
 
-    Default = Down ///< 默认采用从上到下的流向
+    Default = Down ///< 默认采用从上到下的流向。
 };
 
-/// @brief 将 Direction 转换为字符串。
+/// @brief 将布局方向转换为 D2 使用的英文字符串。
+/// @param dir 要转换的方向。
+/// @return 指向静态字符串的指针；未知枚举值返回 `"unknown"`。
 constexpr const char* to_string(Direction dir) noexcept {
     switch (dir) {
-        case Direction::Down:  return "down";
-        case Direction::Right: return "right";
-        case Direction::Up:    return "up";
-        case Direction::Left:  return "left";
-        default:               return "unknown";
+    case Direction::Down:  return "down";
+    case Direction::Right: return "right";
+    case Direction::Up:    return "up";
+    case Direction::Left:  return "left";
+    default:               return "unknown";
     }
 }
 
-/// @brief 将 Direction 转换为 string_view。
+/// @brief 将布局方向转换为不拥有字符数据的 string_view。
+/// @param dir 要转换的方向。
+/// @return 引用静态字符串的视图。
 constexpr std::string_view to_string_view(Direction dir) noexcept {
     return to_string(dir);
 }
 
 namespace impl {
-/// @brief 内部元编程辅助：Direction 的枚举器数量。
+/// @brief 为 `Direction` 登记四个独立布局方向的枚举器数量。
+///
+/// `Default` 是 `Down` 的别名，因此不单独计数。
 template <>
 struct EnumMaxImpl<Direction>
 {
@@ -129,7 +139,10 @@ struct EnumMaxImpl<Direction>
 };
 } // namespace impl
 
-/// @brief 将 Direction 写入 ostream（格式同 to_string）。
+/// @brief 将布局方向英文标识写入输出流。
+/// @param os 目标输出流。
+/// @param dir 要输出的方向。
+/// @return os，支持连续插入。
 inline std::ostream& operator<<(std::ostream& os, Direction dir) {
     return os << to_string(dir);
 }
@@ -137,13 +150,15 @@ inline std::ostream& operator<<(std::ostream& os, Direction dir) {
 } // namespace tfl
 
 // ============================================================================
-// std::format 支持 (C++20+)
+// std::format 支持
 // ============================================================================
 
 #if __cpp_lib_format >= 202110L
 #include <format>
 
-/// @brief 为 TaskType 注入 std::format 支持。
+/// @brief 将 `tfl::TaskType` 适配为按稳定英文标识输出的 `std::formatter`。
+///
+/// 格式解析和字符串格式化行为复用 `std::formatter<std::string_view>`。
 template <>
 struct std::formatter<tfl::TaskType> : std::formatter<std::string_view>
 {
@@ -153,7 +168,9 @@ struct std::formatter<tfl::TaskType> : std::formatter<std::string_view>
     }
 };
 
-/// @brief 为 Direction 注入 std::format 支持。
+/// @brief 将 `tfl::Direction` 适配为按 D2 方向标识输出的 `std::formatter`。
+///
+/// 格式解析和字符串格式化行为复用 `std::formatter<std::string_view>`。
 template <>
 struct std::formatter<tfl::Direction> : std::formatter<std::string_view>
 {
