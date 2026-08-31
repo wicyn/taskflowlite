@@ -1,5 +1,5 @@
-/// @file  semaphore.hpp
-/// @brief 任务级信号量 Semaphore —— 不阻塞 Worker 线程的并发限流原语。
+﻿/// @file semaphore.hpp
+/// @brief 任务级信号量 Semaphore —— 通过配额控制任务并发度且不阻塞 Worker 线程。
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-05-28
@@ -22,95 +22,127 @@
 
 namespace tfl {
 
-/// @brief 任务级并发限流信号量 —— 配额不足时挂起任务而非线程。
+/// @brief 以可用配额限制任务并发度，而不阻塞执行任务的 Worker 线程。
 ///
-/// 与 OS 信号量的本质差异：acquire 失败时 Worker 不睡眠，而是把任务放入
-/// 内部等待队列后立即返回执行其他就绪任务。release 时把 waiter 批量 swap
-/// 出临界区再推回调度器（惊群批处理优化）。这是 M:N 调度模型成立的必要前提。
+/// Semaphore 维护最大配额 `m_max_value`、当前可用配额 `m_value` 以及等待任务队列。
+/// 任务获取配额成功后继续执行；配额不足时，当前 `Work` 被登记到等待队列并停止本次
+/// 执行尝试，使 Worker 可以继续执行其他就绪任务，而不是阻塞操作系统线程。
 ///
-/// @note 线程安全：全局 mutex 保护内部状态，不在热路径上。
+/// 配额释放时不会直接在 Semaphore 内执行等待任务，而是将当前等待者批量移出并交给
+/// Executor 重新调度。任务被再次调度后会重新调用获取流程，因此一次 release 唤醒的
+/// waiter 并不意味着已经获得配额，只表示它获得了重新竞争配额的机会。
+///
+/// Semaphore 只保存等待任务的非拥有 `Work*`，不负责这些 Work 的生命周期。
+///
+/// @note `m_value` 表示“当前可用配额”，而不是当前正在运行的任务数量；
+///       已占用配额数量在通常状态下等于 `m_max_value - m_value`。
+/// @note 运行期配额获取、释放以及等待队列修改均由 `m_lock` 串行化。
+/// @note `max_value()`、名称访问以及 `reset()` 的并发使用限制由各接口契约约束。
+/// @warning 所有引用本对象的任务完成并归还其已获取配额之前，本对象必须保持存活。
 class Semaphore : public Immovable<Semaphore> {
     friend class Work;
     friend class Executor;
     friend class Task;
 
 public:
-    /// @brief 构造函数, 初始化信号量的最大并发容量。
-    /// @param max_value 允许的最大并发数量。初始可用计数也等同于此值。
-    /// @param name 信号量的名称 (可选, 通常用于调试或日志追踪)。
+    /// @brief 以指定最大容量构造信号量，并使全部配额初始可用。
+    /// @param max_value 最大可用配额，同时作为初始可用配额。
+    /// @param name 用于诊断、调试和可视化的可选名称。
     explicit Semaphore(std::size_t max_value, std::string name = "");
 
-    /// @brief 构造函数, 分别指定最大容量与当前初始可用容量。
-    /// @param max_value 允许的最大并发数量。
-    /// @param current_value 初始时刻的可用计数。
-    /// @param name 信号量的名称 (可选)。
-    /// @note 内部会自动将初始可用计数裁剪至不超过最大容量, 防止不变量被打破。
+    /// @brief 分别指定最大配额和初始可用配额构造信号量。
+    /// @param max_value 最大可用配额。
+    /// @param current_value 初始可用配额；超过 @p max_value 时自动裁剪为最大值。
+    /// @param name 用于诊断、调试和可视化的可选名称。
     Semaphore(std::size_t max_value, std::size_t current_value, std::string name = "");
 
+    /// @brief 信号量包含互斥同步状态，因此禁止复制构造。
     Semaphore(const Semaphore&) = delete;
+
+    /// @brief 禁止复制赋值。
     Semaphore& operator=(const Semaphore&) = delete;
 
-    /// @brief 线程安全地获取当前剩余可用计数。
-    /// @return 当前可用配额数 (加锁快照)。
+    /// @brief 获取当前可用配额的线程安全快照。
+    /// @return 在持有内部互斥锁期间观察到的当前可用配额。
+    /// @note 返回值离开本函数后可能立即因其他任务获取或释放配额而失效。
     [[nodiscard]] std::size_t value() const noexcept;
 
-    /// @brief 获取信号量的最大设计容量。
-    /// @return 最大并发配额上限。
+    /// @brief 获取配置的最大配额。
+    /// @return 当前最大可用配额。
+    /// @note 本函数不获取 `m_lock`，因此不得与 `reset()` 并发调用。
     [[nodiscard]] std::size_t max_value() const noexcept;
 
-    /// @brief 重置信号量的容量并完全恢复可用计数。
-    /// @param max_value 新的最大并发数量。
-    /// @pre 必须确保当前没有任何任务在此信号量上处于等待挂起状态。
-    /// @throw Exception 如果内部等待队列非空, 抛出异常。
+    /// @brief 重置信号量最大配额，并使全部新配额恢复为可用状态。
+    /// @param max_value 新的最大配额，同时成为新的当前可用配额。
+    /// @pre 不得存在等待任务或尚未归还的已占用配额，也不得与任务获取、释放或其他配置操作并发调用。
+    /// @throws Exception 当前内部等待队列非空时抛出异常。
+    /// @note 本实现只显式检测等待队列是否为空；其他前置条件由调用方保证。
     void reset(std::size_t max_value);
 
-    /// @brief 重置信号量容量, 并显式指定当前可用计数。
-    /// @param max_value 新的最大并发数量。
-    /// @param current_value 新的可用计数。
-    /// @pre 必须确保当前没有任何任务在此信号量上处于等待挂起状态。
-    /// @throw Exception 如果内部等待队列非空, 抛出异常。
+    /// @brief 重置信号量最大配额和当前可用配额。
+    /// @param max_value 新的最大配额。
+    /// @param current_value 新的当前可用配额；超过 @p max_value 时自动裁剪为最大值。
+    /// @pre 不得存在等待任务或尚未归还的已占用配额，也不得与任务获取、释放或其他配置操作并发调用。
+    /// @throws Exception 当前内部等待队列非空时抛出异常。
+    /// @note 本实现只显式检测等待队列是否为空；其他前置条件由调用方保证。
     void reset(std::size_t max_value, std::size_t current_value);
 
-    /// @brief 线程安全地获取信号量的名称。
-    /// @return 信号量名称的只读视图。
+    /// @brief 获取信号量名称。
+    /// @return 指向内部名称存储的字符串视图。
+    /// @note 返回视图在下次修改名称或销毁本对象之前有效。
+    /// @note 本函数不加锁，不得与 `name(S&&)` 或其他可能修改名称的操作并发调用。
     [[nodiscard]] std::string_view name() const noexcept;
 
-    /// @brief 线程安全地设置信号量的名称。
-    /// @tparam S 可构造 std::string 的类型。
-    /// @param name 新的信号量名称。
-    /// @return *this, 支持链式调用。
+    /// @brief 设置信号量名称。
+    /// @tparam S 可用于构造 `std::string` 的名称类型。
+    /// @param name 新名称。
+    /// @return `*this`，用于链式配置。
+    /// @note 名称不参与任务调度和配额同步，仅用于诊断或可视化。
+    /// @note 本函数不加锁，不得与其他名称读取或修改操作并发调用。
     template <typename S>
         requires std::constructible_from<std::string, S>
     Semaphore& name(S&& name);
 
 private:
     std::string m_name;
-    /// @brief 保护内部状态的互斥锁 —— 不在热路径上, 原子操作不用在此处过度优化。
+    /// @brief 串行保护 `m_value` 和 `m_waiters` 的运行期访问。
     mutable std::mutex m_lock;
-    /// @brief 允许的最大并发边界。
+    /// @brief 信号量允许持有的最大配额总量。
     std::size_t m_max_value{0};
-    /// @brief 运行时动态追踪的当前可用授权数。
+    /// @brief 当前尚未被任务占用的可用配额数量。
     std::size_t m_value{0};
-    /// @brief 因获取失败而被迫挂起的拦截任务队列。
+    /// @brief 因配额不足而等待重新调度并再次尝试获取的非拥有 Work 指针集合。
     SmallVector<Work*> m_waiters;
 
 
-    /// @brief 框架内部调用: 尝试非阻塞地获取指定数量的授权配额。
-    /// @param w 发起尝试的任务节点指针。
-    /// @param count 需要获取的配额数量。
-    /// @return 成功扣减计数返回 true; 否则自动将该任务压入等待队列并返回 false。
+    /// @brief 尝试为指定任务一次性获取 @p count 个配额。
+    ///
+    /// 配额充足时在持锁状态下直接从 `m_value` 扣除请求数量并返回 true。
+    /// 配额不足时不阻塞当前 Worker，而是把 @p w 登记到 `m_waiters`，由后续
+    /// `_release()` 将其交回 Executor 重新调度并再次尝试获取。
+    ///
+    /// @param w 发起获取请求的任务；Semaphore 不取得其所有权。
+    /// @param count 本次需要原子获取的配额数量。
+    /// @return 获取全部请求配额时返回 true；配额不足并进入等待队列时返回 false。
+    /// @note 本接口采用 all-or-nothing 语义，不会部分扣减配额。
     [[nodiscard]] bool _try_acquire(Work* w, std::size_t count);
 
-    /// @brief 框架内部调用: 归还配额并释放等待者。
-    /// @param count 归还的配额数量。
-    /// @param out   [out] 被唤醒的任务列表, 由调用方统一推回调度器。
+    /// @brief 归还配额，并收集需要重新参与调度竞争的等待任务。
+    ///
+    /// 首先在 `m_lock` 保护下归还最多 @p count 个配额，并将当前全部等待者
+    /// 从 `m_waiters` 批量移出。随后在锁外把这些 Work 合并到 @p out，
+    /// 由 Executor 负责重新发布；被重新调度的任务仍需要再次执行获取操作。
+    ///
+    /// @param count 本次归还的配额数量；内部计数最多恢复到 `m_max_value`。
+    /// @param out 接收需要由 Executor 重新调度的非拥有 Work 指针。
+    /// @note 一次释放会取出当前全部 waiter，而不是只选择当前配额能够满足的任务。
     void _release(std::size_t count, SmallVector<Work*>& out);
 };
 
 
-// ==============================================================================
-//  实现
-// ==============================================================================
+// ============================================================================
+// 实现
+// ============================================================================
 
 inline Semaphore::Semaphore(std::size_t max_value, std::string name)
     : m_name{std::move(name)}
@@ -128,23 +160,27 @@ inline std::size_t Semaphore::value() const noexcept {
 }
 
 inline std::size_t Semaphore::max_value() const noexcept {
+    std::lock_guard lk{m_lock};
     return m_max_value;
 }
-
 inline void Semaphore::reset(std::size_t max_value) {
     std::lock_guard lk{m_lock};
+
     if (!m_waiters.empty()) {
-        throw Exception("cannot reset while waiters exist.");
+        throw Exception("cannot reset semaphore while waiters exist.");
     }
+
     m_max_value = max_value;
-    m_value = m_max_value;
+    m_value = max_value;
 }
 
 inline void Semaphore::reset(std::size_t max_value, std::size_t current_value) {
     std::lock_guard lk{m_lock};
+
     if (!m_waiters.empty()) {
-        throw Exception("cannot reset while waiters exist.");
+        throw Exception("cannot reset semaphore while waiters exist.");
     }
+
     m_max_value = max_value;
     m_value = (std::min)(current_value, max_value);
 }
@@ -163,52 +199,51 @@ inline Semaphore& Semaphore::name(S&& name) {
 inline bool Semaphore::_try_acquire(Work* w, std::size_t count) {
     std::lock_guard lk{m_lock};
 
-    // 配额充足, 直接扣减放行
+    // 当前可用配额能够一次性满足整个请求时直接扣减并放行，不发生部分获取。
     if (m_value >= count) {
         m_value -= count;
         return true;
     }
 
-    // 当配额不足以满足当前 count 时, 直接将任务记录在案, 随后返回 false。
-    // 这指导底层的 Worker 线程立即放弃此任务并投身于窃取网络,
-    // 彻底杜绝了并发死锁与 CPU 空转
+    // 配额不足时仅登记当前 Work，不阻塞执行它的 Worker。
+    // 后续 release 会把等待者重新交回调度器；任务再次执行时重新竞争所需全部配额。
+    // 因此错误的配额依赖关系仍然可能在任务层形成逻辑死锁。
     m_waiters.push_back(w);
     return false;
 }
 
 inline void Semaphore::_release(std::size_t count, SmallVector<Work*>& out) {
-    SmallVector<Work*> batch;
-    {
-        std::lock_guard lk{m_lock};
+    std::lock_guard lk{m_lock};
 
-        // 严格断言不变式, 自证下面的减法绝对不会发生无符号下溢
-        TFL_ASSERT(m_value <= m_max_value && "semaphore invariant broken");
+    // 当前可用配额必须始终位于 [0, m_max_value]。
+    TFL_ASSERT(m_value <= m_max_value && "semaphore invariant broken");
 
-        // 归还配额, 并进行安全裁剪以防溢出 (防范用户在 DAG 拓扑中配错 release 数量)
-        if (m_max_value - m_value >= count) {
-            m_value += count;
+    // release 不允许使可用配额超过配置上限。
+    // 使用差值判断避免直接计算 m_value + count 时发生无符号溢出。
+    if (count > m_max_value - m_value) [[unlikely]] {
+        throw Exception("semaphore release exceeds max_value.");
+    }
+
+    if (!m_waiters.empty()) {
+        if (out.empty()) {
+            // 最常见路径：直接交换底层存储。
+            // 不需要复制 waiter，也不会发生额外内存分配。
+            out.swap(m_waiters);
         } else {
-            m_value = m_max_value;
-        }
+            // 先完成唯一可能发生内存分配的容量准备。
+            // reserve 失败时，Semaphore 的配额和 waiter 状态均保持不变。
+            out.reserve(out.size() + m_waiters.size());
 
-        // 只有当确实有任务在等待, 且当前有可用资源时, 才进行唤醒操作。
-        // 使用 SmallVector swap 是一种经典的锁粒度优化 ("惊群"批处理):
-        // 一次性将挂起的队列移交到局部栈上, 使得互斥锁能够被极速释放,
-        // 防止因唤醒过程过长拖累并发度
-        if (m_waiters.empty()) {
-            return;
+            // 容量已经准备完成，元素类型为 Work*；
+            // 追加成功后再清空内部 waiter，完成所有权意义上的转移。
+            out.insert(out.end(), m_waiters.begin(), m_waiters.end());
+            m_waiters.clear();
         }
-        batch.swap(m_waiters);
     }
 
-    // 锁外完成 out 聚合, 即使 out 需要 malloc 扩容也不占临界区。
-    // 快路径 (单 sem 场景): out 空, 直接 move 整个 storage, 3 个指针赋值
-    if (out.empty()) {
-        out = std::move(batch);
-    } else {
-        out.reserve(out.size() + batch.size());
-        out.insert(out.end(), batch.begin(), batch.end());
-    }
+    // waiter 转移完成后提交配额变化。
+    m_value += count;
+
 }
 
 }  // namespace tfl

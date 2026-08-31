@@ -1,16 +1,5 @@
 ﻿/// @file traits.hpp
-/// @brief 类型概念与萃取 —— 框架的 C++20 concepts 集中地
-/// @details
-/// 本文件汇集所有用户签名约束：
-/// - `basic_invocable` / `runtime_invocable` / `branch_invocable` / ... ：
-///   按签名形态分类的 invocable 概念，驱动 Flow::emplace 的重载分发；
-/// - `graph_holder` / `predicate` / `callback` ：Flow 提交 API 的辅助约束；
-/// - `capturable<T...>` ：确保用户传入的所有类型都能被框架安全持久化存储；
-/// - `pack<Ts...>`     ：批量插入用的参数打包器（见下）。
-///
-/// 这些 concepts 让框架的 API 在类型不匹配时给出**清晰的编译错误**，
-/// 而不是模板深处的"recursive instantiation 200 deep"。
-///
+/// @brief 类型概念与萃取 —— 框架的 C++20 concepts 集中定义。
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-03-02
@@ -19,19 +8,15 @@
 
 #pragma once
 
-#include <stop_token>
 #include <concepts>
 #include <functional>
 #include <type_traits>
 #include <version>
 #include <coroutine>
+#include <string>
+#include <memory>
 
 #include "forward.hpp"
-
-#if !defined(__cpp_lib_jthread) || __cpp_lib_jthread < 201911L
-#  error "TaskflowLite requires P0660 (std::jthread / std::stop_token / std::stop_source). Use a stdlib that provides it: libstdc++ 11+, libc++ 18+, or MSVC STL; on macOS use Homebrew LLVM if Apple Clang lacks it."
-#endif
-
 
 namespace tfl {
 
@@ -46,20 +31,25 @@ namespace tfl {
 // | std::ref(x)             | int&        |
 // | std::cref(x)            | const int&  |
 // | int& / const int&       | int         |
-// | int*                    | int*        |
-// | int[3]                  | int*        |
+// | int* | int* |
+// | int[3]                  | int* |
 // | void()                  | void(*)()   |
 
 namespace detail {
 
-// 1. 基础模板 (默认匹配失败)
+/// @brief 将未匹配成完整信号量/计数对的参数序列判定为 false。
+/// @tparam Ts 待验证的完整参数序列。
 template <typename... Ts>
 struct is_sem_count_seq : std::false_type {};
-// 2. 递归终止条件 (当参数包拆解为空时，匹配成功)
+
+/// @brief 将空序列作为递归终点判定为合法的信号量/计数序列。
 template <>
 struct is_sem_count_seq<> : std::true_type {};
 
-// 3. 递归拆包核心逻辑
+/// @brief 逐对验证 `Semaphore` 左值引用和可转换为 `size_t` 的计数。
+/// @tparam S 当前信号量参数类型。
+/// @tparam C 当前计数参数类型。
+/// @tparam Rest 尚待递归验证的剩余参数。
 template <typename S, typename C, typename... Rest>
 struct is_sem_count_seq<S, C, Rest...>
     : std::bool_constant<
@@ -70,360 +60,247 @@ struct is_sem_count_seq<S, C, Rest...>
           > {};
 
 // ============================================================================
-//  reference_wrapper 探测
+// reference_wrapper 探测
 // ============================================================================
 
-/// @brief 检查类型是否为 std::reference_wrapper 特化
+/// @brief 将普通类型判定为非 `std::reference_wrapper` 的内部类型萃取。
+/// @tparam T 待检测类型。
 template <typename T>
 struct is_reference_wrapper : std::false_type {};
 
+/// @brief 识别 `std::reference_wrapper<T>` 并保留其被引用类型参数。
+/// @tparam T 包装器引用的对象类型。
 template <typename T>
 struct is_reference_wrapper<std::reference_wrapper<T>> : std::true_type {};
 
-/// @brief 检查 **原始类型** 是否为 reference_wrapper（不做隐式 decay）
 template <typename T>
-inline constexpr bool is_reference_wrapper_v = is_reference_wrapper<T>::value;
-
-/// @brief 检查 decay 后是否为 reference_wrapper
-/// @note 与 is_reference_wrapper_v 的区别：显式对 T 做 decay，语义更透明。
-template <typename T>
-inline constexpr bool is_reference_wrapper_after_decay_v = is_reference_wrapper<std::decay_t<T>>::value;
+inline constexpr bool is_reference_wrapper_v = is_reference_wrapper<std::remove_cvref_t<T>>::value;
 
 // ============================================================================
-//  capture / borrow 运行时工具 —— 配对使用
-//  capture: 把实参转成可存储表示（左值存 ref，右值存值/移动接管）
-//  borrow : 从存储表示借出一个可用的左值引用（不取得所有权）
+// 捕获存储
 // ============================================================================
 
-/// @brief 把实参转成可长期存储的表示。
-/// @return 左值 → std::ref 包装（非拥有引用）；右值 → 按值接管。
+/// @brief 根据实参值类别选择非拥有引用包装或衰减值存储。
+/// @tparam T 原始实参类型。
 template <typename T>
-[[nodiscard]] constexpr auto capture(T&& t) noexcept {
-    if constexpr (std::is_lvalue_reference_v<T>) {
-        return std::ref(t);
+using captured_t = std::conditional_t<is_reference_wrapper_v<T>,
+                                      std::decay_t<T>,
+                                      std::conditional_t<std::is_lvalue_reference_v<T>,
+                                                         std::reference_wrapper<std::remove_reference_t<T>>,
+                                                         std::decay_t<T>>>;
+
+static_assert(std::same_as<captured_t<int>, int>);
+static_assert(std::same_as<captured_t<int&&>, int>);
+static_assert(std::same_as<captured_t<int&>, std::reference_wrapper<int>>);
+static_assert(std::same_as<captured_t<const int&>, std::reference_wrapper<const int>>);
+static_assert(std::same_as<captured_t<std::reference_wrapper<int>&>, std::reference_wrapper<int>>);
+static_assert(std::same_as<captured_t<std::unique_ptr<int>>, std::unique_ptr<int>>);
+static_assert(std::same_as<captured_t<std::unique_ptr<int>&>, std::reference_wrapper<std::unique_ptr<int>>>);
+static_assert(std::same_as<captured_t<Flow&>, std::reference_wrapper<Flow>>);
+
+/// @brief 将实参转换为可存储表示。
+/// @warning 普通左值按非拥有引用保存，调用方必须保证其生命周期。
+template <typename T>
+    requires std::constructible_from<captured_t<T>, T>
+[[nodiscard]] constexpr auto capture(T&& value) noexcept(std::is_nothrow_constructible_v<captured_t<T>, T>) -> captured_t<T> {
+    if constexpr (is_reference_wrapper_v<T>) {
+        return std::forward<T>(value);
+    } else if constexpr (std::is_lvalue_reference_v<T>) {
+        return std::ref(value);
     } else {
-        return std::forward<T>(t);
+        return std::forward<T>(value);
     }
 }
 
-/// @brief capture 结果的存储类型。
+/// @brief 从捕获存储中借出可调用的左值引用。
 template <typename T>
-using captured_t = decltype(capture(std::declval<T>()));
-
-/// @brief 从 capture 的存储表示借出一个左值引用，与 capture() 配对。
-/// @return reference_wrapper → 其引用的左值；存储的值对象 → 指向它的左值引用。
-template <typename T>
-[[nodiscard]] constexpr decltype(auto) borrow(T&& t) noexcept {
-    if constexpr (is_reference_wrapper_after_decay_v<T>) {
-        return t.get();
+[[nodiscard]] constexpr decltype(auto) borrow(T& value) noexcept {
+    if constexpr (is_reference_wrapper_v<T>) {
+        return value.get();
     } else {
-        return static_cast<std::remove_reference_t<T>&>(t);
+        return (value);
     }
 }
-} // namespace detail
 
-/// @brief 单个类型能否被框架安全持久化存储（capturable 的逐参数原子）。
+}  // namespace detail
+/// @brief 检测单个实参能否按值持久化存储。
 ///
-/// 满足以下任一条件即可：
-///   1. 已被 std::ref/std::cref 显式包装(引用捕获)；
-///   2. 是右值且 decay 后可移动构造(接管临时对象所有权)；
-///   3. 是左值引用且 decay 后可拷贝构造(拷贝活对象)。
+/// 框架使用 `std::decay_t<T>` 作为存储类型：
+///   1. 普通左值需要能够复制到存储对象；
+///   2. 普通右值需要能够移动或复制到存储对象；
+///   3. std::ref/std::cref 产生的 reference_wrapper 按值保存包装器。
 ///
-/// @note 这是 `capturable<Ts...>` 的单参数构件。单独暴露便于其它 concept
-///       复用，也为将来的逐参数诊断留出接口。
+/// @note 该约束直接检查下面的构造是否合法：
+///       `std::decay_t<T>(std::forward<T>(value))`
 template <typename T>
-concept capturable_one =
-    detail::is_reference_wrapper_after_decay_v<T> ||
-    (!std::is_lvalue_reference_v<T> && std::is_move_constructible_v<std::decay_t<T>>) ||
-    ( std::is_lvalue_reference_v<T> && std::is_copy_constructible_v<std::decay_t<T>>);
+concept capturable_one = std::constructible_from<std::decay_t<T>, T>;
 
-/// @brief 可安全持久化存储的参数包约束。
-///
-/// 包中每个 T 满足 `capturable_one<T>`：
-///   1. 已被 std::ref/std::cref 显式包装(引用捕获)
-///   2. 是右值且 decay 后可移动构造(接管临时对象所有权)
-///   3. 是左值引用且 decay 后可拷贝构造(拷贝活对象)
-///
-/// 异步代码中,把引用以值方式捕获到闭包里是常见的悬空 bug。
-/// 本 concept 强制用户说清意图:用 std::ref 显式包裹、传右值、或传可拷贝左值。
-///
-/// - `capturable<int>`                  → true  (情形 3)
-/// - `capturable<std::string&&>`        → true  (情形 2)
-/// - `capturable<std::ref_wrapper<int>>`→ true  (情形 1)
-/// - `capturable<std::unique_ptr<int>&>`→ false (不可拷贝构造)
-///
-/// @note 行为与拆分前完全一致（对 capturable_one 的 && 折叠）。
+/// @brief 检测参数包中的所有实参能否按值持久化存储。
 template <typename... Ts>
 concept capturable = (capturable_one<Ts> && ...);
 
-/// @brief 检查是否为有效的谓词类型
+static_assert(capturable<int>);
+static_assert(capturable<int&>);
+static_assert(capturable<const int&>);
+static_assert(capturable<std::string&&>);
+static_assert(capturable<std::unique_ptr<int>>);
+static_assert(capturable<std::unique_ptr<int>&&>);
+static_assert(!capturable<std::unique_ptr<int>&>);
+static_assert(capturable<std::reference_wrapper<std::unique_ptr<int>>>);
+static_assert(capturable<std::reference_wrapper<int>>);
+
 template <typename P, typename... Args>
-concept predicate =
-    std::invocable<std::decay_t<P>&, std::decay_t<Args>&...> &&
-    std::same_as<std::invoke_result_t<std::decay_t<P>&, std::decay_t<Args>&...>, bool>;
+concept predicate = std::invocable<std::decay_t<P>&, std::decay_t<Args>&...> &&
+                    std::same_as<std::invoke_result_t<std::decay_t<P>&, std::decay_t<Args>&...>, bool>;
 
-/// @brief 检查是否为 noexcept 谓词
+/// @brief 约束谓词调用不抛出异常。
 template <typename P, typename... Args>
-concept noexcept_predicate =
-    predicate<P, Args...> &&
-    std::is_nothrow_invocable_v<std::decay_t<P>&, std::decay_t<Args>&...>;
+concept noexcept_predicate = predicate<P, Args...> &&
+                             std::is_nothrow_invocable_v<std::decay_t<P>&, std::decay_t<Args>&...>;
 
-/// @brief 检查是否为有效的回调类型
-template <typename C>
-concept callback = std::invocable<std::decay_t<C>&>;
+/// @brief 检查是否为有效的回调类型（返回 void）。
+template <typename C, typename... Args>
+concept callback = std::invocable<std::decay_t<C>&, std::decay_t<Args>&...> &&
+                   std::same_as<std::invoke_result_t<std::decay_t<C>&, std::decay_t<Args>&...>, void>;
 
-
-/// @brief 检查是否为 Flow 任务图持有者。
+/// @brief 表示可默认构造、无状态且调用后不执行任何操作的完成回调。
 ///
-/// 满足以下任一条件即可：
-///   1. 类型本身是 `Graph`，或公开继承自 `Graph`；
-///   2. 暴露完整的 graph() 访问接口：
-///      - `Graph& graph()`
-///      - `const Graph& graph() const`
+/// 用作可选回调的缺省类型，不保存资源且调用保证不抛异常。
+struct noop_callback {
+    constexpr void operator()() const noexcept {}
+};
+
+static_assert(predicate<decltype([]{ return true; })>);
+static_assert(!predicate<decltype([]{})>);
+
+static_assert(callback<decltype([]{})>);
+static_assert(!callback<decltype([]{ return true; })>);
+
+/// @brief 约束类型本身为 Graph，或提供可变与只读 graph() 访问器。
 template <typename Gh>
 concept graph_holder = std::derived_from<std::remove_cvref_t<Gh>, Graph> || (
-                                                                                requires(std::remove_cvref_t<Gh>& gh) {
-                                                                                    { gh.graph() } -> std::convertible_to<Graph&>;
-                                                                                } &&
-                                                                                requires(const std::remove_cvref_t<Gh>& gh) {
-                                                                                    { gh.graph() } -> std::convertible_to<const Graph&>;
-                                                                                }
-                                                                                );
+                           requires(std::remove_cvref_t<Gh>& gh) {
+                               { gh.graph() } -> std::convertible_to<Graph&>;
+                           } &&
+                           requires(const std::remove_cvref_t<Gh>& gh) {
+                               { gh.graph() } -> std::convertible_to<const Graph&>;
+                           }
+                           );
 
 namespace detail {
 
-/// @brief 从 graph_holder 中取出底层 `Graph&`。
+/// @brief 从 graph_holder 获取可修改 Graph 引用。
 template <graph_holder Gh>
 [[nodiscard]] inline auto to_graph(Gh& gh) noexcept -> Graph& {
     using U = std::remove_cvref_t<Gh>;
-
-    if constexpr (requires(U& x) {{ x.graph() } -> std::convertible_to<Graph&>; }) {
-        return static_cast<Graph&>(gh.graph());
-    } else {
+    if constexpr (std::derived_from<U, Graph>) {
         return static_cast<Graph&>(gh);
+    } else {
+        return static_cast<Graph&>(gh.graph());
     }
 }
 
-/// @brief 从 graph_holder 中取出底层 `const Graph&`。
+/// @brief 从 graph_holder 获取只读 Graph 引用。
 template <graph_holder Gh>
 [[nodiscard]] inline auto to_graph(const Gh& gh) noexcept -> const Graph& {
     using U = std::remove_cvref_t<Gh>;
-
-    if constexpr (requires(const U& x) {{ x.graph() } -> std::convertible_to<const Graph&>; }) {
-        return static_cast<const Graph&>(gh.graph());
-    } else {
+    if constexpr (std::derived_from<U, Graph>) {
         return static_cast<const Graph&>(gh);
+    } else {
+        return static_cast<const Graph&>(gh.graph());
     }
 }
 
+/// @brief 检测返回类型是否满足协程返回对象协议。
+template <typename R>
+concept coroutine_returnable = requires {
+    typename std::coroutine_traits<std::remove_cvref_t<R>>::promise_type;
+};
+
 }
 
 // ============================================================================
-//  返回类型推导
-//
-//  统一实现：所有分类（basic/branch/multi_branch/jump/multi_jump/runtime）
-//  共用同一套 specialization，只在尾参 Tag... 上差异化。
-//
-//  Why class specialization (而非 std::conditional_t)：
-//      conditional_t 的两条分支都会被立即实例化；
-//      若 callable 不接受 stop_token，则 _stoppable 的 invoke_result_t 在
-//      替换阶段直接硬错（no type named 'type'），击穿 SFINAE。
-//      改用 requires + 偏特化后，未命中的分支根本不会被实例化，行为正确。
-//
-//  Why _plain 优先：与 invoker 端 `if constexpr (..._stoppable<...>)` 的
-//      分派策略保持一致，避免 return_t 与运行时签名错位。
-//
-//  Why 上移：普通 concept 顶层要用 `*_return_t` 做协程排除（见 coro_returning），
-//      故返回类型别名必须先于 concept 可见。
+// 返回类型推导
 // ============================================================================
 
-namespace detail {
-
-/// @brief 探测返回类型是否为协程返回对象（带成员 promise_type）。
-///
-/// @details 含 co_await / co_return / co_yield 的函数，其返回类型 R 被语言
-///   强制满足协程协议：默认 `std::coroutine_traits<R>::promise_type` 即转发
-///   到 `R::promise_type`。因此「R 暴露 promise_type」⇔「R 是协程返回类型」。
-///
-///   用途：普通任务 concept（basic/branch/.../runtime）反向排除协程。协程被
-///   普通签名 std::invocable 接纳，但 invoke 只构造协程帧、不跑函数体——
-///   「调了但没跑」的静默 bug。这里在编译期把它挡在普通任务路径之外。
-
-template <typename R>
-concept coro_returning =  requires { typename std::coroutine_traits<std::remove_cvref_t<R>>::promise_type; };
-
-/// @brief 尾参标签包：编码各分类追加在 Args... 之后的 framework 形参。
-///
-/// | 分类         | tail_pack          |
-/// |--------------|--------------------|
-/// | basic        | tail_pack<>        |
-/// | branch       | tail_pack<Branch&> |
-/// | multi_branch | tail_pack<MultiBranch&> |
-/// | jump         | tail_pack<Jump&>   |
-/// | multi_jump   | tail_pack<MultiJump&> |
-/// | runtime      | tail_pack<Runtime&> |
-template <typename... Ts> struct tail_pack {};
-
-template <typename T, typename Pack, typename... Args>
-struct invocable_return;
-
-// plain 命中：f(args..., Tail...)
-template <typename T, typename... Tail, typename... Args>
-    requires std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Tail...>
-struct invocable_return<T, tail_pack<Tail...>, Args...> {
-    using type = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Tail...>;
-};
-
-// 仅 stoppable 命中：f(args..., Tail..., stop_token)
-template <typename T, typename... Tail, typename... Args>
-    requires (!std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Tail...>)
-            &&  std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Tail..., std::stop_token>
-struct invocable_return<T, tail_pack<Tail...>, Args...> {
-    using type = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Tail..., std::stop_token>;
-};
-
-} // namespace detail
-
-/// @brief `basic_invocable<T, Args...>` 的返回类型 —— `f(args...)` 或 `f(args..., stop_token)`。
+/// @brief 普通 callable 的返回类型。
 template <typename T, typename... Args>
-using basic_return_t        = typename detail::invocable_return<T, detail::tail_pack<>, Args...>::type;
-/// @brief `branch_invocable<T, Args...>` 的返回类型。
-template <typename T, typename... Args>
-using branch_return_t       = typename detail::invocable_return<T, detail::tail_pack<Branch&>, Args...>::type;
-/// @brief `multi_branch_invocable<T, Args...>` 的返回类型。
-template <typename T, typename... Args>
-using multi_branch_return_t = typename detail::invocable_return<T, detail::tail_pack<MultiBranch&>, Args...>::type;
-/// @brief `jump_invocable<T, Args...>` 的返回类型。
-template <typename T, typename... Args>
-using jump_return_t         = typename detail::invocable_return<T, detail::tail_pack<Jump&>, Args...>::type;
-/// @brief `multi_jump_invocable<T, Args...>` 的返回类型。
-template <typename T, typename... Args>
-using multi_jump_return_t   = typename detail::invocable_return<T, detail::tail_pack<MultiJump&>, Args...>::type;
-/// @brief `runtime_invocable<T, Args...>` 的返回类型。
-template <typename T, typename... Args>
-using runtime_return_t      = typename detail::invocable_return<T, detail::tail_pack<Runtime&>, Args...>::type;
+using basic_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>;
 
+/// @brief 单目标分支 callable 的返回类型。
+template <typename T, typename... Args>
+using branch_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>;
+
+/// @brief 多目标分支 callable 的返回类型。
+template <typename T, typename... Args>
+using multi_branch_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>;
+
+/// @brief 单目标跳转 callable 的返回类型。
+template <typename T, typename... Args>
+using jump_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>;
+
+/// @brief 多目标跳转 callable 的返回类型。
+template <typename T, typename... Args>
+using multi_jump_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>;
+
+/// @brief Runtime callable 的返回类型。
+template <typename T, typename... Args>
+using runtime_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>;
+
+/// @brief SubFlow callable 的返回类型。
+template <typename T, typename... Args>
+using subflow_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., SubFlow&>;
 
 // ============================================================================
-//  Concepts — 任务节点类型约束
+//  任务 callable 概念
 //
-//  Args 经 std::unwrap_ref_decay_t 处理，与框架实际存储/传递 callable 参数
-//  的类型一致。
-//
-//  每个 concept 拆为两个独立实现：
-//    _plain     : f(args..., [Tail&])
-//    _stoppable : f(args..., [Tail&], std::stop_token)
-//  顶层 concept = (_plain || _stoppable) && !coro_returning<*_return_t>。
-//  便于 invoker 用 `if constexpr (xxx_stoppable<...>)` 精确分派。
-//
-//  Why: stop_token 是 shared_ptr 语义；用值接收 + std::move 进 invoke
-//       省一次 atomic ref-count，与 std::jthread 惯例一致。
-//
-//  ── 协程排除（!coro_returning）─────────────────────────────────────────
-//  协程被普通签名 std::invocable 接纳，但 invoke 只构造协程帧、不跑函数体
-//  ——「调了但没跑」的静默 bug。故在每个普通顶层 concept 反向排除「返回类型
-//  暴露 promise_type」者，把协程挡在普通任务路径之外，交由专门的协程入口处理。
-//
-//  SFINAE 安全：concept 合取短路——左侧 (_plain || _stoppable) 为 false 时，
-//      右侧 *_return_t<T,Args...> 根本不被替换，bad type 不会硬错（已实测）。
-//      又因左侧为 true ⟺ invocable_return 的某偏特化命中 ⟺ ::type 必存在，
-//      被求值路径上 *_return_t 永不替换失败。
+//  每类签名分别检测普通形式和尾随 `std::stop_token` 的形式。
+//  返回协程对象的 callable 不进入普通任务路径。
 // ============================================================================
 
 /// @brief `f(args...)` 可调用 —— 普通同步任务签名。
 template <typename T, typename... Args>
-concept basic_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>
-                                && !detail::coro_returning<basic_return_t<T, Args...>>;
-/// @brief `f(args..., stop_token)` 可调用 —— 普通同步任务（带停止令牌）。
-template <typename T, typename... Args>
-concept basic_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., std::stop_token>
-                                    && !detail::coro_returning<basic_return_t<T, Args...>>;
-/// @brief 普通同步任务：plain 或 stoppable 至少满足其一，且非协程。
-template <typename T, typename... Args>
-concept basic_invocable = basic_invocable_plain<T, Args...> || basic_invocable_stoppable<T, Args...>;
+concept basic_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>
+                          && !detail::coroutine_returnable<basic_return_t<T, Args...>>;
 
 /// @brief `f(args..., Branch&)` 可调用 —— 单目标条件分支任务签名。
 template <typename T, typename... Args>
-concept branch_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>
-                                 && !detail::coro_returning<branch_return_t<T, Args...>>;
-/// @brief `f(args..., Branch&, stop_token)` 可调用 —— 条件分支任务（带停止令牌）。
-template <typename T, typename... Args>
-concept branch_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&, std::stop_token>
-                                     && !detail::coro_returning<branch_return_t<T, Args...>>;
-/// @brief 条件分支任务：plain 或 stoppable 至少满足其一，且非协程。
-template <typename T, typename... Args>
-concept branch_invocable = branch_invocable_plain<T, Args...> || branch_invocable_stoppable<T, Args...>;
+concept branch_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>
+                           && !detail::coroutine_returnable<branch_return_t<T, Args...>>;
 
 /// @brief `f(args..., MultiBranch&)` 可调用 —— 多目标广播分支任务签名。
 template <typename T, typename... Args>
-concept multi_branch_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>
-                                       && !detail::coro_returning<multi_branch_return_t<T, Args...>>;
-/// @brief `f(args..., MultiBranch&, stop_token)` 可调用 —— 多分支任务（带停止令牌）。
-template <typename T, typename... Args>
-concept multi_branch_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&, std::stop_token>
-                                           && !detail::coro_returning<multi_branch_return_t<T, Args...>>;
-/// @brief 多目标广播分支任务：plain 或 stoppable 至少满足其一，且非协程。
-template <typename T, typename... Args>
-concept multi_branch_invocable = multi_branch_invocable_plain<T, Args...> || multi_branch_invocable_stoppable<T, Args...>;
+concept multi_branch_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>
+                                 && !detail::coroutine_returnable<multi_branch_return_t<T, Args...>>;
 
 /// @brief `f(args..., Jump&)` 可调用 —— 单目标强制跳转任务签名。
 template <typename T, typename... Args>
-concept jump_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>
-                               && !detail::coro_returning<jump_return_t<T, Args...>>;
-/// @brief `f(args..., Jump&, stop_token)` 可调用 —— 跳转任务（带停止令牌）。
-template <typename T, typename... Args>
-concept jump_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&, std::stop_token>
-                                   && !detail::coro_returning<jump_return_t<T, Args...>>;
-/// @brief 强制跳转任务：plain 或 stoppable 至少满足其一，且非协程。
-template <typename T, typename... Args>
-concept jump_invocable = jump_invocable_plain<T, Args...> || jump_invocable_stoppable<T, Args...>;
+concept jump_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>
+                         && !detail::coroutine_returnable<jump_return_t<T, Args...>>;
 
 /// @brief `f(args..., MultiJump&)` 可调用 —— 多目标广播跳转任务签名。
 template <typename T, typename... Args>
-concept multi_jump_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>
-                                     && !detail::coro_returning<multi_jump_return_t<T, Args...>>;
-/// @brief `f(args..., MultiJump&, stop_token)` 可调用 —— 多跳转任务（带停止令牌）。
-template <typename T, typename... Args>
-concept multi_jump_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&, std::stop_token>
-                                         && !detail::coro_returning<multi_jump_return_t<T, Args...>>;
-/// @brief 多目标广播跳转任务：plain 或 stoppable 至少满足其一，且非协程。
-template <typename T, typename... Args>
-concept multi_jump_invocable = multi_jump_invocable_plain<T, Args...> || multi_jump_invocable_stoppable<T, Args...>;
+concept multi_jump_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>
+                               && !detail::coroutine_returnable<multi_jump_return_t<T, Args...>>;
 
 /// @brief `f(args..., Runtime&)` 可调用 —— 运行时动态调度任务签名。
 template <typename T, typename... Args>
-concept runtime_invocable_plain = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>
-                                  && !detail::coro_returning<runtime_return_t<T, Args...>>;
-/// @brief `f(args..., Runtime&, stop_token)` 可调用 —— 运行时任务（带停止令牌）。
-template <typename T, typename... Args>
-concept runtime_invocable_stoppable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&, std::stop_token>
-                                      && !detail::coro_returning<runtime_return_t<T, Args...>>;
-/// @brief 运行时动态调度任务：plain 或 stoppable 至少满足其一，且非协程。
-template <typename T, typename... Args>
-concept runtime_invocable = runtime_invocable_plain<T, Args...> || runtime_invocable_stoppable<T, Args...>;
+concept runtime_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>
+                            && !detail::coroutine_returnable<runtime_return_t<T, Args...>>;
 
+/// @brief `f(args..., SubFlow&)` 可调用。
+template <typename T, typename... Args>
+concept subflow_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., SubFlow&>
+                            && !detail::coroutine_returnable<subflow_return_t<T, Args...>>;
 
 /// @brief 约束 `Ts...` 为 `{Semaphore, count, Semaphore, count, ...}` 交替序列。
 template <typename... Ts>
 concept sem_count_sequence = detail::is_sem_count_seq<Ts...>::value;
-
-
-/// @brief 带自动 decay 的任务参数包。
+/// @brief 将一次任务创建所需的 callable 和参数按衰减类型组合保存为元组。
 ///
-/// @details 用于 `Flow::emplace(packs...)` 批量插入重载。
-///   内部存储 `std::tuple<std::decay_t<Ts>...>`，构造时自动退化
-///   函数类型和数组类型，避免 `std::tuple` CTAD 的 by-ref guide 陷阱。
+/// `pack` 按值拥有内部元素，用于批量 `emplace` 时延后展开；左值也会被复制而非借用。
 ///
-/// @tparam Ts 原始参数类型（由 CTAD 推导，未退化）。
-///
-///   与等价的 `std::tuple<std::decay_t<Ts>...>` 完全相同，零额外开销。
-///
-///   | 原始类型          | decay 后            | 说明                  |
-///   |-------------------|---------------------|-----------------------|
-///   | `void(int&)`      | `void(*)(int&)`     | 函数 → 函数指针       |
-///   | `int[5]`          | `int*`              | 数组 → 指针           |
-///   | `const int&`      | `int`               | 去 cv + 去引用        |
-///   | `ref_wrapper<T>`  | `ref_wrapper<T>`    | 不变（已是对象类型）  |
+/// @tparam Ts 构造时推导出的原始参数类型。
 template <typename... Ts>
 struct pack {
     /// @brief 退化后的内部存储类型。
@@ -431,159 +308,54 @@ struct pack {
 
     tuple_type data;
 
-            /// @brief 构造并自动 decay 所有参数。
-            ///
-            /// @param args 任务的可调用对象和参数，第一个通常是 callable，
-            ///             后续是传给 callable 的参数（支持 std::ref）。
+    /// @brief 按衰减规则保存全部参数。
+    /// @param args 要保存的 callable 及其参数。
     constexpr pack(Ts&&... args)
         : data(std::forward<Ts>(args)...) {}
 };
 
-/// @brief CTAD guide：`tfl::pack{a, b, c}` → `pack<decltype(a), decltype(b), decltype(c)>`。
-///
-/// @details 注意 Ts... 推导的是**原始类型**（可能包含函数类型、数组类型），
-///   退化发生在 pack 的成员类型 `std::tuple<std::decay_t<Ts>...>` 中，
-///   而非 CTAD guide 本身——这是刻意设计：如果在 guide 中就 decay，
-///   构造函数的参数类型会和 guide 推导的类型不匹配，导致编译错误。
+/// @brief 为 `pack{args...}` 推导原始参数类型。
+/// @note 内部 tuple 负责对推导结果执行衰减。
 template <typename... Ts>
 pack(Ts&&...) -> pack<Ts...>;
 
 // ============================================================================
-//  pack 探测
+// pack 探测
 // ============================================================================
 namespace detail {
 
-/// @brief pack 类型萃取（主模板：不是 pack）。
+/// @brief 将任意普通类型判定为非 `tfl::pack` 的内部类型萃取。
+/// @tparam T 待检测类型。
 template <typename T>
 struct is_pack_impl : std::false_type {};
 
-/// @brief pack 类型萃取（特化：是 pack）。
+/// @brief 识别任意参数列表的 `tfl::pack` 特化。
+/// @tparam Args `pack` 保存的参数类型。
 template <typename... Args>
 struct is_pack_impl<pack<Args...>> : std::true_type {};
 
 }  // namespace detail
 
-/// @brief 约束类型为 tfl::pack，拒绝裸 std::tuple。
-///
-/// @details 用于 `Flow::emplace(Packs&&...)` 的 requires 子句，
-///   确保用户必须使用 `tfl::pack{...}` 构造参数包，
-///   从而强制走 decay 路径，杜绝 CTAD 陷阱。
+/// @brief 约束类型为 `tfl::pack`。
 template <typename T>
 concept task_pack = detail::is_pack_impl<std::remove_cvref_t<T>>::value;
 
-
-
-namespace anchor {
-
-/// @brief 不设锚 —— 异常沿 m_parent 链向上传播，由更上游的锚点归档。
-///        语义最轻；适合"我就是个叶子，出错丢给爹处理"的场景。
-struct none_t      { explicit constexpr none_t()     = default; };
-
-/// @brief 隐式锚 —— 构造期置 Implicit::ANCHORED（非原子，运行期只读）。
-///        语义：本节点天生是个异常汇聚点；与 Subflow / Runtime body 同档。
-struct implicit_t  { explicit constexpr implicit_t() = default; };
-
-/// @brief 显式锚 —— 构造期置 Explicit::ANCHORED（原子位）。
-///        语义：本节点是运行期可被 AnchorGuard / corun 动态翻转的会话锚。
-///        与 AsyncHandle* / corun 同档,适合需要"把 child 异常截在我这里"的场景。
-struct explicit_t  { explicit constexpr explicit_t() = default; };
-
-} // namespace anchor
-
-/// @brief 约束 `T` 为 `anchor::none_t`、`anchor::implicit_t` 或 `anchor::explicit_t` 之一。
+// ============================================================================
+// AsyncTask —— 类型识别
+// ============================================================================
 template <typename T>
-concept anchor_tag = std::same_as<T, anchor::none_t> || std::same_as<T, anchor::implicit_t> || std::same_as<T, anchor::explicit_t>;
+struct is_async_task : std::false_type {};
 
+template <typename R>
+struct is_async_task<AsyncTask<R>> : std::true_type {};
 
-// ============================================================
-// AsyncTask —— mode tag 与概念家族
-// ============================================================
-
-/// @namespace task_mode
-/// @brief AsyncTask 的执行模式标签 —— 描述任务在状态机上的允许行为。
-///
-/// AsyncTask 通过模板参数 `Mode` 在编译期区分"单次执行"和"可重复执行"两种语义。
-/// 模式标签作为类型 tag 参与重载解析与 concept 约束,确保依赖图的拓扑安全性
-/// (例如:可重复任务在编译期就被禁止作为其它任务的依赖)。
-namespace task_mode {
-
-/// @brief 不可重复任务模式 —— 状态机单调走完:Idle → Running → Finished。
-///        启动一次后即耗尽,不允许 resubmit。
-///        典型用途:作为他人依赖、组成静态 DAG 的叶节点。
-struct nonrepeat_t { explicit constexpr nonrepeat_t() = default; };
-
-/// @brief 可重复任务模式 —— 完成后可经 `Executor::resubmit` 反复启动,
-///        每轮独立携带异常 / 信号量配额 / join_counter。
-///        不允许作为其它任务的依赖,避免依赖图被多轮回放污染。
-struct repeat_t    { explicit constexpr repeat_t()    = default; };
-
-}  // namespace task_mode
-
-
-// ============================================================
-// mode tag 约束 concept
-// ============================================================
-
-/// @brief 约束 `T` 为合法的任务模式标签 —— 必须是 `task_mode::nonrepeat_t`
-///        或 `task_mode::repeat_t` 之一。
-///        用于 AsyncTask 的模板参数 SFINAE 守卫(配合类内 static_assert)。
 template <typename T>
-concept task_mode_tag = std::same_as<T, task_mode::nonrepeat_t> || std::same_as<T, task_mode::repeat_t>;
+inline constexpr bool is_async_task_v = is_async_task<std::remove_cvref_t<T>>::value;
 
-
-// ============================================================
-// AsyncTask 类型别名
-// ============================================================
-
-/// @brief 不可重复异步任务句柄 —— `AsyncTask<task_mode::nonrepeat_t>` 简称。
-///        默认句柄类型;可作为 submit 依赖。
-using NonrepeatAsyncTask = AsyncTask<task_mode::nonrepeat_t>;
-
-/// @brief 可重复异步任务句柄 —— `AsyncTask<task_mode::repeat_t>` 简称。
-///        支持 resubmit;不可作为其它任务的依赖。
-using RepeatAsyncTask    = AsyncTask<task_mode::repeat_t>;
-
-
-// ============================================================
-// AsyncTask 能力探测 concept(用于 Executor / Runtime 接口守卫)
-// ============================================================
-
-/// @brief 检测 `T` 是否为不可重复异步任务句柄(忽略 cv / 引用)。
-///        Executor::submit 的依赖参数靠它约束:只有不可重复任务可作依赖。
 template <typename T>
-concept nonrepeat_async_task = std::same_as<std::remove_cvref_t<T>, NonrepeatAsyncTask>;
+concept async_task = is_async_task_v<T>;
 
-/// @brief 检测 `T` 是否为可重复异步任务句柄(忽略 cv / 引用)。
-///        Executor::resubmit 靠它约束:只有可重复任务能被重启。
 template <typename T>
-concept repeat_async_task = std::same_as<std::remove_cvref_t<T>, RepeatAsyncTask>;
-
-/// @brief 检测 `T` 是否为任意一种异步任务句柄(忽略 cv / 引用)。
-///        Executor::submit 的首参靠它约束:两种 mode 都允许首次启动。
-template <typename T>
-concept any_async_task = nonrepeat_async_task<T> || repeat_async_task<T>;
-
-
-// ─── 主 concept ────────────────────────────────────────────────────────
-//
-// 合法形态(H 是模板参数推导得到的类型,保留值类别):
-//
-//   ┌────────────────────────────────┬───────────────────┬──────────┐
-//   │ 用户写法                       │ H 推导结果        │ 语义     │
-//   ├────────────────────────────────┼───────────────────┼──────────┤
-//   │ Executor e(h)         (lvalue) │ MyHandler&        │ 借用     │
-//   │ Executor e(ch)  (const lvalue) │ const MyHandler&  │ 借用     │
-//   │ Executor e(std::move(h))       │ MyHandler         │ 拥有(move) │
-//   │ Executor e(MyHandler{...})     │ MyHandler         │ 拥有(move) │
-//   └────────────────────────────────┴───────────────────┴──────────┘
-//
-// 约束:
-//   1. remove_cvref_t<H> 必须派生自 WorkerHandler
-//   2. WorkerHandler 是抽象类,无法构造,自动防御切片
-//   3. lvalue 形态总是合法(借用,无需构造);
-//      rvalue 形态必须能从 H 构造(拷贝/移动到堆)
-template <class H>
-concept worker_handle = std::derived_from<std::remove_cvref_t<H>, WorkerHandler> &&
-                        (std::is_lvalue_reference_v<H> || std::constructible_from<std::remove_cvref_t<H>, H>);
+using forward_return_t = std::conditional_t<std::is_lvalue_reference_v<T>, T, std::remove_cvref_t<T>>;
 
 } // namespace tfl

@@ -1,4 +1,4 @@
-﻿/// @file  d2_render.hpp
+﻿/// @file d2_render.hpp
 /// @brief D2 可视化渲染器 D2Renderer —— Work / Graph 的图形导出。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -8,14 +8,15 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <format>
+#include <iterator>
 #include <ostream>
 #include <span>
 #include <string>
 #include <string_view>
-#include <cstdio>
-#include <cstdint>
-#include <cmath>
-#include <cstring>
 
 #include "work.hpp"
 #include "graph.hpp"
@@ -24,25 +25,28 @@
 
 namespace tfl {
 
-/// @brief Work / Graph 的 D2 描述语言渲染器 —— 单一职责，聚合内部友元。
+/// @brief 提供将任务节点和子图写成 D2 描述文本的无状态渲染工具。
 ///
-/// 核心入口: render_work() 渲染单节点，render_graph() 渲染嵌套 Flow 容器。
-/// 信号量配色用 HSL 黄金比例哈希 —— 同一 sem 在所有节点上颜色一致，不同 sem 尽量分散。
-/// 全 static 无状态设计；定义为类的唯一理由是 `friend class D2Renderer` 一句搞定访问授权。
+/// 全部接口均为静态操作，只读取传入的 `Work`、`Graph` 和 `Semaphore` 元数据并
+/// 写入调用方提供的流；渲染器不拥有这些对象，也不缓存渲染状态。
 class D2Renderer {
 public:
     /// @brief 信号量请求只读视图。
     using SemReqs = std::span<const Work::SemaphoreReq>;
 
-    //=========================================================================
-    //  Palette —— HSL -> hex, hue 由 semaphore 地址黄金比例旋转得到
-    //=========================================================================
+    // ============================================================================
+    // Palette 颜色转换
+    // ============================================================================
 
-    /// @brief D2 渲染时使用的信号量配色。
+    static constexpr size_t COLOR_HEX_LEN = 8;
+
+    /// @brief 保存同一信号量在 D2 标签中使用的三组固定长度十六进制颜色。
+    ///
+    /// 该结构是纯值结果，不持有 `Semaphore` 或输出流引用。
     struct Palette {
-        char bg[8];   ///< pill 暗底色
-        char fg[8];   ///< pill 亮字色
-        char md[8];   ///< |md 块内文字色
+        char bg[COLOR_HEX_LEN];   ///< pill 暗底色。
+        char fg[COLOR_HEX_LEN];   ///< pill 亮字色。
+        char md[COLOR_HEX_LEN];   ///< |md 块内文字色。
     };
 
     /// @brief 计算 HSL 转 RGB 过程中的单个颜色通道。
@@ -59,87 +63,73 @@ public:
     /// @param out [out] 至少 8 字节的缓冲区。
     static void format_hsl_hex(float h, float s, float l, char* out) noexcept;
 
-    /// @brief 根据 Semaphore 地址生成稳定配色 —— 同一 sem 在所有节点上颜色一致。
-    /// @param sem 信号量指针, 其地址用于确定性哈希。
-    /// @return Palette{ bg, fg, md } 三色。
-    ///
-    /// 哈希: 指针 -> splitmix64 -> hi:16 位映射到 hue 空间。
-    /// 黄金比例旋转让相邻地址的 sem 颜色尽量分散。
+    /// @brief 根据 Semaphore 地址生成稳定配色。
+    /// @param sem 用于计算颜色的信号量地址。
+    /// @return 背景色、前景色和 Markdown 文字色。
     [[nodiscard]] static Palette format_palette(const Semaphore* sem) noexcept;
 
-    //=========================================================================
-    //  底层写入器
-    //=========================================================================
+    // ============================================================================
+    // 底层写入器
+    // ============================================================================
 
-    /// @brief 写入 HTML 转义后的字符串, 用于 D2 markdown 块。
-    /// @param os 输出流。
-    /// @param s  原始字符串 (可能含 <, >, &, " 等)。
-    ///
-    /// 这一层小工具看似无聊, 实则是渲染 robust 的底座 ——
-    /// 用户随便取个含 < 的节点名也不会破坏输出。
+    /// @brief 写入经过 HTML 转义的 D2 Markdown 文本。
+    /// @param os 目标输出流。
+    /// @param s 原始文本。
     static void write_html_escaped(std::ostream& os, std::string_view s);
 
-    /// @brief 写入双引号字符串转义后的内容, 用于 D2 字符串字面量。
-    /// @param os 输出流。
-    /// @param s  原始字符串 (可能含 ", \)。
+    /// @brief 写入经过转义的 D2 双引号字符串内容。
+    /// @param os 目标输出流。
+    /// @param s 原始文本。
     static void write_quoted_escaped(std::ostream& os, std::string_view s);
 
-    /// @brief 将指针地址格式化为合法的 D2 节点 ID (以字母开头)。
-    /// @param os 输出流。
-    /// @param p  指针。
-    ///
-    /// D2 标识符需以字母开头, 直接用 %p 会以数字开头导致语法错误。
-    /// 这里前缀 p 字符, 后跟十六进制地址。
+    /// @brief 将指针地址写成以字母开头的 D2 节点 ID。
+    /// @param os 目标输出流。
+    /// @param p 要格式化的指针。
     static void format_id(std::ostream& os, const void* p);
 
-    //=========================================================================
-    //  信号量药丸写入器
-    //=========================================================================
+    // ============================================================================
+    // 信号量药丸写入器
+    // ============================================================================
 
-    /// @brief 写入 grid 布局的信号量 pill bar, 供 rectangle 外壳节点使用。
-    /// @param os   输出流。
-    /// @param reqs acquire 或 release 请求列表。
-    /// @param tag  标签前缀 (如 "acq", "rel")。
+    /// @brief 写入矩形节点使用的网格信号量标签。
+    /// @param os 目标输出流。
+    /// @param reqs 信号量请求列表。
+    /// @param tag 标签前缀。
     static void write_sem_pill_grid(std::ostream& os, SemReqs reqs, const char* tag);
 
-    /// @brief 写入 markdown 内联信号量 pill 行, 供 diamond / hexagon 等节点使用。
-    /// @param os   输出流。
-    /// @param reqs acquire 或 release 请求列表。
-    /// @param tag  标签前缀 (如 "acq", "rel")。
+    /// @brief 写入非矩形节点使用的内联信号量标签。
+    /// @param os 目标输出流。
+    /// @param reqs 信号量请求列表。
+    /// @param tag 标签前缀。
     static void write_sem_pill_row(std::ostream& os, SemReqs reqs, const char* tag);
 
     /// @brief 渲染单个 Work 节点。
-    ///
-    /// 依据 shape 与信号量存在性走两条路径:
-    ///   - 无信号量 / 非 rectangle -> |md ... | 块
-    ///   - rectangle + 信号量      -> grid pill bar
-    ///
-    /// @param os            输出流。
-    /// @param w             待渲染的 Work 节点。
-    /// @param shape         D2 形状 (rectangle / diamond / hexagon / circle)。
-    /// @param fill          填充颜色。
-    /// @param stroke        描边颜色。
-    /// @param font_color    字体颜色。
+    /// @param os 目标输出流。
+    /// @param w 要渲染的 Work。
+    /// @param shape D2 节点形状。
+    /// @param fill 填充颜色。
+    /// @param stroke 描边颜色。
+    /// @param font_color 文字颜色。
     /// @param border_radius 圆角半径。
-    /// @param stroke_dash   虚线样式 (空字符串 = 实线)。
-    static void render_work(std::ostream& os, const Work* w,
+    /// @param stroke_dash 描边虚线样式；空字符串表示实线。
+    static void render_work(std::ostream& os, const Work& w,
                             const char* shape,
                             const char* fill, const char* stroke,
                             const char* font_color, const char* border_radius,
                             const char* stroke_dash = "");
 
-    /// @brief 渲染内嵌 Flow 的容器节点, Subflow / DepFlow 通用。
-    /// @param os        输出流。
-    /// @param w         待渲染的容器 Work 节点。
-    /// @param type_name 节点类型字符串 (如 "Subflow", "DepFlow")。
-    /// @param graph     内嵌的子图。
-    static void render_graph(std::ostream& os, const Work* w,
+    /// @brief 渲染包含子图的 Work 节点。
+    /// @param os 目标输出流。
+    /// @param w 要渲染的容器 Work。
+    /// @param type_name 节点类型名称。
+    /// @param graph 内嵌子图。
+    static void render_graph(std::ostream& os, const Work& w,
                              const char* type_name,
                              const Graph& graph);
 };
-//=============================================================================
-//  实现
-//=============================================================================
+// ============================================================================
+// 实现
+// ============================================================================
 
 // ---- 调色板 ---------------------------------------------------------------
 
@@ -157,19 +147,20 @@ inline std::uint8_t D2Renderer::format_hsl_component(float p, float q, float t) 
 inline void D2Renderer::format_hsl_hex(float h, float s, float l, char* out) noexcept {
     const float q = (l < 0.5f) ? l * (1.f + s) : l + s - l * s;
     const float p = 2.f * l - q;
-    std::snprintf(out, 8, "#%02x%02x%02x",
+
+    std::snprintf(out, COLOR_HEX_LEN, "#%02x%02x%02x",
                   format_hsl_component(p, q, h + 1.f/3.f),
                   format_hsl_component(p, q, h),
                   format_hsl_component(p, q, h - 1.f/3.f));
 }
 
 inline D2Renderer::Palette D2Renderer::format_palette(const Semaphore* sem) noexcept {
-    // 黄金比例逆元旋转 hue, 让相邻 sem 地址的颜色尽量分散
+    // 黄金比例逆元旋转 hue， 让相邻 sem 地址的颜色尽量分散
     constexpr float PHI_INV = 0.6180339887498949f;
-    // splitmix64 位混合: 指针 -> 64 位 -> xor-shift -> multiply -> xor-shift
+    // splitmix64 位混合： 指针 -> 64 位 -> xor-shift -> multiply -> xor-shift
     auto v = reinterpret_cast<std::uintptr_t>(sem);
     v ^= v >> 16; v *= 0x45d9f3bu; v ^= v >> 16;
-    // 取 hi 16 位, 归一化到 [0,1), 再乘 PHI_INV 旋转
+    // 取 hi 16 位， 归一化到 [0,1)， 再乘 PHI_INV 旋转
     const float hue = std::fmod(static_cast<float>(v & 0xFFFFu) / 65536.f * PHI_INV, 1.f);
 
     Palette p{};
@@ -204,11 +195,13 @@ inline void D2Renderer::write_quoted_escaped(std::ostream& os, std::string_view 
     }
 }
 
-inline void D2Renderer::format_id(std::ostream& os, const void* p) {
-    char buf[24];
-    const int n = std::snprintf(buf, sizeof(buf), "p%zx",
-                                reinterpret_cast<std::uintptr_t>(p));
-    os.write(buf, n);
+
+inline void D2Renderer::format_id(std::ostream& os, const void* pointer) {
+    std::format_to(
+        std::ostreambuf_iterator<char>{os},
+        "p{:x}",
+        reinterpret_cast<std::uintptr_t>(pointer)
+        );
 }
 
 // ---- 信号量药丸写入器 -------------------------------------------------
@@ -258,27 +251,27 @@ inline void D2Renderer::write_sem_pill_row(std::ostream& os, SemReqs reqs, const
 
 // ---- 公开渲染器 -------------------------------------------------------
 
-inline void D2Renderer::render_work(std::ostream& os, const Work* w,
+inline void D2Renderer::render_work(std::ostream& os, const Work& w,
                                     const char* shape,
                                     const char* fill, const char* stroke,
                                     const char* font_color, const char* border_radius,
                                     const char* stroke_dash)
 {
-    const char* type_name  = to_string(w->m_type);
-    const auto* sd         = w->m_semaphores.get();
+    const char* type_name  = to_string(w.type());
+    const auto* sd         = w.m_semaphores.get();
     const bool  has_acq    = sd && !sd->acquires.empty();
     const bool  has_rel    = sd && !sd->releases.empty();
-    const bool  is_rect    = (std::strcmp(shape, "rectangle") == 0);
-    const std::string& raw = w->m_name;
+    const bool is_rect = std::string_view{shape} == "rectangle";
+    const std::string& raw = w.m_name;
 
     auto write_name = [&]{
-        if (raw.empty()) format_id(os, w);
+        if (raw.empty()) format_id(os, std::addressof(w));
         else             write_html_escaped(os, raw);
     };
 
     // Path A — |md 块 (无信号量 或 非矩形)
     if (!(has_acq || has_rel) || !is_rect) [[likely]] {
-        format_id(os, w);
+        format_id(os, std::addressof(w));
         os << ": |md\n  <center>\n";
 
         if (has_acq) write_sem_pill_row(os, sd->acquires, "acq");
@@ -305,8 +298,8 @@ inline void D2Renderer::render_work(std::ostream& os, const Work* w,
         return;
     }
 
-    // Path B — rectangle + 信号量: grid pill bar
-    format_id(os, w);
+    // Path B — rectangle + 信号量： grid pill bar
+    format_id(os, std::addressof(w));
     os << ": \"\" {\n"
           "  style.fill: \""        << fill          << "\"\n"
                   "  style.stroke: \""      << stroke        << "\"\n"
@@ -329,7 +322,7 @@ inline void D2Renderer::render_work(std::ostream& os, const Work* w,
     os << "}";
 }
 
-inline void D2Renderer::render_graph(std::ostream& os, const Work* w,
+inline void D2Renderer::render_graph(std::ostream& os, const Work& w,
                                      const char* type_name,
                                      const Graph& graph)
 {
@@ -338,19 +331,19 @@ inline void D2Renderer::render_graph(std::ostream& os, const Work* w,
         return;
     }
 
-    const auto* sd      = w->m_semaphores.get();
+    const auto* sd      = w.m_semaphores.get();
     const bool  has_acq = sd && !sd->acquires.empty();
     const bool  has_rel = sd && !sd->releases.empty();
-    const std::string& raw = w->m_name;
+    const std::string& raw = w.m_name;
 
     auto write_name = [&]{
-        if (raw.empty()) format_id(os, w);
+        if (raw.empty()) format_id(os, std::addressof(w));
         else             write_html_escaped(os, raw);
     };
 
-    // Path A — 无信号量: |md 块内嵌子图
+    // Path A — 无信号量： |md 块内嵌子图
     if (!has_acq && !has_rel) [[likely]] {
-        format_id(os, w);
+        format_id(os, std::addressof(w));
         os << ": |md\n  <center>";
         write_name();
         os << "<br/><span style=\"color: #6b7280;\">[ " << type_name
@@ -366,8 +359,8 @@ inline void D2Renderer::render_graph(std::ostream& os, const Work* w,
         return;
     }
 
-    // Path B — 有信号量: grid(title + content)
-    format_id(os, w);
+    // Path B — 有信号量： grid(title + content)
+    format_id(os, std::addressof(w));
     os << ": \"\" {\n"
           "  style.fill: \"#e8f5e9\"\n"
           "  style.stroke: \"#10b981\"\n"
