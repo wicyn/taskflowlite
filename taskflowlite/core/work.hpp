@@ -616,22 +616,29 @@ private:
         }
     }
 
-    /// @brief 捕获当前 `catch (...)` 正在处理的异常并进入统一传播/归档流程。
+    /// @brief 捕获当前 `catch (...)` 正在处理的异常，并进入统一通知、传播和归档流程。
+    ///
+    /// 当前异常会先通知该 Work 注册的全部观察者，随后进入异常传播和归档流程。
+    ///
+    /// @param wr 当前执行该 Work 的 Worker。
     /// @note 必须在活动异常处理上下文内调用，否则 `std::current_exception()` 可能为空。
-    TFL_FORCE_INLINE void _process_exception() noexcept {
-        _process_exception(std::current_exception());
+    TFL_FORCE_INLINE void _process_exception(Worker& wr) noexcept {
+        _process_exception(wr, std::current_exception());
     }
 
-
-    /// @brief 沿 `m_parent` 链传播异常标记，并按显式/隐式锚点优先级竞争异常归档位置。
+    /// @brief 通知观察者，沿 `m_parent` 链传播异常标记，并按显式/隐式锚点优先级竞争异常归档位置。
     ///
-    /// @param eptr 待传播和归档的 `std::exception_ptr`。
+    /// @param wr 当前执行该 Work 的 Worker。
+    /// @param eptr 待通知、传播和归档的 `std::exception_ptr`。
     ///
-    /// 本重载可直接接收已经捕获的 exception_ptr。实现先沿父 Work 链设置
-    /// EXCEPTION 并寻找显式/隐式锚点，再使用 `fetch_or` 的旧值竞争 EXCEPTION_CAUGHT；
-    /// 同一归档位置只允许首个观察到 CAUGHT 未置位的调用写入 `m_exception_ptr`。
-    /// 选定锚点竞争失败时继续尝试当前 Work 作为兜底归档位置。
+    /// 本重载可直接接收已经捕获的 exception_ptr。实现首先向当前 Work 注册的全部
+    /// TaskObserver 通知异常，随后沿父 Work 链设置 EXCEPTION 并寻找显式/隐式锚点，
+    /// 再使用 `fetch_or` 的旧值竞争 EXCEPTION_CAUGHT；同一归档位置只允许首个观察到
+    /// CAUGHT 未置位的调用写入 `m_exception_ptr`。选定锚点竞争失败时继续尝试当前 Work
+    /// 作为兜底归档位置。
+    ///
     /// @note `m_exception_ptr` 是非原子对象，只能在框架约定的完成同步之后由观察者读取。
+    ///
     /// 归档流程分为三阶段：
     ///
     /// 阶段 1：沿父 Work 链传播 EXCEPTION 并寻找异常锚点
@@ -652,7 +659,12 @@ private:
     ///
     /// @note 若锚点和当前 Work 的 CAUGHT 均已被其他异常占用，本次 eptr 不再覆盖已有异常，
     ///       因而该归档位置保持“首个异常优先”的语义。
-    void _process_exception(std::exception_ptr eptr) noexcept {
+    TFL_FORCE_INLINE void _process_exception(Worker& wr, std::exception_ptr eptr) noexcept {
+        TFL_ASSERT(eptr);
+
+        // 首先通知当前 Work 注册的全部观察者。
+        _notify_exception(wr, eptr);
+
         // 阶段 1：沿父 Work 链传播 EXCEPTION，并寻找可用异常锚点。
         // 循环不变式：
         //   - explicit_anchor 只在遇到首个显式锚点时赋值；
@@ -660,14 +672,17 @@ private:
         //   - cur 每轮沿 m_parent 向上推进。
         Work* explicit_anchor = nullptr;
         Work* implicit_anchor = nullptr;
+
         for (Work* cur = this; cur; cur = cur->m_parent) {
             // 显式锚点优先级最高：遇到后停止向上搜索，交由阶段 2 竞争归档权。
             if (cur->m_control.load(std::memory_order_relaxed) & Control::EXPLICIT_ANCHOR) {
                 explicit_anchor = cur;
                 break;
             }
+
             // 显式锚点之前经过的节点全部置 EXCEPTION，供后续 tear-down 识别异常路径。
             cur->m_control.fetch_or(Control::EXCEPTION, std::memory_order_relaxed);
+
             // Properties 在该执行阶段无并发写入，因此可直接读取并记录首个隐式锚点。
             if (!implicit_anchor && (cur->m_properties & Properties::IMPLICIT_ANCHOR)) {
                 implicit_anchor = cur;
@@ -676,22 +691,25 @@ private:
 
         // 阶段 2：优先尝试显式锚点，否则尝试首个隐式锚点。
         // archive_mask 同时设置异常路径位和异常归档权位：
-        //   - EXCEPTION       表示归档 Work 本身也处于异常路径；
+        //   - EXCEPTION        表示归档 Work 本身也处于异常路径；
         //   - EXCEPTION_CAUGHT 的旧值用于判断本次调用是否取得首次归档权。
         constexpr auto archive_mask = Control::EXCEPTION | Control::EXCEPTION_CAUGHT;
 
         // 优先级 1：显式锚点。
         if (explicit_anchor) {
-            auto prev = explicit_anchor->m_control.fetch_or(archive_mask, std::memory_order_relaxed);
+            const auto prev = explicit_anchor->m_control.fetch_or(archive_mask, std::memory_order_relaxed);
+
             if ((prev & Control::EXCEPTION_CAUGHT) == 0) {
                 explicit_anchor->m_exception_ptr = eptr;
                 return;
             }
+
             // 显式锚点已有异常占用归档权；继续尝试当前 Work 的兜底位置。
         }
         // 优先级 2：仅在没有显式锚点时尝试首个隐式锚点。
         else if (implicit_anchor) {
-            auto prev = implicit_anchor->m_control.fetch_or(archive_mask, std::memory_order_relaxed);
+            const auto prev = implicit_anchor->m_control.fetch_or(archive_mask, std::memory_order_relaxed);
+
             if ((prev & Control::EXCEPTION_CAUGHT) == 0) {
                 implicit_anchor->m_exception_ptr = eptr;
                 return;
@@ -705,7 +723,8 @@ private:
         //
         // 当前 Work 仍使用同一 CAUGHT 竞争协议；
         // 若当前 Work 也已有归档异常，则保留原异常，不覆盖 m_exception_ptr。
-        auto prev = m_control.fetch_or(archive_mask, std::memory_order_relaxed);
+        const auto prev = m_control.fetch_or(archive_mask, std::memory_order_relaxed);
+
         if ((prev & Control::EXCEPTION_CAUGHT) == 0) {
             m_exception_ptr = eptr;
         }
@@ -713,35 +732,38 @@ private:
 
     /// @brief 调用 Module 终止谓词，并将异常转换为终止条件.
     ///
-    /// predicate 正常返回时直接返回其结果；若调用抛出异常，则将异常归档到当前
-    /// Work，并返回 true，使 Module 进入正常结束和资源清理路径.
+    /// predicate 正常返回时直接返回其结果；若调用抛出异常，则将异常通知观察者并
+    /// 归档到当前 Work，随后返回 true，使 Module 进入正常结束和资源清理路径.
     ///
     /// @tparam P 无参终止谓词类型。
+    /// @param wr 当前执行该 Work 的 Worker。
     /// @param predicate 要调用的终止谓词。
     /// @return predicate 的返回值；发生异常时返回 true。
     template <predicate P>
-    TFL_FORCE_INLINE bool _invoke_predicate(P& predicate) noexcept {
+    TFL_FORCE_INLINE bool _invoke_predicate(Worker& wr, P& predicate) noexcept {
         try {
             return std::invoke(predicate);
         } catch (...) {
-            _process_exception();
+            _process_exception(wr);
             return true;
         }
     }
 
     /// @brief 调用完成回调，并将异常归档到当前 Work.
     ///
-    /// callback 抛出的异常不会离开本函数，从而保证调用方能够继续完成 Observer、
-    /// Semaphore、执行状态和 tear-down 等收尾流程.
+    /// callback 抛出的异常不会离开本函数；异常会通知观察者并进入当前 Work 的统一
+    /// 传播和归档流程，从而保证调用方能够继续完成 Observer、Semaphore、执行状态
+    /// 和 tear-down 等收尾流程.
     ///
     /// @tparam C 无参完成回调类型。
+    /// @param wr 当前执行该 Work 的 Worker。
     /// @param callback 要调用的完成回调。
     template <callback C>
-    TFL_FORCE_INLINE void _invoke_callback(C& callback) noexcept {
+    TFL_FORCE_INLINE void _invoke_callback(Worker& wr, C& callback) noexcept {
         try {
             std::invoke(callback);
         } catch (...) {
-            _process_exception();
+            _process_exception(wr);
         }
     }
 
@@ -815,8 +837,12 @@ private:
     void _release_semaphores(SmallVector<Work*>& out);
 
     // ---- 观察者执行前/后通知 ----
-    void _notify_before(Worker& wr) const;
-    void _notify_after(Worker& wr) const;
+    /// @brief 在 callable 正式执行前依次通知当前 Work 注册的全部观察者。
+    TFL_FORCE_INLINE void _notify_before(Worker& wr) const noexcept;
+    /// @brief 在 callable 执行结束后依次通知当前 Work 注册的全部观察者。
+    TFL_FORCE_INLINE void _notify_after(Worker& wr) const noexcept;
+    /// @brief 向当前 Work 注册的全部观察者通知 callable 异常。
+    TFL_FORCE_INLINE void _notify_exception(Worker& wr, std::exception_ptr eptr) const noexcept;
 
     // ---- 静态图双向边表维护 ----
     void _erase_successor_at(std::size_t idx) noexcept;
@@ -1077,14 +1103,15 @@ inline void Work::_release(Semaphore* sem, std::size_t count) {
 ///
 /// @param sem 要移除的 Semaphore；不存在时无操作。
 inline void Work::_remove_acquire(Semaphore* sem) noexcept {
-    if (!m_semaphores) return;
-    auto& acqs = m_semaphores->acquires;
-    for (std::size_t i = 0; i < acqs.size(); ++i) {
-        if (acqs[i].sem == sem) {
-            acqs[i] = acqs.back();
-            acqs.pop_back();
-            _try_release_semaphores();
-            return;
+    if (m_semaphores) {
+        auto& acqs = m_semaphores->acquires;
+        for (std::size_t i = 0; i < acqs.size(); ++i) {
+            if (acqs[i].sem == sem) {
+                acqs[i] = acqs.back();
+                acqs.pop_back();
+                _try_release_semaphores();
+                return;
+            }
         }
     }
 }
@@ -1093,31 +1120,34 @@ inline void Work::_remove_acquire(Semaphore* sem) noexcept {
 ///
 /// @param sem 要移除的 Semaphore；不存在时无操作。
 inline void Work::_remove_release(Semaphore* sem) noexcept {
-    if (!m_semaphores) return;
-    auto& rels = m_semaphores->releases;
+    if (m_semaphores) {
+        auto& rels = m_semaphores->releases;
 
-    for (std::size_t i = 0; i < rels.size(); ++i) {
-        if (rels[i].sem == sem) {
-            rels[i] = rels.back();
-            rels.pop_back();
-            _try_release_semaphores();
-            return;
+        for (std::size_t i = 0; i < rels.size(); ++i) {
+            if (rels[i].sem == sem) {
+                rels[i] = rels.back();
+                rels.pop_back();
+                _try_release_semaphores();
+                return;
+            }
         }
     }
 }
 
 /// @brief 清空全部 acquire 配置，并在两张列表都为空时释放 SemaphoreData。
 inline void Work::_clear_acquires() noexcept {
-    if (!m_semaphores) return;
-    m_semaphores->acquires.clear();
-    _try_release_semaphores();
+    if (m_semaphores) {
+        m_semaphores->acquires.clear();
+        _try_release_semaphores();
+    }
 }
 
 /// @brief 清空全部 release 配置，并在两张列表都为空时释放 SemaphoreData。
 inline void Work::_clear_releases() noexcept {
-    if (!m_semaphores) return;
-    m_semaphores->releases.clear();
-    _try_release_semaphores();
+    if (m_semaphores) {
+        m_semaphores->releases.clear();
+        _try_release_semaphores();
+    }
 }
 
 /// @brief 按配置顺序尝试一次性取得当前 Work 的全部 acquire 配额。
@@ -1150,21 +1180,52 @@ TFL_FORCE_INLINE void Work::_release_semaphores(SmallVector<Work*>& out) {
 }
 
 /// @brief 在 callable 正式执行前依次通知当前 Work 注册的全部观察者。
-TFL_FORCE_INLINE void Work::_notify_before(Worker& wr) const {
-    if (!m_observers) [[likely]] return;
-    for (auto& aspect : m_observers->observers) {
-        aspect->on_before(WorkerView{wr});
+///
+/// 单个观察者的 `on_before` 抛出异常时，将异常通知给该观察者的
+/// `on_exception`，随后继续通知剩余观察者。
+TFL_FORCE_INLINE void Work::_notify_before(Worker& wr) const noexcept {
+    if (m_observers) [[unlikely]] {
+        for (auto& observer : m_observers->observers) {
+            try {
+                observer->on_before(WorkerView{wr});
+            } catch (...) {
+                observer->on_exception(WorkerView{wr}, std::current_exception());
+            }
+        }
     }
 }
+
 
 /// @brief 在 callable 执行结束后依次通知当前 Work 注册的全部观察者。
-TFL_FORCE_INLINE void Work::_notify_after(Worker& wr) const {
-    if (!m_observers) [[likely]] return;
-    for (auto& aspect : m_observers->observers) {
-        aspect->on_after(WorkerView{wr});
+///
+/// 单个观察者的 `on_after` 抛出异常时，将异常通知给该观察者的
+/// `on_exception`，随后继续通知剩余观察者。
+TFL_FORCE_INLINE void Work::_notify_after(Worker& wr) const noexcept {
+    if (m_observers) [[unlikely]] {
+        for (auto& observer : m_observers->observers) {
+            try {
+                observer->on_after(WorkerView{wr});
+            } catch (...) {
+                observer->on_exception(WorkerView{wr}, std::current_exception());
+            }
+        }
     }
 }
 
+/// @brief 向当前 Work 注册的全部观察者通知 callable 异常。
+///
+/// `TaskObserver::on_exception` 为 noexcept，因此异常通知过程不会继续产生
+/// 可传播异常。
+///
+/// @param wr 当前执行 Work 的 Worker。
+/// @param eptr callable 抛出的异常。
+TFL_FORCE_INLINE void Work::_notify_exception(Worker& wr, std::exception_ptr eptr) const noexcept {
+    if (m_observers) [[unlikely]] {
+        for (auto& observer : m_observers->observers) {
+            observer->on_exception(WorkerView{wr}, eptr);
+        }
+    }
+}
 
 /// @brief 内部协作执行作用域使用的栈绑定异常/完成锚点 Work。
 ///

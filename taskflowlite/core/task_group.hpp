@@ -331,15 +331,7 @@ inline void TaskGroup::_launch_silent_async(Work* work) {
     // 每个组内任务占用 AnchorWork 的一个完成 slot；必须先计数再发布，
     // 避免任务在计数建立前快速完成并使锚点提前归零。
     m_anchor.m_join_counter.fetch_add(1, std::memory_order_relaxed);
-
-    try {
-        m_executor._schedule(m_worker, work);
-    } catch (...) {
-        // 调度失败意味着 work 尚未发布，因此撤销本次 slot 并直接销毁节点。
-        m_anchor.m_join_counter.fetch_sub(1, std::memory_order_relaxed);
-        destroy_work(work);
-        throw;
-    }
+    m_executor._schedule(m_worker, work);
 }
 
 template <typename R, async_future... Deps>
@@ -376,20 +368,7 @@ inline AsyncFuture<R> TaskGroup::_launch_async(Work* work, ResultSlot<R>* result
         }
     }
 
-    try {
-        m_executor._schedule(m_worker, work);
-    } catch (...) {
-        // 调度失败，任务尚未发布：撤销 AnchorWork slot 和执行强引用。
-        // 局部 future 将在异常栈展开时自动析构并释放 Future 强引用。
-        m_anchor.m_join_counter.fetch_sub(1, std::memory_order_relaxed);
-
-        if (work->_decrement_ref()) {
-            destroy_work(work);
-        }
-
-        throw;
-    }
-
+    m_executor._schedule(m_worker, work);
     return future;
 }
 

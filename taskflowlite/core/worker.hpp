@@ -124,70 +124,63 @@ private:
     const Worker& m_worker;
 };
 
-/// @brief 定义 Worker 线程生命周期和未处理异常策略的扩展接口。
+/// @brief 定义 Worker 线程生命周期处理接口。
 ///
-/// `Executor` 在对应 Worker 线程上调用启动、停止和异常钩子。通过构造函数
-/// 传入的 WorkerHandler 始终由调用方拥有，Executor 仅在自身生命周期内借用。
+/// `Executor` 在对应 Worker 线程上调用启动和停止钩子。通过构造函数传入的
+/// `WorkerHandler` 始终由调用方拥有，Executor 仅在自身生命周期内借用。
+///
+/// `on_start` 在线程进入调度循环前调用；`on_stop` 在线程离开调度循环后调用。
+/// Worker 正常停止时 `on_stop` 接收到空异常指针；若调度路径存在未处理异常导致
+/// Worker 退出，则接收到对应的 `std::exception_ptr`。
+///
+/// 普通任务 callable 抛出的异常由 Work 自身捕获、通知和归档，不会作为
+/// Worker 停止异常进入本接口。
 ///
 /// @warning 传入 Executor 的处理器必须比 Executor 及其全部 Worker 线程存活更久。
-/// @warning 同一处理器实例可能服务多个 Worker，派生类必须自行同步共享状态；
-///          所有钩子均不得抛出异常。
+/// @warning 同一处理器实例可能被多个 Worker 并发调用，派生类必须自行同步共享状态。
+/// @warning 所有生命周期钩子均不得抛出异常。
 class WorkerHandler {
 public:
+    /// @brief 虚析构函数，确保通过基类正确销毁派生处理器。
     virtual ~WorkerHandler() = default;
 
-    /// @brief 在线程创建后、进入调度循环前触发。
-    /// @param worker 即将在当前 OS 线程上运行的 Worker。
-    /// @note 适合设置 CPU 亲和性、线程名称和线程局部状态。
+    /// @brief Worker 线程启动后、进入调度循环前触发。
+    ///
+    /// 回调运行在当前 Worker 所属的 OS 线程上，可用于设置线程名称、
+    /// CPU 亲和性、线程优先级以及初始化线程局部资源。
+    ///
+    /// @param worker 当前启动的 Worker。
+    /// @warning 派生实现不得抛出异常。
     virtual void on_start(Worker& worker) noexcept = 0;
 
-    /// @brief 在调度循环退出后、线程函数返回前触发。
-    /// @param worker 即将停止的 Worker。
-    /// @note 适合清理线程局部状态和输出统计信息。
-    virtual void on_stop(Worker& worker) noexcept = 0;
+    /// @brief Worker 离开调度循环后、线程函数返回前触发。
+    ///
+    /// 正常停止时 @p exception 为空；若 Worker 因未处理的调度路径异常退出，
+    /// 则保存导致本次退出的异常。该回调只负责处理停止事件，不影响 Worker
+    /// 已经确定的退出行为。
+    ///
+    /// @param worker 当前即将停止的 Worker。
+    /// @param exception 导致 Worker 停止的异常；正常停止时为空。
+    /// @warning 派生实现不得抛出异常。
+    virtual void on_stop(Worker& worker, const std::exception_ptr& exception) noexcept = 0;
 
-    /// @brief 处理未进入任务结果通道的调度路径异常。
-    /// @param worker 捕获异常的 Worker。
-    /// @param eptr 当前异常指针。
-    /// @return true 表示异常已处理并继续调度；false 表示终止该 Worker 循环。
-    /// @warning 本函数为 noexcept；派生实现抛出异常会导致程序终止。
-    virtual bool on_exception(Worker& worker, std::exception_ptr eptr) noexcept = 0;
-};
+protected:
+    /// @brief 允许派生类型构造基类部分。
+    WorkerHandler() = default;
 
-/// @brief 将未进入任务结果通道的异常视为已处理并继续当前 Worker 调度。
-///
-/// 启动和停止钩子为空操作；该策略不会记录、重抛或终止异常。
-class ResumeAlways : public WorkerHandler {
-public:
-    /// @brief Worker 启动时不执行附加操作。
-    void on_start(Worker&) noexcept override {}
+    /// @brief 允许派生类型复制基类部分。
+    WorkerHandler(const WorkerHandler&) = default;
 
-    /// @brief Worker 停止时不执行附加操作。
-    void on_stop(Worker&) noexcept override {}
+    /// @brief 允许派生类型移动基类部分。
+    WorkerHandler(WorkerHandler&&) = default;
 
-    /// @brief 将未处理异常视为已处理。
-    /// @return 恒为 true，使 Worker 继续调度。
-    bool on_exception(Worker&, std::exception_ptr) noexcept override final {
-        return true; // 消费异常，继续调度
-    }
-};
+    /// @brief 允许派生类型复制赋值基类部分。
+    /// @return `*this`。
+    WorkerHandler& operator=(const WorkerHandler&) & = default;
 
-/// @brief 在出现未进入任务结果通道的异常时终止当前 Worker 调度循环。
-///
-/// 启动和停止钩子为空操作；该策略只影响发生异常的 Worker，不负责保存异常结果。
-class ResumeNever : public WorkerHandler {
-public:
-    /// @brief Worker 启动时不执行附加操作。
-    void on_start(Worker&) noexcept override {}
-
-    /// @brief Worker 停止时不执行附加操作。
-    void on_stop(Worker&) noexcept override {}
-
-    /// @brief 将未处理异常视为终止信号。
-    /// @return 恒为 false，使当前 Worker 退出调度循环。
-    bool on_exception(Worker&, std::exception_ptr) noexcept override final {
-        return false; // 异常触发 worker 退出
-    }
+    /// @brief 允许派生类型移动赋值基类部分。
+    /// @return `*this`。
+    WorkerHandler& operator=(WorkerHandler&&) & = default;
 };
 
 }  // namespace tfl
