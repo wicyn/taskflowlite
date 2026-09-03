@@ -646,7 +646,12 @@ inline Executor::Executor(WorkerHandler* handler, std::size_t num_workers)
     , m_notifier{num_workers}
     , m_handler{handler}
 {
-    _spawn(num_workers);
+    try {
+        _spawn(num_workers);
+    } catch (...) {
+        _shutdown();
+        throw;
+    }
 }
 
 inline Executor::Executor(std::size_t num_workers)
@@ -673,17 +678,10 @@ inline void Executor::_launch_silent_async(Work* work) {
     TFL_ASSERT(work);
 
     _increment_topology();
-
-    try {
-        if (Worker* worker = _this_worker()) {
-            _schedule(*worker, work);
-        } else {
-            _schedule(work);
-        }
-    } catch (...) {
-        _decrement_topology();
-        destroy_work(work);
-        throw;
+    if (Worker* worker = _this_worker()) {
+        _schedule(*worker, work);
+    } else {
+        _schedule(work);
     }
 }
 
@@ -714,20 +712,10 @@ inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result,
         }
     }
 
-    try {
-        if (Worker* worker = _this_worker()) {
-            _schedule(*worker, work);
-        } else {
-            _schedule(work);
-        }
-    } catch (...) {
-        _decrement_topology();
-
-        if (work->_decrement_ref()) {
-            destroy_work(work);
-        }
-
-        throw;
+    if (Worker* worker = _this_worker()) {
+        _schedule(*worker, work);
+    } else {
+        _schedule(work);
     }
 
     return future;
@@ -893,10 +881,10 @@ inline void Executor::_shutdown() noexcept {
     }
 }
 
-
 // ============================================================================
 // Work-Stealing 调度循环
 // ============================================================================
+
 inline void Executor::_spawn(std::size_t num_workers) {
     const std::size_t num_queues = this->num_queues();
 
@@ -914,31 +902,27 @@ inline void Executor::_spawn(std::size_t num_workers) {
                 m_handler->on_start(wr);
             }
 
-            Work* w = nullptr;
+            std::exception_ptr exception = nullptr;
 
-            for (;;) {
-                while (w) {
-                    try {
+            try {
+                Work* w = nullptr;
+
+                for (;;) {
+                    while (w) {
                         _invoke(wr, w);
-                    } catch (...) {
-                        // 普通任务异常应由 Work 自身归档；
-                        // 这里只处理逃逸出调度路径的兜底异常。
-                        if (m_handler && !m_handler->on_exception(wr, std::current_exception())) {
-                            goto exit;
-                        }
+                        w = wr.m_wslq.pop();
                     }
 
-                    w = wr.m_wslq.pop();
+                    if ((w = _wait_for_work(wr)) == nullptr) [[unlikely]] {
+                        break;
+                    }
                 }
-
-                if ((w = _wait_for_work(wr)) == nullptr) [[unlikely]] {
-                    break;
-                }
+            } catch (...) {
+                exception = std::current_exception();
             }
 
-        exit:
             if (m_handler) {
-                m_handler->on_stop(wr);
+                m_handler->on_stop(wr, exception);
             }
         });
 
@@ -1403,15 +1387,8 @@ TFL_FORCE_INLINE void Executor::_link_predecessors(Work* w, I first, S last, std
                                               current | Topology::Control::LOCKED,
                                               std::memory_order_acquire,
                                               std::memory_order_acquire)) {
-                try {
-                    work->m_edges.push_back(w);
-                    ++work->m_num_successors;
-                } catch (...) {
-                    // push_back 可能因扩容抛出；必须在异常离开前释放 LOCKED，
-                    // 否则完成路径会永久等待该前驱解锁。
-                    control.fetch_and(~Topology::Control::LOCKED, std::memory_order_release);
-                    throw;
-                }
+                work->m_edges.push_back(w);
+                ++work->m_num_successors;
 
                 control.fetch_and(~Topology::Control::LOCKED, std::memory_order_release);
                 break;

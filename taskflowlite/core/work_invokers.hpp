@@ -10,8 +10,6 @@
 #pragma once
 #include <cmath>
 #include <cstring>
-#include <variant>
-#include <optional>
 #include <functional>
 
 #include "work.hpp"
@@ -331,7 +329,7 @@ public:
         try {
             std::invoke(m_func);
         } catch (...) {
-            w._process_exception();
+            w._process_exception(wr);
         }
 
         w._notify_after(wr);
@@ -395,7 +393,7 @@ public:
         try {
             std::invoke(m_func, branch);
         } catch (...) {
-            w._process_exception();
+            w._process_exception(wr);
         }
 
         w._notify_after(wr);
@@ -458,7 +456,7 @@ public:
         try {
             std::invoke(m_func, branch);
         } catch (...) {
-            w._process_exception();
+            w._process_exception(wr);
         }
 
         w._notify_after(wr);
@@ -522,7 +520,7 @@ public:
         try {
             std::invoke(m_func, jump);
         } catch (...) {
-            w._process_exception();
+            w._process_exception(wr);
         }
 
         w._notify_after(wr);
@@ -586,7 +584,7 @@ public:
         try {
             std::invoke(m_func, jump);
         } catch (...) {
-            w._process_exception();
+            w._process_exception(wr);
         }
 
         w._notify_after(wr);
@@ -659,7 +657,7 @@ public:
             try {
                 std::invoke(m_func, runtime);
             } catch (...) {
-                w._process_exception();
+                w._process_exception(wr);
             }
 
             if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
@@ -749,7 +747,7 @@ public:
             try {
                 std::invoke(m_func, flow);
             } catch (...) {
-                w._process_exception();
+                w._process_exception(wr);
             }
 
             if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
@@ -841,7 +839,7 @@ public:
         }
 
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
+        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(wr, m_pred)) {
             w._notify_after(wr);
 
             w.m_properties &= ~Work::Properties::PREEMPTED;
@@ -917,7 +915,7 @@ public:
         try {
             std::invoke(m_func);
         } catch (...) {
-            w._process_exception();
+            w._process_exception(wr);
         }
 
         TFL_WORK_EXECUTION_END(w);
@@ -962,7 +960,7 @@ public:
             try {
                 std::invoke(m_func, rt);
             } catch (...) {
-                w._process_exception();
+                w._process_exception(wr);
             }
 
             if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
@@ -1027,7 +1025,7 @@ public:
             try {
                 std::invoke(m_func, flow);
             } catch (...) {
-                w._process_exception();
+                w._process_exception(wr);
             }
 
             if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
@@ -1098,8 +1096,8 @@ public:
         }
 
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
-            w._invoke_callback(m_callback);
+        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(wr, m_pred)) {
+            w._invoke_callback(wr, m_callback);
 
             w.m_properties &= ~Work::Properties::PREEMPTED;
             TFL_WORK_EXECUTION_END(w);
@@ -1170,7 +1168,7 @@ public:
         try {
             Storage::set_result_from(m_func);
         } catch (...) {
-            w._process_exception();
+            w._process_exception(wr);
         }
 
         TFL_WORK_EXECUTION_END(w);
@@ -1218,7 +1216,7 @@ public:
             try {
                 Storage::set_result_from(m_func, rt);
             } catch (...) {
-                w._process_exception();
+                w._process_exception(wr);
             }
 
             if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
@@ -1284,7 +1282,7 @@ public:
             try {
                 Storage::set_result_from(m_func, flow);
             } catch (...) {
-                w._process_exception();
+                w._process_exception(wr);
             }
 
             if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
@@ -1356,8 +1354,8 @@ public:
         }
 
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
-            w._invoke_callback(m_callback);
+        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(wr, m_pred)) {
+            w._invoke_callback(wr, m_callback);
 
             w.m_properties &= ~Work::Properties::PREEMPTED;
             TFL_WORK_EXECUTION_END(w);
@@ -1438,7 +1436,7 @@ public:
         try {
             Storage::set_result_from(m_func);
         } catch (...) {
-            w._process_exception();
+            w._process_exception(wr);
         }
 
         w._notify_after(wr);
@@ -1505,7 +1503,7 @@ public:
             try {
                 Storage::set_result_from(m_func, rt);
             } catch (...) {
-                w._process_exception();
+                w._process_exception(wr);
             }
 
             if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
@@ -1593,7 +1591,7 @@ public:
             try {
                 Storage::set_result_from(m_func, flow);
             } catch (...) {
-                w._process_exception();
+                w._process_exception(wr);
             }
 
             if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
@@ -1683,10 +1681,10 @@ public:
         }
 
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
+        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(wr, m_pred)) {
             w._notify_after(wr);
 
-            w._invoke_callback(m_callback);
+            w._invoke_callback(wr, m_callback);
             w.m_properties &= ~Work::Properties::PREEMPTED;
             if (w.m_semaphores && !w.m_semaphores->releases.empty()) [[unlikely]] {
                 SmallVector<Work*> waiters;

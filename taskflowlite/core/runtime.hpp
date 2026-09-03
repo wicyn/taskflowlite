@@ -339,14 +339,7 @@ inline void Runtime::_launch_silent_async(Work* work) {
     TFL_ASSERT(work);
 
     m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
-
-    try {
-        m_executor._schedule(m_worker, work);
-    } catch (...) {
-        m_work.m_join_counter.fetch_sub(1, std::memory_order_relaxed);
-        destroy_work(work);
-        throw;
-    }
+    m_executor._schedule(m_worker, work);
 }
 
 template <typename R, async_future... Deps>
@@ -382,20 +375,7 @@ inline AsyncFuture<R> Runtime::_launch_async(Work* work, ResultSlot<R>* result, 
         }
     }
 
-    try {
-        m_executor._schedule(m_worker, work);
-    } catch (...) {
-        // 当前 Runtime callable 自身仍然占有基准 slot，
-        // 因此这里撤销新增 slot 不需要触发父节点调度。
-        m_work.m_join_counter.fetch_sub(1, std::memory_order_relaxed);
-
-        if (work->_decrement_ref()) {
-            destroy_work(work);
-        }
-
-        throw;
-    }
-
+    m_executor._schedule(m_worker, work);
     return future;
 }
 
