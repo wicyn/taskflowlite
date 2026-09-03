@@ -711,6 +711,40 @@ private:
         }
     }
 
+    /// @brief 调用 Module 终止谓词，并将异常转换为终止条件.
+    ///
+    /// predicate 正常返回时直接返回其结果；若调用抛出异常，则将异常归档到当前
+    /// Work，并返回 true，使 Module 进入正常结束和资源清理路径.
+    ///
+    /// @tparam P 无参终止谓词类型。
+    /// @param predicate 要调用的终止谓词。
+    /// @return predicate 的返回值；发生异常时返回 true。
+    template <predicate P>
+    TFL_FORCE_INLINE bool _invoke_predicate(P& predicate) noexcept {
+        try {
+            return std::invoke(predicate);
+        } catch (...) {
+            _process_exception();
+            return true;
+        }
+    }
+
+    /// @brief 调用完成回调，并将异常归档到当前 Work.
+    ///
+    /// callback 抛出的异常不会离开本函数，从而保证调用方能够继续完成 Observer、
+    /// Semaphore、执行状态和 tear-down 等收尾流程.
+    ///
+    /// @tparam C 无参完成回调类型。
+    /// @param callback 要调用的完成回调。
+    template <callback C>
+    TFL_FORCE_INLINE void _invoke_callback(C& callback) noexcept {
+        try {
+            std::invoke(callback);
+        } catch (...) {
+            _process_exception();
+        }
+    }
+
     /// @brief 获取 `m_edges` 中后继前缀的 span 视图。
     [[nodiscard]] std::span<Work*> _successors() noexcept {
         return {m_edges.data(), m_num_successors};

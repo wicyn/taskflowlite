@@ -42,94 +42,80 @@ public:
 
     /// @brief 向当前图插入普通 callable 节点。
     /// @tparam T 满足 `basic_invocable` 的 callable 类型。
-    /// @tparam Args callable 的参数类型。
     /// @param task 要保存并在节点执行时调用的 callable。
-    /// @param args 要保存并传给 callable 的参数。
     /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
     /// @throws std::bad_alloc 节点或图存储分配失败。
-    /// @throws ... callable 或参数的衰减存储构造失败时原样传播。
-    /// @note callable 和参数按衰减类型保存：左值构造副本，右值转发到节点存储。
-    template <typename T, typename... Args>
-        requires (basic_invocable<T, Args...> && capturable<T, Args...>)
-    [[nodiscard]] Task emplace(T&& task, Args&&... args);
+    /// @throws ... callable 的衰减存储构造失败时原样传播。
+    /// @note callable 按衰减类型保存：左值构造副本，右值转发到节点存储。
+    template <typename T>
+        requires (basic_invocable<T> && capturable<T>)
+    [[nodiscard]] Task emplace(T&& task);
 
     /// @brief 向当前图插入可选择一个后继的条件分支节点。
     /// @tparam T 满足 `branch_invocable` 的 callable 类型。
-    /// @tparam Args callable 的附加参数类型。
     /// @param task 执行时接收框架注入的 `Branch&`，用于选择一个后继。
-    /// @param args 要保存并传给 callable 的附加参数。
     /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
     /// @throws std::bad_alloc 节点或图存储分配失败。
-    /// @throws ... callable 或参数的衰减存储构造失败时原样传播。
+    /// @throws ... callable 的衰减存储构造失败时原样传播。
     /// @note 注入的 `Branch&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
-    template <typename T, typename... Args>
-        requires (branch_invocable<T, Args...> && capturable<T, Args...>)
-    [[nodiscard]] Task emplace(T&& task, Args&&... args);
+    template <typename T>
+        requires (branch_invocable<T> && capturable<T>)
+    [[nodiscard]] Task emplace(T&& task);
 
     /// @brief 向当前图插入可选择多个后继的条件分支节点。
     /// @tparam T 满足 `multi_branch_invocable` 的 callable 类型。
-    /// @tparam Args callable 的附加参数类型。
     /// @param task 执行时接收框架注入的 `MultiBranch&`，用于选择多个后继。
-    /// @param args 要保存并传给 callable 的附加参数。
     /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
     /// @throws std::bad_alloc 节点或图存储分配失败。
-    /// @throws ... callable 或参数的衰减存储构造失败时原样传播。
+    /// @throws ... callable 的衰减存储构造失败时原样传播。
     /// @note 注入的 `MultiBranch&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
-    template <typename T, typename... Args>
-        requires (multi_branch_invocable<T, Args...> && capturable<T, Args...>)
-    [[nodiscard]] Task emplace(T&& task, Args&&... args);
+    template <typename T>
+        requires (multi_branch_invocable<T> && capturable<T>)
+    [[nodiscard]] Task emplace(T&& task);
 
     /// @brief 向当前图插入可强制激活一个后继的跳转节点。
     /// @tparam T 满足 `jump_invocable` 的 callable 类型。
-    /// @tparam Args callable 的附加参数类型。
     /// @param task 执行时接收框架注入的 `Jump&`，用于指定一个跳转目标。
-    /// @param args 要保存并传给 callable 的附加参数。
     /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
     /// @throws std::bad_alloc 节点或图存储分配失败。
-    /// @throws ... callable 或参数的衰减存储构造失败时原样传播。
+    /// @throws ... callable 的衰减存储构造失败时原样传播。
     /// @note 注入的 `Jump&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
-    template <typename T, typename... Args>
-        requires (jump_invocable<T, Args...> && capturable<T, Args...>)
-    [[nodiscard]] Task emplace(T&& task, Args&&... args);
+    template <typename T>
+        requires (jump_invocable<T> && capturable<T>)
+    [[nodiscard]] Task emplace(T&& task);
 
     /// @brief 向当前图插入可强制激活多个后继的跳转节点。
     /// @tparam T 满足 `multi_jump_invocable` 的 callable 类型。
-    /// @tparam Args callable 的附加参数类型。
     /// @param task 执行时接收框架注入的 `MultiJump&`，用于指定多个跳转目标。
-    /// @param args 要保存并传给 callable 的附加参数。
     /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
     /// @throws std::bad_alloc 节点或图存储分配失败。
-    /// @throws ... callable 或参数的衰减存储构造失败时原样传播。
+    /// @throws ... callable 的衰减存储构造失败时原样传播。
     /// @note 注入的 `MultiJump&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
-    template <typename T, typename... Args>
-        requires (multi_jump_invocable<T, Args...> && capturable<T, Args...>)
-    [[nodiscard]] Task emplace(T&& task, Args&&... args);
+    template <typename T>
+        requires (multi_jump_invocable<T> && capturable<T>)
+    [[nodiscard]] Task emplace(T&& task);
 
     /// @brief 向当前图插入可在执行期间动态派发任务的运行时节点。
     /// @tparam T 满足 `runtime_invocable` 的 callable 类型。
-    /// @tparam Args callable 的附加参数类型。
     /// @param task 执行时接收框架注入的 `Runtime&`。
-    /// @param args 要保存并传给 callable 的附加参数。
     /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
     /// @throws std::bad_alloc 节点或图存储分配失败。
-    /// @throws ... callable 或参数的衰减存储构造失败时原样传播。
+    /// @throws ... callable 的衰减存储构造失败时原样传播。
     /// @note 注入的 `Runtime&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
-    template <typename T, typename... Args>
-        requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
-    [[nodiscard]] Task emplace(T&& task, Args&&... args);
+    template <typename T>
+        requires (runtime_invocable<T> && capturable<T>)
+    [[nodiscard]] Task emplace(T&& task);
 
     /// @brief 向当前图插入可在执行期间构建动态子图的节点。
     /// @tparam T 满足 `subflow_invocable` 的 callable 类型。
-    /// @tparam Args callable 的附加参数类型。
     /// @param task 执行时接收框架注入的 `SubFlow&`。
-    /// @param args 要保存并传给 callable 的附加参数。
     /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
     /// @throws std::bad_alloc 节点或图存储分配失败。
-    /// @throws ... callable 或参数的衰减存储构造失败时原样传播。
+    /// @throws ... callable 的衰减存储构造失败时原样传播。
     /// @note 注入的 `SubFlow&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
-    template <typename T, typename... Args>
-        requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
-    [[nodiscard]] Task emplace(T&& task, Args&&... args);
+    template <typename T>
+        requires (subflow_invocable<T> && capturable<T>)
+    [[nodiscard]] Task emplace(T&& task);
 
     /// @brief 向当前图插入执行指定子图一次的模块节点。
     /// @tparam Gh 满足 `graph_holder` 的子图持有者类型。
@@ -325,46 +311,46 @@ inline Task FlowBuilder::placeholder() {
     return Task{m_graph.emplace(make_placeholder(std::addressof(m_graph)))};
 }
 
-template <typename T, typename... Args>
-    requires (basic_invocable<T, Args...> && capturable<T, Args...>)
-inline Task FlowBuilder::emplace(T&& task, Args&&... args) {
-    return Task{m_graph.emplace(make_basic(std::addressof(m_graph), std::forward<T>(task), std::forward<Args>(args)...))};
+template <typename T>
+    requires (basic_invocable<T> && capturable<T>)
+inline Task FlowBuilder::emplace(T&& task) {
+    return Task{m_graph.emplace(make_basic(std::addressof(m_graph), std::forward<T>(task)))};
 }
 
-template <typename T, typename... Args>
-    requires (branch_invocable<T, Args...> && capturable<T, Args...>)
-inline Task FlowBuilder::emplace(T&& task, Args&&... args) {
-    return Task{m_graph.emplace(make_branch(std::addressof(m_graph), std::forward<T>(task), std::forward<Args>(args)...))};
+template <typename T>
+    requires (branch_invocable<T> && capturable<T>)
+inline Task FlowBuilder::emplace(T&& task) {
+    return Task{m_graph.emplace(make_branch(std::addressof(m_graph), std::forward<T>(task)))};
 }
 
-template <typename T, typename... Args>
-    requires (multi_branch_invocable<T, Args...> && capturable<T, Args...>)
-inline Task FlowBuilder::emplace(T&& task, Args&&... args) {
-    return Task{m_graph.emplace(make_multi_branch(std::addressof(m_graph), std::forward<T>(task), std::forward<Args>(args)...))};
+template <typename T>
+    requires (multi_branch_invocable<T> && capturable<T>)
+inline Task FlowBuilder::emplace(T&& task) {
+    return Task{m_graph.emplace(make_multi_branch(std::addressof(m_graph), std::forward<T>(task)))};
 }
 
-template <typename T, typename... Args>
-    requires (jump_invocable<T, Args...> && capturable<T, Args...>)
-inline Task FlowBuilder::emplace(T&& task, Args&&... args) {
-    return Task{m_graph.emplace(make_jump(std::addressof(m_graph), std::forward<T>(task), std::forward<Args>(args)...))};
+template <typename T>
+    requires (jump_invocable<T> && capturable<T>)
+inline Task FlowBuilder::emplace(T&& task) {
+    return Task{m_graph.emplace(make_jump(std::addressof(m_graph), std::forward<T>(task)))};
 }
 
-template <typename T, typename... Args>
-    requires (multi_jump_invocable<T, Args...> && capturable<T, Args...>)
-inline Task FlowBuilder::emplace(T&& task, Args&&... args) {
-    return Task{m_graph.emplace(make_multi_jump(std::addressof(m_graph), std::forward<T>(task), std::forward<Args>(args)...))};
+template <typename T>
+    requires (multi_jump_invocable<T> && capturable<T>)
+inline Task FlowBuilder::emplace(T&& task) {
+    return Task{m_graph.emplace(make_multi_jump(std::addressof(m_graph), std::forward<T>(task)))};
 }
 
-template <typename T, typename... Args>
-    requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
-inline Task FlowBuilder::emplace(T&& task, Args&&... args) {
-    return Task{m_graph.emplace(make_runtime(std::addressof(m_graph), std::forward<T>(task), std::forward<Args>(args)...))};
+template <typename T>
+    requires (runtime_invocable<T> && capturable<T>)
+inline Task FlowBuilder::emplace(T&& task) {
+    return Task{m_graph.emplace(make_runtime(std::addressof(m_graph), std::forward<T>(task)))};
 }
 
-template <typename T, typename... Args>
-    requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
-inline Task FlowBuilder::emplace(T&& task, Args&&... args) {
-    return Task{m_graph.emplace(make_subflow(std::addressof(m_graph), std::forward<T>(task), std::forward<Args>(args)...))};
+template <typename T>
+    requires (subflow_invocable<T> && capturable<T>)
+inline Task FlowBuilder::emplace(T&& task) {
+    return Task{m_graph.emplace(make_subflow(std::addressof(m_graph), std::forward<T>(task)))};
 }
 
 template <graph_holder Gh>
@@ -403,8 +389,8 @@ template <typename... Packs>
 inline auto FlowBuilder::emplace(Packs&&... task_packs) {
     return std::tuple{
         std::apply(
-            [this]<typename... Args>(Args&&... args) {
-                return this->emplace(std::forward<Args>(args)...);
+            [this](auto&&... args) {
+                return this->emplace(std::forward<decltype(args)>(args)...);
             },
             std::forward<Packs>(task_packs).data
             )...

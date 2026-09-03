@@ -12,7 +12,7 @@ namespace tfl {
 /// @brief 为异步任务按值存储一个与任务生命周期一致的 `Topology`。
 ///
 /// storage 拥有拓扑控制块，但不拥有传入的父 Topology 和 Executor。
-/// Detached、Joinable 和 Attached 任务通过继承该类获得独立拓扑状态。
+/// SilentAsync、Async 和 AsyncTask 任务通过继承该类获得独立拓扑状态。
 class TopologyStorage {
 public:
     /// @brief 获取内部 Topology 的可修改地址。
@@ -43,7 +43,7 @@ private:
 
 /// @brief 为需要结果通道的异步任务按值存储 `Topology` 和 `ResultSlot<R>`。
 ///
-/// Joinable 和 Attached 任务共享该存储层；两者的区别由各自生命周期和
+/// Async 和 AsyncTask 任务共享该存储层；两者的区别由各自生命周期和
 /// tear-down 协议决定，而不是由结果存储方式决定。
 ///
 /// @tparam R 任务返回类型。
@@ -73,13 +73,13 @@ protected:
 
     ~ResultStorage() noexcept = default;
 
-    /// @brief 执行 callable，并将返回结果保存到内部结果槽。
-    template <typename Callable>
-        requires requires(ResultSlot<R>& result, Callable&& callable) {
-            result.invoke(std::forward<Callable>(callable));
+    /// @brief 调用 callable，并将返回结果保存到内部结果槽。
+    template <typename F, typename... Args>
+        requires requires(ResultSlot<R>& result, F&& f, Args&&... args) {
+            result.invoke(std::forward<F>(f), std::forward<Args>(args)...);
         }
-    void set_result_from(Callable&& callable) noexcept(noexcept(m_result.invoke(std::forward<Callable>(callable)))) {
-        m_result.invoke(std::forward<Callable>(callable));
+    void set_result_from(F&& f, Args&&... args) noexcept(noexcept(m_result.invoke(std::forward<F>(f), std::forward<Args>(args)...))) {
+        m_result.invoke(std::forward<F>(f), std::forward<Args>(args)...);
     }
 
 private:

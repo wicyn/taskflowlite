@@ -206,32 +206,6 @@ static_assert((TFL_DEFAULT_QUEUE_SIZE & (TFL_DEFAULT_QUEUE_SIZE - 1)) == 0, "TFL
 // 编译期断言校验
 static_assert(TF_POINTER_BITS > 0 && TF_POINTER_BITS <= 64, "TF_POINTER_BITS must be between 1 and 64");
 
-/// @brief 控制是否启用 Worker 本地内存池。
-///
-/// 设置为 1：
-///   - 启用每个 Worker 独占的 SegmentedPool。
-///   - Work 等小对象优先从 Worker 本地池分配。
-///   - 减少频繁调用全局 operator new/operator delete。
-///
-/// 设置为 0：
-///   - 完全关闭 Worker 本地内存池。
-///   - 内存分配回退到全局 operator new/operator delete。
-///
-/// 可通过编译器参数覆盖：
-///   GCC/Clang：-DTFL_ENABLE_POOL=0
-///   MSVC：     /DTFL_ENABLE_POOL=0
-///
-/// @warning 同一程序的所有翻译单元必须使用相同的宏值，
-///          否则可能因 Worker 对象布局不同而违反 ODR，并产生 ABI 问题。
-#ifndef TFL_ENABLE_POOL
-#define TFL_ENABLE_POOL 0
-#endif
-
-/// @brief 检查 Worker Pool 开关值是否合法。
-/// @note TFL_ENABLE_POOL 只允许设置为 0 或 1。
-#if TFL_ENABLE_POOL != 0 && TFL_ENABLE_POOL != 1
-#error "TFL_ENABLE_POOL must be 0 or 1"
-#endif
 
 // ============================================================================
 // 对象布局优化

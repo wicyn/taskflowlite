@@ -88,37 +88,31 @@ public:
 
     /// @brief 创建尚未启动的普通 callable 异步任务。
     /// @tparam T 满足 `basic_invocable` concept 的 callable 类型。
-    /// @tparam Args callable 参数类型。
     /// @param task 要按 `capturable` 规则保存的 callable。
-    /// @param args 按 `capturable` 规则保存的调用参数。
     /// @throws std::bad_alloc 创建 Work、Topology、结果槽或 callable 存储失败。
     /// @note 构造完成后任务仍处于 Idle 状态，不会立即提交执行。
-    template <typename T, typename... Args>
-        requires (basic_invocable<T, Args...> && capturable<T, Args...> && std::same_as<R, basic_return_t<T, Args...>>)
-    explicit AsyncTask(T&& task, Args&&... args);
+    template <typename T>
+        requires (basic_invocable<T> && capturable<T> && std::same_as<R, basic_return_t<T>>)
+    explicit AsyncTask(T&& task);
 
     /// @brief 创建尚未启动、执行时由框架注入 `Runtime&` 的异步任务。
     /// @tparam T 满足 `runtime_invocable` concept 的 callable 类型。
-    /// @tparam Args callable 参数类型。
     /// @param task 要按 `capturable` 规则保存的 callable。
-    /// @param args 按 `capturable` 规则保存的调用参数。
     /// @throws std::bad_alloc 创建 Work、Topology、结果槽或 callable 存储失败。
     /// @note 构造完成后任务仍处于 Idle 状态，不会立即提交执行。
-    template <typename T, typename... Args>
-        requires (runtime_invocable<T, Args...> && capturable<T, Args...> && std::same_as<R, runtime_return_t<T, Args...>>)
-    explicit AsyncTask(T&& task, Args&&... args);
+    template <typename T>
+        requires (runtime_invocable<T> && capturable<T> && std::same_as<R, runtime_return_t<T>>)
+    explicit AsyncTask(T&& task);
 
     /// @brief 创建尚未启动、执行时由框架注入 `SubFlow&` 的异步任务。
     /// @tparam T 满足 `subflow_invocable` concept 的 callable 类型。
-    /// @tparam Args callable 参数类型。
     /// @param task 要按 `capturable` 规则保存的 callable。
-    /// @param args 按 `capturable` 规则保存的调用参数。
     /// @throws std::bad_alloc 创建 Work、Topology、结果槽或 callable 存储失败。
     /// @note 构造完成后任务仍处于 Idle 状态，不会立即提交执行。
     /// @warning callable 不得保存框架注入的 `SubFlow&`，该引用仅在本次调用期间有效。
-    template <typename T, typename... Args>
-        requires (subflow_invocable<T, Args...> && capturable<T, Args...> && std::same_as<R, subflow_return_t<T, Args...>>)
-    explicit AsyncTask(T&& task, Args&&... args);
+    template <typename T>
+        requires (subflow_invocable<T> && capturable<T> && std::same_as<R, subflow_return_t<T>>)
+    explicit AsyncTask(T&& task);
 
     /// @brief 创建尚未启动、执行一次子图的 void 异步任务。
     /// @tparam Gh 满足 `graph_holder` concept 的子图持有者类型。
@@ -424,7 +418,7 @@ private:
     ///
     /// 启动成功后当前 Work 关联 parent，Topology 继承父停止域，并为执行生命周期增加
     /// 一个 Work 强引用；同时 parent 的 join_counter 增加 1，保证父任务等待该异步任务完成。
-    template <async_task... Deps>
+    template <bool InheritTopology, async_task... Deps>
     void _start(Work& parent, Worker& worker, Executor& executor, Deps&&... deps) {
         Work* work = m_work;
 
@@ -455,13 +449,20 @@ private:
         }
 
         work->m_parent = std::addressof(parent);
-        topology->m_parent = parent.m_topology;
+
+        if constexpr (InheritTopology) {
+            topology->m_parent = parent.m_topology;
+            TFL_ASSERT(topology->m_parent);
+        } else {
+            topology->m_parent = nullptr;
+        }
+
         topology->m_executor = std::addressof(executor);
 
         work->_increment_ref();
         parent.m_join_counter.fetch_add(1, std::memory_order_relaxed);
 
-        if constexpr (sizeof...(Deps) > 0) {
+        if constexpr (sizeof...(Deps) != 0) {
             std::array<Work*, sizeof...(Deps)> predecessors{deps.m_work...};
             std::size_t num_predecessors = sizeof...(Deps);
 
@@ -521,7 +522,7 @@ private:
         work->_increment_ref();
         executor._increment_topology();
 
-        if constexpr (sizeof...(Deps) > 0) {
+        if constexpr (sizeof...(Deps) != 0) {
             std::array<Work*, sizeof...(Deps)> predecessors{deps.m_work...};
             std::size_t num_predecessors = sizeof...(Deps);
 
@@ -561,24 +562,24 @@ AsyncTask<R>& AsyncTask<R>::operator=(std::nullptr_t) noexcept {
 }
 
 template <typename R>
-template <typename T, typename... Args>
-    requires (basic_invocable<T, Args...> && capturable<T, Args...> && std::same_as<R, basic_return_t<T, Args...>>)
-AsyncTask<R>::AsyncTask(T&& task, Args&&... args)
-    : AsyncTask{make_attached_basic(std::forward<T>(task), std::forward<Args>(args)...)} {
+template <typename T>
+    requires (basic_invocable<T> && capturable<T> && std::same_as<R, basic_return_t<T>>)
+AsyncTask<R>::AsyncTask(T&& task)
+    : AsyncTask{make_async_task_basic(std::forward<T>(task))} {
 }
 
 template <typename R>
-template <typename T, typename... Args>
-    requires (runtime_invocable<T, Args...> && capturable<T, Args...> && std::same_as<R, runtime_return_t<T, Args...>>)
-AsyncTask<R>::AsyncTask(T&& task, Args&&... args)
-    : AsyncTask{make_attached_runtime(std::forward<T>(task), std::forward<Args>(args)...)} {
+template <typename T>
+    requires (runtime_invocable<T> && capturable<T> && std::same_as<R, runtime_return_t<T>>)
+AsyncTask<R>::AsyncTask(T&& task)
+    : AsyncTask{make_async_task_runtime(std::forward<T>(task))} {
 }
 
 template <typename R>
-template <typename T, typename... Args>
-    requires (subflow_invocable<T, Args...> && capturable<T, Args...> && std::same_as<R, subflow_return_t<T, Args...>>)
-AsyncTask<R>::AsyncTask(T&& task, Args&&... args)
-    : AsyncTask{make_attached_subflow(std::forward<T>(task), std::forward<Args>(args)...)} {
+template <typename T>
+    requires (subflow_invocable<T> && capturable<T> && std::same_as<R, subflow_return_t<T>>)
+AsyncTask<R>::AsyncTask(T&& task)
+    : AsyncTask{make_async_task_subflow(std::forward<T>(task))} {
 }
 
 template <typename R>
@@ -599,7 +600,7 @@ template <typename R>
 template <graph_holder Gh, predicate P, callback C>
     requires (capturable<P, C> && std::same_as<R, void>)
 AsyncTask<R>::AsyncTask(Gh&& gh, P&& predicate, C&& callback)
-    : AsyncTask{make_attached_module(std::forward<Gh>(gh), std::forward<P>(predicate), std::forward<C>(callback))} {
+    : AsyncTask{make_async_task_module(std::forward<Gh>(gh), std::forward<P>(predicate), std::forward<C>(callback))} {
 }
 
 // ============================================================================
@@ -890,20 +891,20 @@ void AsyncTask<R>::unregister_observer(const std::shared_ptr<Observer>& observer
 // AsyncTask CTAD
 // ============================================================================
 
-/// @brief 从普通 callable 及其参数推导对应返回类型的 AsyncTask。
-template <typename T, typename... Args>
-    requires (basic_invocable<T, Args...> && capturable<T, Args...>)
-AsyncTask(T&&, Args&&...) -> AsyncTask<basic_return_t<T, Args...>>;
+/// @brief 从普通 callable 推导对应返回类型的 AsyncTask。
+template <typename T>
+    requires (basic_invocable<T> && capturable<T>)
+AsyncTask(T&&) -> AsyncTask<basic_return_t<T>>;
 
-/// @brief 从接收 Runtime 的 callable 及其参数推导对应返回类型的 AsyncTask。
-template <typename T, typename... Args>
-    requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
-AsyncTask(T&&, Args&&...) -> AsyncTask<runtime_return_t<T, Args...>>;
+/// @brief 从接收 Runtime 的 callable 推导对应返回类型的 AsyncTask。
+template <typename T>
+    requires (runtime_invocable<T> && capturable<T>)
+AsyncTask(T&&) -> AsyncTask<runtime_return_t<T>>;
 
-/// @brief 从接收 SubFlow 的 callable 及其参数推导对应返回类型的 AsyncTask。
-template <typename T, typename... Args>
-    requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
-AsyncTask(T&&, Args&&...) -> AsyncTask<subflow_return_t<T, Args...>>;
+/// @brief 从接收 SubFlow 的 callable 推导对应返回类型的 AsyncTask。
+template <typename T>
+    requires (subflow_invocable<T> && capturable<T>)
+AsyncTask(T&&) -> AsyncTask<subflow_return_t<T>>;
 
 /// @brief 从单次子图任务构造参数推导 `AsyncTask<void>`。
 template <graph_holder Gh, callback C = noop_callback>
@@ -935,6 +936,25 @@ std::ostream& operator<<(std::ostream& stream, const AsyncTask<R>& task) {
     task.dump(stream);
     return stream;
 }
+
+
+
+
+static_assert(async_future<AsyncFuture<int>>);
+static_assert(async_future<AsyncFuture<int>&>);
+static_assert(async_future<const AsyncFuture<int>&>);
+
+static_assert(async_future<AsyncTask<int>>);
+static_assert(async_future<AsyncTask<int>&>);
+static_assert(async_future<const AsyncTask<int>&>);
+
+static_assert(!async_future<int>);
+static_assert(!async_future<std::string>);
+
+static_assert(async_task<AsyncTask<int>>);
+static_assert(async_task<AsyncTask<int>&>);
+
+static_assert(!async_task<AsyncFuture<int>>);
 
 }  // namespace tfl
 

@@ -15,25 +15,28 @@
 #include <coroutine>
 #include <string>
 #include <memory>
+#include <cstddef>
+#include <tuple>
+#include <utility>
 
 #include "forward.hpp"
 
 namespace tfl {
 
-// ── std::unwrap_ref_decay_t<T> 行为速查 ──────────────────────────────
-// 框架内存储的 callable 类型均经 unwrap_ref_decay_t 处理:
-// 1. Decay: 去引用/cv、数组/函数→指针(等价于值传递)
-// 2. Unwrap: 若结果为 reference_wrapper<T> → T&
+// ── callable 与捕获存储规则 ──────────────────────────────────────────
+// 任务 callable 直接保存自身，执行参数由 callable 自行捕获。
+// captured_t 用于需要持有或借用外部对象的内部存储:
+// 1. 普通左值 → reference_wrapper<T>
+// 2. 普通右值 → decay_t<T>
 //
 // 速查表:
-// | 输入                     | 结果         |
-// |--------------------------|-------------|
-// | std::ref(x)             | int&        |
-// | std::cref(x)            | const int&  |
-// | int& / const int&       | int         |
-// | int* | int* |
-// | int[3]                  | int* |
-// | void()                  | void(*)()   |
+// | 输入                              | 结果                         |
+// |-----------------------------------|------------------------------|
+// | std::ref(x)                       | reference_wrapper<T>         |
+// | std::cref(x)                      | reference_wrapper<const T>   |
+// | T& / const T&                     | reference_wrapper<T>         |
+// | T&&                               | T                            |
+// | T                                 | T                            |
 
 namespace detail {
 
@@ -54,7 +57,7 @@ template <typename S, typename C, typename... Rest>
 struct is_sem_count_seq<S, C, Rest...>
     : std::bool_constant<
           std::is_lvalue_reference_v<S>
-          && std::same_as<std::remove_cvref_t<S>, Semaphore>
+          && std::same_as<std::remove_reference_t<S>, Semaphore>
           && std::convertible_to<C, std::size_t>
           && is_sem_count_seq<Rest...>::value
           > {};
@@ -176,14 +179,14 @@ static_assert(!predicate<decltype([]{})>);
 static_assert(callback<decltype([]{})>);
 static_assert(!callback<decltype([]{ return true; })>);
 
-/// @brief 约束类型本身为 Graph，或提供可变与只读 graph() 访问器。
+/// @brief 约束类型本身为 Graph，或提供 noexcept 的可变与只读 graph() 访问器。
 template <typename Gh>
 concept graph_holder = std::derived_from<std::remove_cvref_t<Gh>, Graph> || (
                            requires(std::remove_cvref_t<Gh>& gh) {
-                               { gh.graph() } -> std::convertible_to<Graph&>;
+                               { gh.graph() } noexcept -> std::convertible_to<Graph&>;
                            } &&
                            requires(const std::remove_cvref_t<Gh>& gh) {
-                               { gh.graph() } -> std::convertible_to<const Graph&>;
+                               { gh.graph() } noexcept -> std::convertible_to<const Graph&>;
                            }
                            );
 
@@ -224,74 +227,74 @@ concept coroutine_returnable = requires {
 // ============================================================================
 
 /// @brief 普通 callable 的返回类型。
-template <typename T, typename... Args>
-using basic_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>;
+template <typename T>
+using basic_return_t = std::invoke_result_t<std::decay_t<T>&>;
 
 /// @brief 单目标分支 callable 的返回类型。
-template <typename T, typename... Args>
-using branch_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>;
+template <typename T>
+using branch_return_t = std::invoke_result_t<std::decay_t<T>&, Branch&>;
 
 /// @brief 多目标分支 callable 的返回类型。
-template <typename T, typename... Args>
-using multi_branch_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>;
+template <typename T>
+using multi_branch_return_t = std::invoke_result_t<std::decay_t<T>&, MultiBranch&>;
 
 /// @brief 单目标跳转 callable 的返回类型。
-template <typename T, typename... Args>
-using jump_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>;
+template <typename T>
+using jump_return_t = std::invoke_result_t<std::decay_t<T>&, Jump&>;
 
 /// @brief 多目标跳转 callable 的返回类型。
-template <typename T, typename... Args>
-using multi_jump_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>;
+template <typename T>
+using multi_jump_return_t = std::invoke_result_t<std::decay_t<T>&, MultiJump&>;
 
 /// @brief Runtime callable 的返回类型。
-template <typename T, typename... Args>
-using runtime_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>;
+template <typename T>
+using runtime_return_t = std::invoke_result_t<std::decay_t<T>&, Runtime&>;
 
 /// @brief SubFlow callable 的返回类型。
-template <typename T, typename... Args>
-using subflow_return_t = std::invoke_result_t<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., SubFlow&>;
+template <typename T>
+using subflow_return_t = std::invoke_result_t<std::decay_t<T>&, SubFlow&>;
 
 // ============================================================================
 //  任务 callable 概念
 //
-//  每类签名分别检测普通形式和尾随 `std::stop_token` 的形式。
+//  每类 callable 只接收自身所需的执行上下文。
 //  返回协程对象的 callable 不进入普通任务路径。
 // ============================================================================
 
-/// @brief `f(args...)` 可调用 —— 普通同步任务签名。
-template <typename T, typename... Args>
-concept basic_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&...>
-                          && !detail::coroutine_returnable<basic_return_t<T, Args...>>;
+/// @brief `f()` 可调用 —— 普通同步任务签名。
+template <typename T>
+concept basic_invocable = std::invocable<std::decay_t<T>&>
+                          && !detail::coroutine_returnable<basic_return_t<T>>;
 
-/// @brief `f(args..., Branch&)` 可调用 —— 单目标条件分支任务签名。
-template <typename T, typename... Args>
-concept branch_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Branch&>
-                           && !detail::coroutine_returnable<branch_return_t<T, Args...>>;
+/// @brief `f(Branch&)` 可调用 —— 单目标条件分支任务签名。
+template <typename T>
+concept branch_invocable = std::invocable<std::decay_t<T>&, Branch&>
+                           && !detail::coroutine_returnable<branch_return_t<T>>;
 
-/// @brief `f(args..., MultiBranch&)` 可调用 —— 多目标广播分支任务签名。
-template <typename T, typename... Args>
-concept multi_branch_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiBranch&>
-                                 && !detail::coroutine_returnable<multi_branch_return_t<T, Args...>>;
+/// @brief `f(MultiBranch&)` 可调用 —— 多目标广播分支任务签名。
+template <typename T>
+concept multi_branch_invocable = std::invocable<std::decay_t<T>&, MultiBranch&>
+                                 && !detail::coroutine_returnable<multi_branch_return_t<T>>;
 
-/// @brief `f(args..., Jump&)` 可调用 —— 单目标强制跳转任务签名。
-template <typename T, typename... Args>
-concept jump_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Jump&>
-                         && !detail::coroutine_returnable<jump_return_t<T, Args...>>;
+/// @brief `f(Jump&)` 可调用 —— 单目标强制跳转任务签名。
+template <typename T>
+concept jump_invocable = std::invocable<std::decay_t<T>&, Jump&>
+                         && !detail::coroutine_returnable<jump_return_t<T>>;
 
-/// @brief `f(args..., MultiJump&)` 可调用 —— 多目标广播跳转任务签名。
-template <typename T, typename... Args>
-concept multi_jump_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., MultiJump&>
-                               && !detail::coroutine_returnable<multi_jump_return_t<T, Args...>>;
+/// @brief `f(MultiJump&)` 可调用 —— 多目标广播跳转任务签名。
+template <typename T>
+concept multi_jump_invocable = std::invocable<std::decay_t<T>&, MultiJump&>
+                               && !detail::coroutine_returnable<multi_jump_return_t<T>>;
 
-/// @brief `f(args..., Runtime&)` 可调用 —— 运行时动态调度任务签名。
-template <typename T, typename... Args>
-concept runtime_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., Runtime&>
-                            && !detail::coroutine_returnable<runtime_return_t<T, Args...>>;
+/// @brief `f(Runtime&)` 可调用 —— 运行时动态调度任务签名。
+template <typename T>
+concept runtime_invocable = std::invocable<std::decay_t<T>&, Runtime&>
+                            && !detail::coroutine_returnable<runtime_return_t<T>>;
 
-/// @brief `f(args..., SubFlow&)` 可调用。
-template <typename T, typename... Args>
-concept subflow_invocable = std::invocable<std::decay_t<T>&, std::unwrap_ref_decay_t<Args>&..., SubFlow&>
-                            && !detail::coroutine_returnable<subflow_return_t<T, Args...>>;
+/// @brief `f(SubFlow&)` 可调用。
+template <typename T>
+concept subflow_invocable = std::invocable<std::decay_t<T>&, SubFlow&>
+                            && !detail::coroutine_returnable<subflow_return_t<T>>;
 
 /// @brief 约束 `Ts...` 为 `{Semaphore, count, Semaphore, count, ...}` 交替序列。
 template <typename... Ts>
@@ -341,8 +344,17 @@ template <typename T>
 concept task_pack = detail::is_pack_impl<std::remove_cvref_t<T>>::value;
 
 // ============================================================================
+// AsyncFuture —— 类型识别
+// ============================================================================
+
+template <typename T>
+concept async_future = requires {typename std::remove_cvref_t<T>::result_type;} &&
+                       std::derived_from<std::remove_cvref_t<T>, AsyncFuture<typename std::remove_cvref_t<T>::result_type>>;
+
+// ============================================================================
 // AsyncTask —— 类型识别
 // ============================================================================
+
 template <typename T>
 struct is_async_task : std::false_type {};
 
@@ -354,6 +366,11 @@ inline constexpr bool is_async_task_v = is_async_task<std::remove_cvref_t<T>>::v
 
 template <typename T>
 concept async_task = is_async_task_v<T>;
+
+
+// ============================================================================
+// 转发返回类型
+// ============================================================================
 
 template <typename T>
 using forward_return_t = std::conditional_t<std::is_lvalue_reference_v<T>, T, std::remove_cvref_t<T>>;

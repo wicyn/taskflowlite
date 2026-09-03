@@ -60,6 +60,9 @@ class AsyncFuture {
     template <typename> friend class AsyncTask;
 
 public:
+
+    using result_type = R;
+
     /// @brief 构造不关联任何任务的空 AsyncFuture。
     AsyncFuture() noexcept = default;
 
