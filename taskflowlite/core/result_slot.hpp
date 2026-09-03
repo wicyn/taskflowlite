@@ -135,13 +135,15 @@ class ResultSlot : private detail::ResultStorage<R> {
     using Storage = detail::ResultStorage<R>;
 
 public:
-    /// @brief 调用无参 callable 并保存其非 void 返回值。
+    /// @brief 调用 callable 并保存其非 void 返回值。
     /// @tparam F 可调用对象类型；返回值必须可保存为 R。
+    /// @tparam Args 调用时传递给 callable 的参数类型。
     /// @param f 要调用的对象。
-    template <typename F>
-        requires std::invocable<F&&> && (!std::is_void_v<std::invoke_result_t<F&&>>) && Storage::template storable<std::invoke_result_t<F&&>>
-        void invoke(F&& f) noexcept(std::is_nothrow_invocable_v<F&&> && Storage::template nothrow_storable<std::invoke_result_t<F&&>>) {
-        Storage::store(std::invoke(std::forward<F>(f)));
+    /// @param args 转发给 callable 的参数。
+    template <typename F, typename... Args>
+        requires std::invocable<F&&, Args&&...> && (!std::is_void_v<std::invoke_result_t<F&&, Args&&...>>) && Storage::template storable<std::invoke_result_t<F&&, Args&&...>>
+        void invoke(F&& f, Args&&... args) noexcept(std::is_nothrow_invocable_v<F&&, Args&&...> && Storage::template nothrow_storable<std::invoke_result_t<F&&, Args&&...>>) {
+        Storage::store(std::invoke(std::forward<F>(f), std::forward<Args>(args)...));
     }
 
     /// @brief 直接保存一个可转换或可赋值为 R 的结果。
@@ -178,13 +180,15 @@ public:
 template <typename T>
 class ResultSlot<T&> {
 public:
-    /// @brief 调用无参 callable 并保存其返回左值的地址。
+    /// @brief 调用 callable 并保存其返回左值的地址。
     /// @tparam F 返回可转换为 `T&` 的左值引用的 callable 类型。
+    /// @tparam Args 调用时传递给 callable 的参数类型。
     /// @param f 要调用的对象。
-    template <typename F>
-        requires std::invocable<F&&> && std::is_lvalue_reference_v<std::invoke_result_t<F&&>> && std::convertible_to<std::invoke_result_t<F&&>, T&>
-    void invoke(F&& f) noexcept(std::is_nothrow_invocable_v<F&&>) {
-        T& value = std::invoke(std::forward<F>(f));
+    /// @param args 转发给 callable 的参数。
+    template <typename F, typename... Args>
+        requires std::invocable<F&&, Args&&...> && std::is_lvalue_reference_v<std::invoke_result_t<F&&, Args&&...>> && std::convertible_to<std::invoke_result_t<F&&, Args&&...>, T&>
+    void invoke(F&& f, Args&&... args) noexcept(std::is_nothrow_invocable_v<F&&, Args&&...>) {
+        T& value = std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
         m_value = std::addressof(value);
     }
 
@@ -217,12 +221,14 @@ private:
 template <>
 class ResultSlot<void> {
 public:
-    /// @brief 调用返回 void 的无参 callable。
+    /// @brief 调用返回 void 的 callable。
     /// @tparam F 返回类型严格为 void 的 callable 类型。
+    /// @tparam Args 调用时传递给 callable 的参数类型。
     /// @param f 要调用的对象。
-    template <typename F>
-        requires std::invocable<F&&> && std::same_as<std::invoke_result_t<F&&>, void>
-    void invoke(F&& f) noexcept(std::is_nothrow_invocable_v<F&&>) { std::invoke(std::forward<F>(f)); }
+    /// @param args 转发给 callable 的参数。
+    template <typename F, typename... Args>
+        requires std::invocable<F&&, Args&&...> && std::same_as<std::invoke_result_t<F&&, Args&&...>, void>
+    void invoke(F&& f, Args&&... args) noexcept(std::is_nothrow_invocable_v<F&&, Args&&...>) { std::invoke(std::forward<F>(f), std::forward<Args>(args)...); }
 
     /// @brief 标记 void 结果完成；无需保存任何值。
     static constexpr void return_void() noexcept {}
@@ -235,4 +241,3 @@ public:
 };
 
 } // namespace tfl
-

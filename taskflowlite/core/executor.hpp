@@ -24,6 +24,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <array>
 
 #include "graph.hpp"
 #include "traits.hpp"
@@ -41,7 +42,7 @@ namespace tfl {
 /// Executor 构造时创建固定数量的 Worker，并通过 Worker 本地 work-stealing 队列、
 /// 分片共享队列和 Notifier 协同完成任务发布、窃取、休眠与唤醒。
 ///
-/// 每个顶层 detach / async / run 执行链通过 `m_num_topologies` 参与 Executor
+/// 每个顶层 silent_async / async / run 执行链通过 `m_num_topologies` 参与 Executor
 /// 生命周期管理；析构会先等待该计数归零，再通知 Worker 退出并回收线程。
 ///
 /// Executor 不拥有以借用方式提交的外部对象，例如左值 Graph/Flow 和 WorkerHandler；
@@ -103,19 +104,41 @@ public:
     /// 已经 Finished 的依赖同样视为已经满足。
     ///
     /// @tparam T AsyncTask 句柄类型，保留调用实参的值类别。
-    /// @tparam Deps 前置 AsyncTask 依赖类型包。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
     /// @param task 待启动句柄，必须非空且尚未成功启动过。
     /// @param deps 前置依赖列表。
     /// @return task 为左值时返回原引用；为右值时按值返回移动后的句柄。
     /// @throws Exception task 为空或已经离开 Idle 状态。
     ///
     /// @note 启动成功后 task 所属 Topology 的 Executor 被绑定为当前 Executor。
-    template <async_task T, async_task... Deps>
+    template <async_task T, async_future... Deps>
     auto run(T&& task, Deps&&... deps) -> forward_return_t<T>;
 
     // ============================================================================
     // 即发即弃 API —— 提交任务并立即返回，不提供结果获取途径
     // ============================================================================
+
+    /// @brief 即发即弃执行单个可调用任务。
+    /// @tparam T 满足 basic_invocable concept 的任务体。
+    /// @param task 可调用对象。
+    template <typename T>
+        requires (basic_invocable<T> && capturable<T>)
+    void silent_async(T&& task);
+
+    /// @brief 即发即弃执行单个运行时任务（可通过 Runtime 动态操作图）。
+    /// @tparam T 满足 runtime_invocable concept。
+    /// @param task 可调用对象；框架在调用时注入栈绑定 `Runtime&`。
+    template <typename T>
+        requires (runtime_invocable<T> && capturable<T>)
+    void silent_async(T&& task);
+
+    /// @brief 即发即弃执行可接收 `SubFlow&` 的动态子图 callable。
+    /// @tparam T 满足 subflow_invocable concept 的任务体。
+    /// @param task 要执行的 callable；框架在调用时注入栈绑定 `SubFlow&`。
+    /// @warning callable 不得保存框架注入的 `SubFlow&`。
+    template <typename T>
+        requires (subflow_invocable<T> && capturable<T>)
+    void silent_async(T&& task);
 
     /// @brief 提交任务图执行一次（即发即弃）；给了 @p cb 则完成后执行。
     /// @tparam Gh 满足 graph_holder concept 的图持有者类型。
@@ -124,7 +147,7 @@ public:
     /// @param cb  完成回调，省略则不回调。若任务抛异常，cb 仍会被调用。
     template <graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
-    void detach(Gh&& gh, C&& cb = C{});
+    void silent_async(Gh&& gh, C&& cb = C{});
 
     /// @brief 提交任务图循环执行 @p num 次（即发即弃）；给了 @p cb 则完成后执行。
     /// @tparam Gh  满足 graph_holder concept。
@@ -134,7 +157,7 @@ public:
     /// @param cb   完成回调，省略则不回调。
     template <graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
-    void detach(Gh&& gh, std::uint64_t num, C&& cb = C{});
+    void silent_async(Gh&& gh, std::uint64_t num, C&& cb = C{});
 
     /// @brief 提交任务图按谓词条件循环执行（即发即弃）；给了 @p cb 则完成后执行。
     /// @tparam Gh   满足 graph_holder concept。
@@ -145,109 +168,120 @@ public:
     /// @param cb    完成回调，省略则不回调。
     template <graph_holder Gh, predicate P, callback C = noop_callback>
         requires capturable<P, C>
-    void detach(Gh&& gh, P&& pred, C&& cb = C{});
-
-    /// @brief 即发即弃执行单个可调用任务。
-    /// @tparam T    满足 basic_invocable concept 的任务体。
-    /// @tparam Args 任务参数类型包。
-    /// @param task  可调用对象。
-    /// @param args  任务参数。
-    template <typename T, typename... Args>
-        requires (basic_invocable<T, Args...> && capturable<T, Args...>)
-    void detach(T&& task, Args&&... args);
-
-    /// @brief 即发即弃执行单个运行时任务（可通过 Runtime 动态操作图）。
-    /// @tparam T    满足 runtime_invocable concept。
-    /// @tparam Args 任务参数类型包。
-    /// @param task  可调用对象（签名为 void(Runtime&, Args...)）。
-    /// @param args  任务参数。
-    template <typename T, typename... Args>
-        requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
-    void detach(T&& task, Args&&... args);
-
-    /// @brief 即发即弃执行可接收 `SubFlow&` 的动态子图 callable。
-    /// @tparam T 满足 subflow_invocable concept 的任务体。
-    /// @tparam Args 任务参数类型包。
-    /// @param task 要执行的 callable；框架在调用时注入栈绑定 `SubFlow&`。
-    /// @param args 按捕获规则保存并传入 task 的参数。
-    /// @warning callable 不得保存框架注入的 `SubFlow&`。
-    template <typename T, typename... Args>
-        requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
-    void detach(T&& task, Args&&... args);
+    void silent_async(Gh&& gh, P&& pred, C&& cb = C{});
 
     // ============================================================================
-    // 异步返回 API —— 提交任务并返回 AsyncFuture<R>，可阻塞等待结果
+    // 异步返回 API —— 提交任务并返回 AsyncFuture<R>，可附加动态前置依赖
     // ============================================================================
 
-    /// @brief 异步执行任务图一次；给了 @p cb 则完成后回调。返回 AsyncFuture<void> 用于等待完成。
-    /// @tparam Gh 满足 graph_holder concept。
-    /// @tparam C  完成回调类型，默认 noop_callback（无回调）。
-    /// @param gh  任务图持有者。
-    /// @param cb  完成回调，省略则不回调。回调中的异常会被归档到 AsyncFuture，通过 future.get() 可见。
-    /// @return    AsyncFuture<void>。调用 future.get() 可阻塞等待完成并传播异常。
-    template <graph_holder Gh, callback C = noop_callback>
-        requires capturable<C>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, C&& cb = C{});
-
-    /// @brief 异步执行任务图 @p num 次；给了 @p cb 则完成后回调。返回 AsyncFuture<void>。
-    /// @tparam Gh  满足 graph_holder concept。
-    /// @tparam C   完成回调类型，默认 noop_callback（无回调）。
-    /// @param gh   任务图持有者。
-    /// @param num  循环次数。
-    /// @param cb   完成回调，省略则不回调。
-    /// @return     AsyncFuture<void>。
-    template <graph_holder Gh, callback C = noop_callback>
-        requires capturable<C>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, C&& cb = C{});
-
-    /// @brief 异步执行任务图按谓词条件循环；给了 @p cb 则完成后回调。返回 AsyncFuture<void>。
-    /// @tparam Gh   满足 graph_holder concept。
-    /// @tparam P    满足 predicate concept。
-    /// @tparam C    完成回调类型，默认 noop_callback（无回调）。
-    /// @param gh    任务图持有者。
-    /// @param pred  循环谓词。
-    /// @param cb    完成回调，省略则不回调。
-    /// @return      AsyncFuture<void>。
-    template <graph_holder Gh, predicate P, callback C = noop_callback>
-        requires capturable<P, C>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, C&& cb = C{});
-
-    /// @brief 异步执行单个可调用任务，返回 AsyncFuture<R>。
+    /// @brief 异步执行单个可调用任务，并在全部前置依赖完成后开始执行。
     ///
-    /// @tparam T    满足 basic_invocable concept 的任务体。
-    /// @tparam Args 任务参数类型包。
-    /// @param task  可调用对象。
-    /// @param args  任务参数。
-    /// @return      AsyncFuture<basic_return_t<T, Args...>>。调用 future.get()
-    ///              阻塞等待任务完成并返回结果；若任务抛异常则 future.get() 重抛。
+    /// @tparam T 满足 basic_invocable concept 的任务体。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
+    /// @param task 可调用对象。
+    /// @param deps 前置依赖列表；已完成依赖立即视为满足。
+    /// @return AsyncFuture<basic_return_t<T>>。调用 future.get()
+    ///         阻塞等待任务完成并返回结果；若任务抛异常则 future.get() 重抛。
     ///
     /// @note 返回的 AsyncFuture 通过 Work 强引用保持任务状态存活，
     ///       `request_stop()` 直接作用于该任务的独立 Topology。
-    template <typename T, typename... Args>
-        requires (basic_invocable<T, Args...> && capturable<T, Args...>)
-    [[nodiscard]] auto async(T&& task, Args&&... args) -> AsyncFuture<basic_return_t<T, Args...>>;
+    template <typename T, async_future... Deps>
+        requires (basic_invocable<T> && capturable<T>)
+    [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<basic_return_t<T>>;
 
-    /// @brief 异步执行单个运行时任务，返回 AsyncFuture<R>。
+    /// @brief 异步执行单个运行时任务，并在全部前置依赖完成后开始执行。
     ///
-    /// @tparam T    满足 runtime_invocable concept 的任务体。
-    /// @tparam Args 任务参数类型包。
-    /// @param task  可调用对象（签名为 R(Runtime&, Args...)）。
-    /// @param args  任务参数。
-    /// @return      AsyncFuture<runtime_return_t<T, Args...>>。
-    template <typename T, typename... Args>
-        requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
-    [[nodiscard]] auto async(T&& task, Args&&... args) -> AsyncFuture<runtime_return_t<T, Args...>>;
+    /// @tparam T 满足 runtime_invocable concept 的任务体。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
+    /// @param task 可调用对象；框架在调用时注入栈绑定 `Runtime&`。
+    /// @param deps 前置依赖列表；已完成依赖立即视为满足。
+    /// @return AsyncFuture<runtime_return_t<T>>。
+    template <typename T, async_future... Deps>
+        requires (runtime_invocable<T> && capturable<T>)
+    [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<runtime_return_t<T>>;
 
-    /// @brief 异步执行可接收 `SubFlow&` 的 callable，并返回结果 AsyncFuture。
+    /// @brief 异步执行可接收 `SubFlow&` 的 callable，并在全部前置依赖完成后开始执行。
+    ///
     /// @tparam T 满足 subflow_invocable concept 的任务体。
-    /// @tparam Args 任务参数类型包。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
     /// @param task 要执行的 callable；框架在调用时注入栈绑定 `SubFlow&`。
-    /// @param args 按捕获规则保存并传入 task 的参数。
-    /// @return `AsyncFuture<R>`，其中 `R = subflow_return_t<T, Args...>`。
+    /// @param deps 前置依赖列表；已完成依赖立即视为满足。
+    /// @return `AsyncFuture<R>`，其中 `R = subflow_return_t<T>`。
     /// @warning callable 不得保存框架注入的 `SubFlow&`。
-    template <typename T, typename... Args>
-        requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
-    [[nodiscard]] auto async(T&& task, Args&&... args) -> AsyncFuture<subflow_return_t<T, Args...>>;
+    template <typename T, async_future... Deps>
+        requires (subflow_invocable<T> && capturable<T>)
+    [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_return_t<T>>;
+
+    /// @brief 异步执行任务图一次，并在全部前置依赖完成后开始执行。
+    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
+    /// @param gh 任务图持有者。
+    /// @param deps 前置依赖列表。
+    /// @return AsyncFuture<void>。
+    template <graph_holder Gh, async_future... Deps>
+    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, Deps&&... deps);
+
+    /// @brief 异步执行任务图一次，并在完成后执行回调。
+    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam C 完成回调类型。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
+    /// @param gh 任务图持有者。
+    /// @param cb 完成回调；回调异常会归档到 AsyncFuture。
+    /// @param deps 前置依赖列表。
+    /// @return AsyncFuture<void>。
+    template <graph_holder Gh, callback C, async_future... Deps>
+        requires capturable<C>
+    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, C&& cb, Deps&&... deps);
+
+    /// @brief 异步执行任务图 @p num 次，并在全部前置依赖完成后开始执行。
+    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
+    /// @param gh 任务图持有者。
+    /// @param num 循环次数。
+    /// @param deps 前置依赖列表。
+    /// @return AsyncFuture<void>。
+    template <graph_holder Gh, async_future... Deps>
+    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, Deps&&... deps);
+
+    /// @brief 异步执行任务图 @p num 次，并在完成后执行回调。
+    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam C 完成回调类型。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
+    /// @param gh 任务图持有者。
+    /// @param num 循环次数。
+    /// @param cb 完成回调。
+    /// @param deps 前置依赖列表。
+    /// @return AsyncFuture<void>。
+    template <graph_holder Gh, callback C, async_future... Deps>
+        requires capturable<C>
+    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps);
+
+    /// @brief 异步执行任务图按谓词条件循环，并在全部前置依赖完成后开始执行。
+    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam P 满足 predicate concept。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
+    /// @param gh 任务图持有者。
+    /// @param pred 循环谓词；返回 true 时停止，返回 false 时继续。
+    /// @param deps 前置依赖列表。
+    /// @return AsyncFuture<void>。
+    template <graph_holder Gh, predicate P, async_future... Deps>
+        requires capturable<P>
+    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, Deps&&... deps);
+
+    /// @brief 异步执行任务图按谓词条件循环，并在完成后执行回调。
+    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam P 满足 predicate concept。
+    /// @tparam C 完成回调类型。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
+    /// @param gh 任务图持有者。
+    /// @param pred 循环谓词；返回 true 时停止，返回 false 时继续。
+    /// @param cb 完成回调。
+    /// @param deps 前置依赖列表。
+    /// @return AsyncFuture<void>。
+    template <graph_holder Gh, predicate P, callback C, async_future... Deps>
+        requires capturable<P, C>
+    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps);
+
 
     // ============================================================================
     // 同步与状态查询
@@ -321,28 +355,29 @@ private:
     /// @brief 执行 Executor 关闭序列：等待顶层拓扑归零、请求终止、统一唤醒并 join Worker。
     void _shutdown() noexcept;
 
-    /// @brief 发布一个顶层 Detached Work，并维护 Executor 活跃 topology 计数。
+    /// @brief 发布一个顶层 SilentAsync Work，并维护 Executor 活跃 topology 计数.
     ///
     /// 发布前先增加 `m_num_topologies`；若调度在 Work 尚未成功发布前抛出异常，
-    /// 则撤销 topology 计数并销毁该 Detached Work。
+    /// 则撤销 topology 计数并销毁该 SilentAsync Work.
     ///
-    /// @param work 已完成构造、尚未发布的 Detached Work。
+    /// @param work 已完成构造、尚未发布的 SilentAsync Work.
     /// @pre work 非空，且 `_schedule()` 抛异常时保证 work 尚未被调度器发布。
-    void _schedule_detached(Work* work);
+    void _launch_silent_async(Work* work);
 
-    /// @brief 发布一个顶层 Joinable Work，并建立 Future 与执行生命周期引用。
+
+    /// @brief 发布一个顶层 Async Work，并按动态前置依赖决定是否立即调度。
     ///
     /// 返回的 Future 持有一份外部强引用；任务执行期间额外持有一份执行强引用。
-    /// 若调度在 Work 尚未成功发布前抛出异常，则撤销 topology 计数和执行引用；
-    /// 局部 Future 随栈展开释放其强引用，并在最后一个引用离开时销毁 Work。
+    /// 存在未完成依赖时，Work 暂不进入调度队列，由最后一个完成的前驱负责发布。
     ///
-    /// @tparam R 子任务结果类型。
-    /// @param work 已完成构造、尚未发布的 Joinable Work。
+    /// @tparam R 任务结果类型。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
+    /// @param work 已完成构造、尚未发布的 Async Work。
     /// @param result 与 work 绑定的结果槽。
+    /// @param deps 前置依赖列表。
     /// @return 关联该顶层任务的 AsyncFuture。
-    /// @pre work 与 result 均非空，且 `_schedule()` 抛异常时保证 work 尚未被调度器发布。
-    template <typename R>
-    [[nodiscard]] AsyncFuture<R> _schedule_joinable(Work* work, ResultSlot<R>* result);
+    template <typename R, async_future... Deps>
+    [[nodiscard]] AsyncFuture<R> _launch_async(Work* work, ResultSlot<R>* result, const Deps&... deps);
 
     /// @brief 执行一个 Work，并沿 `cache` 接力链连续执行后续就绪任务。
     ///
@@ -455,27 +490,15 @@ private:
     /// @param targets 要强制激活的目标集合，可为空。
     void _tear_down_multi_jump_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets);
 
-    /// @brief 完成 Detached Work，销毁节点并结束其父 slot 或顶层 topology 生命周期。
+    /// @brief 完成 SilentAsync Work，销毁节点并结束其父 slot 或顶层 topology 生命周期.
     ///
-    /// Detached 没有外部 Future 强引用，执行结束后立即 `destroy_work()`；随后若存在
-    /// parent 则归还 parent slot，否则递减 Executor 的顶层拓扑计数。
+    /// SilentAsync 不持有外部 AsyncFuture 强引用，执行结束后立即 `destroy_work()`；
+    /// 若存在 parent 则归还 parent slot，否则递减 Executor 的顶层 topology 计数.
     ///
-    /// @param w 已完成的 Detached Work。
-    /// @param wr 当前 Worker。
-    /// @param cache cache 接力槽。
-    void _tear_down_detached_task(Work& w, Worker& wr, Work*& cache);
-
-
-    /// @brief 完成 Joinable Work，发布 Finished、唤醒 Future 等待者并释放执行强引用。
-    ///
-    /// Joinable 不接受运行期动态后继，因此完成路径无需与 LOCKED 插边竞争。
-    /// 执行引用释放后，若仍有 AsyncFuture 等外部强引用，Work 与 ResultStorage
-    /// 继续存活；否则立即销毁。
-    ///
-    /// @param w 已完成的 Joinable Work。
-    /// @param wr 当前 Worker。
-    /// @param cache cache 接力槽。
-    void _tear_down_joinable_task(Work& w, Worker& wr, Work*& cache);
+    /// @param w 已完成的 SilentAsync Work.
+    /// @param wr 当前 Worker.
+    /// @param cache cache 接力槽.
+    void _tear_down_silent_async_task(Work& w, Worker& wr, Work*& cache);
 
     /// @brief 将一组 AsyncTask 作为 @p w 的动态前驱，并修正尚未满足的依赖数量。
     ///
@@ -493,7 +516,7 @@ private:
         requires std::convertible_to<std::iter_reference_t<I>, Work*>
     void _link_predecessors(Work* w, I first, S last, std::size_t& num_predecessors);
 
-    /// @brief 完成 Attached AsyncTask，冻结动态后继表并向所有后继传播完成信号。
+    /// @brief 完成 AsyncTask AsyncTask，冻结动态后继表并向所有后继传播完成信号。
     ///
     /// 完成路径通过 CAS 与 `_link_predecessors()` 的 LOCKED 插边协议竞争，只有在
     /// 未锁定 Running 状态下才能发布 Finished。成功后动态边表被冻结，随后逐个
@@ -502,10 +525,10 @@ private:
     ///
     /// 最后释放执行期间持有的 Work 强引用，并归还 parent slot 或顶层 topology 计数。
     ///
-    /// @param w 已完成的 Attached Work。
+    /// @param w 已完成的 AsyncTask Work。
     /// @param wr 当前 Worker。
     /// @param cache cache 接力槽。
-    void _tear_down_attached_task(Work& w, Worker& wr, Work*& cache);
+    void _tear_down_async_task(Work& w, Worker& wr, Work*& cache);
 
     /// @brief 将单个 Work 发布到共享分片队列。
     ///
@@ -639,13 +662,14 @@ inline Executor::~Executor() noexcept {
 // ============================================================================
 // Executor::run(AsyncTask)
 // ============================================================================
-
-template <async_task T, async_task... Deps>
+template <async_task T, async_future... Deps>
 inline auto Executor::run(T&& task, Deps&&... deps) -> forward_return_t<T> {
     task._start(*this, std::forward<Deps>(deps)...);
     return std::forward<T>(task);
 }
-inline void Executor::_schedule_detached(Work* work) {
+
+
+inline void Executor::_launch_silent_async(Work* work) {
     TFL_ASSERT(work);
 
     _increment_topology();
@@ -663,16 +687,32 @@ inline void Executor::_schedule_detached(Work* work) {
     }
 }
 
-template <typename R>
-inline AsyncFuture<R> Executor::_schedule_joinable(Work* work, ResultSlot<R>* result) {
+template <typename R, async_future... Deps>
+inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result, const Deps&... deps) {
     TFL_ASSERT(work);
     TFL_ASSERT(result);
 
     AsyncFuture<R> future{work, result};
 
-    // 执行生命周期额外持有一份强引用，由 Joinable tear-down 释放。
+    auto& control = work->m_topology->m_control;
+    auto current = control.load(std::memory_order_relaxed);
+    control.store(Topology::Control::set_status(current, Topology::Control::Status::Running), std::memory_order_relaxed);
+
+    // 执行生命周期额外持有一份强引用，由 Async tear-down 释放。
     work->_increment_ref();
     _increment_topology();
+
+    if constexpr (sizeof...(Deps) != 0) {
+        std::array<Work*, sizeof...(Deps)> predecessors{deps.m_work...};
+        std::size_t num_predecessors = sizeof...(Deps);
+
+        work->m_join_counter.store(num_predecessors, std::memory_order_relaxed);
+        _link_predecessors(work, predecessors.begin(), predecessors.end(), num_predecessors);
+
+        if (num_predecessors != 0) {
+            return future;
+        }
+    }
 
     try {
         if (Worker* worker = _this_worker()) {
@@ -683,12 +723,10 @@ inline AsyncFuture<R> Executor::_schedule_joinable(Work* work, ResultSlot<R>* re
     } catch (...) {
         _decrement_topology();
 
-        // 此时 future 仍持有一份强引用，因此释放执行引用不会提前销毁 work。
         if (work->_decrement_ref()) {
             destroy_work(work);
         }
 
-        // throw 后局部 future 析构并释放其强引用；若它是最后一个引用则负责销毁。
         throw;
     }
 
@@ -698,89 +736,120 @@ inline AsyncFuture<R> Executor::_schedule_joinable(Work* work, ResultSlot<R>* re
 // ============================================================================
 // Executor：独立顶层 fire-and-forget
 // ============================================================================
+template <typename T>
+    requires (basic_invocable<T> && capturable<T>)
+inline void Executor::silent_async(T&& task) {
+    Work* work = make_silent_async_basic(*this, nullptr, nullptr, std::forward<T>(task));
+    _launch_silent_async(work);
+}
 
-template <graph_holder Gh, callback C>
-    requires capturable<C>
-inline void Executor::detach(Gh&& gh, C&& cb) {
-    detach(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
+template <typename T>
+    requires (runtime_invocable<T> && capturable<T>)
+inline void Executor::silent_async(T&& task) {
+    Work* work = make_silent_async_runtime(*this, nullptr, nullptr, std::forward<T>(task));
+    _launch_silent_async(work);
+}
+
+template <typename T>
+    requires (subflow_invocable<T> && capturable<T>)
+inline void Executor::silent_async(T&& task) {
+    Work* work = make_silent_async_subflow(*this, nullptr, nullptr, std::forward<T>(task));
+    _launch_silent_async(work);
 }
 
 template <graph_holder Gh, callback C>
     requires capturable<C>
-inline void Executor::detach(Gh&& gh, std::uint64_t num, C&& cb) {
-    detach(std::forward<Gh>(gh), [num]() mutable noexcept  -> bool { return num-- == 0; }, std::forward<C>(cb));
+inline void Executor::silent_async(Gh&& gh, C&& cb) {
+    silent_async(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
+}
+
+template <graph_holder Gh, callback C>
+    requires capturable<C>
+inline void Executor::silent_async(Gh&& gh, std::uint64_t num, C&& cb) {
+    silent_async(std::forward<Gh>(gh), [num]() mutable noexcept  -> bool { return num-- == 0; }, std::forward<C>(cb));
 }
 
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
-inline void Executor::detach(Gh&& gh, P&& pred, C&& cb) {
-    Work* work = make_detached_module(*this, nullptr, nullptr, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
-    _schedule_detached(work);
+inline void Executor::silent_async(Gh&& gh, P&& pred, C&& cb) {
+    Work* work = make_silent_async_module(*this, nullptr, nullptr, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
+    _launch_silent_async(work);
 }
 
-template <typename T, typename... Args>
-    requires (basic_invocable<T, Args...> && capturable<T, Args...>)
-inline void Executor::detach(T&& task, Args&&... args) {
-    Work* work = make_detached_basic(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
-    _schedule_detached(work);
-}
-
-template <typename T, typename... Args>
-    requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
-inline void Executor::detach(T&& task, Args&&... args) {
-    Work* work = make_detached_runtime(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
-    _schedule_detached(work);
-}
-
-template <typename T, typename... Args>
-    requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
-inline void Executor::detach(T&& task, Args&&... args) {
-    Work* work = make_detached_subflow(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
-    _schedule_detached(work);
-}
 
 // ============================================================================
 // Executor：独立顶层带结果任务
 // ============================================================================
 
-template <graph_holder Gh, callback C>
-    requires capturable<C>
-inline AsyncFuture<void> Executor::async(Gh&& gh, C&& cb) {
-    return async(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
+template <typename T, async_future... Deps>
+    requires (basic_invocable<T> && capturable<T>)
+inline auto Executor::async(T&& task, Deps&&... deps) -> AsyncFuture<basic_return_t<T>> {
+    auto [work, result] = make_async_basic(*this, nullptr, nullptr, std::forward<T>(task));
+    return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, callback C>
-    requires capturable<C>
-inline AsyncFuture<void> Executor::async(Gh&& gh, std::uint64_t num, C&& cb) {
-    return async(std::forward<Gh>(gh), [num]() mutable noexcept { return num-- == 0; }, std::forward<C>(cb));
+template <typename T, async_future... Deps>
+    requires (runtime_invocable<T> && capturable<T>)
+inline auto Executor::async(T&& task, Deps&&... deps) -> AsyncFuture<runtime_return_t<T>> {
+    auto [work, result] = make_async_runtime(*this, nullptr, nullptr, std::forward<T>(task));
+    return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, predicate P, callback C>
+template <typename T, async_future... Deps>
+    requires (subflow_invocable<T> && capturable<T>)
+inline auto Executor::async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_return_t<T>> {
+    auto [work, result] = make_async_subflow(*this, nullptr, nullptr, std::forward<T>(task));
+    return _launch_async(work, result, std::forward<Deps>(deps)...);
+}
+
+template <graph_holder Gh, async_future... Deps>
+inline AsyncFuture<void> Executor::async(Gh&& gh, Deps&&... deps) {
+    return async(std::forward<Gh>(gh), std::uint64_t{1}, noop_callback{}, std::forward<Deps>(deps)...);
+}
+
+template <graph_holder Gh, callback C, async_future... Deps>
+    requires capturable<C>
+inline AsyncFuture<void> Executor::async(Gh&& gh, C&& cb, Deps&&... deps) {
+    return async(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb), std::forward<Deps>(deps)...);
+}
+
+template <graph_holder Gh, async_future... Deps>
+inline AsyncFuture<void> Executor::async(Gh&& gh, std::uint64_t num, Deps&&... deps) {
+    return async(std::forward<Gh>(gh),
+                 [num]() mutable noexcept -> bool { return num-- == 0; },
+                 noop_callback{},
+                 std::forward<Deps>(deps)...);
+}
+
+template <graph_holder Gh, callback C, async_future... Deps>
+    requires capturable<C>
+inline AsyncFuture<void> Executor::async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) {
+    return async(std::forward<Gh>(gh),
+                 [num]() mutable noexcept -> bool { return num-- == 0; },
+                 std::forward<C>(cb),
+                 std::forward<Deps>(deps)...);
+}
+
+template <graph_holder Gh, predicate P, async_future... Deps>
+    requires capturable<P>
+inline AsyncFuture<void> Executor::async(Gh&& gh, P&& pred, Deps&&... deps) {
+    return async(std::forward<Gh>(gh),
+                 std::forward<P>(pred),
+                 noop_callback{},
+                 std::forward<Deps>(deps)...);
+}
+
+template <graph_holder Gh, predicate P, callback C, async_future... Deps>
     requires capturable<P, C>
-inline AsyncFuture<void> Executor::async(Gh&& gh, P&& pred, C&& cb) {
-    auto [work, result] = make_joinable_module(*this, nullptr, nullptr, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
-    return _schedule_joinable(work, result);
-}
+inline AsyncFuture<void> Executor::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) {
+    auto [work, result] = make_async_module(*this,
+                                               nullptr,
+                                               nullptr,
+                                               std::forward<Gh>(gh),
+                                               std::forward<P>(pred),
+                                               std::forward<C>(cb));
 
-template <typename T, typename... Args>
-    requires (basic_invocable<T, Args...> && capturable<T, Args...>)
-inline auto Executor::async(T&& task, Args&&... args) -> AsyncFuture<basic_return_t<T, Args...>> {
-    auto [work, result] = make_joinable_basic(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
-    return _schedule_joinable(work, result);
-}
-
-template <typename T, typename... Args>
-    requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
-inline auto Executor::async(T&& task, Args&&... args) -> AsyncFuture<runtime_return_t<T, Args...>> {
-    auto [work, result] = make_joinable_runtime(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
-    return _schedule_joinable(work, result);
-}
-
-template <typename T, typename... Args>
-    requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
-inline auto Executor::async(T&& task, Args&&... args) -> AsyncFuture<subflow_return_t<T, Args...>> {
-    auto [work, result] = make_joinable_subflow(*this, nullptr, nullptr, std::forward<T>(task), std::forward<Args>(args)...);
-    return _schedule_joinable(work, result);
+    return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
 inline void Executor::wait_for_all() const noexcept {
@@ -1284,15 +1353,15 @@ TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work& w, Worker& wr, 
 }
 
 
-/// @brief 完成 Detached 异步任务，立即销毁 Work，并结束所属父 slot 或顶层 topology。
+/// @brief 完成 SilentAsync 异步任务，立即销毁 Work，并结束所属父 slot 或顶层 topology。
 ///
-/// Detached 不向调用方暴露结果句柄，因此执行完成后不需要为外部观察者保留 Work。
+/// SilentAsync 不向调用方暴露结果句柄，因此执行完成后不需要为外部观察者保留 Work。
 /// 函数先缓存 parent，再销毁当前节点；之后若存在 parent 则归还一个 join slot，
 /// 否则递减 Executor 的顶层 topology 计数。
-TFL_FORCE_INLINE void Executor::_tear_down_detached_task(Work& w, Worker& wr, Work*& cache) {
+TFL_FORCE_INLINE void Executor::_tear_down_silent_async_task(Work& w, Worker& wr, Work*& cache) {
     Work* const parent = w.m_parent;
 
-    // parent 已提前保存；Detached 没有外部强引用，当前执行结束后即可立即回收 Work。
+    // parent 已提前保存；SilentAsync 没有外部强引用，当前执行结束后即可立即回收 Work。
     destroy_work(std::addressof(w));
 
     if (parent) {
@@ -1302,42 +1371,6 @@ TFL_FORCE_INLINE void Executor::_tear_down_detached_task(Work& w, Worker& wr, Wo
     }
 }
 
-
-/// @brief 完成 Joinable 异步任务，发布 Finished、唤醒等待者并释放执行强引用。
-///
-/// Joinable 由 AsyncFuture 观察，不参与 AsyncTask 的运行期动态后继插入协议，因此完成时
-/// 不需要等待 Topology::Control::LOCKED。Finished 以 release 语义发布后立即 notify_all。
-///
-/// ResultStorage 与 Work 共生命周期；若仍存在 AsyncFuture 等外部强引用，结果继续保留。
-/// 若本次执行引用恰好是最后一个强引用，则当前线程立即销毁 Work。
-TFL_FORCE_INLINE void Executor::_tear_down_joinable_task(Work& w, Worker& wr, Work*& cache) {
-    Topology* const topology = w.m_topology;
-    Work* const parent = w.m_parent;
-
-    auto& control = topology->m_control;
-
-    const auto previous = control.fetch_or(Topology::Control::state_bits(Topology::Control::Status::Finished), std::memory_order_release);
-
-    TFL_ASSERT(Topology::Control::status(previous) == Topology::Control::Status::Running);
-    TFL_ASSERT(!Topology::Control::locked(previous));
-
-    control.notify_all();
-
-    // 释放本次执行持有的一份强引用。
-    //
-    // Future 等外部句柄仍然持有引用时，Work 和 ResultStorage 继续存活；
-    // 当前执行引用若是最后一份强引用，则由当前线程立即销毁。
-    if (w._decrement_ref()) {
-        destroy_work(std::addressof(w));
-    }
-
-    // 上一步可能已经销毁 w，因此从这里开始禁止再次访问 w，只使用提前缓存的 parent。
-    if (parent) {
-        _schedule_parent(parent, wr, cache);
-    } else {
-        _decrement_topology();
-    }
-}
 
 template <std::forward_iterator I, std::sentinel_for<I> S>
     requires std::convertible_to<std::iter_reference_t<I>, Work*>
@@ -1387,7 +1420,7 @@ TFL_FORCE_INLINE void Executor::_link_predecessors(Work* w, I first, S last, std
     }
 }
 
-TFL_FORCE_INLINE void Executor::_tear_down_attached_task(Work& w, Worker& wr, Work*& cache) {
+TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*& cache) {
     Topology* const topology = w.m_topology;
     Work* const parent = w.m_parent;
     auto& control = topology->m_control;
@@ -1553,7 +1586,6 @@ inline void Executor::_schedule_parent(Work* parent, Worker& wr, Work*& cache) {
             if (cache) {
                 _schedule(wr, cache);
             }
-
             cache = parent;
         }
     }
@@ -1562,9 +1594,7 @@ inline void Executor::_schedule_parent(Work* parent, Worker& wr, Work*& cache) {
 inline void Executor::_schedule_from_semaphore(Worker& wr, SmallVector<Work*>& waiters) {
     for (Work* work : waiters) {
         Executor* const executor = work->m_topology->m_executor;
-
         TFL_ASSERT(executor);
-
         if (executor == this) [[likely]] {
             _schedule(wr, work);
         } else {

@@ -361,74 +361,74 @@ public:
     /// 典型用途是先通过 `FlowBuilder::placeholder()` 建立图结构，再补充实际执行体。
     ///
     /// @warning 不得与当前 Graph 的执行并发调用。
-    template <typename T, typename... Args>
-        requires (basic_invocable<T, Args...> && capturable<T, Args...>)
-    Task& work(T&& task, Args&&... args) &;
+    template <typename T>
+        requires (basic_invocable<T> && capturable<T>)
+    Task& work(T&& task) &;
 
     /// @brief 在右值 Task 上替换普通 callable，并返回修改后的 Task。
-    template <typename T, typename... Args>
-        requires (basic_invocable<T, Args...> && capturable<T, Args...>)
-    Task work(T&& task, Args&&... args) &&;
+    template <typename T>
+        requires (basic_invocable<T> && capturable<T>)
+    Task work(T&& task) &&;
 
     /// @brief 将当前静态图节点的执行体替换为单目标条件分支 callable。
-    template <typename T, typename... Args>
-        requires (branch_invocable<T, Args...> && capturable<T, Args...>)
-    Task& work(T&& task, Args&&... args) &;
+    template <typename T>
+        requires (branch_invocable<T> && capturable<T>)
+    Task& work(T&& task) &;
 
     /// @brief 在右值 Task 上替换单目标条件分支 callable。
-    template <typename T, typename... Args>
-        requires (branch_invocable<T, Args...> && capturable<T, Args...>)
-    Task work(T&& task, Args&&... args) &&;
+    template <typename T>
+        requires (branch_invocable<T> && capturable<T>)
+    Task work(T&& task) &&;
 
     /// @brief 将当前静态图节点的执行体替换为多目标条件分支 callable。
-    template <typename T, typename... Args>
-        requires (multi_branch_invocable<T, Args...> && capturable<T, Args...>)
-    Task& work(T&& task, Args&&... args) &;
+    template <typename T>
+        requires (multi_branch_invocable<T> && capturable<T>)
+    Task& work(T&& task) &;
 
     /// @brief 在右值 Task 上替换多目标条件分支 callable。
-    template <typename T, typename... Args>
-        requires (multi_branch_invocable<T, Args...> && capturable<T, Args...>)
-    Task work(T&& task, Args&&... args) &&;
+    template <typename T>
+        requires (multi_branch_invocable<T> && capturable<T>)
+    Task work(T&& task) &&;
 
     /// @brief 将当前静态图节点的执行体替换为单目标 Jump callable。
-    template <typename T, typename... Args>
-        requires (jump_invocable<T, Args...> && capturable<T, Args...>)
-    Task& work(T&& task, Args&&... args) &;
+    template <typename T>
+        requires (jump_invocable<T> && capturable<T>)
+    Task& work(T&& task) &;
 
     /// @brief 在右值 Task 上替换单目标 Jump callable。
-    template <typename T, typename... Args>
-        requires (jump_invocable<T, Args...> && capturable<T, Args...>)
-    Task work(T&& task, Args&&... args) &&;
+    template <typename T>
+        requires (jump_invocable<T> && capturable<T>)
+    Task work(T&& task) &&;
 
     /// @brief 将当前静态图节点的执行体替换为多目标 MultiJump callable。
-    template <typename T, typename... Args>
-        requires (multi_jump_invocable<T, Args...> && capturable<T, Args...>)
-    Task& work(T&& task, Args&&... args) &;
+    template <typename T>
+        requires (multi_jump_invocable<T> && capturable<T>)
+    Task& work(T&& task) &;
 
     /// @brief 在右值 Task 上替换多目标 MultiJump callable。
-    template <typename T, typename... Args>
-        requires (multi_jump_invocable<T, Args...> && capturable<T, Args...>)
-    Task work(T&& task, Args&&... args) &&;
+    template <typename T>
+        requires (multi_jump_invocable<T> && capturable<T>)
+    Task work(T&& task) &&;
 
     /// @brief 将当前静态图节点的执行体替换为 Runtime callable。
-    template <typename T, typename... Args>
-        requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
-    Task& work(T&& task, Args&&... args) &;
+    template <typename T>
+        requires (runtime_invocable<T> && capturable<T>)
+    Task& work(T&& task) &;
 
     /// @brief 在右值 Task 上替换 Runtime callable。
-    template <typename T, typename... Args>
-        requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
-    Task work(T&& task, Args&&... args) &&;
+    template <typename T>
+        requires (runtime_invocable<T> && capturable<T>)
+    Task work(T&& task) &&;
 
     /// @brief 将当前静态图节点的执行体替换为 SubFlow callable。
-    template <typename T, typename... Args>
-        requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
-    Task& work(T&& task, Args&&... args) &;
+    template <typename T>
+        requires (subflow_invocable<T> && capturable<T>)
+    Task& work(T&& task) &;
 
     /// @brief 在右值 Task 上替换 SubFlow callable。
-    template <typename T, typename... Args>
-        requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
-    Task work(T&& task, Args&&... args) &&;
+    template <typename T>
+        requires (subflow_invocable<T> && capturable<T>)
+    Task work(T&& task) &&;
 
     /// @brief 将当前静态图节点替换为单次执行的 Module 节点。
     template <graph_holder Gh>
@@ -738,21 +738,41 @@ inline void Task::_replace_work(Args&&... args) {
 }
 
 // ============================================================================
-// Branch
+// Basic
 // ============================================================================
 
-template <typename T, typename... Args>
-    requires (branch_invocable<T, Args...> && capturable<T, Args...>)
-inline Task& Task::work(T&& task, Args&&... args) & {
-    using Invoker = BranchInvoker<std::decay_t<T>, std::decay_t<Args>...>;
-    _replace_work<Invoker>(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (basic_invocable<T> && capturable<T>)
+inline Task& Task::work(T&& task) & {
+    using Invoker = BasicInvoker<std::decay_t<T>>;
+    _replace_work<Invoker>(std::forward<T>(task));
     return *this;
 }
 
-template <typename T, typename... Args>
-    requires (branch_invocable<T, Args...> && capturable<T, Args...>)
-inline Task Task::work(T&& task, Args&&... args) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (basic_invocable<T> && capturable<T>)
+inline Task Task::work(T&& task) && {
+    static_cast<Task&>(*this).work(std::forward<T>(task));
+    return std::move(*this);
+}
+
+
+// ============================================================================
+// Branch
+// ============================================================================
+
+template <typename T>
+    requires (branch_invocable<T> && capturable<T>)
+inline Task& Task::work(T&& task) & {
+    using Invoker = BranchInvoker<std::decay_t<T>>;
+    _replace_work<Invoker>(std::forward<T>(task));
+    return *this;
+}
+
+template <typename T>
+    requires (branch_invocable<T> && capturable<T>)
+inline Task Task::work(T&& task) && {
+    static_cast<Task&>(*this).work(std::forward<T>(task));
     return std::move(*this);
 }
 
@@ -761,18 +781,18 @@ inline Task Task::work(T&& task, Args&&... args) && {
 // MultiBranch
 // ============================================================================
 
-template <typename T, typename... Args>
-    requires (multi_branch_invocable<T, Args...> && capturable<T, Args...>)
-inline Task& Task::work(T&& task, Args&&... args) & {
-    using Invoker = MultiBranchInvoker<std::decay_t<T>, std::decay_t<Args>...>;
-    _replace_work<Invoker>(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (multi_branch_invocable<T> && capturable<T>)
+inline Task& Task::work(T&& task) & {
+    using Invoker = MultiBranchInvoker<std::decay_t<T>>;
+    _replace_work<Invoker>(std::forward<T>(task));
     return *this;
 }
 
-template <typename T, typename... Args>
-    requires (multi_branch_invocable<T, Args...> && capturable<T, Args...>)
-inline Task Task::work(T&& task, Args&&... args) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (multi_branch_invocable<T> && capturable<T>)
+inline Task Task::work(T&& task) && {
+    static_cast<Task&>(*this).work(std::forward<T>(task));
     return std::move(*this);
 }
 
@@ -781,18 +801,18 @@ inline Task Task::work(T&& task, Args&&... args) && {
 // Jump
 // ============================================================================
 
-template <typename T, typename... Args>
-    requires (jump_invocable<T, Args...> && capturable<T, Args...>)
-inline Task& Task::work(T&& task, Args&&... args) & {
-    using Invoker = JumpInvoker<std::decay_t<T>, std::decay_t<Args>...>;
-    _replace_work<Invoker>(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (jump_invocable<T> && capturable<T>)
+inline Task& Task::work(T&& task) & {
+    using Invoker = JumpInvoker<std::decay_t<T>>;
+    _replace_work<Invoker>(std::forward<T>(task));
     return *this;
 }
 
-template <typename T, typename... Args>
-    requires (jump_invocable<T, Args...> && capturable<T, Args...>)
-inline Task Task::work(T&& task, Args&&... args) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (jump_invocable<T> && capturable<T>)
+inline Task Task::work(T&& task) && {
+    static_cast<Task&>(*this).work(std::forward<T>(task));
     return std::move(*this);
 }
 
@@ -801,18 +821,18 @@ inline Task Task::work(T&& task, Args&&... args) && {
 // MultiJump
 // ============================================================================
 
-template <typename T, typename... Args>
-    requires (multi_jump_invocable<T, Args...> && capturable<T, Args...>)
-inline Task& Task::work(T&& task, Args&&... args) & {
-    using Invoker = MultiJumpInvoker<std::decay_t<T>, std::decay_t<Args>...>;
-    _replace_work<Invoker>(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (multi_jump_invocable<T> && capturable<T>)
+inline Task& Task::work(T&& task) & {
+    using Invoker = MultiJumpInvoker<std::decay_t<T>>;
+    _replace_work<Invoker>(std::forward<T>(task));
     return *this;
 }
 
-template <typename T, typename... Args>
-    requires (multi_jump_invocable<T, Args...> && capturable<T, Args...>)
-inline Task Task::work(T&& task, Args&&... args) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (multi_jump_invocable<T> && capturable<T>)
+inline Task Task::work(T&& task) && {
+    static_cast<Task&>(*this).work(std::forward<T>(task));
     return std::move(*this);
 }
 
@@ -821,18 +841,18 @@ inline Task Task::work(T&& task, Args&&... args) && {
 // Runtime
 // ============================================================================
 
-template <typename T, typename... Args>
-    requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
-inline Task& Task::work(T&& task, Args&&... args) & {
-    using Invoker = RuntimeInvoker<std::decay_t<T>, std::decay_t<Args>...>;
-    _replace_work<Invoker>(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (runtime_invocable<T> && capturable<T>)
+inline Task& Task::work(T&& task) & {
+    using Invoker = RuntimeInvoker<std::decay_t<T>>;
+    _replace_work<Invoker>(std::forward<T>(task));
     return *this;
 }
 
-template <typename T, typename... Args>
-    requires (runtime_invocable<T, Args...> && capturable<T, Args...>)
-inline Task Task::work(T&& task, Args&&... args) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (runtime_invocable<T> && capturable<T>)
+inline Task Task::work(T&& task) && {
+    static_cast<Task&>(*this).work(std::forward<T>(task));
     return std::move(*this);
 }
 
@@ -841,18 +861,18 @@ inline Task Task::work(T&& task, Args&&... args) && {
 // SubFlow
 // ============================================================================
 
-template <typename T, typename... Args>
-    requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
-inline Task& Task::work(T&& task, Args&&... args) & {
-    using Invoker = SubFlowInvoker<std::decay_t<T>, std::decay_t<Args>...>;
-    _replace_work<Invoker>(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (subflow_invocable<T> && capturable<T>)
+inline Task& Task::work(T&& task) & {
+    using Invoker = SubFlowInvoker<std::decay_t<T>>;
+    _replace_work<Invoker>(std::forward<T>(task));
     return *this;
 }
 
-template <typename T, typename... Args>
-    requires (subflow_invocable<T, Args...> && capturable<T, Args...>)
-inline Task Task::work(T&& task, Args&&... args) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task), std::forward<Args>(args)...);
+template <typename T>
+    requires (subflow_invocable<T> && capturable<T>)
+inline Task Task::work(T&& task) && {
+    static_cast<Task&>(*this).work(std::forward<T>(task));
     return std::move(*this);
 }
 

@@ -86,21 +86,19 @@ do {                                                                            
 
 /// @brief 为普通同步 callable 节点提供公共存储、固定 `TaskType::Basic` 和 D2 渲染语义。
 ///
-/// BasicWork 按值保存 callable 与参数，但不负责停止检查、Semaphore、Observer、
+/// BasicWork 按值保存 callable，但不负责停止检查、Semaphore、Observer、
 /// 异常归档或依赖传播；这些执行协议由具体 Basic Invoker 与 Executor 完成。
 ///
 /// @tparam F 节点按值拥有的 callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
+template <typename F>
 class BasicWork {
 public:
     static constexpr TaskType TYPE = TaskType::Basic;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit BasicWork(U&& f, Us&&... args)
-        : m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit BasicWork(U&& f)
+        : m_func{std::forward<U>(f)} {}
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
@@ -108,28 +106,25 @@ public:
 
 protected:
     TFL_NO_UNIQUE_ADDRESS F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 };
 
 
-/// @brief 为单目标条件分支节点提供 callable/参数存储、`TaskType::Branch` 和 D2 渲染语义。
+/// @brief 为单目标条件分支节点提供 callable 存储、`TaskType::Branch` 和 D2 渲染语义。
 ///
-/// 该内部基类按值保存 callable 与参数，不保存本次分支选择结果；具体 Invoker
+/// 该内部基类按值保存 callable，不保存本次分支选择结果；具体 Invoker
 /// 在执行期创建栈绑定 `Branch`，由用户 callable 选择至多一个后继，再交由
 /// Executor 的 Branch tear-down 路径传播依赖。
 ///
 /// @tparam F 节点按值拥有的 callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
+template <typename F>
 class BranchWork {
 public:
     static constexpr TaskType TYPE = TaskType::Branch;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit BranchWork(U&& f, Us&&... args)
-        : m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit BranchWork(U&& f)
+        : m_func{std::forward<U>(f)} {}
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "diamond", "#dbeafe", "#3b82f6", "#1e3a5f", "8");
@@ -137,27 +132,24 @@ public:
 
 protected:
     TFL_NO_UNIQUE_ADDRESS F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 };
 
 
-/// @brief 为多目标条件分支节点提供 callable/参数存储、`TaskType::MultiBranch` 和 D2 渲染语义。
+/// @brief 为多目标条件分支节点提供 callable 存储、`TaskType::MultiBranch` 和 D2 渲染语义。
 ///
-/// 该内部基类按值保存 callable 与参数；具体 Invoker 在执行期创建栈绑定
+/// 该内部基类按值保存 callable；具体 Invoker 在执行期创建栈绑定
 /// `MultiBranch`，允许用户选择零个或多个后继，并由专用 tear-down 路径批量传播。
 ///
 /// @tparam F 节点按值拥有的 callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
+template <typename F>
 class MultiBranchWork {
 public:
     static constexpr TaskType TYPE = TaskType::MultiBranch;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit MultiBranchWork(U&& f, Us&&... args)
-        : m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit MultiBranchWork(U&& f)
+        : m_func{std::forward<U>(f)} {}
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "hexagon", "#bfdbfe", "#2563eb", "#1e3a5f", "8");
@@ -165,27 +157,24 @@ public:
 
 protected:
     TFL_NO_UNIQUE_ADDRESS F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 };
 
 
-/// @brief 为单目标跳转节点提供 callable/参数存储、`TaskType::Jump` 和 D2 渲染语义。
+/// @brief 为单目标跳转节点提供 callable 存储、`TaskType::Jump` 和 D2 渲染语义。
 ///
 /// Jump 节点通过专用 tear-down 强制激活至多一个目标，不作为普通 strong predecessor
-/// 参与后继 join_counter。该基类只负责 callable/参数存储和可视化语义。
+/// 参与后继 join_counter。该基类只负责 callable 存储和可视化语义。
 ///
 /// @tparam F 节点按值拥有的 callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
+template <typename F>
 class JumpWork {
 public:
     static constexpr TaskType TYPE = TaskType::Jump;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit JumpWork(U&& f, Us&&... args)
-        : m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit JumpWork(U&& f)
+        : m_func{std::forward<U>(f)} {}
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "diamond", "#fee2e2", "#ef4444", "#7f1d1d", "8", "5");
@@ -193,27 +182,24 @@ public:
 
 protected:
     TFL_NO_UNIQUE_ADDRESS F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 };
 
 
-/// @brief 为多目标跳转节点提供 callable/参数存储、`TaskType::MultiJump` 和 D2 渲染语义。
+/// @brief 为多目标跳转节点提供 callable 存储、`TaskType::MultiJump` 和 D2 渲染语义。
 ///
 /// MultiJump 通过专用 tear-down 强制激活多个目标，不参与普通 strong dependency join。
-/// 该基类仅保存 callable 与参数，目标集合由执行期栈绑定 `MultiJump` 临时收集。
+/// 该基类仅保存 callable，目标集合由执行期栈绑定 `MultiJump` 临时收集。
 ///
 /// @tparam F 节点按值拥有的 callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
+template <typename F>
 class MultiJumpWork {
 public:
     static constexpr TaskType TYPE = TaskType::MultiJump;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit MultiJumpWork(U&& f, Us&&... args)
-        : m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit MultiJumpWork(U&& f)
+        : m_func{std::forward<U>(f)} {}
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5");
@@ -221,27 +207,24 @@ public:
 
 protected:
     TFL_NO_UNIQUE_ADDRESS F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 };
 
 
-/// @brief 为可动态派生任务的 Runtime 节点提供 callable/参数存储、`TaskType::Runtime` 和 D2 渲染语义。
+/// @brief 为可动态派生任务的 Runtime 节点提供 callable 存储、`TaskType::Runtime` 和 D2 渲染语义。
 ///
 /// 该基类不处理挂起与恢复；具体 Runtime Invoker 通过 `Properties::PREEMPTED` 和
 /// `m_join_counter` 管理 child 生命周期，并向用户 callable 注入栈绑定 `Runtime&`。
 ///
 /// @tparam F 节点按值拥有的 callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
+template <typename F>
 class RuntimeWork {
 public:
     static constexpr TaskType TYPE = TaskType::Runtime;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit RuntimeWork(U&& f, Us&&... args)
-        : m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit RuntimeWork(U&& f)
+        : m_func{std::forward<U>(f)} {}
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
@@ -249,7 +232,6 @@ public:
 
 protected:
     TFL_NO_UNIQUE_ADDRESS F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
 };
 
 
@@ -312,22 +294,20 @@ public:
 /// Semaphore 并进入普通 `_tear_down_task()` 传播 strong dependency。
 ///
 /// @tparam F 节点按值拥有的 callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
-class BasicInvoker final : public BasicWork<F, Args...> {
-    using Base = BasicWork<F, Args...>;
+template <typename F>
+class BasicInvoker final : public BasicWork<F> {
+    using Base = BasicWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::STRONG;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit BasicInvoker(U&& f, Us&&... args)
-        : Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit BasicInvoker(U&& f)
+        : Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         if (w._stop_requested()) [[unlikely]] {
@@ -349,13 +329,7 @@ public:
         w._notify_before(wr);
 
         try {
-            if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func);
-            } else {
-                std::apply([this](auto&&... a) {
-                    std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))...);
-                }, m_args);
-            }
+            std::invoke(m_func);
         } catch (...) {
             w._process_exception();
         }
@@ -382,22 +356,20 @@ public:
 /// 完成后由 `_tear_down_branch_task()` 仅向本次选中的目标传播到达。
 ///
 /// @tparam F 节点按值拥有的 callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
-class BranchInvoker final : public BranchWork<F, Args...> {
-    using Base = BranchWork<F, Args...>;
+template <typename F>
+class BranchInvoker final : public BranchWork<F> {
+    using Base = BranchWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::STRONG;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit BranchInvoker(U&& f, Us&&... args)
-        : Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit BranchInvoker(U&& f)
+        : Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         if (w._stop_requested()) [[unlikely]] {
@@ -421,13 +393,7 @@ public:
         Branch branch{w, wr, exe};
 
         try {
-            if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func, branch);
-            } else {
-                std::apply([this, &branch](auto&&... a) {
-                    std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., branch);
-                }, m_args);
-            }
+            std::invoke(m_func, branch);
         } catch (...) {
             w._process_exception();
         }
@@ -453,22 +419,20 @@ public:
 /// ready target 的 cache 接力、父 slot 扩展和批量调度。
 ///
 /// @tparam F 节点按值拥有的 callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
-class MultiBranchInvoker final : public MultiBranchWork<F, Args...> {
-    using Base = MultiBranchWork<F, Args...>;
+template <typename F>
+class MultiBranchInvoker final : public MultiBranchWork<F> {
+    using Base = MultiBranchWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::STRONG;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit MultiBranchInvoker(U&& f, Us&&... args)
-        : Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit MultiBranchInvoker(U&& f)
+        : Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         if (w._stop_requested()) [[unlikely]] {
@@ -492,13 +456,7 @@ public:
         MultiBranch branch{w, wr, exe};
 
         try {
-            if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func, branch);
-            } else {
-                std::apply([this, &branch](auto&&... a) {
-                    std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., branch);
-                }, m_args);
-            }
+            std::invoke(m_func, branch);
         } catch (...) {
             w._process_exception();
         }
@@ -525,22 +483,20 @@ public:
 /// 直接按照跳转语义激活目标。执行过程仍支持停止、Semaphore、Observer 和异常归档。
 ///
 /// @tparam F 节点按值拥有的 callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
-class JumpInvoker final : public JumpWork<F, Args...> {
-    using Base = JumpWork<F, Args...>;
+template <typename F>
+class JumpInvoker final : public JumpWork<F> {
+    using Base = JumpWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit JumpInvoker(U&& f, Us&&... args)
-        : Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit JumpInvoker(U&& f)
+        : Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         if (w._stop_requested()) [[unlikely]] {
@@ -564,13 +520,7 @@ public:
         Jump jump{w, wr, exe};
 
         try {
-            if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func, jump);
-            } else {
-                std::apply([this, &jump](auto&&... a) {
-                    std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., jump);
-                }, m_args);
-            }
+            std::invoke(m_func, jump);
         } catch (...) {
             w._process_exception();
         }
@@ -597,22 +547,20 @@ public:
 /// 执行过程仍支持停止、Semaphore、Observer 和异常归档。
 ///
 /// @tparam F 节点按值拥有的 callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
-class MultiJumpInvoker final : public MultiJumpWork<F, Args...> {
-    using Base = MultiJumpWork<F, Args...>;
+template <typename F>
+class MultiJumpInvoker final : public MultiJumpWork<F> {
+    using Base = MultiJumpWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit MultiJumpInvoker(U&& f, Us&&... args)
-        : Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit MultiJumpInvoker(U&& f)
+        : Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         if (w._stop_requested()) [[unlikely]] {
@@ -636,13 +584,7 @@ public:
         MultiJump jump{w, wr, exe};
 
         try {
-            if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func, jump);
-            } else {
-                std::apply([this, &jump](auto&&... a) {
-                    std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., jump);
-                }, m_args);
-            }
+            std::invoke(m_func, jump);
         } catch (...) {
             w._process_exception();
         }
@@ -673,22 +615,20 @@ public:
 /// Runtime 执行窗口中的 IMPLICIT_ANCHOR 用于承接动态子链异常，最终完成时一并清除。
 ///
 /// @tparam F 节点按值拥有的 Runtime callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
-class RuntimeInvoker final : public RuntimeWork<F, Args...> {
-    using Base = RuntimeWork<F, Args...>;
+template <typename F>
+class RuntimeInvoker final : public RuntimeWork<F> {
+    using Base = RuntimeWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::STRONG;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit RuntimeInvoker(U&& f, Us&&... args)
-        : Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit RuntimeInvoker(U&& f)
+        : Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入：尚未因动态 child / 子图进入 PREEMPTED 挂起状态。
@@ -717,13 +657,7 @@ public:
             Runtime runtime{w, wr, exe};
 
             try {
-                if constexpr (sizeof...(Args) == 0) {
-                    std::invoke(m_func, runtime);
-                } else {
-                    std::apply([this, &runtime](auto&&... a) {
-                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., runtime);
-                    }, m_args);
-                }
+                std::invoke(m_func, runtime);
             } catch (...) {
                 w._process_exception();
             }
@@ -753,22 +687,20 @@ public:
 
 /// @brief 执行静态 SubFlow callable，并等待其动态子图完成后恢复当前节点。
 ///
-/// Invoker 按值拥有 callable、参数和一份内部 `Graph`。首次进入时获取 Semaphore、设置
+/// Invoker 按值拥有 callable 和一份内部 `Graph`。首次进入时获取 Semaphore、设置
 /// PREEMPTED 并注入栈绑定 `SubFlow`；若 SubFlow 派生子图，`m_join_counter` 负责等待
 /// child 完成。恢复后触发 Observer after、清除 PREEMPTED、释放 Semaphore，并进入
 /// 普通静态 tear-down。
 ///
 /// @tparam F 节点按值拥有的 SubFlow callable 类型。
-/// @tparam Args 节点按值拥有的参数类型。
-template <typename F, typename... Args>
-class SubFlowInvoker final : public GraphWork<SubFlowInvoker<F, Args...>> {
-    using Self = SubFlowInvoker<F, Args...>;
+template <typename F>
+class SubFlowInvoker final : public GraphWork<SubFlowInvoker<F>> {
+    using Self = SubFlowInvoker<F>;
     using Base = GraphWork<Self>;
 
     friend class GraphWork<Self>;
 
     TFL_NO_UNIQUE_ADDRESS F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
     Graph m_graph;
 
     [[nodiscard]] Graph& graph() noexcept {
@@ -783,11 +715,10 @@ public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::STRONG;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit SubFlowInvoker(U&& f, Us&&... args)
-        : m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit SubFlowInvoker(U&& f)
+        : m_func{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入：尚未因动态 child / 子图进入 PREEMPTED 挂起状态。
@@ -816,13 +747,7 @@ public:
             SubFlow flow{m_graph, w, wr, exe};
 
             try {
-                if constexpr (sizeof...(Args) == 0) {
-                    std::invoke(m_func, flow);
-                } else {
-                    std::apply([this, &flow](auto&&... a) {
-                        std::invoke(m_func, detail::borrow(std::forward<decltype(a)>(a))..., flow);
-                    }, m_args);
-                }
+                std::invoke(m_func, flow);
             } catch (...) {
                 w._process_exception();
             }
@@ -916,7 +841,7 @@ public:
         }
 
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || std::invoke(m_pred)) {
+        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
             w._notify_after(wr);
 
             w.m_properties &= ~Work::Properties::PREEMPTED;
@@ -957,82 +882,72 @@ public:
 
 
 // ============================================================================
-// Detached Invoker 家族
+// SilentAsync Invoker 家族
 // ============================================================================
 //
-// Detached Work 不向调用方暴露结果句柄。各 Invoker 自身拥有独立 Topology，执行结束后
-// 由 `_tear_down_detached_task()` 直接进入节点销毁路径，并归还父 Work slot 或顶层 topology 计数。
+// SilentAsync Work 不向调用方暴露结果句柄。各 Invoker 自身拥有独立 Topology，执行结束后
+// 由 `_tear_down_silent_async_task()` 直接进入节点销毁路径，并归还父 Work slot 或顶层 topology 计数。
 
-/// @brief 执行无外部结果句柄的顶层/组内普通 Detached callable。
+/// @brief 执行无外部结果句柄的顶层/组内普通 SilentAsync callable。
 ///
 /// 通过 `TopologyStorage` 按值拥有独立 Topology，并以 `IMPLICIT_ANCHOR` 允许当前节点
-/// 承接执行异常。invoke 捕获 callable 异常后直接进入 `_tear_down_detached_task()`；
-/// Detached 完成后没有 Future 引用需要保留，Work 可立即进入对应销毁路径。
+/// 承接执行异常。invoke 捕获 callable 异常后直接进入 `_tear_down_silent_async_task()`；
+/// SilentAsync 完成后没有 Future 引用需要保留，Work 可立即进入对应销毁路径。
 ///
 /// @tparam F 按值拥有的 callable 类型。
-/// @tparam Args 按值拥有的参数类型。
-template <typename F, typename... Args>
-class DetachedBasicInvoker final : public TopologyStorage, public BasicWork<F, Args...> {
-    using Base = BasicWork<F, Args...>;
+template <typename F>
+class SilentAsyncBasicInvoker final : public TopologyStorage, public BasicWork<F> {
+    using Base = BasicWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::IMPLICIT_ANCHOR;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
-    template <typename U, typename... Us>
-        requires std::constructible_from<Base, U&&, Us&&...>
-    explicit DetachedBasicInvoker(Topology* parent_topology, Executor* executor, U&& f, Us&&... args)
+    template <typename U>
+        requires std::constructible_from<Base, U&&>
+    explicit SilentAsyncBasicInvoker(Topology* parent_topology, Executor* executor, U&& f)
         : TopologyStorage{parent_topology, executor}
-        , Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+        , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         TFL_WORK_EXECUTION_BEGIN(w);
 
         try {
-            if constexpr (sizeof...(Args) == 0) {
-                std::invoke(m_func);
-            } else {
-                std::apply([this](auto&&... args) {
-                    std::invoke(m_func, detail::borrow(std::forward<decltype(args)>(args))...);
-                }, m_args);
-            }
+            std::invoke(m_func);
         } catch (...) {
             w._process_exception();
         }
 
         TFL_WORK_EXECUTION_END(w);
-        exe._tear_down_detached_task(w, wr, cache);
+        exe._tear_down_silent_async_task(w, wr, cache);
     }
 };
 
 
-/// @brief 执行无结果句柄的 Detached Runtime callable，并等待动态 child 完成。
+/// @brief 执行无结果句柄的 SilentAsync Runtime callable，并等待动态 child 完成。
 ///
-/// Invoker 通过 `TopologyStorage` 拥有独立 Topology，并保存 Runtime callable/参数。
+/// Invoker 通过 `TopologyStorage` 拥有独立 Topology，并保存 Runtime callable。
 /// 首次进入设置 PREEMPTED 和基准 join slot；child 未全部结束时保持 Work 存活并等待恢复，
-/// 最终归零后清除 PREEMPTED 并进入 Detached tear-down。异常由当前隐式锚点归档。
+/// 最终归零后清除 PREEMPTED 并进入 SilentAsync tear-down。异常由当前隐式锚点归档。
 ///
 /// @tparam F 按值拥有的 Runtime callable 类型。
-/// @tparam Args 按值拥有的参数类型。
-template <typename F, typename... Args>
-class DetachedRuntimeInvoker final : public TopologyStorage, public RuntimeWork<F, Args...> {
-    using Base = RuntimeWork<F, Args...>;
+template <typename F>
+class SilentAsyncRuntimeInvoker final : public TopologyStorage, public RuntimeWork<F> {
+    using Base = RuntimeWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::IMPLICIT_ANCHOR;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
-    template <typename U, typename... Us>
-        requires std::constructible_from<Base, U&&, Us&&...>
-    explicit DetachedRuntimeInvoker(Topology* parent_topology, Executor* executor, U&& f, Us&&... args)
+    template <typename U>
+        requires std::constructible_from<Base, U&&>
+    explicit SilentAsyncRuntimeInvoker(Topology* parent_topology, Executor* executor, U&& f)
         : TopologyStorage{parent_topology, executor}
-        , Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+        , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入。
@@ -1045,13 +960,7 @@ public:
             Runtime rt{w, wr, exe};
 
             try {
-                if constexpr (sizeof...(Args) == 0) {
-                    std::invoke(m_func, rt);
-                } else {
-                    std::apply([this, &rt](auto&&... args) {
-                        std::invoke(m_func, detail::borrow(std::forward<decltype(args)>(args))..., rt);
-                    }, m_args);
-                }
+                std::invoke(m_func, rt);
             } catch (...) {
                 w._process_exception();
             }
@@ -1065,28 +974,26 @@ public:
         w.m_properties &= ~Work::Properties::PREEMPTED;
 
         TFL_WORK_EXECUTION_END(w);
-        exe._tear_down_detached_task(w, wr, cache);
+        exe._tear_down_silent_async_task(w, wr, cache);
     }
 };
 
 
-/// @brief 执行无结果句柄的 Detached SubFlow callable，并等待内部动态子图完成。
+/// @brief 执行无结果句柄的 SilentAsync SubFlow callable，并等待内部动态子图完成。
 ///
-/// 通过 `TopologyStorage` 拥有独立 Topology，同时按值拥有 callable、参数和内部 Graph。
+/// 通过 `TopologyStorage` 拥有独立 Topology，同时按值拥有 callable 和内部 Graph。
 /// 首次执行设置 PREEMPTED 与基准 join slot；SubFlow child 未完成时挂起当前 Work，恢复后
-/// 清除 PREEMPTED 并进入 Detached tear-down。异常由当前隐式锚点承接。
+/// 清除 PREEMPTED 并进入 SilentAsync tear-down。异常由当前隐式锚点承接。
 ///
 /// @tparam F 按值拥有的 SubFlow callable 类型。
-/// @tparam Args 按值拥有的参数类型。
-template <typename F, typename... Args>
-class DetachedSubFlowInvoker final : public TopologyStorage, public GraphWork<DetachedSubFlowInvoker<F, Args...>> {
-    using Self = DetachedSubFlowInvoker<F, Args...>;
+template <typename F>
+class SilentAsyncSubFlowInvoker final : public TopologyStorage, public GraphWork<SilentAsyncSubFlowInvoker<F>> {
+    using Self = SilentAsyncSubFlowInvoker<F>;
     using Base = GraphWork<Self>;
 
     friend class GraphWork<Self>;
 
     TFL_NO_UNIQUE_ADDRESS F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
     Graph m_graph;
 
     [[nodiscard]] Graph& graph() noexcept {
@@ -1101,12 +1008,11 @@ public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::IMPLICIT_ANCHOR;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit DetachedSubFlowInvoker(Topology* parent_topology, Executor* executor, U&& f, Us&&... args)
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit SilentAsyncSubFlowInvoker(Topology* parent_topology, Executor* executor, U&& f)
         : TopologyStorage{parent_topology, executor}
-        , m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
+        , m_func{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入。
@@ -1119,13 +1025,7 @@ public:
             SubFlow flow{m_graph, w, wr, exe};
 
             try {
-                if constexpr (sizeof...(Args) == 0) {
-                    std::invoke(m_func, flow);
-                } else {
-                    std::apply([this, &flow](auto&&... args) {
-                        std::invoke(m_func, detail::borrow(std::forward<decltype(args)>(args))..., flow);
-                    }, m_args);
-                }
+                std::invoke(m_func, flow);
             } catch (...) {
                 w._process_exception();
             }
@@ -1138,7 +1038,7 @@ public:
         // 最终完成。
         w.m_properties &= ~Work::Properties::PREEMPTED;
         TFL_WORK_EXECUTION_END(w);
-        exe._tear_down_detached_task(w, wr, cache);
+        exe._tear_down_silent_async_task(w, wr, cache);
     }
 };
 
@@ -1146,15 +1046,15 @@ public:
 ///
 /// 通过 `TopologyStorage` 拥有独立 Topology；同时保存 Graph holder、终止谓词和 callback。
 /// 首次进入初始化子图并设置 PREEMPTED；每轮完成后检查 source 数量、停止/异常和谓词。
-/// 结束时调用 callback、清除 PREEMPTED 并进入 Detached tear-down；继续时重置 join 状态，
+/// 结束时调用 callback、清除 PREEMPTED 并进入 SilentAsync tear-down；继续时重置 join 状态，
 /// 最后一个 source 通过 cache 接力，其余 source 发布到 Worker 队列。
 ///
 /// @tparam GhStore Graph holder 的实际存储类型。
 /// @tparam P 无参终止谓词类型。
 /// @tparam C Module 整体结束时调用的无参回调类型。
 template <typename GhStore, typename P, typename C>
-class DetachedModuleInvoker final : public TopologyStorage, public GraphWork<DetachedModuleInvoker<GhStore, P, C>> {
-    using Self = DetachedModuleInvoker<GhStore, P, C>;
+class SilentAsyncModuleInvoker final : public TopologyStorage, public GraphWork<SilentAsyncModuleInvoker<GhStore, P, C>> {
+    using Self = SilentAsyncModuleInvoker<GhStore, P, C>;
     using Base = GraphWork<Self>;
 
     friend class GraphWork<Self>;
@@ -1180,7 +1080,7 @@ public:
 
     template <typename Ghs, typename V, typename W>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&> && std::constructible_from<C, W&&>
-    explicit DetachedModuleInvoker(Topology* parent_topology, Executor* executor, Ghs&& ghs, V&& pred, W&& callback)
+    explicit SilentAsyncModuleInvoker(Topology* parent_topology, Executor* executor, Ghs&& ghs, V&& pred, W&& callback)
         : TopologyStorage{parent_topology, executor}
         , m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)}
@@ -1198,12 +1098,12 @@ public:
         }
 
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || std::invoke(m_pred)) {
-            std::invoke(m_callback);
+        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
+            w._invoke_callback(m_callback);
 
             w.m_properties &= ~Work::Properties::PREEMPTED;
             TFL_WORK_EXECUTION_END(w);
-            exe._tear_down_detached_task(w, wr, cache);
+            exe._tear_down_silent_async_task(w, wr, cache);
             return;
         }
 
@@ -1231,91 +1131,79 @@ public:
 
 
 // ============================================================================
-// Joinable Invoker 家族
+// Async Invoker 家族
 // ============================================================================
 //
-// Joinable Work 由 AsyncFuture 观察结果和完成状态。ResultStorage 提供独立 Topology 与结果槽，
+// Async Work 由 AsyncFuture 观察结果和完成状态。ResultStorage 提供独立 Topology 与结果槽，
 // 完成路径发布 Finished 并释放执行强引用，但 Work 可继续由外部 Future 强引用保持存活。
 
-/// @brief 执行可由 `AsyncFuture<R>` 等待并读取结果的普通 Joinable callable。
+/// @brief 执行可由 `AsyncFuture<R>` 等待并读取结果的普通 Async callable。
 ///
 /// 继承 `ResultStorage<R>`，按值拥有独立 Topology 和结果槽；当前 Work 固定为显式异常锚点。
 /// invoke 通过 `set_result_from()` 保存返回值或 void 完成状态，用户异常进入 Work 归档链，
-/// 最后 `_tear_down_joinable_task()` 发布 Finished、唤醒等待者并释放执行生命周期引用。
+/// 最后 `_tear_down_async_task()` 发布 Finished、唤醒等待者并释放执行生命周期引用。
 ///
-/// Joinable 不参与运行期动态后继插入协议，其 Work 可在 Future 强引用释放前继续存活。
+/// Async 不参与运行期动态后继插入协议，其 Work 可在 Future 强引用释放前继续存活。
 ///
 /// @tparam F 按值拥有的 callable 类型。
-/// @tparam Args 按值拥有的参数类型。
-template <typename F, typename... Args>
-class JoinableBasicInvoker final : public ResultStorage<basic_return_t<F, Args...>>, public BasicWork<F, Args...> {
-    using R = basic_return_t<F, Args...>;
+template <typename F>
+class AsyncBasicInvoker final : public ResultStorage<basic_return_t<F>>, public BasicWork<F> {
+    using R = basic_return_t<F>;
     using Storage = ResultStorage<R>;
-    using Base = BasicWork<F, Args...>;
+    using Base = BasicWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
     static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
 
-    template <typename U, typename... Us>
-        requires std::constructible_from<Base, U&&, Us&&...>
-    explicit JoinableBasicInvoker(Topology* parent_topology, Executor* executor, U&& f, Us&&... args)
+    template <typename U>
+        requires std::constructible_from<Base, U&&>
+    explicit AsyncBasicInvoker(Topology* parent_topology, Executor* executor, U&& f)
         : Storage{parent_topology, executor}
-        , Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+        , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         TFL_WORK_EXECUTION_BEGIN(w);
 
         try {
-            Storage::set_result_from([this]() -> decltype(auto) {
-                if constexpr (sizeof...(Args) == 0) {
-                    return std::invoke(m_func);
-                } else {
-                    return std::apply([this](auto&&... args) -> decltype(auto) {
-                        return std::invoke(m_func, detail::borrow(std::forward<decltype(args)>(args))...);
-                    }, m_args);
-                }
-            });
+            Storage::set_result_from(m_func);
         } catch (...) {
             w._process_exception();
         }
 
         TFL_WORK_EXECUTION_END(w);
-        exe._tear_down_joinable_task(w, wr, cache);
+        exe._tear_down_async_task(w, wr, cache);
     }
 };
 
 
-/// @brief 执行可返回结果的 Joinable Runtime callable，并等待动态 child 完成。
+/// @brief 执行可返回结果的 Async Runtime callable，并等待动态 child 完成。
 ///
 /// `ResultStorage<R>` 提供独立 Topology 与结果槽，Work 本身是显式异常锚点。首次进入设置
 /// PREEMPTED 和基准 join slot，并通过 `set_result_from()` 调用用户 Runtime callable；
 /// 若派生 child，则保持挂起直到最后一个 child 恢复当前 Work，最终清除 PREEMPTED 并进入
-/// Joinable tear-down 发布完成状态。
+/// Async tear-down 发布完成状态。
 ///
 /// @tparam F 按值拥有的 Runtime callable 类型。
-/// @tparam Args 按值拥有的参数类型。
-template <typename F, typename... Args>
-class JoinableRuntimeInvoker final : public ResultStorage<runtime_return_t<F, Args...>>, public RuntimeWork<F, Args...> {
-    using R = runtime_return_t<F, Args...>;
+template <typename F>
+class AsyncRuntimeInvoker final : public ResultStorage<runtime_return_t<F>>, public RuntimeWork<F> {
+    using R = runtime_return_t<F>;
     using Storage = ResultStorage<R>;
-    using Base = RuntimeWork<F, Args...>;
+    using Base = RuntimeWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
     static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
 
-    template <typename U, typename... Us>
-        requires std::constructible_from<Base, U&&, Us&&...>
-    explicit JoinableRuntimeInvoker(Topology* parent_topology, Executor* executor, U&& f, Us&&... args)
+    template <typename U>
+        requires std::constructible_from<Base, U&&>
+    explicit AsyncRuntimeInvoker(Topology* parent_topology, Executor* executor, U&& f)
         : Storage{parent_topology, executor}
-        , Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+        , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入。
@@ -1328,15 +1216,7 @@ public:
             Runtime rt{w, wr, exe};
 
             try {
-                Storage::set_result_from([this, &rt]() -> decltype(auto) {
-                    if constexpr (sizeof...(Args) == 0) {
-                        return std::invoke(m_func, rt);
-                    } else {
-                        return std::apply([this, &rt](auto&&... args) -> decltype(auto) {
-                            return std::invoke(m_func, detail::borrow(std::forward<decltype(args)>(args))..., rt);
-                        }, m_args);
-                    }
-                });
+                Storage::set_result_from(m_func, rt);
             } catch (...) {
                 w._process_exception();
             }
@@ -1350,29 +1230,27 @@ public:
         w.m_properties &= ~Work::Properties::PREEMPTED;
 
         TFL_WORK_EXECUTION_END(w);
-        exe._tear_down_joinable_task(w, wr, cache);
+        exe._tear_down_async_task(w, wr, cache);
     }
 };
 
-/// @brief 执行可返回结果的 Joinable SubFlow callable，并等待内部动态子图完成。
+/// @brief 执行可返回结果的 Async SubFlow callable，并等待内部动态子图完成。
 ///
-/// Invoker 同时拥有 `ResultStorage<R>`、callable/参数和内部 Graph。首次进入设置 PREEMPTED
+/// Invoker 同时拥有 `ResultStorage<R>`、callable 和内部 Graph。首次进入设置 PREEMPTED
 /// 与基准 join slot，并将栈绑定 `SubFlow` 注入用户 callable；child 未结束时挂起当前 Work。
-/// 恢复后清除 PREEMPTED，并通过 Joinable tear-down 发布 Finished 和结果可见性。
+/// 恢复后清除 PREEMPTED，并通过 Async tear-down 发布 Finished 和结果可见性。
 ///
 /// @tparam F 按值拥有的 SubFlow callable 类型。
-/// @tparam Args 按值拥有的参数类型。
-template <typename F, typename... Args>
-class JoinableSubFlowInvoker final : public ResultStorage<subflow_return_t<F, Args...>>, public GraphWork<JoinableSubFlowInvoker<F, Args...>> {
-    using R = subflow_return_t<F, Args...>;
-    using Self = JoinableSubFlowInvoker<F, Args...>;
+template <typename F>
+class AsyncSubFlowInvoker final : public ResultStorage<subflow_return_t<F>>, public GraphWork<AsyncSubFlowInvoker<F>> {
+    using R = subflow_return_t<F>;
+    using Self = AsyncSubFlowInvoker<F>;
     using Storage = ResultStorage<R>;
     using Base = GraphWork<Self>;
 
     friend class GraphWork<Self>;
 
     TFL_NO_UNIQUE_ADDRESS F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
     Graph m_graph;
 
     [[nodiscard]] Graph& graph() noexcept {
@@ -1387,12 +1265,11 @@ public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
     static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit JoinableSubFlowInvoker(Topology* parent_topology, Executor* executor, U&& f, Us&&... args)
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit AsyncSubFlowInvoker(Topology* parent_topology, Executor* executor, U&& f)
         : Storage{parent_topology, executor}
-        , m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
+        , m_func{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入。
@@ -1405,15 +1282,7 @@ public:
             SubFlow flow{m_graph, w, wr, exe};
 
             try {
-                Storage::set_result_from([this, &flow]() -> decltype(auto) {
-                    if constexpr (sizeof...(Args) == 0) {
-                        return std::invoke(m_func, flow);
-                    } else {
-                        return std::apply([this, &flow](auto&&... args) -> decltype(auto) {
-                            return std::invoke(m_func, detail::borrow(std::forward<decltype(args)>(args))..., flow);
-                        }, m_args);
-                    }
-                });
+                Storage::set_result_from(m_func, flow);
             } catch (...) {
                 w._process_exception();
             }
@@ -1427,22 +1296,22 @@ public:
         w.m_properties &= ~Work::Properties::PREEMPTED;
 
         TFL_WORK_EXECUTION_END(w);
-        exe._tear_down_joinable_task(w, wr, cache);
+        exe._tear_down_async_task(w, wr, cache);
     }
 };
 
-/// @brief 可由 Future 等待完成的 Joinable Module，重复执行子 Graph 并在结束时调用 callback。
+/// @brief 可由 Future 等待完成的 Async Module，重复执行子 Graph 并在结束时调用 callback。
 ///
 /// `ResultStorage<void>` 提供独立 Topology 与完成结果槽，Work 固定为显式异常锚点。
 /// Invoker 保存 Graph holder、终止谓词和完成回调；通过 PREEMPTED 跨多轮子图保持一次
-/// Module 执行，终止后进入 Joinable tear-down 发布 Finished 并唤醒 Future 等待者。
+/// Module 执行，终止后进入 Async tear-down 发布 Finished 并唤醒 Future 等待者。
 ///
 /// @tparam GhStore Graph holder 的实际存储类型。
 /// @tparam P 无参终止谓词类型。
 /// @tparam C Module 整体结束时调用的无参回调类型。
 template <typename GhStore, typename P, typename C>
-class JoinableModuleInvoker final : public ResultStorage<void>, public GraphWork<JoinableModuleInvoker<GhStore, P, C>> {
-    using Self = JoinableModuleInvoker<GhStore, P, C>;
+class AsyncModuleInvoker final : public ResultStorage<void>, public GraphWork<AsyncModuleInvoker<GhStore, P, C>> {
+    using Self = AsyncModuleInvoker<GhStore, P, C>;
     using Storage = ResultStorage<void>;
     using Base = GraphWork<Self>;
 
@@ -1469,7 +1338,7 @@ public:
 
     template <typename Ghs, typename V, typename W>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&> && std::constructible_from<C, W&&>
-    explicit JoinableModuleInvoker(Topology* parent_topology, Executor* executor, Ghs&& ghs, V&& pred, W&& callback)
+    explicit AsyncModuleInvoker(Topology* parent_topology, Executor* executor, Ghs&& ghs, V&& pred, W&& callback)
         : Storage{parent_topology, executor}
         , m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)}
@@ -1487,12 +1356,12 @@ public:
         }
 
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || std::invoke(m_pred)) {
-            std::invoke(m_callback);
+        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
+            w._invoke_callback(m_callback);
 
             w.m_properties &= ~Work::Properties::PREEMPTED;
             TFL_WORK_EXECUTION_END(w);
-            exe._tear_down_joinable_task(w, wr, cache);
+            exe._tear_down_async_task(w, wr, cache);
             return;
         }
 
@@ -1520,39 +1389,37 @@ public:
 
 
 // ============================================================================
-// Attached Invoker 家族
+// AsyncTask Invoker 家族
 // ============================================================================
 //
-// Attached Work 对应可在启动前建立动态前置依赖、运行期被其他 Attached Work 注册为动态后继的
+// AsyncTask Work 对应可在启动前建立动态前置依赖、运行期被其他 AsyncTask Work 注册为动态后继的
 // 异步任务。完成路径必须与 Topology LOCKED 插边协议协调，发布 Finished 后冻结并传播动态后继。
 
-/// @brief 执行可建立运行期前置依赖和动态后继的 Attached 普通异步 callable。
+/// @brief 执行可建立运行期前置依赖和动态后继的 AsyncTask 普通异步 callable。
 ///
 /// `ResultStorage<R>` 保存独立 Topology 与结果槽，Work 固定为显式异常锚点。执行前支持
 /// Semaphore 获取和 Observer before，结果通过 `set_result_from()` 写入；完成后释放 Semaphore、
-/// 触发 Observer after，并由 `_tear_down_attached_task()` 与动态插边 LOCKED 协议竞争 Finished，
+/// 触发 Observer after，并由 `_tear_down_async_task()` 与动态插边 LOCKED 协议竞争 Finished，
 /// 冻结并传播运行期动态后继后释放执行引用。
 ///
 /// @tparam F 按值拥有的 callable 类型。
-/// @tparam Args 按值拥有的参数类型。
-template <typename F, typename... Args>
-class AttachedBasicInvoker final : public ResultStorage<basic_return_t<F, Args...>>, public BasicWork<F, Args...> {
-    using R = basic_return_t<F, Args...>;
+template <typename F>
+class AsyncTaskBasicInvoker final : public ResultStorage<basic_return_t<F>>, public BasicWork<F> {
+    using R = basic_return_t<F>;
     using Storage = ResultStorage<R>;
-    using Base = BasicWork<F, Args...>;
+    using Base = BasicWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
     static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
 
-    template <typename U, typename... Us>
-        requires std::constructible_from<Base, U&&, Us&&...>
-    explicit AttachedBasicInvoker(Topology* parent_topology, Executor* executor, U&& f, Us&&... args)
+    template <typename U>
+        requires std::constructible_from<Base, U&&>
+    explicit AsyncTaskBasicInvoker(Topology* parent_topology, Executor* executor, U&& f)
         : Storage{parent_topology, executor}
-        , Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+        , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 执行前获取 Semaphore；失败时当前 Work 进入 waiter，本次 invoke 立即让出 Worker。
@@ -1569,15 +1436,7 @@ public:
         w._notify_before(wr);
 
         try {
-            Storage::set_result_from([this]() -> decltype(auto) {
-                if constexpr (sizeof...(Args) == 0) {
-                    return std::invoke(m_func);
-                } else {
-                    return std::apply([this](auto&&... args) -> decltype(auto) {
-                        return std::invoke(m_func, detail::borrow(std::forward<decltype(args)>(args))...);
-                    }, m_args);
-                }
-            });
+            Storage::set_result_from(m_func);
         } catch (...) {
             w._process_exception();
         }
@@ -1592,37 +1451,35 @@ public:
         }
 
         TFL_WORK_EXECUTION_END(w);
-        exe._tear_down_attached_task(w, wr, cache);
+        exe._tear_down_async_task(w, wr, cache);
     }
 };
 
 
-/// @brief 执行 Attached Runtime callable，并同时支持动态依赖、结果和运行期 child。
+/// @brief 执行 AsyncTask Runtime callable，并同时支持动态依赖、结果和运行期 child。
 ///
 /// 首次进入先获取 Semaphore，再设置 PREEMPTED 与基准 join slot，并通过 `ResultStorage<R>`
 /// 保存 Runtime callable 的返回值。child 未完成时 Work 保持挂起；恢复后触发 Observer after、
-/// 清除 PREEMPTED、释放 Semaphore，最终由 Attached tear-down 发布 Finished 并传播动态后继。
+/// 清除 PREEMPTED、释放 Semaphore，最终由 AsyncTask tear-down 发布 Finished 并传播动态后继。
 ///
 /// @tparam F 按值拥有的 Runtime callable 类型。
-/// @tparam Args 按值拥有的参数类型。
-template <typename F, typename... Args>
-class AttachedRuntimeInvoker final : public ResultStorage<runtime_return_t<F, Args...>>, public RuntimeWork<F, Args...> {
-    using R = runtime_return_t<F, Args...>;
+template <typename F>
+class AsyncTaskRuntimeInvoker final : public ResultStorage<runtime_return_t<F>>, public RuntimeWork<F> {
+    using R = runtime_return_t<F>;
     using Storage = ResultStorage<R>;
-    using Base = RuntimeWork<F, Args...>;
+    using Base = RuntimeWork<F>;
 
     using Base::m_func;
-    using Base::m_args;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
     static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
 
-    template <typename U, typename... Us>
-        requires std::constructible_from<Base, U&&, Us&&...>
-    explicit AttachedRuntimeInvoker(Topology* parent_topology, Executor* executor, U&& f, Us&&... args)
+    template <typename U>
+        requires std::constructible_from<Base, U&&>
+    explicit AsyncTaskRuntimeInvoker(Topology* parent_topology, Executor* executor, U&& f)
         : Storage{parent_topology, executor}
-        , Base{std::forward<U>(f), std::forward<Us>(args)...} {}
+        , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入。
@@ -1646,15 +1503,7 @@ public:
             Runtime rt{w, wr, exe};
 
             try {
-                Storage::set_result_from([this, &rt]() -> decltype(auto) {
-                    if constexpr (sizeof...(Args) == 0) {
-                        return std::invoke(m_func, rt);
-                    } else {
-                        return std::apply([this, &rt](auto&&... args) -> decltype(auto) {
-                            return std::invoke(m_func, detail::borrow(std::forward<decltype(args)>(args))..., rt);
-                        }, m_args);
-                    }
-                });
+                Storage::set_result_from(m_func, rt);
             } catch (...) {
                 w._process_exception();
             }
@@ -1677,31 +1526,29 @@ public:
         }
 
         TFL_WORK_EXECUTION_END(w);
-        exe._tear_down_attached_task(w, wr, cache);
+        exe._tear_down_async_task(w, wr, cache);
     }
 };
 
 
-/// @brief 执行 Attached SubFlow callable，并同时支持动态依赖、结果和内部动态子图。
+/// @brief 执行 AsyncTask SubFlow callable，并同时支持动态依赖、结果和内部动态子图。
 ///
-/// Invoker 按值拥有 callable、参数与内部 Graph，并通过 `ResultStorage<R>` 保存独立 Topology
+/// Invoker 按值拥有 callable 与内部 Graph，并通过 `ResultStorage<R>` 保存独立 Topology
 /// 和结果。首次进入完成 Semaphore/Observer 前置流程、设置 PREEMPTED 与基准 join slot；
-/// SubFlow child 完成后恢复当前 Work，最终清理 PREEMPTED、释放 Semaphore并进入 Attached
+/// SubFlow child 完成后恢复当前 Work，最终清理 PREEMPTED、释放 Semaphore并进入 AsyncTask
 /// tear-down，与动态后继插入协议协调完成发布。
 ///
 /// @tparam F 按值拥有的 SubFlow callable 类型。
-/// @tparam Args 按值拥有的参数类型。
-template <typename F, typename... Args>
-class AttachedSubFlowInvoker final : public ResultStorage<subflow_return_t<F, Args...>>, public GraphWork<AttachedSubFlowInvoker<F, Args...>> {
-    using R = subflow_return_t<F, Args...>;
-    using Self = AttachedSubFlowInvoker<F, Args...>;
+template <typename F>
+class AsyncTaskSubFlowInvoker final : public ResultStorage<subflow_return_t<F>>, public GraphWork<AsyncTaskSubFlowInvoker<F>> {
+    using R = subflow_return_t<F>;
+    using Self = AsyncTaskSubFlowInvoker<F>;
     using Storage = ResultStorage<R>;
     using Base = GraphWork<Self>;
 
     friend class GraphWork<Self>;
 
     TFL_NO_UNIQUE_ADDRESS F m_func;
-    TFL_NO_UNIQUE_ADDRESS std::tuple<Args...> m_args;
     Graph m_graph;
 
     [[nodiscard]] Graph& graph() noexcept {
@@ -1716,12 +1563,11 @@ public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
     static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
 
-    template <typename U, typename... Us>
-        requires (sizeof...(Args) == sizeof...(Us)) && std::constructible_from<F, U&&> && (std::constructible_from<Args, Us&&> && ...)
-    explicit AttachedSubFlowInvoker(Topology* parent_topology, Executor* executor, U&& f, Us&&... args)
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit AsyncTaskSubFlowInvoker(Topology* parent_topology, Executor* executor, U&& f)
         : Storage{parent_topology, executor}
-        , m_func{std::forward<U>(f)}
-        , m_args{std::forward<Us>(args)...} {}
+        , m_func{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入。
@@ -1745,15 +1591,7 @@ public:
             SubFlow flow{m_graph, w, wr, exe};
 
             try {
-                Storage::set_result_from([this, &flow]() -> decltype(auto) {
-                    if constexpr (sizeof...(Args) == 0) {
-                        return std::invoke(m_func, flow);
-                    } else {
-                        return std::apply([this, &flow](auto&&... args) -> decltype(auto) {
-                            return std::invoke(m_func, detail::borrow(std::forward<decltype(args)>(args))..., flow);
-                        }, m_args);
-                    }
-                });
+                Storage::set_result_from(m_func, flow);
             } catch (...) {
                 w._process_exception();
             }
@@ -1776,23 +1614,23 @@ public:
         }
 
         TFL_WORK_EXECUTION_END(w);
-        exe._tear_down_attached_task(w, wr, cache);
+        exe._tear_down_async_task(w, wr, cache);
     }
 };
 
-/// @brief 执行 Attached Module，并同时提供动态依赖、Semaphore/Observer 和 Future 完成状态。
+/// @brief 执行 AsyncTask Module，并同时提供动态依赖、Semaphore/Observer 和 Future 完成状态。
 ///
 /// `ResultStorage<void>` 提供独立 Topology 与完成槽；Invoker 保存 Graph holder、终止谓词和
 /// callback。首次进入先获取 Semaphore、触发 Observer before、设置 PREEMPTED 并初始化子图；
 /// 多轮 source 执行完成后恢复当前 Work继续检查终止条件。结束时触发 Observer after 和 callback，
-/// 释放 Semaphore，并由 Attached tear-down 发布 Finished、冻结并传播动态后继。
+/// 释放 Semaphore，并由 AsyncTask tear-down 发布 Finished、冻结并传播动态后继。
 ///
 /// @tparam GhStore Graph holder 的实际存储类型。
 /// @tparam P 无参终止谓词类型。
 /// @tparam C Module 整体结束时调用的无参回调类型。
 template <typename GhStore, typename P, typename C>
-class AttachedModuleInvoker final : public ResultStorage<void>, public GraphWork<AttachedModuleInvoker<GhStore, P, C>> {
-    using Self = AttachedModuleInvoker<GhStore, P, C>;
+class AsyncTaskModuleInvoker final : public ResultStorage<void>, public GraphWork<AsyncTaskModuleInvoker<GhStore, P, C>> {
+    using Self = AsyncTaskModuleInvoker<GhStore, P, C>;
     using Storage = ResultStorage<void>;
     using Base = GraphWork<Self>;
 
@@ -1819,7 +1657,7 @@ public:
 
     template <typename Ghs, typename V, typename W>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&> && std::constructible_from<C, W&&>
-    explicit AttachedModuleInvoker(Topology* parent_topology, Executor* executor, Ghs&& ghs, V&& pred, W&& callback)
+    explicit AsyncTaskModuleInvoker(Topology* parent_topology, Executor* executor, Ghs&& ghs, V&& pred, W&& callback)
         : Storage{parent_topology, executor}
         , m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)}
@@ -1845,10 +1683,10 @@ public:
         }
 
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || std::invoke(m_pred)) {
+        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
             w._notify_after(wr);
 
-            std::invoke(m_callback);
+            w._invoke_callback(m_callback);
             w.m_properties &= ~Work::Properties::PREEMPTED;
             if (w.m_semaphores && !w.m_semaphores->releases.empty()) [[unlikely]] {
                 SmallVector<Work*> waiters;
@@ -1857,7 +1695,7 @@ public:
             }
 
             TFL_WORK_EXECUTION_END(w);
-            exe._tear_down_attached_task(w, wr, cache);
+            exe._tear_down_async_task(w, wr, cache);
             return;
         }
 
@@ -1884,4 +1722,3 @@ public:
 };
 
 }  // namespace tfl
-

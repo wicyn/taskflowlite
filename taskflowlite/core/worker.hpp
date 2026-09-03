@@ -53,13 +53,13 @@ public:
     }
 
     /// @brief 获取底层绑定的系统线程对象。
-    /// @warning Executor 拥有该线程；调用方不得 join、detach、移动或替换它。
+    /// @warning Executor 拥有该线程；调用方不得 join、silent_async、移动或替换它。
     [[nodiscard]] std::thread& thread() noexcept {
         return m_thread;
     }
 
     /// @brief 获取底层绑定的系统线程对象。
-    /// @warning Executor 拥有该线程；调用方不得 join、detach、移动或替换它。
+    /// @warning Executor 拥有该线程；调用方不得 join、silent_async、移动或替换它。
     [[nodiscard]] const std::thread& thread() const noexcept {
         return m_thread;
     }
@@ -110,7 +110,7 @@ public:
         return static_cast<size_t>(m_worker.m_wslq.capacity());
     }
     /// @brief 获取底层绑定的 OS 线程对象的只读引用。
-    /// @return const std::thread&，仅供查询（如 get_id()），不可 join/detach。
+    /// @return const std::thread&，仅供查询（如 get_id()），不可 join/silent_async。
     [[nodiscard]] const std::thread& thread() const noexcept { return m_worker.m_thread; }
 
 private:
