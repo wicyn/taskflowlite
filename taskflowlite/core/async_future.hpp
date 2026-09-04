@@ -132,14 +132,6 @@ public:
     /// @return Work 正在运行时返回 true；空 AsyncFuture 返回 false。
     [[nodiscard]] bool running() const noexcept;
 
-    /// @brief 查询关联任务是否已经完成异常归档。
-    ///
-    /// 本函数查询 `Control::EXCEPTION_CAUGHT`，而不是仅表示异常传播路径的
-    /// `Control::EXCEPTION`。返回 true 时，对应的异常已经写入并完成发布。
-    ///
-    /// @return 当前 Work 已经归档异常时返回 true；空 AsyncFuture 返回 false。
-    [[nodiscard]] bool has_exception() const noexcept;
-
     /// @brief 获取当前任务的强引用计数。
     /// @return 包括 AsyncFuture 等外部句柄引用以及框架执行生命周期引用在内的总强引用数；
     ///         空 AsyncFuture 返回 0。
@@ -326,11 +318,6 @@ bool AsyncFuture<R>::done() const noexcept {
 template <typename R>
 bool AsyncFuture<R>::running() const noexcept {
     return m_work && m_work->_is_running();
-}
-
-template <typename R>
-bool AsyncFuture<R>::has_exception() const noexcept {
-    return m_work && m_work->_has_exception();
 }
 
 template <typename R>

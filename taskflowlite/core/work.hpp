@@ -1,5 +1,5 @@
 ﻿/// @file work.hpp
-/// @brief DAG 任务节点、执行状态、依赖关系及运行期辅助逻辑。
+/// @brief 任务节点、执行状态、依赖关系及运行期辅助逻辑。
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-05-28
@@ -562,16 +562,19 @@ private:
 
     /// @brief 查询当前 Topology 及其祖先 Topology 链是否存在停止请求。
     ///
-    /// 从当前 `m_topology` 开始逐级检查 STOP_REQUESTED；当前层未停止时
-    /// 沿 `Topology::m_parent` 向上继续，直到发现停止请求或父链为空。
-    /// 当前 Work 的 `m_topology` 必须在调用期间保持有效。
+    /// 从当前 `m_topology` 开始逐级检查 STOP_REQUESTED。若祖先 Topology 已请求停止，
+    /// 则将 STOP_REQUESTED 惰性缓存到当前 Topology，使后续查询无需再次遍历父链。
     ///
     /// @return 当前或任一祖先 Topology 已请求停止时返回 true。
     [[nodiscard]] TFL_FORCE_INLINE bool _stop_requested() const noexcept {
-        const Topology* topology = m_topology;
+        Topology* const current = m_topology;
+        Topology* topology = current;
 
         do {
             if (topology->m_control.load(std::memory_order_relaxed) & Topology::Control::STOP_REQUESTED) {
+                if (topology != current) {
+                    current->m_control.fetch_or(Topology::Control::STOP_REQUESTED, std::memory_order_relaxed);
+                }
                 return true;
             }
         } while ((topology = topology->m_parent) != nullptr);

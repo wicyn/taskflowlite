@@ -410,6 +410,7 @@ private:
 
     /// @brief 将任务作为 parent 的子异步任务启动，并按依赖状态决定是否立即调度。
     /// @tparam Deps 前驱异步任务类型包。
+    /// @tparam InheritTopology 是否借用父停止域；false 时仍通过 Work 父链参与等待。
     /// @param parent 当前子任务所属的父 Work。
     /// @param worker 当前执行父 Work 的 Worker。
     /// @param executor 执行该任务的 Executor。
