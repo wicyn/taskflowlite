@@ -563,9 +563,10 @@ private:
     /// @brief 查询当前 Topology 及其祖先 Topology 链是否存在停止请求。
     ///
     /// 从当前 `m_topology` 开始逐级检查 STOP_REQUESTED。若祖先 Topology 已请求停止，
-    /// 则将 STOP_REQUESTED 惰性缓存到当前 Topology，使后续查询无需再次遍历父链。
+    /// 则将 STOP_REQUESTED 惰性缓存到当前 Topology，使后续查询无需再次遍历父链.
     ///
     /// @return 当前或任一祖先 Topology 已请求停止时返回 true。
+    /// @warning 当前 Topology 及其全部祖先 Topology 必须在调用期间保持有效。
     [[nodiscard]] TFL_FORCE_INLINE bool _stop_requested() const noexcept {
         Topology* const current = m_topology;
         Topology* topology = current;

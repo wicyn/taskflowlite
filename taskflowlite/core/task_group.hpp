@@ -128,6 +128,7 @@ public:
     /// @param gh 要执行的子图。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
+    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = true, graph_holder Gh, async_future... Deps>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, Deps&&... deps);
 
@@ -140,6 +141,7 @@ public:
     /// @param cb 全部节点完成后调用的无参回调。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
+    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = true, graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, C&& cb, Deps&&... deps);
@@ -152,6 +154,7 @@ public:
     /// @param num 循环次数。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
+    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = true, graph_holder Gh, async_future... Deps>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, Deps&&... deps);
 
@@ -165,6 +168,7 @@ public:
     /// @param cb 全部循环完成后调用的无参回调。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
+    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = true, graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps);
@@ -178,6 +182,7 @@ public:
     /// @param pred 每轮前调用；返回 true 时停止继续循环。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
+    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = true, graph_holder Gh, predicate P, async_future... Deps>
         requires capturable<P>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, Deps&&... deps);
@@ -193,6 +198,7 @@ public:
     /// @param cb 循环结束后调用的无参回调。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
+    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = true, graph_holder Gh, predicate P, callback C, async_future... Deps>
         requires capturable<P, C>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps);
@@ -204,6 +210,7 @@ public:
     /// @param task 要执行的 callable。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return `AsyncFuture<R>`，其中 `R = basic_return_t<T>`。
+    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = true, typename T, async_future... Deps>
         requires (basic_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<basic_return_t<T>>;
@@ -215,6 +222,7 @@ public:
     /// @param task 要执行的 callable。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return `AsyncFuture<R>`，其中 `R = runtime_return_t<T>`。
+    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = true, typename T, async_future... Deps>
         requires (runtime_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<runtime_return_t<T>>;
@@ -227,6 +235,7 @@ public:
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return `AsyncFuture<R>`，其中 `R = subflow_return_t<T>`。
     /// @warning callable 不得保存框架注入的 `SubFlow&`。
+    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = true, typename T, async_future... Deps>
         requires (subflow_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_return_t<T>>;
@@ -247,6 +256,7 @@ public:
     /// @param deps task 的前置依赖。
     /// @return 若 task 为左值则返回引用，否则按值返回移动后的句柄。
     /// @note 本函数只负责提交，不等待 task 完成。
+    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在 task 仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = true, async_task T, async_future... Deps>
     auto run(T&& task, Deps&&... deps) -> forward_return_t<T>;
 

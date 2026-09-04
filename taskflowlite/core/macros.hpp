@@ -211,13 +211,18 @@ static_assert(TF_POINTER_BITS > 0 && TF_POINTER_BITS <= 64, "TF_POINTER_BITS mus
 // 对象布局优化
 // ============================================================================
 
-/// @brief 跨编译器封装 `[[no_unique_address]]` / `[[msvc::no_unique_address]]`。
-/// @note 空类型成员可与其他子对象共享地址；具体对象布局由编译器决定。
-/// @note 该宏只影响对象布局优化机会，不改变语义正确性。
+/// @brief 跨编译器封装标准 `[[no_unique_address]]` 属性。
+///
+/// 允许编译器在满足对象模型要求的前提下复用空类型成员的尾部填充或存储空间，
+/// 从而减少包含空 callable、策略对象等成员时的对象大小。
+///
+/// @note 仅使用标准 `[[no_unique_address]]`，不使用 `[[msvc::no_unique_address]]`。
+///       本项目曾在 MSVC 下观察到该扩展属性与空 callable 及相邻非空成员组合时
+///       产生异常对象布局，导致本应独立的成员存储发生错误重叠。为避免依赖该
+///       编译器私有布局扩展，MSVC 同样只使用标准属性。
+/// @note 编译器可以选择不执行该布局优化，因此不能依赖成员地址或对象大小判断语义。
 #if defined(__has_cpp_attribute)
-#   if __has_cpp_attribute(msvc::no_unique_address)
-#       define TFL_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
-#   elif __has_cpp_attribute(no_unique_address) >= 201803L
+#   if __has_cpp_attribute(no_unique_address) >= 201803L
 #       define TFL_NO_UNIQUE_ADDRESS [[no_unique_address]]
 #   else
 #       define TFL_NO_UNIQUE_ADDRESS
@@ -225,7 +230,6 @@ static_assert(TF_POINTER_BITS > 0 && TF_POINTER_BITS <= 64, "TF_POINTER_BITS mus
 #else
 #   define TFL_NO_UNIQUE_ADDRESS
 #endif
-
 
 // ============================================================================
 // 内联控制指令

@@ -10,7 +10,6 @@
 
 #include <array>
 #include <cstdint>
-#include <sstream>
 #include <utility>
 
 #include "runtime.hpp"
