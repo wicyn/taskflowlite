@@ -333,17 +333,24 @@ public:
     /// @brief 检测当前句柄是否非空（m_work != nullptr），与 valid() 语义等价，支持 `if(task)`。
     [[nodiscard]] explicit operator bool() const noexcept;
 
-    /// @brief 检测任务执行期间是否已记录异常。
-    /// @return 有异常指针时返回 true。
-    [[nodiscard]] bool has_exception() const noexcept;
-
     /// @brief 获取底层任务节点类型，由 Work 当前 Payload 的 Invoker 类型决定。
     /// @return TaskType 枚举值（Basic, Branch, Runtime, Graph 等）。
     [[nodiscard]] TaskType type() const noexcept;
 
-    /// @brief 获取任务执行期间捕获的异常指针，直接返回 Work::m_exception_ptr。
-    /// @return std::exception_ptr，可能为空。
-    [[nodiscard]] std::exception_ptr exception() const noexcept;
+    /// @brief 检测任务是否已经保存异常指针。
+    ///
+    /// 通过检查底层 Work 的 `m_exception_ptr` 是否非空判断当前任务是否已经归档异常。
+    ///
+    /// @return 已经保存异常指针时返回 true；空 Task 返回 false。
+    [[nodiscard]] bool has_exception_ptr() const noexcept;
+
+    /// @brief 获取任务执行期间归档的异常指针。
+    ///
+    /// 直接返回底层 Work 保存的 `m_exception_ptr`；空 Task 或未归档异常时返回空
+    /// `std::exception_ptr`。
+    ///
+    /// @return 当前任务归档的异常指针，可能为空。
+    [[nodiscard]] std::exception_ptr exception_ptr() const noexcept;
 
     /// @brief 将当前任务节点导出为 D2 描述字符串。
     [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
@@ -995,16 +1002,16 @@ inline Task::operator bool() const noexcept {
     return m_work != nullptr;
 }
 
-inline bool Task::has_exception() const noexcept {
-    return m_work && m_work->_has_exception();
-}
-
-inline std::exception_ptr Task::exception() const noexcept {
-    return m_work ? m_work->m_exception_ptr : std::exception_ptr{};
-}
-
 inline TaskType Task::type() const noexcept {
     return m_work ? m_work->type() : TaskType::None;
+}
+
+inline bool Task::has_exception_ptr() const noexcept {
+    return m_work && m_work->m_exception_ptr;
+}
+
+inline std::exception_ptr Task::exception_ptr() const noexcept {
+    return m_work ? m_work->m_exception_ptr : std::exception_ptr{};
 }
 
 inline std::string Task::dump(Direction dir) const {

@@ -23,8 +23,6 @@ namespace tfl {
 ///
 /// 每个 Worker 保存系统线程、本地工作窃取队列、随机状态和可选内存池；对象由
 /// `Executor` 创建和销毁，不支持独立复制或移动。Owner 操作由所属线程执行，其他线程只窃取队列任务。
-///
-/// @warning 启用本地池时，分配、释放和池重置必须在所属 Worker 线程按同一路径完成。
 class Worker : public Immovable<Worker> {
     friend class Executor;
     friend class Runtime;

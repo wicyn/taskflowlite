@@ -17,6 +17,8 @@ namespace tfl {
 ///
 /// `SubFlow` 同时借用动态 `Graph` 和当前执行上下文；通过 `FlowBuilder` 创建的
 /// 节点归该动态图管理，并作为当前父任务的动态子任务参与完成与异常传播。
+/// 必须显式调用 run() 才会提交节点；只构建图然后返回不会自动执行它。
+/// 同一 SubFlow 节点下一轮调用会清空并重建内部 Graph，上一轮的 Task 句柄随之失效。
 ///
 /// @warning 对象只在当前 callable 和 Worker 线程内有效，不得保存、跨线程传递或在子图执行时修改图结构。
 class SubFlow final : public FlowBuilder, public Context {
