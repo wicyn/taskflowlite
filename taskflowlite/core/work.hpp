@@ -616,26 +616,21 @@ private:
         }
     }
 
-    /// @brief 捕获当前 `catch (...)` 正在处理的异常，并进入统一通知、传播和归档流程。
+    /// @brief 捕获当前 `catch (...)` 正在处理的异常并进入统一传播/归档流程。
     ///
-    /// 当前异常会先通知该 Work 注册的全部观察者，随后进入异常传播和归档流程。
-    ///
-    /// @param wr 当前执行该 Work 的 Worker。
     /// @note 必须在活动异常处理上下文内调用，否则 `std::current_exception()` 可能为空。
-    TFL_FORCE_INLINE void _process_exception(Worker& wr) noexcept {
-        _process_exception(wr, std::current_exception());
+    TFL_FORCE_INLINE void _process_exception() noexcept {
+        _process_exception(std::current_exception());
     }
 
-    /// @brief 通知观察者，沿 `m_parent` 链传播异常标记，并按显式/隐式锚点优先级竞争异常归档位置。
+    /// @brief 沿 `m_parent` 链传播异常标记，并按显式/隐式锚点优先级竞争异常归档位置。
     ///
-    /// @param wr 当前执行该 Work 的 Worker。
-    /// @param eptr 待通知、传播和归档的 `std::exception_ptr`。
+    /// @param eptr 待传播和归档的 `std::exception_ptr`。
     ///
-    /// 本重载可直接接收已经捕获的 exception_ptr。实现首先向当前 Work 注册的全部
-    /// TaskObserver 通知异常，随后沿父 Work 链设置 EXCEPTION 并寻找显式/隐式锚点，
-    /// 再使用 `fetch_or` 的旧值竞争 EXCEPTION_CAUGHT；同一归档位置只允许首个观察到
-    /// CAUGHT 未置位的调用写入 `m_exception_ptr`。选定锚点竞争失败时继续尝试当前 Work
-    /// 作为兜底归档位置。
+    /// 本重载可直接接收已经捕获的 exception_ptr。实现先沿父 Work 链设置
+    /// EXCEPTION 并寻找显式/隐式锚点，再使用 `fetch_or` 的旧值竞争 EXCEPTION_CAUGHT；
+    /// 同一归档位置只允许首个观察到 CAUGHT 未置位的调用写入 `m_exception_ptr`。
+    /// 选定锚点竞争失败时继续尝试当前 Work 作为兜底归档位置。
     ///
     /// @note `m_exception_ptr` 是非原子对象，只能在框架约定的完成同步之后由观察者读取。
     ///
@@ -659,11 +654,8 @@ private:
     ///
     /// @note 若锚点和当前 Work 的 CAUGHT 均已被其他异常占用，本次 eptr 不再覆盖已有异常，
     ///       因而该归档位置保持“首个异常优先”的语义。
-    TFL_FORCE_INLINE void _process_exception(Worker& wr, std::exception_ptr eptr) noexcept {
+    TFL_FORCE_INLINE void _process_exception(std::exception_ptr eptr) noexcept {
         TFL_ASSERT(eptr);
-
-        // 首先通知当前 Work 注册的全部观察者。
-        _notify_exception(wr, eptr);
 
         // 阶段 1：沿父 Work 链传播 EXCEPTION，并寻找可用异常锚点。
         // 循环不变式：
@@ -732,38 +724,35 @@ private:
 
     /// @brief 调用 Module 终止谓词，并将异常转换为终止条件.
     ///
-    /// predicate 正常返回时直接返回其结果；若调用抛出异常，则将异常通知观察者并
-    /// 归档到当前 Work，随后返回 true，使 Module 进入正常结束和资源清理路径.
+    /// predicate 正常返回时直接返回其结果；若调用抛出异常，则将异常归档到当前
+    /// Work，随后返回 true，使 Module 进入正常结束和资源清理路径.
     ///
     /// @tparam P 无参终止谓词类型。
-    /// @param wr 当前执行该 Work 的 Worker。
     /// @param predicate 要调用的终止谓词。
     /// @return predicate 的返回值；发生异常时返回 true。
     template <predicate P>
-    TFL_FORCE_INLINE bool _invoke_predicate(Worker& wr, P& predicate) noexcept {
+    TFL_FORCE_INLINE bool _invoke_predicate(P& predicate) noexcept {
         try {
             return std::invoke(predicate);
         } catch (...) {
-            _process_exception(wr);
+            _process_exception();
             return true;
         }
     }
 
     /// @brief 调用完成回调，并将异常归档到当前 Work.
     ///
-    /// callback 抛出的异常不会离开本函数；异常会通知观察者并进入当前 Work 的统一
-    /// 传播和归档流程，从而保证调用方能够继续完成 Observer、Semaphore、执行状态
-    /// 和 tear-down 等收尾流程.
+    /// callback 抛出的异常不会离开本函数，而是进入当前 Work 的统一传播和归档流程，
+    /// 从而保证调用方能够继续完成 Observer、Semaphore、执行状态和 tear-down 等收尾流程.
     ///
     /// @tparam C 无参完成回调类型。
-    /// @param wr 当前执行该 Work 的 Worker。
     /// @param callback 要调用的完成回调。
     template <callback C>
-    TFL_FORCE_INLINE void _invoke_callback(Worker& wr, C& callback) noexcept {
+    TFL_FORCE_INLINE void _invoke_callback(C& callback) noexcept {
         try {
             std::invoke(callback);
         } catch (...) {
-            _process_exception(wr);
+            _process_exception();
         }
     }
 
@@ -839,10 +828,9 @@ private:
     // ---- 观察者执行前/后通知 ----
     /// @brief 在 callable 正式执行前依次通知当前 Work 注册的全部观察者。
     TFL_FORCE_INLINE void _notify_before(Worker& wr) const noexcept;
+
     /// @brief 在 callable 执行结束后依次通知当前 Work 注册的全部观察者。
     TFL_FORCE_INLINE void _notify_after(Worker& wr) const noexcept;
-    /// @brief 向当前 Work 注册的全部观察者通知 callable 异常。
-    TFL_FORCE_INLINE void _notify_exception(Worker& wr, std::exception_ptr eptr) const noexcept;
 
     // ---- 静态图双向边表维护 ----
     void _erase_successor_at(std::size_t idx) noexcept;
@@ -1180,49 +1168,19 @@ TFL_FORCE_INLINE void Work::_release_semaphores(SmallVector<Work*>& out) {
 }
 
 /// @brief 在 callable 正式执行前依次通知当前 Work 注册的全部观察者。
-///
-/// 单个观察者的 `on_before` 抛出异常时，将异常通知给该观察者的
-/// `on_exception`，随后继续通知剩余观察者。
 TFL_FORCE_INLINE void Work::_notify_before(Worker& wr) const noexcept {
     if (m_observers) [[unlikely]] {
         for (auto& observer : m_observers->observers) {
-            try {
-                observer->on_before(WorkerView{wr});
-            } catch (...) {
-                observer->on_exception(WorkerView{wr}, std::current_exception());
-            }
+            observer->on_before(WorkerView{wr});
         }
     }
 }
 
-
 /// @brief 在 callable 执行结束后依次通知当前 Work 注册的全部观察者。
-///
-/// 单个观察者的 `on_after` 抛出异常时，将异常通知给该观察者的
-/// `on_exception`，随后继续通知剩余观察者。
 TFL_FORCE_INLINE void Work::_notify_after(Worker& wr) const noexcept {
     if (m_observers) [[unlikely]] {
         for (auto& observer : m_observers->observers) {
-            try {
-                observer->on_after(WorkerView{wr});
-            } catch (...) {
-                observer->on_exception(WorkerView{wr}, std::current_exception());
-            }
-        }
-    }
-}
-
-/// @brief 向当前 Work 注册的全部观察者通知 callable 异常。
-///
-/// `TaskObserver::on_exception` 为 noexcept，因此异常通知过程不会继续产生
-/// 可传播异常。
-///
-/// @param wr 当前执行 Work 的 Worker。
-/// @param eptr callable 抛出的异常。
-TFL_FORCE_INLINE void Work::_notify_exception(Worker& wr, std::exception_ptr eptr) const noexcept {
-    if (m_observers) [[unlikely]] {
-        for (auto& observer : m_observers->observers) {
-            observer->on_exception(WorkerView{wr}, eptr);
+            observer->on_after(WorkerView{wr});
         }
     }
 }
