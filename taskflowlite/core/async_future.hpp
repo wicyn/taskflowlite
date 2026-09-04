@@ -180,9 +180,11 @@ public:
     ///          内应优先使用框架提供的协作等待机制。
     decltype(auto) get() const;
 
-    /// @brief 查询当前任务或其继承的停止链路是否已经收到停止请求。
-    /// @return 当前 Work 或其上游停止域存在停止请求时返回 true；
-    ///         空 AsyncFuture 返回 false。
+    /// @brief 查询关联任务及其继承的父 Topology 链是否存在停止请求.
+    ///
+    /// @return 当前任务或任一祖先 Topology 已请求停止时返回 true；空 AsyncFuture 返回 false.
+    ///
+    /// @warning 若当前任务继承了父 Topology，则父 Topology 必须在本调用期间保持有效。
     [[nodiscard]] bool stop_requested() const noexcept;
 
     /// @brief 向当前任务发起协作式停止请求。
