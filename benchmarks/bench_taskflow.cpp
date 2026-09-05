@@ -8,32 +8,13 @@
 #include <string>
 #include <vector>
 
-static std::atomic<int> g_counter{0};
-static void add_one() { /*g_counter.fetch_add(1, std::memory_order_relaxed);*/ }
-
-class Timer {
-public:
-    explicit Timer(std::string name): m_name(std::move(name)), m_start(std::chrono::steady_clock::now()) {}
-    ~Timer() {
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_start).count();
-        std::cout << "[" << m_name << "] elapsed: " << ms << " ms\n";
-    }
-private:
-    std::string m_name;
-    std::chrono::steady_clock::time_point m_start;
-};
-
-static void verify(int expected) {
-    int actual = g_counter.load();
-    std::cout << "  verify: expected=" << expected << ", actual=" << actual
-              << (expected == actual ? "  [PASS]" : "  [FAIL]") << "\n\n";
-}
+#include "bench_common.hpp"
 
 // ============================================================================
 // 01: 纯并行
 // ============================================================================
 static void test_01() {
-    constexpr int kRuns = 500'000, kSize = 32;
+    const int kRuns = bench_runs(500'000), kSize = 32;
     g_counter.store(0);
     tf::Executor executor(8);
     tf::Taskflow flow;
@@ -46,7 +27,7 @@ static void test_01() {
 // 02: 纯串行链
 // ============================================================================
 static void test_02() {
-    constexpr int kRuns = 1'000'000, kSize = 32;
+    const int kRuns = bench_runs(1'000'000), kSize = 32;
     g_counter.store(0);
     tf::Executor executor(1);
     tf::Taskflow flow;
@@ -64,7 +45,7 @@ static void test_02() {
 // 03: 菱形 DAG
 // ============================================================================
 static void test_03() {
-    constexpr int kRuns = 1'000'000, kNodes = 6;
+    const int kRuns = bench_runs(1'000'000), kNodes = 6;
     g_counter.store(0);
     tf::Executor executor(2);
     tf::Taskflow flow;
@@ -80,7 +61,8 @@ static void test_03() {
 // ============================================================================
 template<int kLayers, int kPerLayer, int kRuns, int kThreads>
 static void run_full_connected(const char* tag) {
-    constexpr int kNodes = kLayers * kPerLayer;
+    const int runs = bench_runs(kRuns);
+    const int kNodes = kLayers * kPerLayer;
     g_counter.store(0);
     tf::Executor executor(kThreads);
     tf::Taskflow flow;
@@ -94,8 +76,8 @@ static void run_full_connected(const char* tag) {
         }
         prev = cur;
     }
-    { Timer tm(tag); executor.run_n(flow, kRuns).wait(); }
-    verify(kNodes * kRuns);
+    { Timer tm(tag); executor.run_n(flow, runs).wait(); }
+    verify(kNodes * runs);
 }
 static void test_04a() { run_full_connected<4, 2, 1'000'000, 2>("test_04a [4x2  full   | 2 threads |  1M runs ]"); }
 static void test_04b() { run_full_connected<6, 4, 500'000, 4>("test_04b [6x4  full   | 4 threads | 500k runs]"); }
@@ -108,7 +90,7 @@ static void test_04f() { run_full_connected<6, 100, 2'000, 8>("test_04f [6x100 f
 // 05: 二叉归约树
 // ============================================================================
 static void test_05() {
-    constexpr int kDepth = 5, kNodes = (1 << (kDepth + 1)) - 1, kRuns = 500'000;
+    const int kDepth = 5, kNodes = (1 << (kDepth + 1)) - 1, kRuns = bench_runs(500'000);
     g_counter.store(0);
     tf::Executor executor(8);
     tf::Taskflow flow;
@@ -131,7 +113,7 @@ static void test_05() {
 // 06: 宽扇出 / 扇入
 // ============================================================================
 static void test_06() {
-    constexpr int kWidth = 256, kNodes = kWidth + 2, kRuns = 100'000;
+    const int kWidth = 256, kNodes = kWidth + 2, kRuns = bench_runs(100'000);
     g_counter.store(0);
     tf::Executor executor(8);
     tf::Taskflow flow;
@@ -146,7 +128,7 @@ static void test_06() {
 // 07: 独立流水线
 // ============================================================================
 static void test_07() {
-    constexpr int kPipes = 16, kStages = 8, kNodes = kPipes * kStages, kRuns = 200'000;
+    const int kPipes = 16, kStages = 8, kNodes = kPipes * kStages, kRuns = bench_runs(200'000);
     g_counter.store(0);
     tf::Executor executor(8);
     tf::Taskflow flow;
@@ -166,7 +148,7 @@ static void test_07() {
 // 08: 网格 DAG
 // ============================================================================
 static void test_08() {
-    constexpr int kN = 16, kNodes = kN * kN, kRuns = 100'000;
+    const int kN = 16, kNodes = kN * kN, kRuns = bench_runs(100'000);
     g_counter.store(0);
     tf::Executor executor(8);
     tf::Taskflow flow;
@@ -184,7 +166,7 @@ static void test_08() {
 // 09: 稀疏随机 DAG
 // ============================================================================
 static void test_09() {
-    constexpr int kN = 64, kRuns = 500'000;
+    const int kN = 64, kRuns = bench_runs(500'000);
     g_counter.store(0);
     tf::Executor executor(8);
     tf::Taskflow flow;
@@ -203,14 +185,14 @@ static void test_09() {
 // 10: 条件循环 (condition_task ~= tfl::Jump)
 // ============================================================================
 static void test_10() {
-    constexpr int kLoopIter = 1'000'000;
+    const int kLoopIter = bench_runs(1'000'000);
     g_counter.store(0);
     tf::Executor executor(1);
     tf::Taskflow flow;
     auto init    = flow.emplace([] {});
     auto process = flow.emplace([] { add_one(); });
     int count = 0;
-    auto retry = flow.emplace([&count]() -> int {
+    auto retry = flow.emplace([&count, kLoopIter]() -> int {
         if (count < kLoopIter - 1) { ++count; return 0; } return 1;
     });
     auto end = flow.emplace([] {});
@@ -223,7 +205,7 @@ static void test_10() {
 // 11: 多条件循环 (multi_condition_task ~= tfl::MultiJump)
 // ============================================================================
 static void test_11() {
-    constexpr int kIter = 200'000;
+    const int kIter = bench_runs(200'000);
     g_counter.store(0);
     tf::Executor executor(4);
     tf::Taskflow flow;
@@ -232,7 +214,7 @@ static void test_11() {
     auto branch_b = flow.emplace([] { add_one(); });
     auto branch_c = flow.emplace([] { add_one(); });
     int count = 0;
-    auto mj = flow.emplace([&count]() -> tf::SmallVector<int> {
+    auto mj = flow.emplace([&count, kIter]() -> tf::SmallVector<int> {
         if (count++ < kIter - 1) return {0, 1, 2}; return {3};
     });
     auto end = flow.emplace([] {});
@@ -247,7 +229,7 @@ static void test_11() {
 // 12: Subflow 单次
 // ============================================================================
 static void test_12() {
-    constexpr int kInner = 8, kRuns = 200'000;
+    const int kInner = 8, kRuns = bench_runs(200'000);
     g_counter.store(0);
     tf::Executor executor(4);
     tf::Taskflow inner;
@@ -265,7 +247,7 @@ static void test_12() {
 // 13: Subflow 循环
 // ============================================================================
 static void test_13() {
-    constexpr int kInnerRuns = 500'000;
+    const int kInnerRuns = bench_runs(500'000);
     g_counter.store(0);
     tf::Executor executor(2);
     tf::Taskflow diamond;
@@ -273,7 +255,7 @@ static void test_13() {
     auto c = diamond.emplace([] { add_one(); }); auto d = diamond.emplace([] { add_one(); });
     a.precede(b, c); b.precede(d); c.precede(d);
     tf::Taskflow flow;
-    flow.emplace([&diamond](tf::Subflow& sf) {
+    flow.emplace([&diamond, kInnerRuns](tf::Subflow& sf) {
         for (int i = 0; i < kInnerRuns; ++i) sf.executor().corun(diamond);
     });
     { Timer t("test_13 [subflow loop| 2 threads | 500k iter]"); executor.run(flow).wait(); }
@@ -284,7 +266,7 @@ static void test_13() {
 // 14: 空任务延迟
 // ============================================================================
 static void test_14() {
-    constexpr int kRuns = 10'000'000;
+    const int kRuns = bench_runs(10'000'000);
     g_counter.store(0);
     tf::Executor executor(1);
     tf::Taskflow flow;
@@ -297,7 +279,7 @@ static void test_14() {
 // 15: 并行 for
 // ============================================================================
 static void test_15() {
-    constexpr int kRuns = 10'000; int kSize = 1024;
+    const int kRuns = bench_runs(10'000); int kSize = 1024;
     g_counter.store(0);
     tf::Executor executor(8);
     tf::Taskflow flow;
@@ -310,7 +292,7 @@ static void test_15() {
 // 16: 归约树（带计算）
 // ============================================================================
 static void test_16() {
-    constexpr int kDepth = 6, kNodes = (1 << (kDepth + 1)) - 1, kRuns = 50'000;
+    const int kDepth = 6, kNodes = (1 << (kDepth + 1)) - 1, kRuns = bench_runs(50'000);
     g_counter.store(0);
     tf::Executor executor(8);
     tf::Taskflow flow;
@@ -333,7 +315,7 @@ static void test_16() {
 // 17: 前缀和扫描链
 // ============================================================================
 static void test_17() {
-    constexpr int kRuns = 100'000; int kSize = 128;
+    const int kRuns = bench_runs(100'000); int kSize = 128;
     g_counter.store(0);
     tf::Executor executor(1);
     tf::Taskflow flow;
@@ -351,7 +333,7 @@ static void test_17() {
 // 18: 三角波前
 // ============================================================================
 static void test_18() {
-    constexpr int kN = 20, kRuns = 10'000;
+    const int kN = 20, kRuns = bench_runs(10'000);
     int kNodes = kN * (kN + 1) / 2;
     g_counter.store(0);
     tf::Executor executor(8);
@@ -373,7 +355,7 @@ static void test_18() {
 // 19: 异构工作负载
 // ============================================================================
 static void test_19() {
-    constexpr int kRuns = 100'000, kLight = 8, kHeavy = 8;
+    const int kRuns = bench_runs(100'000), kLight = 8, kHeavy = 8;
     int kNodes = kLight + kHeavy + 2;
     g_counter.store(0);
     tf::Executor executor(8);
@@ -391,7 +373,7 @@ static void test_19() {
 // 20: 内存压力
 // ============================================================================
 static void test_20() {
-    constexpr int kLayers = 10, kPerLayer = 200, kRuns = 500;
+    const int kLayers = 10, kPerLayer = 200, kRuns = bench_runs(500);
     int kNodes = kLayers * kPerLayer;
     g_counter.store(0);
     tf::Executor executor(8);
@@ -413,11 +395,13 @@ static void test_20() {
 // ============================================================================
 // main
 // ============================================================================
-int main() {
+int main(int argc, char** argv) {
+    const int args = parse_benchmark_args(argc, argv);
+    if (args != 0) return args > 0 ? 0 : 2;
     test_01(); test_02(); test_03();
     test_04a(); test_04b(); test_04c(); test_04d(); test_04e(); test_04f();
     test_05(); test_06(); test_07(); test_08(); test_09();
     test_10(); test_11(); test_12(); test_13();
     test_14(); test_15(); test_16(); test_17(); test_18(); test_19(); test_20();
-    return 0;
+    return g_failures == 0 ? 0 : 1;
 }

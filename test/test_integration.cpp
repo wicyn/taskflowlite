@@ -3,9 +3,9 @@
 ///
 /// 覆盖的不变量:
 ///   E3  ✓ 析构 join 所有 worker，无 hang
-///   E5  ✓ submit / shutdown 并发，不死锁
+///   E5  ✓ run / shutdown 并发，不死锁
 ///   E9  ✓ 异常任务的父 join_counter 仍正确
-///   E11 ✓ 并发 submit 多个 Flow，各自独立完成
+///   E11 ✓ 并发 run 多个 Flow，各自独立完成
 ///   E13 ⏸ 0 worker 行为
 ///   E14 ✓ 巨大 worker 数不挂 / 10 万节点链
 ///   X2  ✓ 多 Flow + 异常: 全部完成，无 hang
@@ -29,12 +29,11 @@ using tfl_test::TestEnv;
 /// @test [integration][executor][lifecycle] E14: 大量 worker 构造不崩溃
 TEST_CASE("Integration: executor with many workers does not crash", "[integration][executor][lifecycle]") {
     constexpr std::size_t kN = 128;
-    tfl::ResumeNever handler;
     REQUIRE_NOTHROW([&] {
-        tfl::Executor exec(handler, kN);
+        tfl::Executor exec(kN);
         std::atomic<int> n{0};
-        auto t = tfl::NonrepeatAsyncTask([&] { n.store(42); });
-        exec.submit(t); t.wait();
+        auto t = tfl::AsyncTask([&] { n.store(42); });
+        exec.run(t); t.wait();
         REQUIRE(n.load() == 42);
     }());
 }
@@ -43,8 +42,7 @@ TEST_CASE("Integration: executor with many workers does not crash", "[integratio
 TEST_CASE("Integration: executor destructor joins all workers", "[integration][executor][lifecycle]") {
     std::atomic<int> hits{0};
     {
-        tfl::ResumeNever handler;
-        tfl::Executor exec(handler, 4);
+        tfl::Executor exec(4);
         tfl::Flow flow;
         for (int i = 0; i < 100; ++i) {
             flow.emplace([&] { hits.fetch_add(1, std::memory_order_relaxed); });
@@ -151,8 +149,8 @@ TEST_CASE("Integration: condition task routing to Subflow vs basic", "[integrati
 // 第 4 节: 并发提交多个 Flow (E11)
 // ============================================================================
 
-/// @test [integration][concurrent-submit][stress] E11: 并发提交多个 Flow
-TEST_CASE("Integration: concurrent submit of multiple Flows", "[integration][concurrent-submit][stress]") {
+/// @test [integration][concurrent-run][stress] E11: 并发提交多个 Flow
+TEST_CASE("Integration: concurrent run of multiple Flows", "[integration][concurrent-run][stress]") {
     TestEnv env(8);
     constexpr int kThreads = 4, kTasksPerFlow = 50;
 
@@ -194,8 +192,7 @@ TEST_CASE("Integration: executor destruction with pending tasks", "[integration]
     constexpr int N = 1000;
 
     {
-        tfl::ResumeNever handler;
-        tfl::Executor exec(handler, 4);
+        tfl::Executor exec(4);
 
         tfl::Flow flow;
         for (int i = 0; i < N; ++i) {
@@ -208,16 +205,15 @@ TEST_CASE("Integration: executor destruction with pending tasks", "[integration]
     REQUIRE(hits.load() == N);
 }
 
-/// @test [integration][shutdown][stress] 析构时还有未完成的 detach 任务
-TEST_CASE("Integration: executor destruction with pending detach", "[integration][shutdown][stress]") {
+/// @test [integration][shutdown][stress] 析构时还有未完成的 silent_async 任务
+TEST_CASE("Integration: executor destruction with pending silent_async", "[integration][shutdown][stress]") {
     std::atomic<int> hits{0};
     constexpr int N = 500;
 
     {
-        tfl::ResumeNever handler;
-        tfl::Executor exec(handler, 4);
+        tfl::Executor exec(4);
         for (int i = 0; i < N; ++i) {
-            exec.detach([&] {
+            exec.silent_async([&] {
                 hits.fetch_add(1, std::memory_order_relaxed);
             });
         }
@@ -230,8 +226,8 @@ TEST_CASE("Integration: executor destruction with pending detach", "[integration
 // 第 6 节: wait_for_all 语义
 // ============================================================================
 
-/// @test [integration][wait_for_all] wait_for_all 覆盖 Flow 和 detach
-TEST_CASE("Integration: wait_for_all covers both flows and detach", "[integration][wait_for_all]") {
+/// @test [integration][wait_for_all] wait_for_all 覆盖 Flow 和 silent_async
+TEST_CASE("Integration: wait_for_all covers both flows and silent_async", "[integration][wait_for_all]") {
     TestEnv env;
     std::atomic<int> flow_done{0}, async_done{0};
     constexpr int kFlowTasks = 50, kAsyncTasks = 100;
@@ -244,7 +240,7 @@ TEST_CASE("Integration: wait_for_all covers both flows and detach", "[integratio
     env.executor.async(flow);
 
     for (int i = 0; i < kAsyncTasks; ++i) {
-        env.executor.detach([&] { async_done.fetch_add(1); });
+        env.executor.silent_async([&] { async_done.fetch_add(1); });
     }
 
     env.executor.wait_for_all();
@@ -258,7 +254,7 @@ TEST_CASE("Integration: multiple wait_for_all calls", "[integration][wait_for_al
     TestEnv env;
     std::atomic<int> n{0};
 
-    env.executor.detach([&] { n.store(1); });
+    env.executor.silent_async([&] { n.store(1); });
     env.executor.wait_for_all();
     REQUIRE(n.load() == 1);
 
@@ -266,7 +262,7 @@ TEST_CASE("Integration: multiple wait_for_all calls", "[integration][wait_for_al
     REQUIRE_NOTHROW(env.executor.wait_for_all());
 
     // 提交新任务后再等
-    env.executor.detach([&] { n.store(2); });
+    env.executor.silent_async([&] { n.store(2); });
     env.executor.wait_for_all();
     REQUIRE(n.load() == 2);
 }
@@ -313,7 +309,7 @@ TEST_CASE("Integration: exception in deeply nested Subflow", "[integration][exce
 
     env.executor.async(outer).wait();
 
-    // ResumeNever 策略：异常后后继节点不运行
+    // 图内异常传播后，依赖后继节点不运行
     REQUIRE_FALSE(outer_post.load());
 }
 
@@ -322,7 +318,7 @@ TEST_CASE("Integration: exception in deeply nested Subflow", "[integration][exce
 // ============================================================================
 
 /// @test [integration][reuse] 同一 Flow 多次提交
-TEST_CASE("Integration: same Flow submitted multiple times concurrently", "[integration][reuse][stress]") {
+TEST_CASE("Integration: same Flow reused after each completion", "[integration][reuse][stress]") {
     TestEnv env(4);
 
     tfl::Flow flow;
@@ -338,11 +334,11 @@ TEST_CASE("Integration: same Flow submitted multiple times concurrently", "[inte
 }
 
 // ============================================================================
-// 第 9 节: Runtime cowait 跨 Flow (X4)
+// 第 9 节: Runtime wait 跨 Flow (X4)
 // ============================================================================
 
-/// @test [integration][runtime][flow] Runtime cowait 在 Flow successor 之前完成子任务
-TEST_CASE("Integration: Runtime cowait before successor in Flow", "[integration][runtime][flow]") {
+/// @test [integration][runtime][flow] Runtime wait 在 Flow successor 之前完成子任务
+TEST_CASE("Integration: Runtime wait before successor in Flow", "[integration][runtime][flow]") {
     TestEnv env;
     std::atomic<int> sub_done{0};
     std::atomic<bool> successor_ran{false};
@@ -351,9 +347,9 @@ TEST_CASE("Integration: Runtime cowait before successor in Flow", "[integration]
     tfl::Flow flow;
     auto rt = flow.emplace([&](tfl::Runtime& rt) {
         for (int i = 0; i < kSubTasks; ++i) {
-            rt.detach([&] { sub_done.fetch_add(1); });
+            rt.silent_async([&] { sub_done.fetch_add(1); });
         }
-        rt.cowait();  // 等所有子任务在父任务体内完成
+        rt.wait();  // 等所有子任务在父任务体内完成
     });
     auto next = flow.emplace([&] {
         successor_ran.store(sub_done.load() == kSubTasks);
@@ -438,13 +434,13 @@ TEST_CASE("Integration: async Future used alongside Flow", "[integration][future
 // 覆盖矩阵
 // ============================================================================
 //   E3  ✓ "Integration: executor destructor joins all workers"
-//   E5  ✓ "Integration: executor destruction with pending tasks" / "pending detach"
+//   E5  ✓ "Integration: executor destruction with pending tasks" / "pending silent_async"
 //   E9  ✓ "Integration: exception in deeply nested Subflow"
-//   E11 ✓ "Integration: concurrent submit of multiple Flows" / "same Flow submitted multiple times"
+//   E11 ✓ "Integration: concurrent run of multiple Flows" / "same Flow submitted multiple times"
 //   E13 ⏸ 0 worker（API 设计问题）
 //   E14 ✓ "Integration: executor with many workers does not crash" / "100K-node chain"
 //   X2  ✓ "Integration: exception in one Subflow does not block sibling"
 //   X4  ✓ "Integration: three-level deep Subflow nesting" / "condition task routing to Subflow"
-//         "Integration: Runtime cowait before successor in Flow"
-//   X5  ✓ "Integration: executor destruction with pending tasks" / "pending detach"
+//         "Integration: Runtime wait before successor in Flow"
+//   X5  ✓ "Integration: executor destruction with pending tasks" / "pending silent_async"
 //   F8  ✓ "Integration: three-level deep Subflow nesting" / "nested subflow with repeat counts"

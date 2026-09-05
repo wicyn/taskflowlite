@@ -1,20 +1,21 @@
 /// @file test_executor.cpp
-/// @brief Executor 模块测试 —— DAG 调度正确性 / async 各种形式 / async(single) / detach。
+/// @brief Executor 模块测试 —— DAG 调度正确性 / async 各种形式 / async(single) / silent_async。
 ///
 /// 覆盖的接口：
-///   - Executor(handler, num_workers)             构造
+///   - Executor(num_workers)             构造
 ///   - Executor::async(Flow)                      单次提交
 ///   - Executor::async(Flow, callback)            带回调
 ///   - Executor::async(Flow, num)                 固定次数循环
 ///   - Executor::async(Flow, num, callback)       固定次数 + 回调
 ///   - Executor::async(Flow, predicate)           谓词驱动循环
-///   - tfl::NonrepeatAsyncTask(callable, args...)        独立异步任务
-///   - Executor::submit / AsyncTask::wait         独立任务提交与等待
-///   - Executor::detach                           即发即忘
+///   - tfl::AsyncTask(callable, args...)        独立异步任务
+///   - Executor::run / AsyncTask::wait         独立任务提交与等待
+///   - Executor::silent_async                           即发即忘
 ///   - Executor::async(single)                    返回 Future
 ///   - Executor::wait_for_all                     全局等待
 
 #include "test_common.hpp"
+#include <functional>
 
 using tfl_test::TestEnv;
 
@@ -159,51 +160,51 @@ TEST_CASE("Executor: async(flow, predicate) predicate loop", "[executor][async][
 }
 
 // ============================================================================
-// SECTION 3: AsyncTask<>(callable, args...) + submit —— 独立任务
+// SECTION 3: AsyncTask<>(callable, args...) + run —— 独立任务
 // ============================================================================
 
-/// @test [executor][async] AsyncTask<>(基本任务) + submit 提交执行。
+/// @test [executor][async] AsyncTask<>(基本任务) + run 提交执行。
 TEST_CASE("Executor: AsyncTask single basic task", "[executor][async][standalone]") {
     TestEnv env;
     std::atomic<int> v{0};
 
-    auto t = tfl::NonrepeatAsyncTask([&] { v.store(42); });
-    env.executor.submit(t); t.wait();
+    auto t = tfl::AsyncTask([&] { v.store(42); });
+    env.executor.run(t); t.wait();
 
     REQUIRE(v.load() == 42);
 }
 
-/// @test [executor][async] AsyncTask<>(callable, args...) 参数转发 + submit。
+/// @test [executor][async] AsyncTask<>(callable, args...) 参数转发 + run。
 TEST_CASE("Executor: AsyncTask single task with arguments", "[executor][async][standalone][args]") {
     TestEnv env;
     int v = 0;
-    auto t = tfl::NonrepeatAsyncTask([](int& r) { r = 99; }, std::ref(v));
-    env.executor.submit(t); t.wait();
+    auto t = tfl::AsyncTask(std::bind_front([](int& r) { r = 99; }, std::ref(v)));
+    env.executor.run(t); t.wait();
     REQUIRE(v == 99);
 }
 
-/// @test [executor][async] AsyncTask<>(Runtime 可调用对象) + submit。
+/// @test [executor][async] AsyncTask<>(Runtime 可调用对象) + run。
 TEST_CASE("Executor: AsyncTask single Runtime task", "[executor][async][runtime]") {
     TestEnv env;
     std::atomic<int> v{0};
 
-    auto t = tfl::NonrepeatAsyncTask([&](tfl::Runtime&) { v.store(7); });
-    env.executor.submit(t); t.wait();
+    auto t = tfl::AsyncTask([&](tfl::Runtime&) { v.store(7); });
+    env.executor.run(t); t.wait();
 
     REQUIRE(v.load() == 7);
 }
 
 // ============================================================================
-// SECTION 4: detach / async
+// SECTION 4: silent_async / async
 // ============================================================================
 
-/// @test [executor][detach] detach 即发即忘。
-TEST_CASE("Executor: detach returns no handle", "[executor][detach]") {
+/// @test [executor][silent_async] silent_async 即发即忘。
+TEST_CASE("Executor: silent_async returns no handle", "[executor][silent_async]") {
     TestEnv env;
     std::atomic<int> n{0};
 
     for (int i = 0; i < 16; ++i) {
-        env.executor.detach([&] { n.fetch_add(1); });
+        env.executor.silent_async([&] { n.fetch_add(1); });
     }
     env.executor.wait_for_all();
 
@@ -222,7 +223,7 @@ TEST_CASE("Executor: async returns future<int>", "[executor][async]") {
 TEST_CASE("Executor: async with arguments", "[executor][async][args]") {
     TestEnv env;
 
-    auto fut = env.executor.async([](int a, int b) { return a + b; }, 10, 32);
+    auto fut = env.executor.async(std::bind_front([](int a, int b) { return a + b; }, 10, 32));
     REQUIRE(fut.get() == 42);
 }
 
@@ -237,14 +238,14 @@ TEST_CASE("Executor: async Runtime task", "[executor][async][runtime]") {
 // SECTION 5: 压力测试 —— 大规模并发
 // ============================================================================
 
-/// @test [executor][stress] 10K detach 任务全部完成。
-TEST_CASE("Executor: large-scale detach stress", "[executor][stress]") {
+/// @test [executor][stress] 10K silent_async 任务全部完成。
+TEST_CASE("Executor: large-scale silent_async stress", "[executor][stress]") {
     TestEnv env(8);
     std::atomic<int> n{0};
     constexpr int N = 10'000;
 
     for (int i = 0; i < N; ++i) {
-        env.executor.detach([&] { n.fetch_add(1, std::memory_order_relaxed); });
+        env.executor.silent_async([&] { n.fetch_add(1, std::memory_order_relaxed); });
     }
     env.executor.wait_for_all();
 

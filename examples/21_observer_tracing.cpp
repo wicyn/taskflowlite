@@ -23,7 +23,7 @@
 #include <vector>
 #include <string>
 #include <sstream>
-
+#include <syncstream>
 // ─────────────────────────────────────────────────────────────
 // Observer 1：调用计数器
 // ─────────────────────────────────────────────────────────────
@@ -32,10 +32,10 @@ public:
     std::atomic<int> calls{0};
     std::atomic<int> exits{0};
 
-    void on_before(tfl::WorkerView) override {
+    void on_before(tfl::WorkerView) noexcept override {
         calls.fetch_add(1, std::memory_order_relaxed);
     }
-    void on_after(tfl::WorkerView) override {
+    void on_after(tfl::WorkerView) noexcept override {
         exits.fetch_add(1, std::memory_order_relaxed);
     }
 };
@@ -71,10 +71,10 @@ public:
     explicit TimingObserver(std::size_t worker_count)
         : m_begins(worker_count) {}
 
-    void on_before(tfl::WorkerView wv) override {
+    void on_before(tfl::WorkerView wv) noexcept override {
         m_begins[wv.id()] = Clock::now();    // 写本 worker 槽，免锁
     }
-    void on_after(tfl::WorkerView wv) override {
+    void on_after(tfl::WorkerView wv) noexcept override {
         const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                             Clock::now() - m_begins[wv.id()]).count();
         total_ns.fetch_add(ns, std::memory_order_relaxed);
@@ -95,11 +95,11 @@ class TraceLogger : public tfl::TaskObserver {
     std::vector<std::string> m_log;
 
 public:
-    void on_before(tfl::WorkerView wv) override {
+    void on_before(tfl::WorkerView wv) noexcept override {
         std::lock_guard<std::mutex> lk(m_mtx);
         m_log.emplace_back("worker#" + std::to_string(wv.id()) + " ENTER");
     }
-    void on_after(tfl::WorkerView wv) override {
+    void on_after(tfl::WorkerView wv) noexcept override {
         std::lock_guard<std::mutex> lk(m_mtx);
         m_log.emplace_back("worker#" + std::to_string(wv.id()) + " EXIT");
     }
@@ -112,10 +112,9 @@ public:
 
 // ─────────────────────────────────────────────────────────────
 int main() {
-    std::cout << "=== Example 21: TaskObserver Performance Tracing ===\n\n";
+    std::osyncstream(std::cout) << "=== Example 21: TaskObserver Performance Tracing ===\n\n";
 
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
     tfl::Flow flow;
 
             // 构造一个简单的 fork-join：A → (B, C, D) → E
@@ -164,15 +163,15 @@ int main() {
             // ─────────────────────────────────────────────────────────
             // 输出统计结果
             // ─────────────────────────────────────────────────────────
-    std::cout << "[Counter]    B invoked " << counter->calls.load()
+    std::osyncstream(std::cout) << "[Counter]    B invoked " << counter->calls.load()
               << " times, exited " << counter->exits.load() << " times\n";
 
-    std::cout << "[Timing]     A avg = " << t_a->avg_us() << " us\n";
-    std::cout << "             B avg = " << timing->avg_us() << " us\n";
-    std::cout << "             C avg = " << t_c->avg_us() << " us\n";
-    std::cout << "             D avg = " << t_d->avg_us() << " us\n";
+    std::osyncstream(std::cout) << "[Timing]     A avg = " << t_a->avg_us() << " us\n";
+    std::osyncstream(std::cout) << "             B avg = " << timing->avg_us() << " us\n";
+    std::osyncstream(std::cout) << "             C avg = " << t_c->avg_us() << " us\n";
+    std::osyncstream(std::cout) << "             D avg = " << t_d->avg_us() << " us\n";
 
-    std::cout << "\n[Trace] B recent 10 trace entries:\n";
+    std::osyncstream(std::cout) << "\n[Trace] B recent 10 trace entries:\n";
     {
         std::ostringstream oss;
         tracer->dump(oss);
@@ -180,18 +179,18 @@ int main() {
         std::istringstream iss(oss.str());
         std::string line;
         for (int i = 0; i < 10 && std::getline(iss, line); ++i) {
-            std::cout << line << "\n";
+            std::osyncstream(std::cout) << line << "\n";
         }
     }
 
             // ─────────────────────────────────────────────────────────
             // 演示 unregister：动态移除 observer
             // ─────────────────────────────────────────────────────────
-    std::cout << "\n--- Unregister counter, run 1 more time ---\n";
+    std::osyncstream(std::cout) << "\n--- Unregister counter, run 1 more time ---\n";
     B.unregister_observer(counter);
     executor.async(flow).wait();
 
-    std::cout << "[Counter] After unregister B calls = " << counter->calls.load()
+    std::osyncstream(std::cout) << "[Counter] After unregister B calls = " << counter->calls.load()
               << " (unchanged, unregister succeeded)\n";
 
     return 0;

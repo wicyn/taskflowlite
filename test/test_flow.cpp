@@ -1,16 +1,17 @@
 /// @file test_flow.cpp
-/// @brief Flow 模块测试 —— 图构建 / emplace 参数转发 / 批量插入 / 生命周期。
+/// @brief Flow 模块测试 —— 图构建 / callable 捕获与绑定 / 批量插入 / 生命周期。
 ///
 /// 覆盖的接口：
 ///   - Flow()                              默认构造函数
 ///   - Flow::name(string) / Flow::name()   名称 setter / getter
-///   - Flow::emplace(callable, args...)    单任务插入（分发到 Basic/Branch/Jump/Runtime/Subflow）
+///   - Flow::emplace(std::bind_front(callable, args...))    单任务插入（分发到 Basic/Branch/Jump/Runtime/Subflow）
 ///   - Flow::emplace(Ts&&...)              批量插入（无参数闭包）
 ///   - Flow::emplace(Packs&&...)           批量插入（带 tfl::pack 参数）
 ///   - Flow::size / Flow::empty / Flow::clear
 ///   - Flow::dump                          D2 文本可视化导出
 
 #include "test_common.hpp"
+#include <functional>
 
 using tfl_test::TestEnv;
 
@@ -75,7 +76,7 @@ TEST_CASE("Flow: single task emplace", "[flow][emplace][basic]") {
     REQUIRE(t.num_successors() == 0);
 }
 
-/// @test [flow][emplace] emplace(callable, args...) 使用 std::thread 风格的参数转发。
+/// @test [flow][emplace] 用 std::bind_front 绑定参数，再插入无参 callable。
 /// @details 验证 3 点：
 ///   1. 左值参数衰减复制（修改不影响外部）；
 ///   2. `std::ref(x)` 通过真正的引用写回（修改影响外部）；
@@ -87,10 +88,10 @@ TEST_CASE("Flow: emplace argument forwarding semantics", "[flow][emplace][forwar
     SECTION("decay copy: lvalue mutation isolated from outside") {
         tfl::Flow flow;
         int outside = 42;
-        flow.emplace([](int v) {
+        flow.emplace(std::bind_front([](int v) {
             v = 999; // 仅修改副本
             (void)v;
-        }, outside);
+        }, outside));
         env.executor.async(flow).wait();
         REQUIRE(outside == 42);
     }
@@ -99,7 +100,7 @@ TEST_CASE("Flow: emplace argument forwarding semantics", "[flow][emplace][forwar
     SECTION("std::ref write-back: mutation affects outside") {
         tfl::Flow flow;
         int outside = 0;
-        flow.emplace([](int& r) { r = 42; }, std::ref(outside));
+        flow.emplace(std::bind_front([](int& r) { r = 42; }, std::ref(outside)));
         env.executor.async(flow).wait();
         REQUIRE(outside == 42);
     }
@@ -108,9 +109,9 @@ TEST_CASE("Flow: emplace argument forwarding semantics", "[flow][emplace][forwar
     SECTION("atomic must use std::ref (non-copyable)") {
         tfl::Flow flow;
         std::atomic<int> ac{0};
-        flow.emplace([](std::atomic<int>& c) {
+        flow.emplace(std::bind_front([](std::atomic<int>& c) {
             c.fetch_add(7);
-        }, std::ref(ac));
+        }, std::ref(ac)));
         env.executor.async(flow).wait();
         REQUIRE(ac.load() == 7);
     }
@@ -119,9 +120,9 @@ TEST_CASE("Flow: emplace argument forwarding semantics", "[flow][emplace][forwar
     SECTION("multiple ref simultaneous write-back") {
         tfl::Flow flow;
         int x = 0, y = 0, z = 0;
-        flow.emplace([](int& a, int& b, int& c) {
+        flow.emplace(std::bind_front([](int& a, int& b, int& c) {
             a = 1; b = 2; c = 3;
-        }, std::ref(x), std::ref(y), std::ref(z));
+        }, std::ref(x), std::ref(y), std::ref(z)));
         env.executor.async(flow).wait();
         REQUIRE(x == 1);
         REQUIRE(y == 2);
@@ -153,7 +154,7 @@ TEST_CASE("Flow: batch insert parameterless closures", "[flow][emplace][batch]")
 }
 
 /// @test [flow][emplace][batch] 使用 tfl::pack 批量插入带参数的任务。
-/// @details `tfl::pack{callable, args...}` 解决 std::tuple CTAD 歧义，
+/// @details `tfl::pack{std::bind_front(callable, args...)}` 解决 std::tuple CTAD 歧义，
 ///          自动衰减函数名并支持 std::ref；推荐用于带参数的批量插入。
 TEST_CASE("Flow: batch insert tfl::pack tasks with args", "[flow][emplace][batch][pack]") {
     TestEnv env;
@@ -161,8 +162,8 @@ TEST_CASE("Flow: batch insert tfl::pack tasks with args", "[flow][emplace][batch
 
     int a = 0, b = 0;
     auto [t1, t2] = flow.emplace(
-        tfl::pack{[](int x) { (void)x; }, 100},
-        tfl::pack{[](int& r) { r = 42; }, std::ref(b)}
+        tfl::pack{std::bind_front([](int x) { (void)x; }, 100)},
+        tfl::pack{std::bind_front([](int& r) { r = 42; }, std::ref(b))}
     );
     t1.precede(t2);
 
@@ -172,12 +173,12 @@ TEST_CASE("Flow: batch insert tfl::pack tasks with args", "[flow][emplace][batch
 }
 
 // ============================================================================
-// SECTION 4: 自动任务类型推导 —— 7 种签名的分发
+// SECTION 4: 自动任务类型推导 —— callable 协议与模块
 // ============================================================================
 
 /// @test [flow][emplace][type-deduction] emplace 接受所有签名并路由到正确的 Work 子类。
 /// @details 编译即通过标准；执行确认所有任务均可调用。
-TEST_CASE("Flow: all 7 signatures accepted by emplace", "[flow][emplace][type-deduction]") {
+TEST_CASE("Flow: all callable protocols and module accepted by emplace", "[flow][emplace][type-deduction]") {
     TestEnv env;
     tfl::Flow flow;
 
@@ -213,14 +214,20 @@ TEST_CASE("Flow: all 7 signatures accepted by emplace", "[flow][emplace][type-de
         mj.reset();
     });
 
-    // Subflow（嵌套 Flow）
+    // 动态 SubFlow：必须显式 run
+    flow.emplace([&](tfl::SubFlow& sf) {
+        (void)sf.emplace([&] { hits.fetch_add(1); });
+        sf.run();
+    });
+
+    // Module（嵌套 Flow）
     tfl::Flow inner;
     inner.emplace([&] { hits.fetch_add(1); });
     flow.emplace(std::move(inner));
 
-    REQUIRE(flow.size() == 7);
+    REQUIRE(flow.size() == 8);
     env.executor.async(flow).wait();
-    REQUIRE(hits.load() == 7);
+    REQUIRE(hits.load() == 8);
 }
 
 // ============================================================================
@@ -253,10 +260,10 @@ TEST_CASE("std::cref read-only reference binds to const") {
     tfl::Flow flow;
     int outside = 7;
     int seen = 0;
-    flow.emplace([&seen](const int& r) {
+    flow.emplace(std::bind_front([&seen](const int& r) {
         seen = r;          // 能读到外部当前值
         // r = 0;          // 若取消注释应编译失败：const 引用不可写
-    }, std::cref(outside));
+    }, std::cref(outside)));
     env.executor.async(flow).wait();
     REQUIRE(seen == 7);
     REQUIRE(outside == 7); // 未被改动

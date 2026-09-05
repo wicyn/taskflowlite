@@ -25,8 +25,8 @@ struct CountingObserver : tfl::TaskObserver {
     std::atomic<int> before{0};
     std::atomic<int> after{0};
 
-    void on_before(tfl::WorkerView) override { before.fetch_add(1); }
-    void on_after(tfl::WorkerView)  override { after.fetch_add(1); }
+    void on_before(tfl::WorkerView) noexcept override { before.fetch_add(1); }
+    void on_after(tfl::WorkerView) noexcept override { after.fetch_add(1); }
 };
 
 }  // namespace
@@ -126,13 +126,13 @@ TEST_CASE("Observer: no longer called after unregister", "[observer][unregister]
 // ============================================================================
 
 /// @section async-task-registration
-/// @test [observer][async] AsyncTask<> 可在 submit 前注册 observer。
+/// @test [observer][async] AsyncTask<> 可在 run 前注册 observer。
 TEST_CASE("Observer: AsyncTask<> registration", "[observer][async]") {
     TestEnv env;
 
-    auto t = tfl::NonrepeatAsyncTask([] {});
+    auto t = tfl::AsyncTask([] {});
     auto obs = t.register_observer<CountingObserver>();
-    env.executor.submit(t); t.wait();
+    env.executor.run(t); t.wait();
 
     REQUIRE(obs->before.load() == 1);
     REQUIRE(obs->after.load() == 1);
@@ -234,10 +234,10 @@ TEST_CASE("Observer: custom observer with state", "[observer][custom]") {
     struct StatefulObserver : tfl::TaskObserver {
         std::atomic<int> sum{0};
 
-        void on_before(tfl::WorkerView) override {
+        void on_before(tfl::WorkerView) noexcept override {
             sum.fetch_add(10, std::memory_order_relaxed);
         }
-        void on_after(tfl::WorkerView) override {
+        void on_after(tfl::WorkerView) noexcept override {
             sum.fetch_add(1, std::memory_order_relaxed);
         }
     };

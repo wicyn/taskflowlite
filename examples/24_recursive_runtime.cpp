@@ -7,8 +7,8 @@
 ///
 /// 核心机制：
 ///   1. rt.async(F)   返回 std::future<R>，可拿计算结果；
-///   2. rt.cowait()   协作式等齐当前 Runtime 派发的所有子任务；
-///   3. rt.cowait_until(pred)
+///   2. rt.wait()   协作式等齐当前 Runtime 派发的所有子任务；
+///   3. rt.wait_until(pred)
 ///                    协作式等到谓词成真。**期间 worker 不阻塞睡眠，会主动
 ///                    窃取其他任务执行** —— 这是避免死锁的关键。
 ///
@@ -27,7 +27,7 @@
 #include <atomic>
 #include <chrono>
 #include <future>
-
+#include <syncstream>
 // ─────────────────────────────────────────────────────────
 // 递归 fibonacci：阈值以下转串行，避免任务过细
 // ─────────────────────────────────────────────────────────
@@ -47,20 +47,19 @@ static std::int64_t fib_parallel(int n, tfl::Runtime& rt) {
     auto fb = rt.async([n](tfl::Runtime& sub) { return fib_parallel(n - 2, sub); });
 
     // 协作式等齐 —— 期间本 worker 会窃取其他任务执行，绝不会死锁
-    rt.cowait_until([&]() noexcept {
+    rt.wait_until([&]() noexcept {
         using namespace std::chrono_literals;
-        return fa.wait_for(0s) == std::future_status::ready
-            && fb.wait_for(0s) == std::future_status::ready;
+        return fa.done()
+            && fb.done();
     });
 
     return fa.get() + fb.get();
 }
 
 int main() {
-    std::cout << "=== Example 18: Recursive Runtime (Parallel Fibonacci) ===\n\n";
+    std::osyncstream(std::cout) << "=== Example 18: Recursive Runtime (Parallel Fibonacci) ===\n\n";
 
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, std::thread::hardware_concurrency());
+    tfl::Executor executor(std::thread::hardware_concurrency());
 
     constexpr int N = 35;
 
@@ -68,11 +67,11 @@ int main() {
     // 方式 A：通过 Executor::async 直接拿到 future
     // ─────────────────────────────────────────────────────────
     {
-        std::cout << "--- Method A: executor.async(runtime_task) ---\n";
+        std::osyncstream(std::cout) << "--- Method A: executor.async(runtime_task) ---\n";
 
         using Clock = std::chrono::steady_clock;
         const auto t0 = Clock::now();
-        auto fut = executor.async([](tfl::Runtime& rt) {
+        auto fut = executor.async([N](tfl::Runtime& rt) {
             return fib_parallel(N, rt);
         });
         const auto result = fut.get();
@@ -80,7 +79,7 @@ int main() {
 
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             t1 - t0).count();
-        std::cout << "  fib(" << N << ") = " << result
+        std::osyncstream(std::cout) << "  fib(" << N << ") = " << result
                   << "  (parallel elapsed " << ms << " ms)\n";
     }
 
@@ -88,7 +87,7 @@ int main() {
     // 方式 B：在 Flow 节点里用 Runtime 启动递归
     // ─────────────────────────────────────────────────────────
     {
-        std::cout << "\n--- Method B: Embedded in Flow node ---\n";
+        std::osyncstream(std::cout) << "\n--- Method B: Embedded in Flow node ---\n";
 
         std::atomic<std::int64_t> answer{0};
         tfl::Flow flow;
@@ -97,8 +96,8 @@ int main() {
             answer.store(fib_parallel(N, rt));
         }).name("fib_root");
 
-        auto report = flow.emplace([&answer] {
-            std::cout << "  [report] fib(" << N << ") = " << answer.load() << "\n";
+        auto report = flow.emplace([&answer, N] {
+            std::osyncstream(std::cout) << "  [report] fib(" << N << ") = " << answer.load() << "\n";
         }).name("report");
 
         root.precede(report);
@@ -107,35 +106,35 @@ int main() {
     }
 
     // ─────────────────────────────────────────────────────────
-    // 方式 C：detach fire-and-forget，不取结果
+    // 方式 C：silent_async fire-and-forget，不取结果
     //          适合 "我只想并行做完，不关心返回值" 的场景
     // ─────────────────────────────────────────────────────────
     {
-        std::cout << "\n--- Method C: detach fan-out + implicit join ---\n";
+        std::osyncstream(std::cout) << "\n--- Method C: silent_async fan-out + implicit join ---\n";
 
         std::atomic<int> done{0};
         tfl::Flow flow;
 
         flow.emplace([&done](tfl::Runtime& rt) {
             for (int i = 0; i < 8; ++i) {
-                rt.detach([&done, i] {
+                rt.silent_async([&done, i] {
                     // 模拟独立的并行计算
                     std::int64_t r = fib_serial(20 + (i % 4));
                     done.fetch_add(1);
-                    std::cout << "    detach#" << i << " -> " << r << "\n";
+                    std::osyncstream(std::cout) << "    silent_async#" << i << " -> " << r << "\n";
                 });
             }
-            // 不调用 cowait —— 框架会在 invoke 返回后自动等齐子任务
+            // 不调用 wait —— 框架会在 invoke 返回后自动等齐子任务
         });
 
         executor.async(flow).wait();
-        std::cout << "  [verify] All detach subtasks complete: "
+        std::osyncstream(std::cout) << "  [verify] All silent_async subtasks complete: "
                   << done.load() << "/8\n";
     }
 
     // 串行 baseline 用于结果验证
     const auto baseline = fib_serial(N);
-    std::cout << "\n[Verify] fib_serial(" << N << ") = " << baseline << "\n";
+    std::osyncstream(std::cout) << "\n[Verify] fib_serial(" << N << ") = " << baseline << "\n";
 
     return 0;
 }

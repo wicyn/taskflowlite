@@ -1,4 +1,4 @@
-/// @file 14_parallel_for_index.cpp
+﻿/// @file 14_parallel_for_index.cpp
 /// @brief 并行 for 循环：将线性索引范围分片，批量创建任务并行执行。
 ///
 /// 构建: g++ -std=c++23 -O2 -pthread 14_parallel_for_index.cpp -o 14_parallel_for_index
@@ -9,7 +9,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
-
+#include <syncstream>
 /// @brief 手动并行 for 循环 — 将 [0, N) 拆成 num_chunks 块，每块一个任务。
 /// 这不是框架内置函数，而是用 Flow + emplace 搭出来的模式。
 template <typename F>
@@ -30,12 +30,11 @@ void parallel_for(tfl::Flow& flow, std::size_t N, std::size_t num_chunks, F&& fu
 }
 
 int main() {
-    std::cout << "=== Example 14: Parallel For-Index ===\n\n";
+    std::osyncstream(std::cout) << "=== Example 14: Parallel For-Index ===\n\n";
 
     constexpr std::size_t N = 10'000'000;
 
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, std::thread::hardware_concurrency());
+    tfl::Executor executor(std::thread::hardware_concurrency());
 
     // ================================================================
     //  场景 1：计算每个元素的平方，验证正确性
@@ -67,7 +66,7 @@ int main() {
         bool ok = (results[0] == 0) && (results[1] == 1) &&
                   (results[100] == 10000LL) &&
                   (results[N-1] == static_cast<std::int64_t>(N-1) * static_cast<std::int64_t>(N-1));
-        std::cout << "Square computation: " << (ok ? "✓ Correct" : "✗ ERROR")
+        std::osyncstream(std::cout) << "Square computation: " << (ok ? "✓ Correct" : "✗ ERROR")
                   << " (verified " << verified.load() << " elements)\n";
     }
 
@@ -126,10 +125,10 @@ int main() {
         }
         executor.async(std::move(count_flow)).wait();
 
-        std::cout << "Primes under " << N << ": " << prime_count.load() << "\n";
+        std::osyncstream(std::cout) << "Primes under " << N << ": " << prime_count.load() << "\n";
     }
 
     executor.wait_for_all();
-    std::cout << "Done.\n";
+    std::osyncstream(std::cout) << "Done.\n";
     return 0;
 }

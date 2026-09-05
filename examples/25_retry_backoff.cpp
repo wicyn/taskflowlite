@@ -28,12 +28,11 @@
 #include <chrono>
 #include <random>
 #include <string>
-
+#include <syncstream>
 int main() {
-    std::cout << "=== Example 19: Retry with Exponential Backoff ===\n\n";
+    std::osyncstream(std::cout) << "=== Example 19: Retry with Exponential Backoff ===\n\n";
 
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
     tfl::Flow flow;
     flow.name("Retry_Backoff");
 
@@ -47,7 +46,7 @@ int main() {
     // ─────────────────────────────────────────────────────────
     auto entry = flow.emplace([&attempts] {
         attempts.store(0);
-        std::cout << "[entry] Starting external service call\n";
+        std::osyncstream(std::cout) << "[entry] Starting external service call\n";
     }).name("entry");
 
     // ─────────────────────────────────────────────────────────
@@ -55,14 +54,14 @@ int main() {
     // ─────────────────────────────────────────────────────────
     auto call = flow.emplace([&attempts, &succeeded] {
         const int n = attempts.fetch_add(1) + 1;
-        std::cout << "[call]  Attempt " << n << "... ";
+        std::osyncstream(std::cout) << "[call]  Attempt " << n << "... ";
 
         // 模拟前 3 次失败、第 4 次成功
         if (n < 4) {
-            std::cout << "FAILED (connection timeout)\n";
+            std::osyncstream(std::cout) << "FAILED (connection timeout)\n";
             succeeded.store(false);
         } else {
-            std::cout << "SUCCESS (HTTP 200)\n";
+            std::osyncstream(std::cout) << "SUCCESS (HTTP 200)\n";
             succeeded.store(true);
         }
     }).name("call");
@@ -75,11 +74,11 @@ int main() {
     //     1 → backoff   （失败但还能重试）
     //     2 → fail      （重试次数耗尽）
     // ─────────────────────────────────────────────────────────
-    auto check = flow.emplace([&attempts, &succeeded](tfl::Branch& br) {
+    auto check = flow.emplace([&attempts, &succeeded, MAX_RETRIES](tfl::Branch& br) {
         if (succeeded.load()) {
             br.select(0);                   // → success
         } else if (attempts.load() >= MAX_RETRIES) {
-            std::cout << "[check] Max retries (" << MAX_RETRIES
+            std::osyncstream(std::cout) << "[check] Max retries (" << MAX_RETRIES
                       << ") reached, giving up\n";
             br.select(2);                   // → fail
         } else {
@@ -98,7 +97,7 @@ int main() {
     auto backoff = flow.emplace([&attempts](tfl::Jump& jmp) {
         const int n = attempts.load();
         const int ms = std::min(100 << (n - 1), 3200);   // 100, 200, 400, 800...
-        std::cout << "[backoff] Backing off " << ms << " ms then retrying\n";
+        std::osyncstream(std::cout) << "[backoff] Backing off " << ms << " ms then retrying\n";
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 
         // 跳回 call 节点（按名字定位）
@@ -111,17 +110,17 @@ int main() {
     // 5. 终态节点
     // ─────────────────────────────────────────────────────────
     auto success = flow.emplace([&attempts] {
-        std::cout << "[success] Service call succeeded (total " << attempts.load()
+        std::osyncstream(std::cout) << "[success] Service call succeeded (total " << attempts.load()
                   << " attempts)\n";
     }).name("success");
 
     auto fail = flow.emplace([&attempts] {
-        std::cout << "[fail]   Permanently failed (retried " << attempts.load()
+        std::osyncstream(std::cout) << "[fail]   Permanently failed (retried " << attempts.load()
                   << " times, manual intervention recommended)\n";
     }).name("fail");
 
     auto cleanup = flow.emplace([] {
-        std::cout << "[cleanup] Releasing connection resources / writing audit log\n";
+        std::osyncstream(std::cout) << "[cleanup] Releasing connection resources / writing audit log\n";
     }).name("cleanup");
 
     // ─────────────────────────────────────────────────────────
@@ -143,10 +142,10 @@ int main() {
     // ─────────────────────────────────────────────────────────
     // 7. 执行 —— 测两个场景
     // ─────────────────────────────────────────────────────────
-    std::cout << "\n--- Scenario 1: Succeeds on 4th try ---\n";
+    std::osyncstream(std::cout) << "\n--- Scenario 1: Succeeds on 4th try ---\n";
     executor.async(flow).wait();
 
-    std::cout << "\n--- Scenario 2: Eventual failure (modified logic: always fails) ---\n";
+    std::osyncstream(std::cout) << "\n--- Scenario 2: Eventual failure (modified logic: always fails) ---\n";
     // 重新构造一个新 Flow，模拟永远失败
     {
         tfl::Flow flow2;
@@ -157,7 +156,7 @@ int main() {
         auto c  = flow2.emplace([&a, &ok] {
             a.fetch_add(1);
             ok.store(false);   // 永远失败
-            std::cout << "[call]  Attempt " << a.load() << "... FAILED\n";
+            std::osyncstream(std::cout) << "[call]  Attempt " << a.load() << "... FAILED\n";
         }).name("call");
         auto ck = flow2.emplace([&a, &ok](tfl::Branch& br) {
             if (ok.load())               br.select(0);
@@ -168,9 +167,9 @@ int main() {
             std::this_thread::sleep_for(std::chrono::milliseconds(50 << (a.load() - 1)));
             jmp.select_if([](tfl::TaskView tv) { return tv.name() == "call"; });
         }).name("backoff");
-        auto sx = flow2.emplace([] { std::cout << "[success] Will not execute\n"; }).name("success");
+        auto sx = flow2.emplace([] { std::osyncstream(std::cout) << "[success] Will not execute\n"; }).name("success");
         auto fx = flow2.emplace([&a] {
-            std::cout << "[fail]   Bottomed out (total " << a.load() << " attempts)\n";
+            std::osyncstream(std::cout) << "[fail]   Bottomed out (total " << a.load() << " attempts)\n";
         }).name("fail");
 
         e.precede(c);

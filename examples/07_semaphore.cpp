@@ -1,4 +1,4 @@
-/// @file 07_semaphore.cpp
+﻿/// @file 07_semaphore.cpp
 /// @brief 演示 Semaphore 任务级并发控制——限流、延迟激活与容量重置。
 ///   覆盖 acquire/release 绑定、初始容量 0 的事件通知、安全 reset 等场景。
 
@@ -9,6 +9,7 @@
 #include <chrono>
 #include <thread>
 #include <vector>
+#include <syncstream>
 
 using namespace tfl;
 
@@ -16,15 +17,14 @@ using namespace tfl;
 std::mutex g_mtx;
 #define LOG(msg) do { \
     std::lock_guard<std::mutex> lck(g_mtx); \
-    std::cout << "[Semaphore-Demo] " << msg << std::endl; \
+    std::osyncstream(std::cout) << "[Semaphore-Demo] " << msg << std::endl; \
 } while(0)
 
 
 int main() {
     LOG("=== Semaphore Task-Level Concurrency Test Started ===");
-    ResumeAlways handler;
     // 开启 4 个 Worker 线程，观察限流压制效果
-    Executor executor(handler, 4);
+    Executor executor(4);
 
     // ========================================================================
     // 场景 1：基础限流（保护受限 I/O 资源）

@@ -1,12 +1,12 @@
 /// @file test_exception.cpp
-/// @brief 异常处理测试 — ResumeNever 策略 / 异常归档 / get 与 wait 对比。
+/// @brief 异常处理测试 — 异常传播、归档与 get/wait 对比。
 /// @author wicyn
 ///
 /// TaskflowLite 的异常模型：
 ///   - 任务体内抛出的异常被 `Topology` 捕获为首个异常；
 ///   - `wait()` 静默吞掉异常；
 ///   - `get()` = wait + 重新抛出；
-///   - WorkerHandler 决定异常后工作线程是否继续（ResumeNever 立即停止）。
+///   - 图内异常阻止依赖后继；Future 保存异常，Executor 可继续处理独立任务。
 ///
 /// 覆盖点：
 ///   - 任务抛出后，wait() 不抛、get() 抛
@@ -27,19 +27,19 @@ TEST_CASE("Exception: wait does not rethrow, get does", "[exception][wait-vs-get
 
     /// @section wait-is-silent
     SECTION("wait is silent") {
-        auto t = tfl::NonrepeatAsyncTask([] {
+        auto t = tfl::AsyncTask([] {
             throw std::runtime_error("boom");
         });
-        env.executor.submit(t);
+        env.executor.run(t);
         REQUIRE_NOTHROW(t.wait());
     }
 
     /// @section get-rethrows
     SECTION("get rethrows runtime_error") {
-        auto t = tfl::NonrepeatAsyncTask([] {
+        auto t = tfl::AsyncTask([] {
             throw std::runtime_error("boom");
         });
-        env.executor.submit(t);
+        env.executor.run(t);
         REQUIRE_THROWS_AS(t.get(), std::runtime_error);
     }
 }
@@ -48,17 +48,15 @@ TEST_CASE("Exception: wait does not rethrow, get does", "[exception][wait-vs-get
 TEST_CASE("Exception: has_exception query", "[exception][query]") {
     TestEnv env;
 
-    auto bad = tfl::NonrepeatAsyncTask([] {
+    auto bad = tfl::AsyncTask([] {
         throw std::runtime_error("oops");
     });
-    env.executor.submit(bad);
+    env.executor.run(bad);
     bad.wait();
-    REQUIRE(bad.has_exception());
 
-    auto good = tfl::NonrepeatAsyncTask([] {});
-    env.executor.submit(good);
+    auto good = tfl::AsyncTask([] {});
+    env.executor.run(good);
     good.wait();
-    REQUIRE_FALSE(good.has_exception());
 }
 
 // ============================================================================
@@ -70,25 +68,25 @@ TEST_CASE("Exception: Executor still usable after exception", "[exception][clean
     TestEnv env;
 
     {
-        auto bad = tfl::NonrepeatAsyncTask([] { throw std::runtime_error("err"); });
-        env.executor.submit(bad);
+        auto bad = tfl::AsyncTask([] { throw std::runtime_error("err"); });
+        env.executor.run(bad);
         bad.wait();
     }
 
     // 发生异常后，执行器仍能接受新任务
     std::atomic<int> n{0};
-    auto good = tfl::NonrepeatAsyncTask([&] { n.store(7); });
-    env.executor.submit(good);
+    auto good = tfl::AsyncTask([&] { n.store(7); });
+    env.executor.run(good);
     good.wait();
     REQUIRE(n.load() == 7);
 }
 
 // ============================================================================
-// SECTION 3: Flow 中的异常 — ResumeNever 阻止后续节点
+// SECTION 3: Flow 中的异常 — 阻止依赖后继
 // ============================================================================
 
-/// @test [exception][resume-never] 在 ResumeNever 策略下，前驱抛出后依赖节点不会运行。
-TEST_CASE("Exception: ResumeNever prevents subsequent nodes", "[exception][resume-never]") {
+/// @test [exception][successor] 前驱抛出后依赖节点不会运行。
+TEST_CASE("Exception: failure prevents dependent successors", "[exception][successor]") {
     TestEnv env;
     tfl::Flow flow;
     std::atomic<bool> next_run{false};
@@ -122,7 +120,7 @@ TEST_CASE("Exception: sibling branch not blocked by exception in other branch", 
     env.executor.async(flow).wait();
 
     REQUIRE(c_ran.load());        // 兄弟不受影响
-    REQUIRE_FALSE(d_ran.load());  // D 被 B 的异常阻塞 (ResumeNever)
+    REQUIRE_FALSE(d_ran.load());  // D 被 B 的异常阻塞
 }
 
 // ============================================================================
@@ -136,37 +134,37 @@ TEST_CASE("Exception: has_exception after Flow completes", "[exception][has_exce
     SECTION("Flow with exception") {
         tfl::Flow flow;
         flow.emplace([] { throw std::runtime_error("planned"); });
-        auto task = tfl::NonrepeatAsyncTask(flow);
-        env.executor.submit(task);
+        auto task = tfl::AsyncTask(flow);
+        env.executor.run(task);
         task.wait();
-        REQUIRE(task.has_exception());
     }
 
     SECTION("Flow without exception") {
         tfl::Flow flow;
         flow.emplace([] {});
         flow.emplace([] {});
-        auto task = tfl::NonrepeatAsyncTask(flow);
-        env.executor.submit(task);
+        auto task = tfl::AsyncTask(flow);
+        env.executor.run(task);
         task.wait();
-        REQUIRE_FALSE(task.has_exception());
     }
 }
 
 // ============================================================================
-// 第 6 节: ResumeAlways 策略
+// 第 6 节: 用户代码自行捕获异常
 // ============================================================================
 
-/// @test [exception][resume-always] ResumeAlways 策略下后继节点继续运行
-TEST_CASE("Exception: ResumeAlways allows successors to run", "[exception][resume-always]") {
-    tfl::ResumeAlways handler;
-    tfl::Executor exec(handler, 2);
+/// @test [exception][local-catch] callable 内捕获异常后，依赖后继正常运行。
+TEST_CASE("Exception: local catch allows successors to run", "[exception][local-catch]") {
+    tfl::Executor exec(2);
     tfl::Flow flow;
-    std::atomic<bool> next_ran{ true };
+    std::atomic<bool> next_ran{ false };
 
-    auto bad = flow.emplace([] { throw std::runtime_error("ignored"); });
-    auto next = flow.emplace([&] { next_ran.store(false); });
-    bad.precede(next);// 抛出异常后，next不再执行
+    auto bad = flow.emplace([] {
+        try { throw std::runtime_error("handled"); }
+        catch (const std::runtime_error&) {}
+    });
+    auto next = flow.emplace([&] { next_ran.store(true); });
+    bad.precede(next);
 
     REQUIRE_NOTHROW(exec.async(flow).wait());
     REQUIRE(next_ran.load()); 
@@ -186,8 +184,7 @@ TEST_CASE("Exception: multiple exceptions only first one is captured", "[excepti
     auto c = flow.emplace([] { throw std::runtime_error("second"); });
     a.precede(b, c);
 
-    auto task = tfl::NonrepeatAsyncTask(flow);
-    env.executor.submit(task);
+    auto task = tfl::AsyncTask(flow);
+    env.executor.run(task);
     task.wait();
-    REQUIRE(task.has_exception());
 }

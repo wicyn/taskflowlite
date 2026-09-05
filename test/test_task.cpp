@@ -261,7 +261,7 @@ TEST_CASE("Task: acquire/release semaphore configuration", "[task][semaphore]") 
     REQUIRE(rel == 2);
 }
 
-/// @test [task][semaphore] 多计数 acquire(sem, count, sem, count) 形式。
+/// @test [task][semaphore] 用链式 acquire(sem, count) 配置多个信号量。
 TEST_CASE("Task: multi-count acquire", "[task][semaphore][multi-count]") {
     tfl::Flow flow;
     tfl::Semaphore heavy_sem{10};
@@ -269,8 +269,8 @@ TEST_CASE("Task: multi-count acquire", "[task][semaphore][multi-count]") {
 
     auto t = flow.emplace([] {});
     // 3 个单位的 heavy_sem + 2 个单位的 light_sem
-    t.acquire(heavy_sem, 3, light_sem, 2)
-     .release(heavy_sem, 3, light_sem, 2);
+    t.acquire(heavy_sem, 3).acquire(light_sem, 2)
+     .release(heavy_sem, 3).release(light_sem, 2);
 
     std::vector<std::pair<tfl::Semaphore*, std::size_t>> got;
     t.for_each_acquire([&](tfl::Semaphore& s, std::size_t& c) {
@@ -300,4 +300,34 @@ TEST_CASE("Task: clear_acquires/releases", "[task][semaphore][clear]") {
     int n_acq_after = 0;
     t.for_each_acquire([&](tfl::Semaphore&) { ++n_acq_after; });
     REQUIRE(n_acq_after == 0);
+}
+
+// ============================================================================
+// SECTION 8: work 重绑定的 callable 协议
+// ============================================================================
+
+/// @test [task][work] 占位符可重绑各协议，依赖边保持不变。
+TEST_CASE("Task: work rebinds callable protocols without losing edges", "[task][work]") {
+    TestEnv env;
+    const int kind = GENERATE(0, 1, 2, 3, 4, 5, 6, 7, 8);
+    tfl::Flow inner, flow;
+    int count = 0;
+    (void)inner.emplace([&] { ++count; });
+    auto task = flow.placeholder();
+    auto finish = flow.emplace([&] { count += 10; });
+    task.precede(finish);
+    switch (kind) {
+    case 0: task.work([&] { ++count; }); break;
+    case 1: task.work([&](tfl::Runtime&) { ++count; }); break;
+    case 2: task.work([&](tfl::Branch& branch) { ++count; branch.select(0); }); break;
+    case 3: task.work([&](tfl::MultiBranch& branch) { ++count; branch.select(0); }); break;
+    case 4: task.work([&](tfl::Jump& jump) { ++count; jump.select(0); }); break;
+    case 5: task.work([&](tfl::MultiJump& jump) { ++count; jump.select(0); }); break;
+    case 6: task.work([&](tfl::SubFlow& sf) { (void)sf.emplace([&] { ++count; }); sf.run(); }); break;
+    case 7: task.work(inner); break;
+    case 8: task.work(inner, 2ULL); break;
+    }
+    REQUIRE(task.num_successors() == 1);
+    env.executor.async(flow).get();
+    REQUIRE(count == (kind == 8 ? 12 : 11));
 }

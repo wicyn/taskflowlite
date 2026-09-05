@@ -116,27 +116,27 @@ TEST_CASE("Lifecycle: multiple AsyncTask handles share a node", "[lifecycle][ref
 
     {
         TestEnv env;
-        auto t = tfl::NonrepeatAsyncTask(Probe{});
+        auto t = tfl::AsyncTask(Probe{});
         auto copy1 = t;
         auto copy2 = t;
         // 三个句柄指向同一节点；仅 1 个 Probe 实例（在节点内部）
 
-        env.executor.submit(t);
+        env.executor.run(t);
         t.wait();
     }
 
     REQUIRE(Probe::alive.load() == 0);
 }
 
-/// @section detach-released-after-execution
-/// @test [lifecycle][refcount] detach 任务执行后即释放。
-TEST_CASE("Lifecycle: detach tasks released after execution", "[lifecycle][detach]") {
+/// @section silent_async-released-after-execution
+/// @test [lifecycle][refcount] silent_async 任务执行后即释放。
+TEST_CASE("Lifecycle: silent_async tasks released after execution", "[lifecycle][silent_async]") {
     Probe::reset();
 
     {
         TestEnv env;
         for (int i = 0; i < 100; ++i) {
-            env.executor.detach(Probe{});
+            env.executor.silent_async(Probe{});
         }
         env.executor.wait_for_all();
     }

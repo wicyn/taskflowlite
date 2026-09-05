@@ -1,312 +1,212 @@
 /// @file test_future.cpp
-/// @brief Future 返回值通道测试 —— get / wait / wait_for / request_stop 语义。
+/// @brief AsyncFuture 测试 —— 共享结果、值/引用/void、状态、停止控制与依赖。
 ///
-/// tfl::Future<R> 组合 std::future<R> + std::stop_source，是 Executor::async 的返回值句柄。
+/// 覆盖的接口：
+///   - get / wait / valid / operator bool / done / running / has_exception
+///   - copy / move / reset / nullptr / use_count / hash_value / operator==
+///   - request_stop / stop_requested / type / dump
 ///
-/// 覆盖点:
-///   - get() 获取结果；重复 get 抛 future_error
-///   - wait / wait_for / wait_until 等待语义
-///   - valid() 状态查询
-///   - request_stop / stop_requested / stop_possible 停止控制
-///   - 移动语义（不可拷贝）
-///   - share() → shared_future
-///   - native_future() 逃生口
-///   - Future<void> 特化
-///   - Runtime::async 返回的 Future
+/// 关键约束：get() 不消耗句柄，值结果返回 const R&；工作线程内先协作等待。
 
 #include "test_common.hpp"
 
-#include <atomic>
-#include <chrono>
-#include <stop_token>
-#include <thread>
+#include <sstream>
 #include <type_traits>
+#include <unordered_set>
 
 using tfl_test::TestEnv;
-using namespace std::chrono_literals;
 
 // ============================================================================
-// 第 1 节: 基础 get / wait / valid
+// SECTION 1: 结果类型与非消费式 get
 // ============================================================================
 
-/// @test [future][basic] async 返回 Future，get() 获取结果
-TEST_CASE("Future: get returns result", "[future][basic]") {
+/// @test [future][basic] get 可重复调用且不改变共享结果地址。
+TEST_CASE("AsyncFuture: repeated get shares a const result", "[future][basic]") {
     TestEnv env;
-    auto f = env.executor.async([] { return 42; });
-    REQUIRE(f.get() == 42);
+    auto future = env.executor.async([] { return std::string("result"); });
+    STATIC_REQUIRE(std::same_as<decltype(future.get()), const std::string&>);
+    REQUIRE(future.get() == "result");
+    REQUIRE(&future.get() == &future.get());
+    REQUIRE(future.valid());
+    REQUIRE(static_cast<bool>(future));
+    REQUIRE(future.done());
+    REQUIRE_FALSE(future.running());
 }
 
-/// @test [future][basic] get 仅可调一次，再次调抛 Exception
-TEST_CASE("Future: double get throws Exception", "[future][basic]") {
+/// @test [future][result] 非默认构造、move-only、引用与 void 结果。
+TEST_CASE("AsyncFuture: value reference and void results", "[future][result]") {
     TestEnv env;
-    auto f = env.executor.async([] { return 99; });
-    REQUIRE(f.get() == 99);
-    REQUIRE_THROWS_AS(f.get(), tfl::Exception);
-}
-
-/// @test [future][basic] valid() 反映共享状态
-TEST_CASE("Future: valid reflects state", "[future][basic]") {
-    TestEnv env;
-    auto f = env.executor.async([] { return 1; });
-    REQUIRE(f.valid());
-    f.get();
-    REQUIRE_FALSE(f.valid());  // get 后无效
-}
-
-/// @test [future][basic] wait 阻塞至结果就绪
-TEST_CASE("Future: wait blocks until ready", "[future][basic]") {
-    TestEnv env;
-    auto f = env.executor.async([] { return 7; });
-    REQUIRE_NOTHROW(f.wait());
-    REQUIRE(f.get() == 7);
-}
-
-/// @test [future][basic] wait_for 返回正确状态
-TEST_CASE("Future: wait_for returns correct status", "[future][basic]") {
-    TestEnv env;
-    auto f = env.executor.async([] { return 100; });
-    auto status = f.wait_for(10s);
-    REQUIRE(status == std::future_status::ready);
-    REQUIRE(f.get() == 100);
-}
-
-// ============================================================================
-// 第 2 节: 移动语义
-// ============================================================================
-
-/// @test [future][move] Future 仅可移动不可拷贝
-TEST_CASE("Future: move-only semantics", "[future][move]") {
-    STATIC_REQUIRE_FALSE(std::is_copy_constructible_v<tfl::Future<int>>);
-    STATIC_REQUIRE_FALSE(std::is_copy_assignable_v<tfl::Future<int>>);
-    STATIC_REQUIRE(std::is_move_constructible_v<tfl::Future<int>>);
-    STATIC_REQUIRE(std::is_move_assignable_v<tfl::Future<int>>);
-}
-
-/// @test [future][move] 移动后原 Future 不再 valid
-TEST_CASE("Future: moved-from Future is not valid", "[future][move]") {
-    TestEnv env;
-    auto f1 = env.executor.async([] { return 42; });
-    REQUIRE(f1.valid());
-    auto f2 = std::move(f1);
-    REQUIRE(f2.valid());
-    REQUIRE_FALSE(f1.valid());
-    REQUIRE(f2.get() == 42);
-}
-
-/// @test [future][move] 默认构造的 Future valid() == false
-TEST_CASE("Future: default constructed is not valid", "[future][move]") {
-    tfl::Future<int> f;
-    REQUIRE_FALSE(f.valid());
-    REQUIRE_FALSE(!f.stop_possible());
+    SECTION("move-only result") {
+        auto future = env.executor.async([] { return std::make_unique<int>(42); });
+        STATIC_REQUIRE(std::same_as<decltype(future.get()), const std::unique_ptr<int>&>);
+        REQUIRE(*future.get() == 42);
+        auto copy = future;
+        REQUIRE(&copy.get() == &future.get());
+    }
+    SECTION("non-default-constructible result") {
+        struct Value {
+            explicit Value(int n) : number(n) {}
+            int number;
+        };
+        auto future = env.executor.async([] { return Value{17}; });
+        REQUIRE(future.get().number == 17);
+    }
+    SECTION("reference result") {
+        int value = 7;
+        auto future = env.executor.async([&]() -> int& { return value; });
+        STATIC_REQUIRE(std::same_as<decltype(future.get()), int&>);
+        REQUIRE(&future.get() == &value);
+        future.get() = 9;
+        REQUIRE(value == 9);
+    }
+    SECTION("void result") {
+        int value = 0;
+        auto future = env.executor.async([&] { value = 42; });
+        STATIC_REQUIRE(std::same_as<decltype(future.get()), void>);
+        REQUIRE_NOTHROW(future.get());
+        REQUIRE_NOTHROW(future.get());
+        REQUIRE(value == 42);
+        REQUIRE(future.valid());
+    }
 }
 
 // ============================================================================
-// 第 3 节: 停止控制
+// SECTION 2: 句柄生命周期与空状态
 // ============================================================================
 
-/// @test [future][stop] request_stop 首次返回 true，之后返回 false
-TEST_CASE("Future: request_stop returns true only on first call", "[future][stop]") {
+/// @test [future][lifecycle] 复制共享所有权；移动、reset 和 nullptr 只释放本句柄。
+TEST_CASE("AsyncFuture: copy move reset and identity", "[future][lifecycle]") {
     TestEnv env;
-    auto f = env.executor.async([] { return 0; });
-    REQUIRE(f.request_stop());
-    REQUIRE_FALSE(f.request_stop());  // 幂等
-    f.wait();
+    auto future = env.executor.async([] { return 42; });
+    future.wait();
+    env.executor.wait_for_all();  // 等待执行引用释放后再断言引用计数
+    REQUIRE(future.use_count() == 1);
+    auto copy = future;
+    REQUIRE(copy == future);
+    REQUIRE(copy.use_count() == 2);
+    REQUIRE(copy.hash_value() == future.hash_value());
+    REQUIRE(std::hash<tfl::AsyncFuture<int>>{}(copy) == future.hash_value());
+    auto moved = std::move(copy);
+    REQUIRE_FALSE(copy.valid());
+    REQUIRE(moved == future);
+    copy = moved;
+    REQUIRE(future.use_count() == 3);
+    copy = copy;
+    REQUIRE(future.use_count() == 3);
+    copy = nullptr;
+    moved.reset();
+    REQUIRE(future.use_count() == 1);
+    moved = std::move(future);
+    REQUIRE_FALSE(future.valid());
+    REQUIRE(moved.get() == 42);
 }
 
-/// @test [future][stop] stop_requested 反映 request_stop
-TEST_CASE("Future: stop_requested reflects request_stop", "[future][stop]") {
-    TestEnv env;
-    auto f = env.executor.async([] { return 0; });
-    REQUIRE_FALSE(f.stop_requested());
-    f.request_stop();
-    REQUIRE(f.stop_requested());
-    f.wait();
+/// @test [future][empty] 空句柄查询与 wait 安全；get/dump 明确拒绝无任务状态。
+TEST_CASE("AsyncFuture: empty handle contract", "[future][empty]") {
+    tfl::AsyncFuture<int> future;
+    tfl::AsyncFuture<int> other{nullptr};
+    REQUIRE(future == other);
+    REQUIRE_FALSE(future.valid());
+    REQUIRE_FALSE(future.done());
+    REQUIRE_FALSE(future.running());
+    REQUIRE_FALSE(future.stop_requested());
+    REQUIRE_FALSE(future.request_stop());
+    REQUIRE(future.use_count() == 0);
+    REQUIRE(future.type() == tfl::TaskType::None);
+    REQUIRE_NOTHROW(future.wait());
+    REQUIRE_NOTHROW(future.reset());
+    REQUIRE_THROWS_AS(future.get(), tfl::Exception);
+    REQUIRE_THROWS_AS(future.dump(), tfl::Exception);
 }
 
-/// @test [future][stop] stop_possible 有任务时为 true
-TEST_CASE("Future: stop_possible when Future has associated task", "[future][stop]") {
-    TestEnv env;
-    auto f = env.executor.async([] { return 0; });
-    REQUIRE(f.stop_possible());
-    f.wait();
-    f.get();
-}
+// ============================================================================
+// SECTION 3: 确定性状态同步、停止请求与异常
+// ============================================================================
 
-/// @test [future][stop] async callable 内可接收 stop_token，与 Future::stop_token() 同源
-TEST_CASE("Future: stop_token visible inside callable", "[future][stop]") {
-    TestEnv env;
-    std::atomic<bool> callable_saw_stop_possible{false};
-
-    // async 的 callable 接受 stop_token —— 框架检测 stoppable 签名后自动传入
-    auto f = env.executor.async([&](std::stop_token st) {
-        callable_saw_stop_possible.store(st.stop_possible());
-        return 1;
+/// @test [future][state] 用门闩保持任务运行，避免依赖 sleep 的时序断言。
+TEST_CASE("AsyncFuture: running and cooperative stop", "[future][state][stop]") {
+    TestEnv env(1);
+    std::atomic<bool> entered{false}, finish{false};
+    auto future = env.executor.async([&] {
+        entered.store(true);
+        entered.notify_one();
+        finish.wait(false);
+        return 11;
     });
-	f.wait();
-    auto token = f.stop_token();
-    REQUIRE(token.stop_possible());
-    REQUIRE(callable_saw_stop_possible.load());
-    REQUIRE_FALSE(token.stop_requested());
-    REQUIRE(f.get() == 1);
+    entered.wait(false);
+    const bool running = future.running();
+    const bool done = future.done();
+    const bool first = future.request_stop();
+    const bool second = future.request_stop();
+    const bool stopped = future.stop_requested();
+    finish.store(true);
+    finish.notify_one();  // 在可能失败的断言之前释放任务，避免析构等待死锁
+    REQUIRE(future.get() == 11);  // 停止请求不抢占已运行 callable
+    REQUIRE(running);
+    REQUIRE_FALSE(done);
+    REQUIRE(first);
+    REQUIRE_FALSE(second);
+    REQUIRE(stopped);
 }
 
-// ============================================================================
-// 第 4 节: native_future / share 逃生口
-// ============================================================================
-
-/// @test [future][escape] native_future() 返回底层 std::future 引用
-TEST_CASE("Future: native_future access", "[future][escape]") {
+/// @test [future][exception] wait 同步但不重抛；每次 get 均重抛原异常。
+TEST_CASE("AsyncFuture: shared exception survives repeated get", "[future][exception]") {
     TestEnv env;
-    auto f = env.executor.async([] { return 99; });
-    auto& native = f.native_future();
-    REQUIRE(native.valid());
-    REQUIRE(native.get() == 99);
-}
-
-/// @test [future][escape] share() 转为 shared_future
-TEST_CASE("Future: share produces shared_future", "[future][escape]") {
-    TestEnv env;
-    auto f = env.executor.async([] { return 55; });
-    auto sf = f.share();
-    REQUIRE(sf.valid());
-    REQUIRE(sf.get() == 55);
-    REQUIRE(sf.valid());   // shared_future 可多次读
-    REQUIRE(sf.get() == 55);
+    auto future = env.executor.async([]() -> int { throw std::runtime_error("planned"); });
+    auto copy = future;
+    REQUIRE_NOTHROW(future.wait());
+    REQUIRE_THROWS_AS(future.get(), std::runtime_error);
+    REQUIRE_THROWS_AS(copy.get(), std::runtime_error);
+    REQUIRE(future.valid());
 }
 
 // ============================================================================
-// 第 5 节: async 参数转发
+// SECTION 4: 依赖、Runtime 协作等待与导出
 // ============================================================================
 
-/// @test [future][args] async 多参数转发
-TEST_CASE("Future: async with multiple arguments", "[future][args]") {
-    TestEnv env;
-    auto f = env.executor.async([](int a, int b, int c) { return a + b + c; }, 1, 2, 3);
-    REQUIRE(f.get() == 6);
+/// @test [future][deps] async 接受 Future 前驱，包括已完成的前驱。
+TEST_CASE("AsyncFuture: dependency fan-in and completed predecessors", "[future][deps]") {
+    TestEnv env(1);
+    auto first = env.executor.async([] { return 20; });
+    auto second = env.executor.async([] { return 22; });
+    auto sum = env.executor.async([first, second] { return first.get() + second.get(); }, first, second);
+    REQUIRE(sum.get() == 42);
+    auto next = env.executor.async([sum] { return sum.get() + 1; }, sum);
+    REQUIRE(next.get() == 43);
 }
 
-/// @test [future][args] async 配合 std::ref 写回外部变量
-TEST_CASE("Future: async with std::ref write-back", "[future][args]") {
-    TestEnv env;
-    int x = 0;
-    auto f = env.executor.async([](int& r) { r = 42; return r; }, std::ref(x));
-    REQUIRE(f.get() == 42);
-    REQUIRE(x == 42);
+/// @test [future][runtime] 单线程 Runtime 通过 wait_until 协作执行子任务。
+TEST_CASE("AsyncFuture: Runtime cooperatively waits for a result", "[future][runtime]") {
+    TestEnv env(1);
+    auto parent = env.executor.async([](tfl::Runtime& rt) {
+        auto future = rt.async([] { return 42; });
+        rt.wait_until([&] { return future.done(); });
+        return future.get();
+    });
+    REQUIRE(parent.get() == 42);
 }
 
-/// @test [future][args] async void 返回 Future<void>
-TEST_CASE("Future: async void returns Future<void>", "[future][args]") {
+/// @test [future][dump] 字符串与流输出一致，并包含方向和任务名称。
+TEST_CASE("AsyncFuture: dump and task type", "[future][dump]") {
     TestEnv env;
-    std::atomic<int> n{0};
-    auto f = env.executor.async([&] { n.store(7); });
-    f.get();  // Future<void>::get() 返回 void
-    REQUIRE(n.load() == 7);
+    auto task = tfl::AsyncTask([] { return 7; }).name("result_node");
+    env.executor.run(task).wait();
+    const tfl::AsyncFuture<int> future = task;
+    REQUIRE(future.type() != tfl::TaskType::None);
+    std::ostringstream stream;
+    future.dump(stream, tfl::Direction::Right);
+    REQUIRE(stream.str() == future.dump(tfl::Direction::Right));
+    REQUIRE(stream.str().find("result_node") != std::string::npos);
 }
 
-// ============================================================================
-// 第 6 节: 大量 Future 并发
-// ============================================================================
-
-/// @test [future][stress] 100 个 async 并发获取结果
-TEST_CASE("Future: 100 concurrent async calls", "[future][stress]") {
+/// @test [future][stress] 多个 Future 的值不互相覆盖。
+TEST_CASE("AsyncFuture: 100 concurrent results", "[future][stress]") {
     TestEnv env(8);
-    constexpr int N = 100;
-
-    std::vector<tfl::Future<int>> futures;
-    futures.reserve(N);
-    for (int i = 0; i < N; ++i) {
+    std::vector<tfl::AsyncFuture<int>> futures;
+    for (int i = 0; i < 100; ++i) {
         futures.push_back(env.executor.async([i] { return i * i; }));
     }
-
-    long sum = 0;
-    for (int i = 0; i < N; ++i) {
-        sum += futures[i].get();
-    }
-
-    // 平方和公式: (N-1)*N*(2N-1)/6
-    REQUIRE(sum == static_cast<long>(N - 1) * N * (2 * N - 1) / 6);
+    int sum = 0;
+    for (const auto& future : futures) sum += future.get();
+    REQUIRE(sum == 99 * 100 * 199 / 6);
 }
-
-// ============================================================================
-// 第 7 节: wait_for 延迟任务
-// ============================================================================
-
-/// @test [future][timing] wait_for 对慢任务返回 timeout
-TEST_CASE("Future: wait_for on slow task returns timeout", "[future][timing]") {
-    TestEnv env;
-    auto f = env.executor.async([&] {
-        std::this_thread::sleep_for(50ms);
-        return 1;
-    });
-
-    // 立即检查 → 可能 timeout 或 ready
-    auto status = f.wait_for(1ms);
-    REQUIRE((status == std::future_status::ready || status == std::future_status::timeout));
-
-    // 最终应 ready
-    REQUIRE(f.get() == 1);
-}
-
-// ============================================================================
-// 第 8 节: Future<void> 特化
-// ============================================================================
-
-/// @test [future][void] Future<void>::get() 无返回值
-TEST_CASE("Future: Future<void> get is void", "[future][void]") {
-    TestEnv env;
-    bool done = false;
-    auto f = env.executor.async([&] { done = true; });
-    STATIC_REQUIRE(std::same_as<decltype(f), tfl::Future<void>>);
-    REQUIRE_NOTHROW(f.get());
-    REQUIRE(done);
-}
-
-/// @test [future][void] Future<void> wait + valid
-TEST_CASE("Future: Future<void> wait and valid", "[future][void]") {
-    TestEnv env;
-    auto f = env.executor.async([] {});
-    REQUIRE(f.valid());
-    f.wait();
-    f.get();
-    REQUIRE_FALSE(f.valid());
-}
-
-// ============================================================================
-// 第 9 节: Runtime::async 返回的 Future
-// ============================================================================
-
-/// @test [future][stop][runtime] Runtime::async 返回的 Future 可用于停止控制
-TEST_CASE("Future: Runtime::async Future stop_token", "[future][stop][runtime]") {
-    TestEnv env;
-    tfl::Flow flow;
-    std::atomic<bool> token_seen{false};
-
-    flow.emplace([&](tfl::Runtime& rt) {
-        auto f = rt.async([] { return 42; });
-        auto st = f.stop_token();
-        token_seen.store(st.stop_possible());
-        rt.cowait();
-    });
-
-    env.executor.async(flow).wait();
-    REQUIRE(token_seen.load());
-}
-
-// ============================================================================
-// 覆盖矩阵
-// ============================================================================
-//   Future::get           ✓ "Future: get returns result" / "Future: double get throws future_error"
-//   Future::valid         ✓ "Future: valid reflects state" / "moved-from not valid" / "default not valid"
-//   Future::wait          ✓ "Future: wait blocks until ready"
-//   Future::wait_for      ✓ "Future: wait_for returns correct status" / "wait_for on slow task"
-//   Future::move          ✓ "Future: move-only semantics" / "moved-from Future is not valid"
-//   Future::request_stop  ✓ "Future: request_stop returns true only on first call"
-//   Future::stop_requested ✓ "Future: stop_requested reflects request_stop"
-//   Future::stop_possible ✓ "Future: stop_possible when Future has associated task"
-//   Future::stop_token    ✓ "Future: stop_token visible inside callable"
-//   Future::native_future ✓ "Future: native_future access"
-//   Future::share         ✓ "Future: share produces shared_future"
-//   Future::args          ✓ "Future: async with multiple arguments" / "async with std::ref write-back"
-//   Future<void>          ✓ "Future: Future<void> get is void" / "Future<void> wait and valid"
-//   Future::stress        ✓ "Future: 100 concurrent async calls"
-//   Future::runtime       ✓ "Future: Runtime::async Future stop_token"

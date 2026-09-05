@@ -1,4 +1,4 @@
-/// @file 13_parallel_reduce.cpp
+﻿/// @file 13_parallel_reduce.cpp
 /// @brief 并行 Map-Reduce：将大数据集分片并行处理，结果汇总到 atomic 累加器。
 ///
 /// 构建: g++ -std=c++23 -O2 -pthread 13_parallel_reduce.cpp -o 13_parallel_reduce
@@ -10,9 +10,10 @@
 #include <random>
 #include <numeric>
 #include <cstdint>
+#include <syncstream>
 
 int main() {
-    std::cout << "=== Example 13: Parallel Map-Reduce ===\n\n";
+    std::osyncstream(std::cout) << "=== Example 13: Parallel Map-Reduce ===\n\n";
 
     // 生成测试数据
     constexpr std::size_t N = 10'000'000;
@@ -25,10 +26,9 @@ int main() {
 
     // 串行求和（用于验证正确性）
     const std::int64_t expected = std::accumulate(data.begin(), data.end(), 0LL);
-    std::cout << "Data size: " << N << ", expected sum: " << expected << "\n";
+    std::osyncstream(std::cout) << "Data size: " << N << ", expected sum: " << expected << "\n";
 
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, std::thread::hardware_concurrency());
+    tfl::Executor executor(std::thread::hardware_concurrency());
     tfl::Flow flow;
     flow.name("Parallel_Reduce");
 
@@ -60,8 +60,8 @@ int main() {
     // ---- Reduce 阶段：等待所有 chunk 完成后汇总 ----
     auto reduce = flow.emplace([&total_sum, expected] {
         const std::int64_t result = total_sum.load(std::memory_order_relaxed);
-        std::cout << "Parallel sum: " << result << "\n";
-        std::cout << (result == expected ? "✓ Correct!" : "✗ ERROR: mismatch!") << "\n";
+        std::osyncstream(std::cout) << "Parallel sum: " << result << "\n";
+        std::osyncstream(std::cout) << (result == expected ? "✓ Correct!" : "✗ ERROR: mismatch!") << "\n";
     }).name("Reduce");
 
     // 所有 chunk → reduce（fan-in：reduce 等待全部 chunk 完成）
@@ -69,5 +69,5 @@ int main() {
 
     executor.async(flow).wait();
 
-    return 0;
+    return total_sum.load() == expected ? 0 : 1;
 }

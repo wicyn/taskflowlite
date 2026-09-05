@@ -3,6 +3,7 @@
 
 #include "../taskflowlite/taskflowlite.hpp"
 #include <iostream>
+#include <syncstream>
 // 假设框架内提供了特定的闭包参数类型用于跳转，例如 tfl::Jump&
 // 这里根据你在 work.hpp 中定义的 JumpWork 语义进行模拟
 
@@ -15,36 +16,36 @@ void build_training_loop() {
 
     // 1. 初始化任务
     tfl::Task init = flow.emplace([]{
-                             std::cout << "[1. Init] Loading dataset and initializing model weights...\n";
+                             std::osyncstream(std::cout) << "[1. Init] Loading dataset and initializing model weights...\n";
                          }).name("Init");
 
     // 2. 核心训练任务 (被循环的主体)
     tfl::Task train = flow.emplace([&]{
                               current_epoch++;
-                              std::cout << "[2. Train] Running Epoch " << current_epoch << "/" << max_epochs << "...\n";
+                              std::osyncstream(std::cout) << "[2. Train] Running Epoch " << current_epoch << "/" << max_epochs << "...\n";
                               accuracy += 0.15; // 模拟精度提升
                           }).name("Train");
 
     // 3. 评估任务
     tfl::Task evaluate = flow.emplace([&]{
-                                 std::cout << "[3. Evaluate] Current Model Accuracy: " << (accuracy * 100) << "%\n";
+                                 std::osyncstream(std::cout) << "[3. Evaluate] Current Model Accuracy: " << (accuracy * 100) << "%\n";
                              }).name("Evaluate");
 
     // 4. 条件跳转任务 (这是一个 Jump 类型的节点)
     // 假设 flow.emplace_jump 对应生成 TaskType::Jump 的节点
     tfl::Task check_and_jump = flow.emplace([&](tfl::Jump& jump_ctrl) {
                                        if (accuracy < 0.8 && current_epoch < max_epochs) {
-                                           std::cout << "[4. Check] Accuracy not met criteria. Jumping back to Train...\n\n";
+                                           std::osyncstream(std::cout) << "[4. Check] Accuracy not met criteria. Jumping back to Train...\n\n";
                                            // 触发底层的执行器跃迁，重置后续依赖计数，跳回 train 节点
                                            // jump_ctrl.select(train); // 假设的 Jump API
                                        } else {
-                                           std::cout << "[4. Check] Training finished! Criteria met or max epochs reached.\n\n";
+                                           std::osyncstream(std::cout) << "[4. Check] Training finished! Criteria met or max epochs reached.\n\n";
                                        }
                                    }).name("CheckAndJump");
 
     // 5. 导出与保存模型
     tfl::Task save_model = flow.emplace([]{
-                                   std::cout << "[5. Save] Exporting model to ONNX format...\n";
+                                   std::osyncstream(std::cout) << "[5. Save] Exporting model to ONNX format...\n";
                                }).name("SaveModel");
 
     // ========================================================================
@@ -68,13 +69,12 @@ void build_training_loop() {
     //  执行与验证
     // ========================================================================
 
-    std::cout << "=== Starting Loop Workflow ===\n";
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    std::osyncstream(std::cout) << "=== Starting Loop Workflow ===\n";
+    tfl::Executor executor(4);
     executor.async(flow).wait();
 
     // 如果你通过 Task::dump 打印，你会看到生成的 D2 图代码中完美包含了一个后向反馈箭头。
-    // std::cout << "\n=== D2 Graph Diagram ===\n" << init.dump() << "\n";
+    // std::osyncstream(std::cout) << "\n=== D2 Graph Diagram ===\n" << init.dump() << "\n";
 }
 
 int main() {
