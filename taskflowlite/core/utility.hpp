@@ -14,6 +14,7 @@
 #include <type_traits>
 #include <string>
 #include <string_view>
+#include <cstring>
 #include <typeinfo>
 #include <vector>
 #include <utility>
@@ -21,18 +22,9 @@
 #include <bit>
 #include <cstddef>
 #include <type_traits>
-
 #include <cstddef>
 #include <type_traits>
 #include <version>
-
-
-#if defined(__cpp_lib_stacktrace) && __cpp_lib_stacktrace >= 202011L
-#  include <stacktrace>
-#  define TFL_HAS_STACKTRACE 1
-#else
-#  define TFL_HAS_STACKTRACE 0
-#endif
 
 #include "macros.hpp"
 
@@ -167,45 +159,6 @@ public:
     /// @return std::source_location 结构体的常量引用。
     constexpr const std::source_location& location() const noexcept { return m_loc; }
 };
-
-#if TFL_HAS_STACKTRACE
-/// @brief 在 `Located<T>` 的值和源码位置之外按值保存调用栈快照。
-///
-/// 该类型仅在平台支持 `std::stacktrace` 时定义，捕获到的帧受平台和优化设置影响。
-///
-/// @tparam T 被包装并按值拥有的类型。
-template <class T>
-struct Traced : Located<T> {
-private:
-    std::stacktrace m_trace;   ///< 构造时的调用栈信息。
-
-public:
-    /// @brief 构造包装值并捕获调用点源码位置与堆栈信息。
-    /// @tparam U 用于构造 T 的输入类型。
-    /// @tparam Loc 源码位置类型。
-    /// @tparam Trace 堆栈快照类型。
-    /// @param inner 要保存的值。
-    /// @param loc 调用点源码位置。
-    /// @param trace 调用栈快照。
-    template <class U, class Loc = std::source_location, class Trace = std::stacktrace>
-        requires std::constructible_from<T, U> &&
-                     std::constructible_from<std::source_location, Loc> &&
-                     std::constructible_from<std::stacktrace, Trace>
-    consteval Traced(
-        U&& inner,
-        Loc&& loc = std::source_location::current(),
-        Trace&& trace = std::stacktrace::current()
-        ) noexcept
-        : Located<T>{std::forward<U>(inner), std::forward<Loc>(loc)}
-        , m_trace{std::forward<Trace>(trace)}
-    {}
-
-    /// @brief 获取该包装器构造时捕获的调用栈快照。
-    /// @return 实现捕获到的 `std::stacktrace` 快照；优化和平台限制可能省略帧。
-    constexpr const std::stacktrace& stacktrace() const noexcept { return m_trace; }
-};
-#endif
-
 
 
 /// @brief 将整数向上舍入到指定 2 的幂对齐边界。

@@ -1,133 +1,67 @@
-/// @file 16_error_handling.cpp
-/// @brief 演示异常处理：Future::get 传播异常、异常归档、ResumeAlways vs ResumeNever。
+﻿/// @file 16_error_handling.cpp
+/// @brief 演示异常处理：AsyncFuture::get、图内传播和 TaskGroup 局部异常处理。
 
 #include "../taskflowlite/taskflowlite.hpp"
 #include <iostream>
 #include <stdexcept>
-#include <string>
+#include <syncstream>
 
 int main() {
-    std::cout << "=== Example 16: Error Handling ===\n\n";
+    std::osyncstream(std::cout) << "=== Example 16: Error Handling ===\n\n";
+    tfl::Executor executor(4);
 
     // ================================================================
-    // Part 1: Future::get() 传播异常
+    // Part 1: wait 只同步，get 可重复重抛异常
     // ================================================================
-    {
-        std::cout << "--- Part 1: Future exception propagation ---\n";
+    auto failed = executor.async([]() -> int {
+        throw std::runtime_error("async task failed");
+    });
+    failed.wait();
+    try {
+        (void)failed.get();
+    } catch (const std::exception& error) {
+        std::osyncstream(std::cout) << "Caught via AsyncFuture::get(): " << error.what() << "\n";
+    }
 
-        tfl::ResumeNever handler;
-        tfl::Executor executor(handler, 4);
+    // ================================================================
+    // Part 2: 图内异常由提交句柄接收，依赖后继不会执行
+    // ================================================================
+    tfl::Flow flow;
+    auto bad = flow.emplace([] { throw std::logic_error("graph task failed"); });
+    auto downstream = flow.emplace([] {
+        std::osyncstream(std::cout) << "This successor must not run\n";
+    });
+    bad.precede(downstream);
+    try {
+        executor.async(flow).get();
+    } catch (const std::exception& error) {
+        std::osyncstream(std::cout) << "Graph exception: " << error.what() << "\n";
+    }
 
-        auto fut = executor.async([]() -> int {
-            throw std::runtime_error("Something went wrong in async task!");
-            return 42;
-            });
-
+    // ================================================================
+    // Part 3: TaskGroup 析构协作等待，在局部作用域捕获子任务异常
+    // ================================================================
+    executor.async([](tfl::Runtime& rt) {
         try {
-            int result = fut.get();  // exception rethrown here
-            std::cout << "Result: " << result << "\n";  // never executed
+            tfl::TaskGroup group(rt);
+            group.silent_async([] { throw std::runtime_error("child failed"); });
+            // 析构等待并重抛；不要让子任务引用超过 group 的生命周期。
+        } catch (const std::exception& error) {
+            std::osyncstream(std::cout) << "Recovered locally: " << error.what() << "\n";
         }
-        catch (const std::exception& e) {
-            std::cout << "Caught via Future::get(): " << e.what() << "\n";
+        std::osyncstream(std::cout) << "Parent can continue after local recovery\n";
+    }).get();
+
+    // ================================================================
+    // Part 4: 顶层 silent_async 没有结果句柄，需在任务内部自行处理异常
+    // ================================================================
+    executor.silent_async([] {
+        try {
+            throw std::runtime_error("fire-and-forget error");
+        } catch (const std::exception& error) {
+            std::osyncstream(std::cout) << "Handled inside silent_async: " << error.what() << "\n";
         }
-
-        executor.wait_for_all();
-    }
-
-    // ================================================================
-    // Part 2: 图内异常传播与归档
-    // ================================================================
-    {
-        std::cout << "\n--- Part 2: In-graph exception archiving ---\n";
-
-        tfl::ResumeAlways handler;  // single task exception does not terminate worker
-        tfl::Executor executor(handler, 4);
-
-        tfl::Flow flow;
-        flow.name("Exception_Flow");
-
-        auto good = flow.emplace([] {
-            std::cout << "  [Good] Running normally\n";
-            }).name("good");
-
-        auto bad = flow.emplace([] {
-            std::cout << "  [Bad] About to throw...\n";
-            throw std::logic_error("Invalid state in bad task!");
-            }).name("bad");
-
-        // This task will be skipped because bad's exception marks the chain
-        auto downstream = flow.emplace([] {
-            std::cout << "  [Downstream] Should NOT run after exception\n";
-            }).name("downstream");
-
-        auto catcher = flow.emplace([](tfl::Runtime& rt) {
-            // Runtime node is an implicit anchor — exception archived here
-            std::cout << "  [Catcher] Runtime anchor — "
-                << (rt.has_exception() ? "exception detected" : "no exception")
-                << "\n";
-            }).name("catcher");
-
-        good.precede(bad);
-        bad.precede(downstream);   // bad throws, downstream skipped
-        good.precede(catcher);     // catcher still runs
-        bad.precede(catcher);      // exception propagates to catcher
-
-        executor.detach(flow);
-        executor.wait_for_all();
-
-        std::cout << "  Graph completed (some tasks skipped due to exception)\n";
-    }
-
-    // ================================================================
-    // Part 3: AsyncTask 链中的异常处理
-    // ================================================================
-    {
-        std::cout << "\n--- Part 3: AsyncTask chain exception ---\n";
-
-        tfl::ResumeAlways handler;
-        tfl::Executor executor(handler, 4);
-
-        bool downstream_ran = false;
-        auto t1 = tfl::NonrepeatAsyncTask([] {
-            throw std::runtime_error("Task 1 failed");
-            });
-
-        auto t2 = tfl::NonrepeatAsyncTask([&downstream_ran] {
-            downstream_ran = true;
-            std::cout << "  Task 2 running\n";
-            });
-
-        executor.submit(t1);       // submit t1 first (root, no deps)
-        executor.submit(t2, t1);  // t2 depends on t1
-
-        t2.wait();
-        executor.wait_for_all();
-
-        std::cout << "  Downstream ran: " << (downstream_ran ? "yes" : "no (skipped)") << "\n";
-    }
-
-    // ================================================================
-    // Part 4: detach 中的异常 — 静默消费
-    // ================================================================
-    {
-        std::cout << "\n--- Part 4: detach exception (silently consumed) ---\n";
-
-        tfl::ResumeAlways handler;
-        tfl::Executor executor(handler, 4);
-
-        executor.detach([] {
-            std::cout << "  [detach] This task throws but executor continues\n";
-            throw std::runtime_error("silent failure");
-            });
-
-        executor.detach([] {
-            std::cout << "  [detach] Next task still runs normally\n";
-            });
-
-        executor.wait_for_all();
-        std::cout << "  Executor continues after exception (ResumeAlways)\n";
-    }
-
-    std::cout << "\n=== Error Handling Complete ===\n";
+    });
+    executor.wait_for_all();
     return 0;
 }

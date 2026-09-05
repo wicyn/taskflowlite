@@ -1,4 +1,4 @@
-/// @file 18_pipeline_producer_consumer.cpp
+﻿/// @file 18_pipeline_producer_consumer.cpp
 /// @brief 演示多阶段流水线：生产→处理→消费，各阶段间通过 DAG 依赖 + Semaphore 限流。
 ///
 /// 构建: g++ -std=c++23 -O2 -pthread 18_pipeline_producer_consumer.cpp -o 18_pipeline_producer_consumer
@@ -12,6 +12,8 @@
 #include <queue>
 #include <string>
 #include <chrono>
+#include <condition_variable>
+#include <syncstream>
 
 /// @brief 线程安全的有界队列 — 模拟流水线阶段间的缓冲区。
 template <typename T>
@@ -44,10 +46,9 @@ private:
 };
 
 int main() {
-    std::cout << "=== Example 18: Pipeline (Producer-Consumer) ===\n\n";
+    std::osyncstream(std::cout) << "=== Example 18: Pipeline (Producer-Consumer) ===\n\n";
 
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
 
     // ================================================================
     //  三阶段流水线
@@ -84,7 +85,7 @@ int main() {
                 local += (batch * 1000 + i) % 97;  // 伪计算
             }
             total_produced.fetch_add(local, std::memory_order_relaxed);
-            std::cout << "  [S1] Batch " << batch << " produced, subtotal="
+            std::osyncstream(std::cout) << "  [S1] Batch " << batch << " produced, subtotal="
                       << local << "\n";
         }).name("Gen_Batch_" + std::to_string(batch));
         s1.acquire(s1_slots).release(s1_slots);
@@ -96,7 +97,7 @@ int main() {
                 local += (batch * 1000 + i) * 2 % 101;  // 伪处理
             }
             total_processed.fetch_add(local, std::memory_order_relaxed);
-            std::cout << "  [S2] Batch " << batch << " processed, subtotal="
+            std::osyncstream(std::cout) << "  [S2] Batch " << batch << " processed, subtotal="
                       << local << "\n";
         }).name("Proc_Batch_" + std::to_string(batch));
         s2.acquire(s2_slots).release(s2_slots);
@@ -108,7 +109,7 @@ int main() {
                 local += (batch * 1000 + i) * 3 % 103;  // 伪消费
             }
             total_consumed.fetch_add(local, std::memory_order_relaxed);
-            std::cout << "  [S3] Batch " << batch << " consumed, subtotal="
+            std::osyncstream(std::cout) << "  [S3] Batch " << batch << " consumed, subtotal="
                       << local << "\n";
         }).name("Cons_Batch_" + std::to_string(batch));
         s3.acquire(s3_slots).release(s3_slots);
@@ -124,10 +125,10 @@ int main() {
 
     executor.async(pipeline).wait();
 
-    std::cout << "\n--- Pipeline Results ---\n";
-    std::cout << "Total produced:  " << total_produced.load() << "\n";
-    std::cout << "Total processed: " << total_processed.load() << "\n";
-    std::cout << "Total consumed:  " << total_consumed.load() << "\n";
+    std::osyncstream(std::cout) << "\n--- Pipeline Results ---\n";
+    std::osyncstream(std::cout) << "Total produced:  " << total_produced.load() << "\n";
+    std::osyncstream(std::cout) << "Total processed: " << total_processed.load() << "\n";
+    std::osyncstream(std::cout) << "Total consumed:  " << total_consumed.load() << "\n";
 
     return 0;
 }

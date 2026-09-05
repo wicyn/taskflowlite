@@ -4,12 +4,12 @@
 
 #include "../taskflowlite/taskflowlite.hpp"
 #include <iostream>
+#include <syncstream>
 
 int main() {
-    std::cout << "=== Example 08: Subflow (Nested Flow) ===\n";
+    std::osyncstream(std::cout) << "=== Example 08: Subflow (Nested Flow) ===\n";
 
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
 
     int global_record = 0; // 主图和子图共享的状态
 
@@ -19,10 +19,10 @@ int main() {
 
     // 子图内部捕获 global_record
     auto s_a = subflow.emplace([&global_record] {
-        std::cout << "    [Subflow] Step A. Record: " << ++global_record << "\n";
+        std::osyncstream(std::cout) << "    [Subflow] Step A. Record: " << ++global_record << "\n";
     });
     auto s_b = subflow.emplace([&global_record] {
-        std::cout << "    [Subflow] Step B. Record: " << ++global_record << "\n";
+        std::osyncstream(std::cout) << "    [Subflow] Step B. Record: " << ++global_record << "\n";
     });
     s_a.precede(s_b);
 
@@ -32,14 +32,14 @@ int main() {
 
     // 主图也捕获 global_record
     auto start = main_flow.emplace([&global_record] {
-        std::cout << "[Main] System Boot. Record: " << global_record << "\n";
+        std::osyncstream(std::cout) << "[Main] System Boot. Record: " << global_record << "\n";
     });
 
     // 3. 将子图挂载到主图中，循环 2 次
     auto subflow_task = main_flow.emplace(std::move(subflow), 2ULL).name("Subflow_Container");
 
     auto end = main_flow.emplace([&global_record] {
-        std::cout << "[Main] System Shutdown. Final Record: " << global_record << "\n";
+        std::osyncstream(std::cout) << "[Main] System Shutdown. Final Record: " << global_record << "\n";
     });
 
     start.precede(subflow_task);

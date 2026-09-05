@@ -4,8 +4,9 @@
 #
 #  Catch2 来源策略：
 #  ----------
-#    1. 本地存在 test/catch_amalgamated.cpp/.hpp → 用本地（快、离线、可复现）。
-#    2. 本地缺失 → 自动从 GitHub 下载 amalgamated 两个文件。
+#    1. 优先使用 TFL_CATCH2_LOCAL_PATH 指定的 amalgamated 目录。
+#    2. 其次搜索 test/catch2/、test/（快、离线、可复现）。
+#    3. 本地缺失 → 自动从 GitHub 下载 amalgamated 两个文件。
 #       下载地址自动复用根 CMake 已选的镜像前缀 (TFL_EFFECTIVE_PREFIX) 与
 #       代理 (TFL_GIT_PROXY)，无需在此重复配置——在 cmake-gui 顶层的
 #       TFL_GITHUB_MIRROR 下拉框里选一次，Catch2 下载就跟着走。
@@ -32,7 +33,7 @@ endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -86,11 +87,19 @@ endif()
 
 # ============================================================================
 #  Catch2 amalgamated 来源决议：本地优先，缺失则自动下载（复用根镜像前缀）
-#  本地搜索顺序：① test/catch2/ 子目录  ② test/ 根目录  ③ 都没有 → 下载
+#  搜索顺序：指定目录 → test/catch2/ → test/ → 下载
 # ============================================================================
 set(_local_found OFF)
-# ① 优先：test/catch2/ 子目录
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/catch2/catch_amalgamated.cpp"
+set(TFL_CATCH2_LOCAL_PATH "" CACHE PATH "Local Catch2 amalgamated directory (contains catch_amalgamated.cpp/.hpp)")
+# 优先使用显式指定的目录，其次搜索仓库内目录。
+if(TFL_CATCH2_LOCAL_PATH
+   AND EXISTS "${TFL_CATCH2_LOCAL_PATH}/catch_amalgamated.cpp"
+   AND EXISTS "${TFL_CATCH2_LOCAL_PATH}/catch_amalgamated.hpp")
+    set(TFL_CATCH2_SOURCE "local(-DTFL_CATCH2_LOCAL_PATH)")
+    set(CATCH2_SRC "${TFL_CATCH2_LOCAL_PATH}/catch_amalgamated.cpp")
+    set(CATCH2_INC_DIR "${TFL_CATCH2_LOCAL_PATH}")
+    set(_local_found ON)
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/catch2/catch_amalgamated.cpp"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/catch2/catch_amalgamated.hpp")
     set(TFL_CATCH2_SOURCE "local(catch2/)")
     set(CATCH2_SRC     "${CMAKE_CURRENT_SOURCE_DIR}/catch2/catch_amalgamated.cpp")
@@ -153,7 +162,7 @@ endif()
 # ============================================================================
 add_library(tfl_catch2_main OBJECT "${CATCH2_SRC}")
 target_include_directories(tfl_catch2_main PUBLIC "${CATCH2_INC_DIR}")
-target_compile_features(tfl_catch2_main PRIVATE cxx_std_23)
+target_compile_features(tfl_catch2_main PRIVATE cxx_std_20)
 
 if(TARGET tfl_internal_flags)
     target_link_libraries(tfl_catch2_main PRIVATE tfl_internal_flags)
@@ -176,7 +185,7 @@ set_target_properties(tfl_catch2_main PROPERTIES FOLDER "ThirdParty")
 function(tfl_setup_test_target _tgt)
     target_link_libraries(${_tgt} PRIVATE tfl_catch2_main)
 
-    target_compile_features(${_tgt} PRIVATE cxx_std_23)
+    target_compile_features(${_tgt} PRIVATE cxx_std_20)
     target_include_directories(${_tgt} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
     if(TARGET TaskflowLite::taskflowlite)
@@ -194,7 +203,7 @@ function(tfl_setup_test_target _tgt)
         target_link_libraries(${_tgt} PRIVATE Threads::Threads)
     endif()
 
-    # GCC/Clang 上需显式链接 libatomic 以支持 128-bit DWCAS (FreeStack128)
+    # GCC/Clang 上需显式链接 libatomic 以支持 128-bit DWCAS (TaggedHead128)
     # 注意: macOS/AppleClang 无独立 libatomic，故排除 APPLE。
     if(NOT MSVC AND NOT APPLE)
         target_link_libraries(${_tgt} PRIVATE atomic)
@@ -282,6 +291,11 @@ foreach(_src ${TFL_TEST_SOURCES})
     get_filename_component(_full_name "${_src}" NAME_WE)
     string(REGEX REPLACE "^test_" "" _test_name "${_full_name}")
     set(_target "tfl_test_${_test_name}")
+
+    # EXCLUDE_FROM_ALL 的二进制默认不构建，不能注册成默认必跑项。
+    if(NOT TFL_TEST_PER_FILE_DEFAULT)
+        continue()
+    endif()
 
     add_test(
         NAME tfl_test.${_test_name}

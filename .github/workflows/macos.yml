@@ -1,4 +1,4 @@
-name: macOS
+﻿name: macOS
 
 on: [push, pull_request]
 
@@ -6,9 +6,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# 注意：Apple 自带的 Apple Clang / libc++ 不提供 std::stop_token / std::jthread
-# (P0660 至今未进 Apple 的 libc++)，本库用到了它，故 macOS 上必须改用 Homebrew
-# 的上游 LLVM（其 libc++ 自 LLVM 18 起带 <stop_token>）。
+# 使用 Homebrew LLVM 及其配套 libc++，为 C++20 功能提供一致的工具链。
+# examples/CMakeLists.txt 为示例的 <syncstream> 启用 -fexperimental-library。
+# 下方显式选择 libc++，并配置 Homebrew libc++ 的链接和运行时搜索路径。
 env:
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
 
@@ -28,6 +28,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=ASAN \
           -DCMAKE_C_COMPILER="$LLVM/bin/clang" \
           -DCMAKE_CXX_COMPILER="$LLVM/bin/clang++" \
+          -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
           -DCMAKE_EXE_LINKER_FLAGS="-L$LLVM/lib/c++ -Wl,-rpath,$LLVM/lib/c++"
     - name: Build
       run: cmake --build build --parallel $(sysctl -n hw.ncpu)
@@ -49,6 +50,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=TSAN \
           -DCMAKE_C_COMPILER="$LLVM/bin/clang" \
           -DCMAKE_CXX_COMPILER="$LLVM/bin/clang++" \
+          -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
           -DCMAKE_EXE_LINKER_FLAGS="-L$LLVM/lib/c++ -Wl,-rpath,$LLVM/lib/c++"
     - name: Build
       run: cmake --build build --parallel $(sysctl -n hw.ncpu)
@@ -74,6 +76,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON \
           -DCMAKE_C_COMPILER="$LLVM/bin/clang" \
           -DCMAKE_CXX_COMPILER="$LLVM/bin/clang++" \
+          -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
           -DCMAKE_EXE_LINKER_FLAGS="-L$LLVM/lib/c++ -Wl,-rpath,$LLVM/lib/c++"
     - name: Build
       run: cmake --build build --parallel $(sysctl -n hw.ncpu)

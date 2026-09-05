@@ -1,16 +1,19 @@
-/// @file 15_observer.cpp
+﻿/// @file 15_observer.cpp
 /// @brief 演示 TaskObserver —— 在任务执行前后插入自定义逻辑（日志、计时、tracing）。
 ///
-/// 构建: g++ -std=c++23 -O2 -pthread 15_observer.cpp -o 15_observer
+/// 构建（Linux/GCC）:
+/// g++ -std=c++20 -O2 -pthread 15_observer.cpp -o 15_observer -latomic
 
 #include "../taskflowlite/taskflowlite.hpp"
 #include <iostream>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <string>
-#include <iomanip>
-#include <memory>
-#include <thread>
+#include <string_view>
+#include <vector>
+#include <syncstream>
 
 /// @brief 共享报告存储 —— 多个 observer 实例并发写入，由 mutex 保护。
 struct TimingReport {
@@ -31,16 +34,18 @@ struct TimingReport {
     void print() const {
         std::lock_guard lk(mtx);
         double total = 0;
-        std::cout << "\n--- Timing Report ---\n";
+
+        std::osyncstream(std::cout) << "\n--- Timing Report ---\n";
         for (const auto& r : log) {
-            std::cout << "  [" << r.task_name << "]"
+            std::osyncstream(std::cout) << "  [" << r.task_name << "]"
                       << " worker=" << r.worker_id
                       << "  " << r.elapsed_ms << " ms\n";
             total += r.elapsed_ms;
         }
-        std::cout << "  TOTAL wall-clock contributions: "
+
+        std::osyncstream(std::cout) << "  TOTAL wall-clock contributions: "
                   << total << " ms\n";
-        std::cout << "  (Note: parallel tasks' wall-clock times overlap — this is NOT the end-to-end duration)\n";
+        std::osyncstream(std::cout) << "  (Note: parallel tasks' wall-clock times overlap — this is NOT the end-to-end duration)\n";
     }
 };
 
@@ -53,70 +58,86 @@ public:
     explicit TimingObserver(TimingReport& report) noexcept
         : m_report(report) {}
 
-    void on_before(tfl::WorkerView wr) override {
-        // Why: 线程本地 start 时间点 —— 不需要锁
+    void on_before(tfl::WorkerView wr) noexcept override {
+        // 每个任务使用独立实例，本例不会并发复用同一个 Observer。
         m_start = std::chrono::steady_clock::now();
         m_worker_id = wr.id();
     }
 
-    void on_after(tfl::WorkerView wr) override {
+    void on_after(tfl::WorkerView) noexcept override {
         auto end = std::chrono::steady_clock::now();
         double ms = std::chrono::duration<double, std::milli>(end - m_start).count();
-        // 取当前任务名（on_after 时节点仍存活，m_name 可读）
+
+                // 使用任务启动前注入的名称。
         m_report.add(m_task_name, m_worker_id, ms);
     }
 
-    // 注入任务名（在 register_observer 之后调用）
-    void inject_name(std::string_view name) { m_task_name = name; }
+            // 注入任务名（在 register_observer 之后、任务启动之前调用）。
+    void inject_name(std::string_view name) {
+        m_task_name = name;
+    }
 
 private:
     TimingReport& m_report;
-    std::chrono::steady_clock::time_point m_start;
-    std::string      m_task_name;
-    std::size_t      m_worker_id{};
+    std::chrono::steady_clock::time_point m_start{};
+    std::string m_task_name;
+    std::size_t m_worker_id{};
 };
 
 int main() {
-    std::cout << "=== Example 15: TaskObserver (Timing) ===\n\n";
+    std::osyncstream(std::cout) << "=== Example 15: TaskObserver (Timing) ===\n\n";
 
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
+
+            // 共享报告先于 Flow 创建，保证其生命周期覆盖所有 Observer。
+    TimingReport report;
+
     tfl::Flow flow;
     flow.name("Observed_DAG");
 
-    // 共享报告 —— 所有 observer 实例共用
-    TimingReport report;
-
+            // 使用 64 位累计值，避免大量累加导致有符号整数溢出。
+            // volatile 仅用于保留模拟计算负载，不用于线程同步。
+            // 使用普通赋值，避免 C++20 对 volatile 复合赋值的弃用警告。
     auto A = flow.emplace([] {
-        volatile int x = 0;
-        for (int i = 0; i < 10000000; ++i) x += i;
-    }).name("LoadData");
+                     volatile std::int64_t x = 0;
+                     for (int i = 0; i < 10000000; ++i) {
+                         x = x + i;
+                     }
+                 }).name("LoadData");
 
     auto B = flow.emplace([] {
-        volatile int x = 0;
-        for (int i = 0; i < 5000000; ++i) x += i;
-    }).name("Process_A");
+                     volatile std::int64_t x = 0;
+                     for (int i = 0; i < 5000000; ++i) {
+                         x = x + i;
+                     }
+                 }).name("Process_A");
 
     auto C = flow.emplace([] {
-        volatile int x = 0;
-        for (int i = 0; i < 8000000; ++i) x += i;
-    }).name("Process_B");
+                     volatile std::int64_t x = 0;
+                     for (int i = 0; i < 8000000; ++i) {
+                         x = x + i;
+                     }
+                 }).name("Process_B");
 
     auto D = flow.emplace([] {
-        volatile int x = 0;
-        for (int i = 0; i < 2000000; ++i) x += i;
-    }).name("Merge");
+                     volatile std::int64_t x = 0;
+                     for (int i = 0; i < 2000000; ++i) {
+                         x = x + i;
+                     }
+                 }).name("Merge");
 
-    // 为每个任务挂载 observer（各自一个 TimingObserver 实例，共享 report）
-    A.register_observer<TimingObserver>(report);
-    B.register_observer<TimingObserver>(report);
-    C.register_observer<TimingObserver>(report);
-    D.register_observer<TimingObserver>(report);
+            // 为每个任务挂载 Observer（各自一个实例，共享 report）。
+    A.register_observer<TimingObserver>(report)->inject_name(A.name());
+    B.register_observer<TimingObserver>(report)->inject_name(B.name());
+    C.register_observer<TimingObserver>(report)->inject_name(C.name());
+    D.register_observer<TimingObserver>(report)->inject_name(D.name());
 
     A.precede(B, C);
     D.succeed(B, C);
 
-    executor.async(flow).wait();
+            // 等待图完成，同时传播任务异常。
+    executor.async(flow).get();
+    executor.wait_for_all();
 
     report.print();
 

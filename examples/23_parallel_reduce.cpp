@@ -15,6 +15,7 @@
 ///   - 数据规模或 chunk 数运行期才确定时不适用 → 那种场景请用 09 的 Runtime 模式。
 
 #include "../taskflowlite/taskflowlite.hpp"
+#include <functional>
 #include <iostream>
 #include <vector>
 #include <atomic>
@@ -22,12 +23,12 @@
 #include <random>
 #include <thread>
 #include <chrono>
+#include <syncstream>
 
 int main() {
-    std::cout << "=== Example 17: Static-Partition Parallel Reduce ===\n\n";
+    std::osyncstream(std::cout) << "=== Example 17: Static-Partition Parallel Reduce ===\n\n";
 
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
 
     // ─────────────────────────────────────────────────────────
     // 1. 准备大数组（1M 个 int）
@@ -63,15 +64,15 @@ int main() {
     tfl::Flow flow;
     flow.name("Parallel_Reduce");
 
-    auto init = flow.emplace([] {
-        std::cout << "[Init] Launching " << PARTITIONS << " parallel reduce workers\n";
+    auto init = flow.emplace([PARTITIONS] {
+        std::osyncstream(std::cout) << "[Init] Launching " << PARTITIONS << " parallel reduce workers\n";
     }).name("init");
 
     auto reducer = flow.emplace([&] {
         std::int64_t total = 0;
         for (auto& p : partials) total += p.value.load();
         final_sum.store(total);
-        std::cout << "[Reduce] Aggregating " << PARTITIONS
+        std::osyncstream(std::cout) << "[Reduce] Aggregating " << PARTITIONS
                   << " partition results = " << total << "\n";
     }).name("reducer");
 
@@ -83,16 +84,16 @@ int main() {
 
         // 使用 emplace 参数转发：i = p, range = [lo, hi)
         // 这样捕获是值传递，不需要 std::ref，闭包更简洁
-        auto worker = flow.emplace(
+        auto worker = flow.emplace(std::bind_front(
             [&data, &partials](std::size_t idx, std::size_t a, std::size_t b) {
                 std::int64_t local = 0;
                 for (std::size_t i = a; i < b; ++i) local += data[i];
                 partials[idx].value.store(local);
-                std::cout << "  [Worker " << idx << "] [" << a << ", " << b
+                std::osyncstream(std::cout) << "  [Worker " << idx << "] [" << a << ", " << b
                           << ") → " << local << "\n";
             },
             p, lo, hi
-        ).name("worker_" + std::to_string(p));
+        )).name("worker_" + std::to_string(p));
 
         init.precede(worker);
         worker.precede(reducer);
@@ -117,10 +118,10 @@ int main() {
     const auto seq_us = std::chrono::duration_cast<std::chrono::microseconds>(
                             t3 - t2).count();
 
-    std::cout << "\n[Verify] parallel = " << final_sum.load()
+    std::osyncstream(std::cout) << "\n[Verify] parallel = " << final_sum.load()
               << ", serial = " << serial
               << " (" << (final_sum.load() == serial ? "OK" : "MISMATCH") << ")\n";
-    std::cout << "[Time]   parallel = " << par_us << " us, "
+    std::osyncstream(std::cout) << "[Time]   parallel = " << par_us << " us, "
               << "serial = " << seq_us << " us, "
               << "speedup = " << (static_cast<double>(seq_us) / par_us) << "x\n";
 

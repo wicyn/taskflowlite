@@ -1,17 +1,18 @@
 ﻿/// @file 09_pipeline.cpp
-/// @brief 演示基于 Runtime + detach 实现的 Map-Reduce（拆分-计算-聚合）并发流水线。
-///   Map 阶段通过 Runtime::detach 动态扇出 chunk，Reduce 阶段等待所有 chunk 完成后汇总。
+/// @brief 演示基于 Runtime + silent_async 实现的 Map-Reduce（拆分-计算-聚合）并发流水线。
+///   Map 阶段通过 Runtime::silent_async 动态扇出 chunk，Reduce 阶段等待所有 chunk 完成后汇总。
 
 #include "../taskflowlite/taskflowlite.hpp"
+#include <functional>
 #include <iostream>
 #include <vector>
 #include <atomic>
+#include <syncstream>
 
 int main() {
-    std::cout << "=== Example 09: Map-Reduce Pipeline ===\n";
+    std::osyncstream(std::cout) << "=== Example 09: Map-Reduce Pipeline ===\n";
 
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
     tfl::Flow flow;
 
     std::vector<int> data(100);
@@ -21,31 +22,31 @@ int main() {
     constexpr int batchSize = 25;
 
     // Map 阶段：动态拆分任务
-    auto map_task = flow.emplace([](const std::vector<int>& vec, std::atomic<int>& sum, tfl::Runtime& rt) {
-        std::cout << "[Map] Splitting data into chunks...\n";
+    auto map_task = flow.emplace(std::bind_front([](const std::vector<int>& vec, std::atomic<int>& sum, tfl::Runtime& rt) {
+        std::osyncstream(std::cout) << "[Map] Splitting data into chunks...\n";
 
         for (size_t i = 0; i < vec.size(); i += batchSize) {
             // 针对每个 Chunk，抛入后台静默执行
-            rt.detach([&vec, &sum, i]() {
+            rt.silent_async([&vec, &sum, i]() {
                 int local_sum = 0;
                 for (size_t j = 0; j < batchSize && (i + j) < vec.size(); ++j) {
                     local_sum += vec[i + j];
                 }
-                std::cout << "  -> Chunk " << (i / batchSize) << " computed: " << local_sum << "\n";
+                std::osyncstream(std::cout) << "  -> Chunk " << (i / batchSize) << " computed: " << local_sum << "\n";
                 sum.fetch_add(local_sum, std::memory_order_relaxed);
             });
         }
-    }, std::cref(data), std::ref(global_sum));
+    }, std::cref(data), std::ref(global_sum)));
 
-    // Reduce 阶段：在所有 detach 完成后执行
-    auto reduce_task = flow.emplace([](std::atomic<int>& sum) {
-        std::cout << "[Reduce] All chunks processed. Final sum = " << sum.load() << "\n";
-    }, std::ref(global_sum));
+    // Reduce 阶段：在所有 silent_async 完成后执行
+    auto reduce_task = flow.emplace(std::bind_front([](std::atomic<int>& sum) {
+        std::osyncstream(std::cout) << "[Reduce] All chunks processed. Final sum = " << sum.load() << "\n";
+    }, std::ref(global_sum)));
 
     map_task.precede(reduce_task);
 
     executor.async(flow).wait();
 
-    std::cout << "Pipeline example complete!\n";
+    std::osyncstream(std::cout) << "Pipeline example complete!\n";
     return 0;
 }

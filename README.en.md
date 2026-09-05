@@ -4,14 +4,14 @@
 [![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
 [![macOS](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/macos.yml)
 [![CodeQL](https://github.com/wicyn/taskflowlite/actions/workflows/codeql-analysis.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/codeql-analysis.yml)
-[![Lint](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
-[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?logo=cplusplus)](https://en.cppreference.com/w/cpp/23)
+[![CI Extras](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ci.yml)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue?logo=cplusplus)](#build--integration)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Header Only](https://img.shields.io/badge/Header--Only-Yes-success)](#)
+[![Header Only](https://img.shields.io/badge/Header--Only-Yes-success)](#direct-header-inclusion)
 
 [简体中文](README.md) · **English**
 
-TaskflowLite (tfl) is a modern C++23 concurrency scheduling library inspired by [Taskflow](https://github.com/taskflow/taskflow).
+TaskflowLite (tfl) is a modern C++20, header-only task scheduling library inspired by [Taskflow](https://github.com/taskflow/taskflow), with dependency graphs, dynamic tasks, control flow, cooperative waiting, and shared asynchronous results.
 
 ---
 
@@ -28,266 +28,360 @@ TaskflowLite (tfl) is a modern C++23 concurrency scheduling library inspired by 
 9. [Project Structure](#project-structure)
 10. [Benchmark Results](#benchmark-results)
 11. [Examples & Tests](#examples--tests)
-12. [License](#license)
+12. [Migration and Caveats](#migration-and-caveats)
+13. [License](#license)
 
 ## Quick Start
+
+This guide describes source version **2.2.0** and uses **C++20**. Except for the complete minimal example, the C++ snippets are independent fragments for `main()`. They assume an existing `tfl::Executor executor(4)` and the standard headers noted alongside each example.
 
 ### Minimal Example
 
 ```cpp
-#include "taskflowlite/taskflowlite.hpp"
+#include <cstring>
 #include <iostream>
+#include <syncstream>
+#include "taskflowlite/taskflowlite.hpp"
 
 int main() {
     tfl::Executor executor(4);
     tfl::Flow flow;
 
     auto [A, B, C, D] = flow.emplace(
-        [] { std::cout << "Task A\n"; },
-        [] { std::cout << "Task B\n"; },
-        [] { std::cout << "Task C\n"; },
-        [] { std::cout << "Task D\n"; }
+        [] { std::osyncstream(std::cout) << "Task A\n"; },
+        [] { std::osyncstream(std::cout) << "Task B\n"; },
+        [] { std::osyncstream(std::cout) << "Task C\n"; },
+        [] { std::osyncstream(std::cout) << "Task D\n"; }
     );
 
     // A -> {B, C} -> D
     A.precede(B, C);
     D.succeed(B, C);
 
-    executor.async(flow).wait();
+    executor.async(flow).get();
 }
 ```
 
+A runs first, B and C may run concurrently, and D runs after both finish. `get()` waits and propagates exceptions; a Future's `wait()` only waits. Each concurrent log message uses a separate `std::osyncstream` to prevent interleaving.
+
+The current `utility.hpp` uses `std::memcpy` without directly including `<cstring>`. The example includes `<cstring>` first to work with this source snapshot; the library header still needs its own include.
+
 ### Tasks with Arguments
+
+Bind application arguments with lambda captures or `std::bind_front` from `<functional>`. Arguments after the callable in `async(callable, ...)` are asynchronous dependencies, not application arguments.
 
 ```cpp
 tfl::Flow flow;
 int counter = 0;
 
-auto [t1, t2] = flow.emplace(
-    tfl::pack{ [](int a) { std::cout << "Val: " << a << "\n"; }, 42 },
-    tfl::pack{ [](int& c) { c = 100; }, std::ref(counter) }
+auto [first, second] = flow.emplace(
+    std::bind_front([](int value) {
+        std::osyncstream(std::cout) << "Value: " << value << "\n";
+    }, 42),
+    std::bind_front([](int& value) { value = 100; }, std::ref(counter))
 );
-
-t1.precede(t2);
-executor.async(flow).wait();
+first.precede(second);
+executor.async(flow).get();
 // counter == 100
 ```
 
-### Loop Execution
+### Repeated Execution and Completion Callbacks
 
 ```cpp
-// Fixed count
-executor.async(flow, 5ULL).wait();
+tfl::Flow flow;
+int count = 0;
+(void)flow.emplace([&count] { ++count; });
 
-// Predicate-driven
-int round = 0;
-executor.async(flow, [&]() noexcept { return ++round >= 10; }).wait();
+executor.async(flow, 5ULL).get();
+// count == 5
+
+executor.async(flow, [&count]() noexcept { return count >= 10; }).get();
+// count == 10
+
+bool finished = false;
+executor.async(flow, 2ULL, [&finished] { finished = true; }).get();
+// count == 12 && finished
 ```
+
+The stop predicate is checked **before each iteration**: `true` stops execution, including zero iterations if the first check is true. A count of zero also skips the graph; exceptions or stop requests may reduce the number of iterations. The completion callback belongs to the entire submission, not each iteration. Submit the same `Flow` again only after its previous execution finishes.
 
 ---
 
 ## Building DAGs
 
-### Creating Nodes
+### Creating and Editing Nodes
 
 ```cpp
 tfl::Flow flow;
+int value = 0;
 
-// 1. No-arg lambda
-auto t1 = flow.emplace([] { /* work */ });
+auto first = flow.placeholder().name("first");
+auto second = flow.emplace([&value] { value *= 2; }).name("second");
+first.work([&value] { value = 21; });
+first.precede(second);
 
-// 2. Lambda + value args (framework copies)
-auto t2 = flow.emplace([](int x, double y) { /* ... */ }, 42, 3.14);
+executor.async(flow).get();
+// value == 42
 
-// 3. Lambda + std::ref (zero-copy)
-int state = 0;
-auto t3 = flow.emplace([](int& s) { s = 99; }, std::ref(state));
-
-// 4. Function pointer
-auto t4 = flow.emplace(&my_function, arg1, arg2);
-
-// 5. Functor
-auto t5 = flow.emplace(MyFunctor{multiplier}, std::ref(data));
-
-// 6. Member function pointer
-MyService svc;
-auto t6 = flow.emplace(&MyService::process, &svc, 42);
-auto t7 = flow.emplace(&MyService::process, std::ref(svc), 99);
+second.work([&value] { value += 1; });
+executor.async(flow).get();
+// value == 22
 ```
 
-### Weaving Dependencies
+`Task::work(...)` can replace a callable or module graph; `placeholder()` lets you connect a node before assigning its work. Function pointers, function objects, and member functions can be adapted with `std::bind_front`. Edit structure, replace work, and register observers only while tasks are not executing.
+
+### Dependencies and Graph Operations
 
 ```cpp
-// Fluent chaining — lvalue returns reference
-t1.name("Step1")
-  .precede(t2, t3)
-  .acquire(io_sem)
-  .release(io_sem);
+tfl::Flow flow;
+auto [a, b, c] = flow.emplace([] {}, [] {}, [] {});
 
-// succeed = reverse precede
-t4.succeed(t2, t3);
+flow.linearize(a, b, c);  // a -> b -> c
+// Equivalent: a.precede(b); b.precede(c);
 
-// Batch insert + structured bindings
-auto [a, b, c] = flow.emplace(
-    [] { load(); },
-    [] { transform(); },
-    [] { save(); }
+(void)flow.size();
+(void)flow.empty();
+flow.for_each([](tfl::Task task) { (void)task.name(); });
+
+b.remove_successor(c);
+flow.erase(c);
+c.reset();
+flow.clear();
+```
+
+`precede` returns its caller, so `a.precede(b).precede(c)` means **a → b and a → c**, not a → b → c. `linearize` also accepts a range of `Task` handles or an initializer list.
+
+`Task` and `TaskView` are non-owning handles. They do not extend node lifetimes and become invalid after the corresponding `erase`, `clear`, or graph destruction. Erasure also disconnects dependency edges, so the entire operation is not generally O(1). Do not insert or erase nodes inside a traversal callback.
+
+### Batch Argument Packs
+
+`tfl::pack` is still supported: each pack expands into one valid `emplace` call, and the batch overload requires at least two packs. Bind application arguments before packing an ordinary callable; module packs may contain a count or predicate. This example uses `<utility>`.
+
+```cpp
+int count = 0;
+tfl::Flow inner;
+(void)inner.emplace([&count] { ++count; });
+
+tfl::Flow outer;
+auto [module, tail] = outer.emplace(
+    tfl::pack{std::move(inner), 2ULL},
+    tfl::pack{[] {}}
 );
-a.precede(b).precede(c);
-```
-
-### Graph Operations
-
-```cpp
-flow.erase(task);        // O(1) removal (swap-with-last)
-flow.clear();            // Remove all nodes
-flow.empty();            // Check if empty
-flow.size();             // Total node count
-flow.for_each([](tfl::Task t) { /* iterate */ });
-flow.name("MyPipeline"); // Name for debugging/visualization
+module.precede(tail);
+executor.async(outer).get();
+// count == 2
 ```
 
 ---
 
 ## Task Types
 
-`Flow::emplace` uses C++20 Concepts to dispatch to the correct node factory at compile time:
+| Type | Construction | Meaning |
+|------|--------------|---------|
+| Placeholder | `flow.placeholder()` | Dependency propagation only |
+| Basic | `flow.emplace([] { ... })` | Ordinary callable; graph nodes do not expose Future results |
+| Runtime | `flow.emplace([](tfl::Runtime& rt) { ... })` | Dynamic task submission and cooperative waiting |
+| Branch / MultiBranch | Accept `Branch&` / `MultiBranch&` | Select one / multiple successors |
+| Jump / MultiJump | Accept `Jump&` / `MultiJump&` | Force activation of one / multiple targets |
+| Module | `flow.emplace(inner)` | Execute an existing graph |
+| SubFlow | Accept `tfl::SubFlow&` | Build a dynamic graph during execution |
 
-### Basic — Plain Task
+### Branch and MultiBranch
 
 ```cpp
-flow.emplace([] { /* no Runtime access */ });
-flow.emplace([](int x) { /* with args */ }, 42);
-```
+tfl::Flow flow;
+bool success = true;
 
-### Runtime — Dynamic Scheduling
-
-```cpp
-flow.emplace([](tfl::Runtime& rt) {
-    rt.detach([] { /* fire-and-forget */ });
-    auto fut = rt.async([](int x) { return x * 2; }, 21);
-    rt.cowait();
-    int val = fut.get();  // 42
+auto decide = flow.emplace([success](tfl::Branch& branch) {
+    branch.select(success ? 0 : 1);
 });
-```
-
-### Branch — Single-Target Conditional
-
-```cpp
-auto decide = flow.emplace([](tfl::Branch& br) {
-    if (condition) br.select(0); else br.select(1);
-});
-auto good = flow.emplace([] { std::cout << "OK\n"; });
-auto bad  = flow.emplace([] { std::cout << "Fail\n"; });
+auto good = flow.emplace([] {}).name("good");
+auto bad = flow.emplace([] {}).name("bad");
 decide.precede(good, bad);
+executor.async(flow).get();
 ```
 
-Also supports `operator()` and `select_if`:
+Indices start at zero and follow successor order established by `precede`. `branch(0)` is equivalent to `select(0)`; `select_if` accepts a predicate taking `TaskView`. Selecting nothing schedules no successor through that branch. A later single-target selection replaces the previous selection.
 
 ```cpp
-auto br = flow.emplace([](tfl::Branch& br) {
-    br(2);   // equivalent to br.select(2)
-    br.select_if([](tfl::TaskView tv) { return tv.name() == "target"; });
+tfl::Flow flow;
+auto split = flow.emplace([](tfl::MultiBranch& branch) {
+    branch.select(0, 2);
 });
+auto [a, b, c] = flow.emplace([] {}, [] {}, [] {});
+split.precede(a, b, c);
+executor.async(flow).get();
 ```
 
-### MultiBranch — Multi-Target Broadcast
+Multi-target controls also provide `select_all()`, `select_if(...)`, `unselect(...)`, and `reset()`. Branches may leave paths unexecuted; do not give a join node predecessor conditions that can never all be satisfied.
+
+### Jump and MultiJump
 
 ```cpp
-auto mb = flow.emplace([](tfl::MultiBranch& mb) {
-    mb.select(0, 2);       // activate successors 0 and 2
-    // mb.select_all();    // activate all
-    // mb.select_if(...);  // filter by name
+tfl::Flow flow;
+int attempts = 0;
+
+auto entry = flow.emplace([] {});
+auto work = flow.emplace([&attempts] { ++attempts; });
+auto retry = flow.emplace([&attempts](tfl::Jump& jump) {
+    if (attempts < 3) {
+        jump.select(0);
+    }
 });
-mb.precede(t0, t1, t2, t3);
+entry.precede(work);
+work.precede(retry);
+retry.precede(work);
+
+executor.async(flow).get();
+// attempts == 3
 ```
 
-### Jump — Forced Jump (Loop / Retry)
+Jump supports controlled loops and retries; selecting nothing activates no jump target. `MultiJump` is the multi-target version. A jump bypasses ordinary dependency activation conditions, so the target must be in a state that permits another execution. Do not re-enter a node while it is already running. Ordinary cyclic dependencies do not automatically become a valid retry graph.
+
+### Module: Nesting an Existing Graph
 
 ```cpp
-auto process = flow.emplace([] { /* work */ });
-
-auto retry = flow.emplace([&](tfl::Jump& jmp) {
-    if (++attempt < max)
-        jmp.select(0);       // jump back to process (target[0])
-    // No select → natural completion
-});
-
-process.precede(retry);
-retry.precede(process);       // weight=0, excluded from cycle detection
-```
-
-### MultiJump — Multi-Target Forced Jump
-
-```cpp
-auto mj = flow.emplace([](tfl::MultiJump& mj) {
-    mj.select(0, 1, 2);   // simultaneously reset three join_counters
-});
-```
-
-### Subflow — Nested Flow
-
-```cpp
+int count = 0;
 tfl::Flow inner;
-inner.emplace([]{ std::cout << "Inner task\n"; });
+(void)inner.emplace([&count] { ++count; });
 
-// Single execution
-flow.emplace(std::move(inner));
-
-// Predicate-driven loop (5 iterations)
-int i = 0;
-flow.emplace(std::move(inner), [&i]() mutable noexcept { return ++i >= 5; });
+tfl::Flow outer;
+(void)outer.emplace(inner, 3ULL);
+executor.async(outer).get();
+// count == 3
 ```
+
+Lvalue graphs are borrowed and must outlive the module's last execution. An rvalue such as `std::move(inner)` transfers ownership into the node. Do not move the same graph twice or share one mutable graph between concurrently executing modules. Counts and predicates follow the same rules as top-level repeated execution.
+
+### SubFlow: Building a Graph at Runtime
+
+```cpp
+int result = 0;
+auto future = executor.async([&result](tfl::SubFlow& subflow) {
+    auto first = subflow.emplace([&result] { result = 21; });
+    auto second = subflow.emplace([&result] { result *= 2; });
+    first.precede(second);
+    subflow.run();
+    subflow.wait();
+});
+future.get();
+// result == 42
+```
+
+Call `SubFlow::run()` explicitly: returning after construction alone does not submit the graph. `wait()` cooperatively waits for submitted children so the callable can read their results; parent completion also waits for attached children.
+
+The dynamic graph is cleared and rebuilt before the same dynamic node executes again, invalidating previous child handles. `SubFlow`, `Runtime`, and branch contexts are valid only inside the current callback on its Worker thread. Do not retain them for cross-thread use. See [Migration and Caveats](#migration-and-caveats) for the captureless SubFlow regression on MSVC.
 
 ---
 
 ## Runtime Dynamic Scheduling
 
-### Runtime API
+### AsyncFuture: Shared Results
+
+`Executor::async` returns an already-submitted `AsyncFuture<R>`. Copies share the same task and result rather than copying the task. `get()` does not consume the handle and may be called repeatedly. This example uses `<string>`.
 
 ```cpp
-flow.emplace([](tfl::Runtime& rt) {
-    // Fire-and-forget
-    rt.detach([] { background_work(); });
+auto future = executor.async([] { return std::string("ready"); });
+auto shared = future;
+std::string value = shared.get();
+const std::string& view = future.get();
+// Keep a handle alive while using view.
+(void)value;
+(void)view;
+```
 
-    // Async with results
-    auto f1 = rt.async([] { return compute_a(); });
-    auto f2 = rt.async([](int n) { return compute_b(n); }, 100);
+| Operation | Semantics |
+|-----------|-----------|
+| `valid()` / `operator bool()` | Whether the handle refers to a task |
+| `done()` / `running()` | Execution-state snapshots |
+| `wait()` | Blocking wait; does not rethrow task exceptions |
+| `get()` | Waits and propagates exceptions; value results return `const R&`, lvalue-reference results return the original reference, and `void` returns nothing |
+| `has_exception()` | Whether an exception has been archived |
+| `request_stop()` / `stop_requested()` | Request / query cooperative stopping |
+| `reset()` | Releases this handle's strong reference; neither cancels nor waits |
 
-    // Cooperative wait (worker steals tasks, never blocks)
-    rt.cowait_until([&] {
-        return f1.wait_for(0s) == std::future_status::ready
-            && f2.wait_for(0s) == std::future_status::ready;
+A reference to a value result cannot outlive its result storage; copy the value when independent ownership is needed. Reference results require the original object to remain alive. Do not read a handle object while another thread resets, moves, or destroys that same object. Calling `get()` on an empty Future throws `tfl::Exception`.
+
+### Future Dependencies
+
+```cpp
+auto left = executor.async([] { return 20; });
+auto right = executor.async([] { return 22; });
+auto sum = executor.async(
+    [left, right] { return left.get() + right.get(); },
+    left, right
+);
+int result = sum.get();
+// result == 42
+```
+
+`sum` is scheduled only after both predecessors finish, so reading those results inside its callable does not occupy a Worker waiting for unfinished work. Dependencies do not automatically pass their results to the callable: capture handles and call `get()`. Any deferred tasks used as dependencies must be started separately.
+
+### AsyncTask: Deferred Start
+
+```cpp
+tfl::AsyncTask first([] { return 21; });
+tfl::AsyncTask second([first] { return first.get() * 2; });
+
+executor.run(second, first);
+executor.run(first);
+int result = second.get();
+// result == 42
+```
+
+`AsyncTask<R>` derives from `AsyncFuture<R>`, supports class template argument deduction, and can be configured with a name, observers, and semaphores before `run()`. Copies still share one task; each underlying task can be started successfully only once, including through copied handles.
+
+The current implementation of `run(task, deps...)` only accepts `AsyncTask` predecessors internally. For existing `AsyncFuture` predecessors, use `async(callable, futures...)` as above. Do not wait for an unstarted deferred task unless another thread will start it.
+
+### Runtime and Cooperative Waiting
+
+```cpp
+auto parent = executor.async([](tfl::Runtime& runtime) {
+    runtime.silent_async([] {});
+    auto left = runtime.async([] { return 20; });
+    auto right = runtime.async(std::bind_front([](int n) { return n * 2; }, 11));
+
+    runtime.wait_until([&left, &right]() noexcept {
+        return left.done() && right.done();
     });
-
-    int result = f1.get() + f2.get();
-    std::cout << "Result: " << result << "\n";
+    runtime.wait();
+    return left.get() + right.get();
 });
+int result = parent.get();
+// result == 42
 ```
 
-### How Cowait Works
+This example needs `<functional>`. `Runtime::wait()` waits for children attached to the current parent; `wait_until(pred)` returns when the predicate is true. The Worker runs other ready work while waiting, but this does not eliminate circular dependencies, invalid lock ordering, or conditions that never become true.
 
-```
-Normal wait:     Worker thread → OS blocks → CPU wasted
-TFL cowait:      Worker thread → steals other tasks → CPU never idles
-```
-
-During `cowait` / `cowait_until`, the worker continuously steals tasks from its local queue or neighbors. It never performs a system-level block, completely eliminating deadlock risks in recursive scheduling and subflow nesting.
-
-### AsyncTask
-
-`AsyncTask` is a reference-counted handle (vs `Task` which is a weak reference):
+Inside a Worker, do not replace cooperative waiting with blocking `get()` / `wait()` on unfinished Futures, and do not call executor-wide `wait_for_all()` to wait for yourself. If children borrow local data or local graphs, explicitly wait before those objects are destroyed. Implicit parent completion does not extend the lifetime of callable-local variables.
 
 ```cpp
-auto t1 = tfl::NonrepeatAsyncTask([] { step_a(); });
-auto t2 = tfl::NonrepeatAsyncTask([] { step_b(); });
-auto t3 = tfl::NonrepeatAsyncTask([] { step_c(); });
-
-executor.submit(t2, t1);   // t2 depends on t1
-executor.submit(t3, t2);   // t3 depends on t2
-
-t3.wait();                 // Wait for the entire chain
+executor.async([](tfl::Runtime& runtime) {
+    tfl::Flow local;
+    (void)local.emplace([] {});
+    runtime.corun(local);
+}).get();
 ```
+
+`Runtime::run(graph)` submits and returns immediately, requiring a subsequent wait; `corun(graph)` submits and cooperatively waits. Runtime-spawned tasks always participate in parent completion. `async<false>` / `silent_async<false>` disconnect only the Topology parent chain for stopping and exceptions, not child-completion accounting.
+
+### TaskGroup: Scoped Task Groups
+
+```cpp
+auto result = executor.async([](tfl::Runtime& runtime) {
+    tfl::TaskGroup group(runtime);
+    auto left = group.async([] { return 20; });
+    auto right = group.async([] { return 22; });
+    group.wait();
+    return left.get() + right.get();
+});
+int sum = result.get();
+// sum == 42
+```
+
+`TaskGroup` is constructed from the current `Context` and provides `async`, `silent_async`, `run`, `wait`, `request_stop`, `stop_requested`, and `size`. Use and destroy it inside its creating callback on the same Worker.
+
+Its destructor cooperatively waits and may propagate a group exception on normal scope exit; it does not throw a second exception during stack unwinding. Declare borrowed data before the group so the group is destroyed and finishes waiting first. Keep child handles that borrow the group's stop domain inside that scope; return result copies instead.
 
 ---
 
@@ -296,90 +390,120 @@ t3.wait();                 // Wait for the entire chain
 ### Exception Handling
 
 ```cpp
-// Terminate on uncaught exception (default)
-tfl::ResumeNever handler;
-tfl::Executor exec(handler, 4);
-
-// Ignore exceptions, successors continue
-tfl::ResumeAlways handler;
-tfl::Executor exec(handler, 4);
+auto future = executor.async([]() -> int {
+    throw std::runtime_error("task failed");
+});
+future.wait();
+try {
+    (void)future.get();
+} catch (const std::runtime_error& error) {
+    std::osyncstream(std::cout) << error.what() << "\n";
+}
 ```
 
-### Cancellation
+This example needs `<stdexcept>`. The framework catches ordinary task exceptions and propagates them through the execution domain; the Future's `get()` rethrows them. `silent_async` has no result handle. Use `async` when failures must be observed, or handle exceptions explicitly inside the callable. `Executor::wait_for_all()` waits but does not provide exception results.
+
+For local recovery, use a separate `TaskGroup` and catch outside its scope. To intercept child exceptions at `Runtime::wait()` or `SubFlow::wait()`, include `taskflowlite/core/scoped_exception_anchor.hpp`, construct `tfl::ScopedExceptionAnchor anchor(context)` **before** submitting children, and keep it alive until waiting finishes. Calling `wait()` alone does not establish a local exception anchor.
+
+### Cooperative Cancellation
 
 ```cpp
-auto task = tfl::NonrepeatAsyncTask([] { /* long work */ });
-executor.submit(task);
-// ...
-task.request_stop();  // Set soft interrupt
-task.wait();          // Node self-checks before next invoke and skips
-```
-
-### TaskObserver
-
-```cpp
-struct MyTracer : tfl::TaskObserver {
-    void on_before(tfl::TaskView tv) override {
-        std::cout << "Start: " << tv.name() << "\n";
+tfl::AsyncTask<void> task;
+task = tfl::AsyncTask([&task] {
+    for (int i = 0; i < 1'000'000; ++i) {
+        if (task.stop_requested()) {
+            return;
+        }
+        // Perform one bounded unit of work.
     }
-    void on_after(tfl::TaskView tv) override {
-        std::cout << "End: " << tv.name() << "\n";
+});
+executor.run(task);
+task.request_stop();
+task.get();
+```
+
+A stop request does not forcibly terminate a thread. Work that has not started may be skipped, while an already-running long task must check the stop state itself. Blocking I/O is not interrupted automatically. A cancelled task that produced no value cannot be treated as a successful value result; handle its exception or cancellation path. This example uses a `void` result and keeps the task handle alive until execution finishes.
+
+### TaskObserver and WorkerHandler
+
+```cpp
+struct CounterObserver : tfl::TaskObserver {
+    std::atomic<int> before{0};
+    std::atomic<int> after{0};
+
+    void on_before(tfl::WorkerView) noexcept override {
+        before.fetch_add(1, std::memory_order_relaxed);
+    }
+    void on_after(tfl::WorkerView) noexcept override {
+        after.fetch_add(1, std::memory_order_relaxed);
     }
 };
 
-auto t = flow.emplace([] { /* work */ });
-t.register_observer<MyTracer>();
+tfl::Flow flow;
+auto task = flow.emplace([] {});
+auto observer = task.register_observer<CounterObserver>();
+executor.async(flow).get();
+// observer->before == 1 && observer->after == 1
 ```
+
+This example needs `<atomic>`. Observer callbacks take `WorkerView` and must be `noexcept`; synchronize shared state yourself. Exceptions from logging or container allocations must not escape these callbacks.
+
+`WorkerHandler` observes thread lifecycle through `on_start(Worker&) noexcept` and `on_stop(Worker&, const std::exception_ptr&) noexcept`. Register it with `Executor(handler, workers)` and keep the handler alive until Executor destruction finishes. It is not a task-exception recovery policy. See [30_worker_handler.cpp](examples/30_worker_handler.cpp) for a complete example.
 
 ---
 
 ## Resource Control
 
-### Semaphore — Task-Level Concurrency Limit
+### Semaphore: Task-Level Concurrency Limits
 
 ```cpp
-tfl::Semaphore db_pool(4);   // max 4 concurrent
+tfl::Semaphore slots(4);
+tfl::Flow flow;
 
 for (int i = 0; i < 20; ++i) {
-    flow.emplace([i] { query_database(i); })
-        .acquire(db_pool)
-        .release(db_pool);
+    flow.emplace([i] {
+        std::osyncstream(std::cout) << "Job " << i << "\n";
+    }).acquire(slots).release(slots);
 }
-// Excess tasks suspend without occupying worker threads
+executor.async(flow).get();
 ```
 
-### Advanced Usage
+When permits are unavailable, the task registers as a waiter and yields the Worker; a release reschedules waiting work. Use `.acquire(sem, count)` for multiple permits and chain calls for multiple semaphores. Keep semaphores alive until all tasks referring to them finish.
 
 ```cpp
-tfl::Semaphore sem(3, 0);               // capacity 3, initial available 0
-producer.release(sem, 3);               // batch release 3 permits
-consumer.acquire(sem);                  // activate after producer releases
+tfl::Semaphore permits(3, 0);
+tfl::Flow flow;
+auto producer = flow.emplace([] {}).release(permits, 3);
+auto consumer = flow.emplace([] {}).acquire(permits, 3).release(permits, 3);
+producer.precede(consumer);
+executor.async(flow).get();
 
-sem.reset(10);                          // dynamic resize
-sem.value();                            // current available
-sem.max_value();                        // maximum capacity
+permits.reset(10);
+(void)permits.value();
+(void)permits.max_value();
 ```
+
+Call `reset` only when there are no waiters, no outstanding permits, and no concurrent acquire or release operations. It is not a live resizing API. Requests larger than capacity, or release tasks depending on tasks that cannot acquire permits, can still cause logical deadlock.
 
 ---
 
 ## Visualization
 
-```cpp
-std::ofstream file("pipeline.d2");
-flow.name("MyPipeline").dump(file);
+This example needs `<fstream>`. `Flow::dump` produces D2 text, and asynchronous handles also provide `dump`. Export while the graph structure is stable.
 
-// Or get the string directly
+```cpp
+tfl::Flow flow;
+auto [first, second] = flow.emplace([] {}, [] {});
+first.precede(second);
+
+flow.name("MyPipeline");
+std::ofstream file("pipeline.d2");
+flow.dump(file);
 std::string d2 = flow.dump();
-std::cout << d2;
+(void)d2;
 ```
 
-Paste the output into the [D2 Playground](https://play.d2lang.com) to render. Legend:
-
-- **Gray solid line** — Normal dependency edge
-- **Blue line** — Conditional branch
-- **Red dashed line** — Jump back-edge
-
-Example render:
+Render the output with the [D2 Playground](https://play.d2lang.com). Node and edge styles distinguish task types and dependency relationships.
 
 ![TaskflowLite DAG visualization](documentation/img/d2.svg)
 
@@ -389,119 +513,200 @@ Example render:
 
 ### Requirements
 
-| Compiler | Minimum Version | Notes |
-|----------|----------------|-------|
-| GCC | 12+ | libstdc++ provides `std::stop_token` |
-| Clang | 15+ | requires libstdc++ 11+ or libc++ 18+ |
-| MSVC | 2022+ (17.0+) | |
-| Apple Clang | ⚠️ Not supported | Apple's libc++ does not implement `std::stop_token` / `std::jthread` (P0660); use Homebrew LLVM on macOS |
+- **Language standard**: C++20; C++23 is not required.
+- **CMake**: 3.21 or newer.
+- **Runtime dependencies**: the C++ standard library and threading support; the current CMake configuration also links `libatomic` on non-Windows, non-macOS platforms.
+- **Library features**: Concepts, Ranges, `std::format`, atomic waiting, and related facilities; current headers also include `<stop_token>`. Concurrent-printing examples on this page use `<syncstream>`.
+- The library is header-only. Building only the library or examples does not download Catch2 or Taskflow; test and benchmark dependencies are opt-in.
 
-- **C++ Standard**: C++23
-- **CMake**: 3.21+
-- **Dependencies**: C++ standard library (must provide `<stop_token>`) + pthread (Unix)
+| Toolchain | Guidance |
+|-----------|----------|
+| GCC + libstdc++ | Use GCC / libstdc++ 13 or newer; libstdc++ added `std::format` in 13.1 |
+| Clang | Check the selected standard library too; pair it with libstdc++ or libc++ providing the features above |
+| MSVC | Use a Visual Studio 2022 toolset providing those C++20 features; see below for the MSVC 19.44 SubFlow regression |
+| macOS | Repository CI uses Homebrew LLVM; match the compiler, libc++ headers, and runtime library |
 
-> **macOS note:** This library's cancellation mechanism relies on `std::stop_token`,
-> which Apple's bundled Apple Clang / libc++ still does not provide, so it cannot be
-> compiled with the default macOS toolchain. Install Homebrew LLVM and point CMake at it:
->
-> ```bash
-> brew install llvm
-> cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
->   -DCMAKE_C_COMPILER="$(brew --prefix llvm)/bin/clang" \
->   -DCMAKE_CXX_COMPILER="$(brew --prefix llvm)/bin/clang++"
-> cmake --build build --parallel
-> ```
+These are toolchain selection requirements, not a claim that every version passes the full suite. See the [GCC status table](https://gcc.gnu.org/onlinedocs/libstdc++/manual/status.html) and [libc++ C++20 status table](https://libcxx.llvm.org/Status/Cxx20.html). A compiler name or `-std=c++20` alone does not establish standard-library completeness.
 
-### CMake
+### CMake Build and Test
 
 ```bash
-# Basic build
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release --parallel
+cmake --build build --config Release --parallel 4
 
-# With tests
-cmake -S . -B build -DTFL_BUILD_TESTS=ON
-cmake --build build
-ctest --test-dir build -C Release --output-on-failure
-
-# Sanitizer
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_SANITIZER=ASAN
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_SANITIZER=TSAN
+cmake -S . -B build/test -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON
+cmake --build build/test --config Release --parallel 4
+ctest --test-dir build/test -C Release --output-on-failure
 ```
 
-### Network / Mirror (for restricted regions)
+Ninja and Unix Makefiles use `CMAKE_BUILD_TYPE`; multi-configuration generators such as Visual Studio use `--config` for builds and `-C` for CTest. Keep those configurations consistent. Top-level builds enable examples by default and disable tests and benchmarks; subproject builds disable examples by default.
 
-Enabling tests or benchmarks may fetch dependencies from GitHub (Catch2 for tests,
-Taskflow for benchmarks). If direct GitHub access is unreliable, switch the mirror
-at configure time (default is `direct`):
+With `TFL_BUILD_TESTS=ON`, the default setup registers 30 examples and one combined unit-test executable. Disabling examples leaves the combined test. Enabling benchmarks adds two smoke tests. Per-file unit tests are neither built nor registered by default, avoiding duplicate execution of the suite.
+
+| CMake option | Default | Purpose |
+|--------------|---------|---------|
+| `TFL_BUILD_EXAMPLES` | ON at top level / OFF as subproject | Build examples |
+| `TFL_BUILD_TESTS` | OFF | Build Catch2 tests and enable CTest |
+| `TFL_BUILD_BENCHMARKS` | OFF | Build both benchmarks and obtain Taskflow |
+| `TFL_SANITIZER` | OFF | OFF / ASAN / TSAN |
+| `TFL_EXAMPLES_RUN_TARGETS` | OFF | Generate `run_example_<name>` targets |
+| `TFL_EXAMPLES_EXCLUDE_FROM_ALL` | OFF | Exclude examples from the default build and automatic CTest registration |
+| `TFL_TEST_PER_FILE_DEFAULT` | OFF | Build and register per-file tests by default |
+| `TFL_TEST_RUN_TARGETS` | OFF | Generate per-file build-and-run targets |
+| `TFL_CATCH2_LOCAL_PATH` | Empty | Directory containing both Catch2 amalgamated files |
+| `TFL_CATCH2_REF` | devel | Ref used when downloading Catch2 |
+| `TASKFLOW_LOCAL_PATH` | Empty | Directory containing `taskflow/taskflow.hpp` |
+
+### Sanitizers
 
 ```bash
-# choices: direct / ghfast.top / gh-proxy.com / ghproxy.net
-cmake -S . -B build -DTFL_BUILD_TESTS=ON -DTFL_GITHUB_MIRROR=ghfast.top
+cmake -S . -B build/asan -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=ASAN
+cmake --build build/asan --config Debug --parallel 4
+ctest --test-dir build/asan -C Debug --output-on-failure
+
+cmake -S . -B build/tsan -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=TSAN
+cmake --build build/tsan --config Debug --parallel 4
+ctest --test-dir build/tsan -C Debug --output-on-failure
 ```
 
-Advanced (under cmake-gui "Advanced"): `TFL_GITHUB_PREFIX` (custom prefix overriding
-the mirror), `TFL_GIT_PROXY` (route git through a local HTTP(S) proxy, e.g.
-`http://127.0.0.1:7890`).
+Use separate build directories for ASAN and TSAN. The current GCC / Clang settings also enable UBSan. MSVC supports ASan but not this project's TSAN configuration. On Windows, make the matching toolset's `clang_rt.asan*.dll` available through `PATH` or beside every executable; tests and examples use different directories.
 
-### As a Dependency
+These options primarily apply to repository-internal targets; downstream projects must configure sanitizers themselves. Skipping failing cases or disabling detection is not a sanitizer pass.
+
+### macOS
+
+```bash
+brew install llvm
+LLVM_PREFIX="$(brew --prefix llvm)"
+cmake -S . -B build/macos -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_COMPILER="$LLVM_PREFIX/bin/clang++" \
+  -DCMAKE_EXE_LINKER_FLAGS="-L$LLVM_PREFIX/lib/c++ -Wl,-rpath,$LLVM_PREFIX/lib/c++"
+cmake --build build/macos --parallel 4
+```
+
+Use a new build directory when changing toolchains. For Apple's bundled toolchain, check the standard-library features provided by that specific Xcode and SDK; upstream Clang versions do not establish Apple libc++ feature availability. Do not add `-latomic` on macOS.
+
+### Offline Dependencies and Network Settings
+
+```bash
+cmake -S . -B build/offline -DCMAKE_BUILD_TYPE=Release \
+  -DTFL_BUILD_TESTS=ON -DTFL_BUILD_BENCHMARKS=ON \
+  -DTFL_CATCH2_LOCAL_PATH=/path/to/Catch2/extras \
+  -DTASKFLOW_LOCAL_PATH=/path/to/taskflow
+```
+
+Replace the paths above. The Catch2 directory must contain both `catch_amalgamated.cpp` and `catch_amalgamated.hpp`. Without a valid explicit path, CMake checks `test/catch2/`, then `test/`, then downloads into the build directory. The default download ref is `devel`; use `TFL_CATCH2_REF` to pin a version. Benchmarks use local Taskflow or clone it automatically; reproducible experiments should pin the local dependency commit.
+
+`TFL_GITHUB_MIRROR` defaults to `direct`; available choices are listed in the root CMake configuration. `TFL_GITHUB_PREFIX` sets a custom prefix, `TFL_GIT_PROXY` configures a Git proxy, `TFL_PARTIAL_CLONE` defaults to ON, and `TFL_UPDATE_DEPS` defaults to OFF. Mirrors are external services whose availability is controlled by their providers.
+
+### Using the CMake Target
+
+Choose one of the following integration methods. Replace `main.cpp` with your application's source; the subdirectory path must point to the TaskflowLite repository root.
 
 ```cmake
-# add_subdirectory
-add_subdirectory(path/to/taskflowlite)
-target_link_libraries(your_app PRIVATE TaskflowLite::taskflowlite)
+cmake_minimum_required(VERSION 3.21)
+project(my_app LANGUAGES CXX)
 
-# FetchContent
+set(TFL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(TFL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(TFL_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+add_subdirectory(path/to/taskflowlite)
+
+add_executable(my_app main.cpp)
+target_link_libraries(my_app PRIVATE TaskflowLite::taskflowlite)
+```
+
+Alternatively, use FetchContent. The `main` ref below follows the development branch; production builds should use a verified full commit hash or an existing release tag. A source version macro does not establish that a release tag exists.
+
+```cmake
+cmake_minimum_required(VERSION 3.21)
+project(my_app LANGUAGES CXX)
+
 include(FetchContent)
+set(TFL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(TFL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(TFL_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(taskflowlite
     GIT_REPOSITORY https://github.com/wicyn/taskflowlite.git
-    GIT_TAG v1.2.0)   # pin a release tag rather than main for reproducibility
+    GIT_TAG main
+)
 FetchContent_MakeAvailable(taskflowlite)
-target_link_libraries(your_app PRIVATE TaskflowLite::taskflowlite)
+
+add_executable(my_app main.cpp)
+target_link_libraries(my_app PRIVATE TaskflowLite::taskflowlite)
 ```
 
-### Header-Only
+### Installation and find_package
 
-```cpp
-#include "taskflowlite/taskflowlite.hpp"  // one line, compile with -std=c++23 -pthread
+```bash
+cmake -S . -B build/install -DCMAKE_BUILD_TYPE=Release \
+  -DTFL_BUILD_EXAMPLES=OFF -DTFL_BUILD_TESTS=OFF -DTFL_BUILD_BENCHMARKS=OFF
+cmake --install build/install --prefix /path/to/tfl-install
 ```
+
+```cmake
+cmake_minimum_required(VERSION 3.21)
+project(my_app LANGUAGES CXX)
+
+find_package(TaskflowLite CONFIG REQUIRED)
+add_executable(my_app main.cpp)
+target_link_libraries(my_app PRIVATE TaskflowLite::taskflowlite)
+```
+
+Configure the consumer with `-DCMAKE_PREFIX_PATH=/path/to/tfl-install`. The exported target carries include paths, the C++20 requirement, and threading/platform link dependencies. No separate TaskflowLite static library needs to be built.
+
+### Direct Header Inclusion
+
+Save the minimal example as `main.cpp` in the repository root. On Linux with GCC:
+
+```bash
+g++ -std=c++20 -O2 -pthread -I. main.cpp -o my_app -latomic
+```
+
+Header-only code still needs its platform link dependencies. On x86-64, configurations requiring 128-bit CAS may additionally need `-mcx16`; repository-internal targets set it on applicable platforms. Prefer the CMake target to reduce platform-specific setup.
 
 ---
 
 ## Project Structure
 
-```
+```text
 taskflowlite/
 ├── taskflowlite/
-│   ├── taskflowlite.hpp                   # Unified include
-│   └── core/                              # 30+ core headers
-│       ├── executor.hpp                   # Scheduling engine
-│       ├── flow.hpp / task.hpp            # DAG builder & task handles
-│       ├── async_task.hpp / runtime.hpp   # Dynamic tasks & runtime
-│       ├── work.hpp / works.hpp           # Node base & factories
-│       ├── branch.hpp / jump.hpp          # Control flow
-│       ├── semaphore.hpp / observer.hpp   # Resources & observation
-│       ├── bounded_queue.hpp etc.         # Concurrency primitives
-│       └── traits.hpp / utility.hpp       # Concepts & utilities
-├── test/                                  # 23 test files (Catch2 v3)
-├── examples/                              # 25 examples
-├── benchmarks/                            # Performance comparison (vs Taskflow)
-├── .github/workflows/                     # CI: ubuntu/windows/macos build+test + codeql + lint (ci.yml)
+│   ├── taskflowlite.hpp                 # Unified include and version
+│   └── core/
+│       ├── executor.hpp                # Scheduler
+│       ├── flow.hpp / flow_builder.hpp # Graph ownership and construction
+│       ├── task.hpp                    # Task / TaskView
+│       ├── async_task.hpp              # Deferred tasks
+│       ├── async_future.hpp            # Shared result handles
+│       ├── runtime.hpp / subflow.hpp   # Dynamic scheduling and subgraphs
+│       ├── task_group.hpp              # Scoped task groups
+│       ├── scoped_exception_anchor.hpp # Local exception anchors
+│       ├── branch.hpp / jump.hpp       # Branching and jumps
+│       ├── semaphore.hpp / observer.hpp
+│       ├── worker.hpp / context.hpp    # Workers and execution contexts
+│       ├── work.hpp / work_factory.hpp / work_invokers.hpp
+│       └── object_pool.hpp / bounded_queue.hpp / unbounded_queue.hpp
+├── examples/                           # 30 standalone examples
+├── test/                               # 31 test_*.cpp files, Catch2 v3
+├── benchmarks/                         # Two benchmarks and shared verification
+├── documentation/                      # Additional documentation and images
+├── cmake/                              # Installed package configuration
+├── .github/workflows/                  # Platform tests, CodeQL, CI Extras
 ├── CMakeLists.txt
-├── LICENSE (MIT)
-└── README.md
+├── README.md / README.en.md
+└── LICENSE
 ```
 
 ---
 
 ## Benchmark Results
 
-TaskflowLite vs Taskflow — **same hardware, threads, topology, and total iterations**.
-Task bodies are **empty function calls**, so the figures measure **pure scheduling
-overhead** (excluding per-node computation/atomics); correctness is verified separately
-by a counter-based suite.
+### Historical Measurements (Reference Only)
 
-**Test Environment:** Intel Core i7-9750H @ 2.60GHz (6C/12T), Windows 11, MSVC 2022 /O2
+The following 25 measurements are retained from the previous README. The original record describes an empty-task comparison using the same hardware, thread counts, topology, and iterations. **These numbers were not remeasured after the current 2.2.0 API migration.** The original table does not pin both source commits and does not establish current-version performance across workloads.
+
+**Originally reported environment:** Intel Core i7-9750H @ 2.60GHz (6C/12T), Windows 11, MSVC 2022 /O2.
 
 | # | Scenario | Config | TaskflowLite | Taskflow | Speedup |
 |--:|---------|------|--------:|------------:|------:|
@@ -532,66 +737,119 @@ by a counter-based suite.
 | 20 | Memory stress | 8 thr · 2000×500 | 786 ms | 1115 ms | **1.42×** |
 | | **Geometric mean** | | | | **≈ 1.85×** |
 
-**Summary:** All 25 scenarios favor TaskflowLite, geometric mean ≈ **1.85×**. Because task
-bodies are empty, these figures measure pure scheduling overhead — ratios run higher than
-workload-heavy runs, where shared per-task computation dilutes the ratio toward 1.0. The
-largest gains are in dependency-dense topologies: pipelines (07, 6.30×), grid (08, 4.17×),
-wavefront (18, 3.47×), scan chain (17, 2.87×); the closest is heterogeneous load (19, 1.17×).
-
-> Full benchmark source code in [benchmarks/](benchmarks/).
-> Figures are for empty task bodies (pure scheduling overhead); the atomic-counter
-> correctness suite is in the benchmark source.
+Current benchmarks enable atomic-counter verification by default, so default timings include verification work and are not pure scheduling overhead. Both programs support `--smoke`, `--no-verify`, and `--help`. Use matching compilers, optimization flags, thread counts, dependency revisions, and arguments for comparisons. Pass a verified smoke run before measuring a full run with verification disabled. See [benchmarks/README.md](benchmarks/README.md).
 
 ---
 
 ## Examples & Tests
 
-### Examples
+### Example Index
+
+| File | Topic |
+|------|-------|
+| [01_basic_dag.cpp](examples/01_basic_dag.cpp) | Basic DAG |
+| [02_parallel.cpp](examples/02_parallel.cpp) | Parallel tasks |
+| [03_loop.cpp](examples/03_loop.cpp) | Repeated execution |
+| [04_runtime.cpp](examples/04_runtime.cpp) | Runtime dispatch |
+| [05_branch.cpp](examples/05_branch.cpp) | Conditional branches |
+| [06_jump.cpp](examples/06_jump.cpp) | Jumps and retries |
+| [07_semaphore.cpp](examples/07_semaphore.cpp) | Semaphore limits |
+| [08_subflow.cpp](examples/08_subflow.cpp) | Module graphs |
+| [09_pipeline.cpp](examples/09_pipeline.cpp) | Map-reduce pipeline |
+| [10_dump.cpp](examples/10_dump.cpp) | D2 export |
+| [11_flow_emplace.cpp](examples/11_flow_emplace.cpp) | Node creation and argument binding |
+| [12_loop_workflow.cpp](examples/12_loop_workflow.cpp) | Looping workflows |
+| [13_parallel_reduce.cpp](examples/13_parallel_reduce.cpp) | Parallel reduction |
+| [14_async_task_chain.cpp](examples/14_async_task_chain.cpp) | Deferred task chains |
+| [15_observer.cpp](examples/15_observer.cpp) | Observer timing |
+| [16_error_handling.cpp](examples/16_error_handling.cpp) | Exception handling |
+| [17_cancellation.cpp](examples/17_cancellation.cpp) | Cooperative cancellation |
+| [18_pipeline_producer_consumer.cpp](examples/18_pipeline_producer_consumer.cpp) | Producer-consumer pipeline |
+| [19_dependent_async.cpp](examples/19_dependent_async.cpp) | Asynchronous dependencies |
+| [20_parallel_for_index.cpp](examples/20_parallel_for_index.cpp) | Index-partitioned parallelism |
+| [21_observer_tracing.cpp](examples/21_observer_tracing.cpp) | Observer tracing |
+| [22_state_machine.cpp](examples/22_state_machine.cpp) | State machine |
+| [23_parallel_reduce.cpp](examples/23_parallel_reduce.cpp) | Static-partition reduction |
+| [24_recursive_runtime.cpp](examples/24_recursive_runtime.cpp) | Recursive Runtime |
+| [25_retry_backoff.cpp](examples/25_retry_backoff.cpp) | Retry backoff |
+| [26_task_group.cpp](examples/26_task_group.cpp) | Scoped task groups |
+| [27_dynamic_subflow.cpp](examples/27_dynamic_subflow.cpp) | Dynamic SubFlow |
+| [28_task_editing.cpp](examples/28_task_editing.cpp) | Task editing |
+| [29_async_future_results.cpp](examples/29_async_future_results.cpp) | Value, reference, and void results |
+| [30_worker_handler.cpp](examples/30_worker_handler.cpp) | Worker lifecycle |
 
 ```bash
-cmake -S . -B build -DTFL_BUILD_EXAMPLES=ON
-cmake --build build --config Release
-
-./build/bin/examples/01_basic_dag       # Basic DAG
-./build/bin/examples/05_branch          # Conditional branching
-./build/bin/examples/09_pipeline        # Map-Reduce pipeline
+cmake --build build --config Release --target tfl_ex_01_basic_dag
+cmake --build build --config Release --target run_all_examples
 ```
 
-### Tests
+`run_all_examples` builds and runs all examples in sequence. With tests enabled, `ctest --test-dir build/test -C Release -L example --output-on-failure` runs the built examples.
+
+### Unit Tests
 
 ```bash
-cmake -S . -B build -DTFL_BUILD_TESTS=ON
-cmake --build build --config Release
-
-# All tests
-./build/bin/TaskflowLiteTest
-
-# Single file (build on demand)
-cmake --build build --target tfl_test_task
-./build/bin/tfl_test_task
+ctest --test-dir build/test -C Release -L unit --output-on-failure
+cmake --build build/test --config Release --target tfl_test_task
 ```
 
-> Tests depend on Catch2 v3 amalgamated: used directly if present under `test/`
-> (offline, reproducible); otherwise auto-downloaded once `-DTFL_BUILD_TESTS=ON`
-> is set (download reuses the `TFL_GITHUB_MIRROR` mirror above). `TFL_BUILD_TESTS`
-> defaults to OFF — tests are built (and the download triggered) only when enabled.
+The 31 test files cover graph construction, tasks and Futures, the three submission contexts, branches and jumps, subgraphs, cancellation and exceptions, observers, queues, allocators, and stress scenarios. Select cases with Catch2 tags, for example by passing `"[subflow]"` to the appropriate executable. `tfl_test_task` builds only its corresponding test file; run it directly or enable `TFL_TEST_PER_FILE_DEFAULT=ON` to add per-file tests to CTest.
 
-### Benchmarks
+See [test/README.md](test/README.md) for coverage conventions and known core regressions. Full validation must not filter out regression tests.
+
+### Executable Locations
+
+| Program | Single-configuration generator | Visual Studio Release |
+|---------|--------------------------------|-----------------------|
+| Example | `<build>/bin/examples/01_basic_dag` | `<build>/bin/examples/Release/01_basic_dag.exe` |
+| Combined tests | `<build>/bin/TaskflowLiteTest` | `<build>/bin/Release/TaskflowLiteTest.exe` |
+| Per-file tests | `<build>/bin/tfl_test_task` | `<build>/bin/Release/tfl_test_task.exe` |
+| Benchmark | `<build>/benchmarks/bench_taskflowlite` | `<build>/benchmarks/Release/bench_taskflowlite.exe` |
+
+Replace `<build>` with your build directory. The Taskflow baseline executable is named `bench_taskflow` in the same benchmark directory.
+
+### Running Benchmarks
 
 ```bash
-cmake -S . -B build -DTFL_BUILD_BENCHMARKS=ON
-cmake --build build --config Release
+cmake -S . -B build/bench -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_BENCHMARKS=ON
+cmake --build build/bench --config Release --target bench_taskflowlite bench_taskflow --parallel 4
 
-./build/bin/bench_taskflowlite
-./build/bin/bench_taskflow
+./build/bench/benchmarks/bench_taskflowlite --smoke
+./build/bench/benchmarks/bench_taskflow --smoke
+
+./build/bench/benchmarks/bench_taskflowlite --no-verify
+./build/bench/benchmarks/bench_taskflow --no-verify
 ```
 
-> Benchmarks only require Taskflow (header-only), auto-cloned during configure. Offline: use `-DTASKFLOW_LOCAL_PATH=<path>`.
+The run paths above are for single-configuration generators; adapt Windows paths using the table. `--smoke` preserves all scenario structures and caps repetitions at 3. It is for correctness checks, not performance ranking. With both tests and benchmarks enabled, use `ctest -L benchmark` to run the two smoke tests.
+
+---
+
+## Migration and Caveats
+
+| Previous usage / pitfall | Current usage |
+|--------------------------|---------------|
+| `NonrepeatAsyncTask` | `AsyncTask<R>` or CTAD |
+| `executor.submit(task)` | `executor.run(task)` |
+| `detach(callable)` | `silent_async(callable)` |
+| `cowait()` / `cowait_until(...)` | `Runtime::wait()` / `wait_until(...)` |
+| `emplace(callable, business_args...)` | Captures or `std::bind_front`; module count/predicate overloads still exist |
+| `tfl::pack{callable, business_args...}` | Bind the callable first; packs only expand valid `emplace` arguments |
+| `Future` / `wait_for` / `share` | `AsyncFuture`, `done()`, and direct handle copying |
+| `ResumeNever` / `ResumeAlways` | Future `get()` and explicit exception scopes |
+| `on_before(TaskView)` | `on_before(WorkerView) noexcept`; likewise for `on_after` |
+| Editing / clearing a running graph | Wait for completion before editing |
+| Using `Semaphore::reset` for live resizing | Reset only without waiters, outstanding permits, or concurrent operations |
+
+Current source and CI checks also require attention to the following:
+
+- **MSVC SubFlow regression**: captureless SubFlow callables have reproduced an access violation in `Graph::clear()` on MSVC 19.44 / Windows x64, associated with `TFL_NO_UNIQUE_ADDRESS` layout. Two `[core-regression]` cases remain enabled by default; a filtered pass is not a full-suite pass. See the [test notes](test/README.md).
+- **Self-contained headers on GCC**: `std::memcpy` needs `<cstring>` and `std::condition_variable` needs `<condition_variable>`. Fix the files using those facilities rather than relying on transitive standard-library includes.
+- **Concurrent output and captures**: consistently use separate `std::osyncstream` objects or the same mutex for concurrent logging. Do not mix in unsynchronized concurrent output. Explicitly capture enclosing local constants when printing them, for example `[N] { std::osyncstream(std::cout) << N; }`.
+- **Overflow in timing workloads**: use sufficiently wide integer types for loop accumulation. `volatile` does not prevent signed overflow. Avoid deprecated compound assignment on volatile objects in C++20.
+- **Interpreting results**: use complete build, CTest, and sanitizer logs for the relevant commit. One passing example run does not establish freedom from races, and compiler warnings are not automatically CodeQL or sanitizer errors.
 
 ---
 
 ## License
 
 [MIT License](LICENSE)
-
-*TaskflowLite — built for developers who demand extreme performance and modern C++ aesthetics.*

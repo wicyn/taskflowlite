@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 
 #if defined(_MSC_VER)
 #  include <intrin.h>

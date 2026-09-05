@@ -192,19 +192,19 @@ endif()
 # ──────────────────────────────────────────────────────────────────────────────
 # bench_taskflowlite -- TaskflowLite benchmarks (20 scheduling scenarios)
 # ──────────────────────────────────────────────────────────────────────────────
-add_executable(bench_taskflowlite bench_taskflowlite.cpp)
+add_executable(bench_taskflowlite bench_taskflowlite.cpp bench_common.hpp)
 target_link_libraries(bench_taskflowlite PRIVATE
     TaskflowLite::taskflowlite
     tfl_internal_flags
     Threads::Threads
 )
-target_compile_features(bench_taskflowlite PRIVATE cxx_std_23)
+target_compile_features(bench_taskflowlite PRIVATE cxx_std_20)
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES bench_taskflowlite.cpp)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # bench_taskflow -- Taskflow comparison benchmarks
 # ──────────────────────────────────────────────────────────────────────────────
-add_executable(bench_taskflow bench_taskflow.cpp)
+add_executable(bench_taskflow bench_taskflow.cpp bench_common.hpp)
 target_link_libraries(bench_taskflow PRIVATE
     Taskflow::Taskflow
     Threads::Threads
@@ -218,6 +218,14 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES bench_taskflow.cpp)
 
 # 已建出的 benchmark 目标(给 run_all_benchmarks 用)
 set(BENCHMARKS bench_taskflowlite bench_taskflow)
+if(TFL_BUILD_TESTS)
+    enable_testing()
+    foreach(b ${BENCHMARKS})
+        add_test(NAME benchmark.${b}.smoke COMMAND $<TARGET_FILE:${b}> --smoke)
+        set_tests_properties(benchmark.${b}.smoke PROPERTIES
+            TIMEOUT 120 LABELS "benchmark;smoke")
+    endforeach()
+endif()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # run_all_benchmarks -- one-command execution of all benchmark targets

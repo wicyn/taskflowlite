@@ -1,6 +1,7 @@
 #define CATCH_CONFIG_MAIN
 
 #include "../taskflowlite/taskflowlite.hpp"
+#include <functional>
 #include "catch_amalgamated.hpp"
 
 #include <atomic>
@@ -60,14 +61,12 @@ TEST_CASE("Flow: Batch Emplace (Tuple & Args)", "[flow]") {
 
     // Pack 批量插入
     auto [t1, t2] = flow.emplace(
-        tfl::pack{[](int a) { /* don't assert inside worker */ }, 42},
-        tfl::pack{[](int& c) { c = 100; }, std::ref(counter)}
+        tfl::pack{std::bind_front([](int a) { /* don't assert inside worker */ }, 42)},
+        tfl::pack{std::bind_front([](int& c) { c = 100; }, std::ref(counter))}
         );
 
     REQUIRE(flow.size() == 2);
-
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 1);
+    tfl::Executor executor(1);
     executor.async(flow).wait();
 
     REQUIRE(counter == 100);
@@ -96,9 +95,7 @@ TEST_CASE("DAG: Strict Linear Execution Order", "[dag]") {
     t1.precede(t2);
     t2.precede(t3);
     t3.precede(t4);
-
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
     executor.async(flow).wait();
 
     REQUIRE(order == std::vector<int>{1, 2, 3, 4});
@@ -130,9 +127,7 @@ TEST_CASE("DAG: Diamond Topology Synchronization", "[dag]") {
 
     A.precede(B, C);
     D.succeed(B, C);
-
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
     executor.async(flow).wait();
 
     // 所有断言在主线程上
@@ -148,8 +143,7 @@ TEST_CASE("DAG: Diamond Topology Synchronization", "[dag]") {
 // ============================================================================
 
 TEST_CASE("Branch: Exclusive Path Routing", "[branch]") {
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 2);
+    tfl::Executor executor(2);
 
     for (int route = 0; route < 3; ++route) {
         tfl::Flow flow;
@@ -186,9 +180,7 @@ TEST_CASE("MultiBranch: Concurrent Path Routing", "[branch]") {
     auto p3 = flow.emplace([&] { hits[3]++; });
 
     mbr.precede(p0, p1, p2, p3);
-
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
     executor.async(flow).wait();
 
     REQUIRE(hits[0].load() == 1);
@@ -210,16 +202,14 @@ TEST_CASE("Runtime: Dynamic Async & Wait", "[runtime]") {
         auto fut1 = rt.async([] { return 10; });
         auto fut2 = rt.async([] { return 20; });
 
-        rt.cowait_until([&] {
-            return fut1.wait_for(0s) == std::future_status::ready &&
-                   fut2.wait_for(0s) == std::future_status::ready;
+        rt.wait_until([&] {
+            return fut1.done() &&
+                   fut2.done();
         });
 
         result.store(fut1.get() + fut2.get());
     });
-
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
     executor.async(flow).wait();
 
     REQUIRE(result.load() == 30);
@@ -237,9 +227,7 @@ TEST_CASE("Subflow: Predicate Condition Loop", "[subflow]") {
     main_flow.emplace(std::move(sub_flow), [&loops]() mutable noexcept {
         return (++loops) > 4;
     });
-
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 2);
+    tfl::Executor executor(2);
     executor.async(main_flow).wait();
 
     REQUIRE(runs.load() == 4);
@@ -269,10 +257,8 @@ TEST_CASE("Semaphore: Real Concurrency Limiting", "[semaphore]") {
         });
         task.acquire(sem).release(sem);
     }
-
-    tfl::ResumeNever handler;
     // 分配 8 个物理线程，但由于信号量限制，实际并发不应超过 2
-    tfl::Executor executor(handler, 8);
+    tfl::Executor executor(8);
     executor.async(flow).wait();
 
     REQUIRE(max_active_observed.load() <= 2);
@@ -280,31 +266,30 @@ TEST_CASE("Semaphore: Real Concurrency Limiting", "[semaphore]") {
 }
 
 TEST_CASE("Executor: AsyncTask Explicit Dependencies", "[executor]") {
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
 
     std::atomic<int> step{0};
 
     // 修复：不要在 worker 线程内调用 REQUIRE，使用原子标志收集结果
     std::atomic<bool> t1_ok{false}, t2_ok{false}, t3_ok{false};
 
-    auto t1 = tfl::NonrepeatAsyncTask([&] {
+    auto t1 = tfl::AsyncTask([&] {
         t1_ok.store(step.load() == 0, std::memory_order_relaxed);
         step.store(1);
     });
-    auto t2 = tfl::NonrepeatAsyncTask([&] {
+    auto t2 = tfl::AsyncTask([&] {
         t2_ok.store(step.load() == 1, std::memory_order_relaxed);
         step.store(2);
     });
-    auto t3 = tfl::NonrepeatAsyncTask([&] {
+    auto t3 = tfl::AsyncTask([&] {
         t3_ok.store(step.load() == 2, std::memory_order_relaxed);
         step.store(3);
     });
 
     // 逆序组装并启动：t3 依赖 t2，t2 依赖 t1
-    executor.submit(t3, t2);
-    executor.submit(t2, t1);
-    executor.submit(t1); // 触发点
+    executor.run(t3, t2);
+    executor.run(t2, t1);
+    executor.run(t1); // 触发点
 
     t3.wait();
     executor.wait_for_all();
@@ -317,8 +302,7 @@ TEST_CASE("Executor: AsyncTask Explicit Dependencies", "[executor]") {
 }
 
 TEST_CASE("Executor: Flow Callbacks and Submissions", "[executor]") {
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 2);
+    tfl::Executor executor(2);
     tfl::Flow flow;
     std::atomic<int> runs{0};
     std::atomic<bool> cb_called{false};
@@ -336,9 +320,8 @@ TEST_CASE("Executor: Flow Callbacks and Submissions", "[executor]") {
 // [Exception] 异常处理策略
 // ============================================================================
 
-TEST_CASE("Exception: ResumeNever Stops Execution", "[exception]") {
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 2);
+TEST_CASE("Exception: Graph Failure Stops Dependent Execution", "[exception]") {
+    tfl::Executor executor(2);
     tfl::Flow flow;
     std::atomic<int> next_task_run{0};
 
@@ -351,9 +334,8 @@ TEST_CASE("Exception: ResumeNever Stops Execution", "[exception]") {
     REQUIRE(next_task_run.load() == 0);
 }
 
-TEST_CASE("Exception: ResumeAlways Ignores Failure", "[exception]") {
-    tfl::ResumeAlways handler;
-    tfl::Executor executor(handler, 2);
+TEST_CASE("Exception: wait Does Not Rethrow Failure", "[exception]") {
+    tfl::Executor executor(2);
     tfl::Flow flow;
     std::atomic<int> next_task_run{0};
 
@@ -373,8 +355,7 @@ TEST_CASE("Exception: ResumeAlways Ignores Failure", "[exception]") {
 // ============================================================================
 
 TEST_CASE("Stress: Mass Concurrent Graph Submissions", "[stress]") {
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, std::thread::hardware_concurrency());
+    tfl::Executor executor(std::thread::hardware_concurrency());
 
     std::atomic<int> global_counter{0};
     constexpr int NUM_THREADS = 8;
@@ -405,8 +386,7 @@ TEST_CASE("Stress: Mass Concurrent Graph Submissions", "[stress]") {
 }
 
 TEST_CASE("Edge: Disconnected Empty Tasks", "[edge]") {
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 2);
+    tfl::Executor executor(2);
     tfl::Flow flow;
 
     // 提交大量完全断开连接的孤立空任务，测试调度器边界性能
@@ -443,7 +423,7 @@ TEST_CASE("Task Topology Constraints - precede() exception and cycle detection")
         } catch (const tfl::Exception& e) {
             caught = true;
             std::string msg = e.what();
-            CHECK(msg.find("invalid topology: self-loops are exclusively allowed for jump-type nodes") != std::string::npos);
+            CHECK(msg.find("self-loops") != std::string::npos);
         }
         CHECK(caught == true);
     }
@@ -552,9 +532,7 @@ TEST_CASE("Jump: Backward Retry Loop", "[jump]") {
     start.precede(process);
     process.precede(check);
     check.precede(process);
-
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 2);
+    tfl::Executor executor(2);
     executor.async(flow).wait();
 
     REQUIRE(attempts.load() == 5);

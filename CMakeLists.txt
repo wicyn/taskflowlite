@@ -1,5 +1,5 @@
 # ==============================================================================
-# TaskflowLite (tfl) - 高性能、现代 C++23 任务并行编程库
+# TaskflowLite (tfl) - 高性能、现代 C++20 任务并行编程库
 # ==============================================================================
 
 cmake_minimum_required(VERSION 3.21)
@@ -18,8 +18,8 @@ endif()
 #      顶层不再被一堆杂目标刷屏。设在根目录是最规范的位置。
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
-# C++23 硬性要求
-set(CMAKE_CXX_STANDARD 23)
+# C++20 硬性要求
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -51,7 +51,7 @@ set(_TFL_PATCH ${CMAKE_MATCH_1})
 project(TaskflowLite
     VERSION "${_TFL_MAJOR}.${_TFL_MINOR}.${_TFL_PATCH}"
     LANGUAGES CXX
-    DESCRIPTION "A high-performance, header-only, C++23 task scheduling engine"
+    DESCRIPTION "A high-performance, header-only, C++20 task scheduling engine"
     HOMEPAGE_URL "https://github.com/wicyn/taskflowlite"
 )
 
@@ -188,7 +188,7 @@ mark_as_advanced(
 add_library(taskflowlite INTERFACE)
 add_library(TaskflowLite::taskflowlite ALIAS taskflowlite)
 
-target_compile_features(taskflowlite INTERFACE cxx_std_23)
+target_compile_features(taskflowlite INTERFACE cxx_std_20)
 target_link_libraries(taskflowlite INTERFACE Threads::Threads)
 
 # GCC/Clang 上需显式链接 libatomic 以支持 128-bit DWCAS (FreeStack128)
@@ -202,7 +202,6 @@ endif()
 target_compile_options(taskflowlite INTERFACE
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
     $<$<CXX_COMPILER_ID:MSVC>:/Zc:__cplusplus>
-    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<VERSION_LESS:$<CXX_COMPILER_VERSION>,19.40>>:/std:c++latest>
 )
 
 # 纯静态包含目录：对使用者极其友好

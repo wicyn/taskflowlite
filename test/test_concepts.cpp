@@ -1,4 +1,4 @@
-﻿/// @file test_concepts.cpp
+/// @file test_concepts.cpp
 /// @brief Compile-time concept verification — accept models, reject non-models.
 ///
 /// All callable types are named structs (not inline lambdas) to avoid relying on
@@ -10,15 +10,15 @@
 ///   noexcept_predicate<P, Args> ✓ (models + non-models)
 ///   callback<C>                 ✓ (models + non-models)
 ///   capturable<Ts...>           ✓ (models + non-models)
-///   basic_invocable<T, Args...> ✓
-///   branch_invocable<T, A...>   ✓
-///   runtime_invocable<T, A...>  ✓
-///   jump_invocable<T, A...>     ✓
+///   basic_invocable<T> ✓
+///   branch_invocable<T>   ✓
+///   runtime_invocable<T>  ✓
+///   jump_invocable<T>     ✓
 ///   multi_branch / multi_jump   ✓
 ///   graph_holder<Gh>            ✓
 ///   task_pack<T>                ✓
 ///   sem_count_sequence<Ts...>   ✓
-///   anchor_tag<T>               ✓
+///   async_future / async_task               ✓
 ///   detail::is_reference_wrapper ✓
 ///   detail::capture / borrow       ✓
 ///   pack CTAD                   ✓
@@ -174,15 +174,16 @@ TEST_CASE("Concepts: capturable<Ts...>", "[concepts][capturable]") {
 // ============================================================================
 
 /// @test [concepts][invocable] basic_invocable
-TEST_CASE("Concepts: basic_invocable<T, Args...>", "[concepts][invocable]") {
+TEST_CASE("Concepts: basic_invocable<T>", "[concepts][invocable]") {
     // Plain — no args
     STATIC_REQUIRE(tfl::basic_invocable<EmptyCallable>);
 
     // Plain — with args
-    STATIC_REQUIRE(tfl::basic_invocable<IntReturn, int>);
+    STATIC_REQUIRE(tfl::basic_invocable<decltype(std::bind_front(IntReturn{}, 1))>);
 
-    // Stoppable — stoppable path appends std::stop_token to parameter list
-    STATIC_REQUIRE(tfl::basic_invocable<IntStopCallable, int>);
+    // stop_token 不再自动注入，只有 token 参数的 callable 不满足当前接口。
+    STATIC_REQUIRE_FALSE(tfl::basic_invocable<IntStopCallable>);
+    STATIC_REQUIRE_FALSE(tfl::basic_invocable<StopCallable>);
 
     // Non-model — wrong arity
     STATIC_REQUIRE_FALSE(tfl::basic_invocable<IntReturn>);  // expects int arg
@@ -193,9 +194,9 @@ TEST_CASE("Concepts: basic_invocable<T, Args...>", "[concepts][invocable]") {
 // ============================================================================
 
 /// @test [concepts][invocable] branch_invocable
-TEST_CASE("Concepts: branch_invocable<T, Args...>", "[concepts][invocable]") {
+TEST_CASE("Concepts: branch_invocable<T>", "[concepts][invocable]") {
     STATIC_REQUIRE(tfl::branch_invocable<BranchCallable>);
-    STATIC_REQUIRE(tfl::branch_invocable<IntBranchCallable, int>);
+    STATIC_REQUIRE(tfl::branch_invocable<decltype(std::bind_front(IntBranchCallable{}, 1))>);
     STATIC_REQUIRE_FALSE(tfl::branch_invocable<EmptyCallable>);
 }
 
@@ -204,9 +205,9 @@ TEST_CASE("Concepts: branch_invocable<T, Args...>", "[concepts][invocable]") {
 // ============================================================================
 
 /// @test [concepts][invocable] runtime_invocable
-TEST_CASE("Concepts: runtime_invocable<T, Args...>", "[concepts][invocable]") {
+TEST_CASE("Concepts: runtime_invocable<T>", "[concepts][invocable]") {
     STATIC_REQUIRE(tfl::runtime_invocable<RuntimeCallable>);
-    STATIC_REQUIRE(tfl::runtime_invocable<IntRuntimeCallable, int>);
+    STATIC_REQUIRE(tfl::runtime_invocable<decltype(std::bind_front(IntRuntimeCallable{}, 1))>);
     STATIC_REQUIRE_FALSE(tfl::runtime_invocable<EmptyCallable>);
 }
 
@@ -215,9 +216,9 @@ TEST_CASE("Concepts: runtime_invocable<T, Args...>", "[concepts][invocable]") {
 // ============================================================================
 
 /// @test [concepts][invocable] jump_invocable
-TEST_CASE("Concepts: jump_invocable<T, Args...>", "[concepts][invocable]") {
+TEST_CASE("Concepts: jump_invocable<T>", "[concepts][invocable]") {
     STATIC_REQUIRE(tfl::jump_invocable<JumpCallable>);
-    STATIC_REQUIRE(tfl::jump_invocable<IntJumpCallable, int>);
+    STATIC_REQUIRE(tfl::jump_invocable<decltype(std::bind_front(IntJumpCallable{}, 1))>);
     STATIC_REQUIRE_FALSE(tfl::jump_invocable<EmptyCallable>);
 }
 
@@ -278,17 +279,17 @@ TEST_CASE("Concepts: sem_count_sequence<Ts...>", "[concepts][semaphore]") {
 }
 
 // ============================================================================
-// SECTION 13: anchor_tag concept
+// SECTION 13: async_future / async_task concepts
 // ============================================================================
 
-/// @test [concepts][anchor] anchor_tag accepts the three anchor tag types
-TEST_CASE("Concepts: anchor_tag<T>", "[concepts][anchor]") {
-    STATIC_REQUIRE(tfl::anchor_tag<tfl::anchor::none_t>);
-    STATIC_REQUIRE(tfl::anchor_tag<tfl::anchor::implicit_t>);
-    STATIC_REQUIRE(tfl::anchor_tag<tfl::anchor::explicit_t>);
-
-    STATIC_REQUIRE_FALSE(tfl::anchor_tag<int>);
-    STATIC_REQUIRE_FALSE(tfl::anchor_tag<std::string>);
+/// @test [concepts][async] Future 和延迟任务分别满足对应约束。
+TEST_CASE("Concepts: async_future and async_task", "[concepts][async]") {
+    STATIC_REQUIRE(tfl::async_future<tfl::AsyncFuture<int>>);
+    STATIC_REQUIRE(tfl::async_future<const tfl::AsyncTask<void>&>);
+    STATIC_REQUIRE(tfl::async_task<tfl::AsyncTask<int>&>);
+    STATIC_REQUIRE_FALSE(tfl::async_task<tfl::AsyncFuture<int>>);
+    STATIC_REQUIRE_FALSE(tfl::async_future<int>);
+    STATIC_REQUIRE_FALSE(tfl::async_task<tfl::Task>);
 }
 
 // ============================================================================
@@ -304,10 +305,10 @@ TEST_CASE("Concepts: detail::is_reference_wrapper_v", "[concepts][detail]") {
     STATIC_REQUIRE_FALSE(tfl::detail::is_reference_wrapper_v<int&>);
 }
 
-/// @test [concepts][detail] detail::is_reference_wrapper_after_decay_v
-TEST_CASE("Concepts: detail::is_reference_wrapper_after_decay_v", "[concepts][detail]") {
-    STATIC_REQUIRE(tfl::detail::is_reference_wrapper_after_decay_v<std::reference_wrapper<int>>);
-    STATIC_REQUIRE_FALSE(tfl::detail::is_reference_wrapper_after_decay_v<int&>);
+/// @test [concepts][detail] detail::is_reference_wrapper_v
+TEST_CASE("Concepts: reference_wrapper detection removes cvref", "[concepts][detail]") {
+    STATIC_REQUIRE(tfl::detail::is_reference_wrapper_v<const std::reference_wrapper<int>&>);
+    STATIC_REQUIRE_FALSE(tfl::detail::is_reference_wrapper_v<int&>);
 }
 
 // ============================================================================
@@ -337,12 +338,10 @@ TEST_CASE("Concepts: detail::capture/borrow runtime", "[concepts][detail]") {
         REQUIRE(u == 100);
     }
 
-    SECTION("borrow rvalue forwards as lvalue reference") {
-        // borrow(右值) 返回 int&，该引用绑定到调用处的临时量；
-        // 不能存进具名引用后跨语句使用（临时量已析构 → use-after-scope）。
-        // 故仅做类型检查；值检查在同一完整表达式内完成，不留悬垂引用。
-        STATIC_REQUIRE(std::same_as<decltype(tfl::detail::borrow(42)), int&>);
-        REQUIRE(tfl::detail::borrow(42) == 42);   // 同一表达式内读取，临时量此刻仍存活
+    SECTION("borrow preserves const lvalue references") {
+        const int value = 42;
+        STATIC_REQUIRE(std::same_as<decltype(tfl::detail::borrow(value)), const int&>);
+        REQUIRE(&tfl::detail::borrow(value) == &value);
     }
 }
 
@@ -375,16 +374,16 @@ TEST_CASE("Concepts: pack CTAD deduction", "[concepts][pack]") {
 //   noexcept_predicate    ✓ "Concepts: noexcept_predicate<P, Args...>"
 //   callback              ✓ "Concepts: callback<C>"
 //   capturable            ✓ "Concepts: capturable<Ts...>"
-//   basic_invocable       ✓ "Concepts: basic_invocable<T, Args...>"
-//   branch_invocable      ✓ "Concepts: branch_invocable<T, Args...>"
+//   basic_invocable       ✓ "Concepts: basic_invocable<T>"
+//   branch_invocable      ✓ "Concepts: branch_invocable<T>"
 //   multi_branch_invocable ✓ "Concepts: multi_branch_invocable / multi_jump_invocable"
-//   jump_invocable        ✓ "Concepts: jump_invocable<T, Args...>"
+//   jump_invocable        ✓ "Concepts: jump_invocable<T>"
 //   multi_jump_invocable  ✓ "Concepts: multi_branch_invocable / multi_jump_invocable"
-//   runtime_invocable     ✓ "Concepts: runtime_invocable<T, Args...>"
+//   runtime_invocable     ✓ "Concepts: runtime_invocable<T>"
 //   graph_holder          ✓ "Concepts: graph_holder<Gh>"
 //   task_pack             ✓ "Concepts: task_pack<T>"
 //   sem_count_sequence    ✓ "Concepts: sem_count_sequence<Ts...>"
-//   anchor_tag            ✓ "Concepts: anchor_tag<T>"
+//   async_future/async_task ✓ "Concepts: async_future and async_task"
 //   detail::is_reference_wrapper ✓ "Concepts: detail::is_reference_wrapper_v"
 //   detail::capture/borrow    ✓ "Concepts: detail::capture/borrow runtime"
 //   pack CTAD              ✓ "Concepts: pack CTAD deduction"

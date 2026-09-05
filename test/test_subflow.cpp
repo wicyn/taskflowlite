@@ -1,5 +1,5 @@
 /// @file test_subflow.cpp
-/// @brief Subflow 测试 —— 子图嵌套、固定次数循环、谓词驱动循环。
+/// @brief Module 与动态 SubFlow 测试 —— 图嵌套、循环、显式 run 和协作等待。
 ///
 /// 覆盖的接口：
 ///   - Flow::emplace(Gh)                       挂载子图（默认 1 次）
@@ -69,7 +69,7 @@ TEST_CASE("Subflow: fixed-count loop", "[subflow][repeat]") {
 // ============================================================================
 
 /// @test [subflow][predicate] 谓词返回 true 时循环停止。
-/// @details 谓词在每次子图完成后调用一次；返回 true 表示"够了"。
+/// @details 谓词在每轮执行前调用；返回 true 表示停止，不启动本轮。
 TEST_CASE("Subflow: predicate-driven loop", "[subflow][predicate]") {
     TestEnv env;
     std::atomic<int> hits{0};
@@ -129,4 +129,66 @@ TEST_CASE("Subflow: lvalue mounting", "[subflow][lvalue]") {
 
     env.executor.async(main_flow).wait();
     REQUIRE(hits.load() == 1);
+}
+
+// ============================================================================
+// SECTION 6: 动态 SubFlow —— 每次调用重新构图，必须显式提交
+// ============================================================================
+
+/// @test [subflow][dynamic] 未 run 的动态图不会自动执行。
+TEST_CASE("SubFlow: construction alone does not execute children", "[subflow][dynamic]") {
+    TestEnv env(1);
+    int count = 0;
+    env.executor.async([&](tfl::SubFlow& sf) {
+        (void)sf.emplace([&] { ++count; });
+    }).get();
+    REQUIRE(count == 0);
+}
+
+/// @test [subflow][dynamic][wait] run 后显式 wait 或返回均等待子图完成。
+TEST_CASE("SubFlow: explicit run and optional cooperative wait", "[subflow][dynamic][wait]") {
+    TestEnv env(1);
+    const bool wait_inside = GENERATE(false, true);
+    std::atomic<int> count{0};
+    bool waited = false;
+    env.executor.async([&](tfl::SubFlow& sf) {
+        auto a = sf.emplace([&] { ++count; });
+        auto b = sf.emplace([&] { ++count; });
+        sf.linearize(a, b);
+        sf.run();
+        if (wait_inside) {
+            sf.wait();
+            waited = count.load() == 2;
+        }
+    }).get();
+    REQUIRE(count.load() == 2);
+    REQUIRE(waited == wait_inside);
+}
+
+/// @test [subflow][dynamic][repeat] 重复外图时清空旧动态图，不累计旧节点。
+TEST_CASE("SubFlow: repeated parent rebuilds children", "[subflow][dynamic][repeat]") {
+    TestEnv env(1);
+    tfl::Flow flow;
+    int count = 0;
+    bool starts_empty = true;
+    (void)flow.emplace([&](tfl::SubFlow& sf) {
+        starts_empty = starts_empty && sf.empty();
+        (void)sf.emplace([&] { ++count; });
+        sf.run();
+    });
+    env.executor.async(flow, 10ULL).get();
+    REQUIRE(starts_empty);
+    REQUIRE(count == 10);
+}
+
+/// @test [subflow][dynamic][exception] 子图异常通过 wait/get 传播。
+/// @note 当前 core 在无捕获 SubFlow 的 Graph 初始化路径崩溃；保留默认回归测试。
+TEST_CASE("SubFlow: child exception reaches the future", "[subflow][dynamic][exception][core-regression]") {
+    TestEnv env(1);
+    auto future = env.executor.async([](tfl::SubFlow& sf) {
+        (void)sf.emplace([] { throw std::runtime_error("dynamic child"); });
+        sf.run();
+        sf.wait();
+    });
+    REQUIRE_THROWS_AS(future.get(), std::runtime_error);
 }

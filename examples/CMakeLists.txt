@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 #  TaskflowLite Examples
 # ============================================================================
 #
@@ -58,7 +58,13 @@ function(tfl_setup_example_target _tgt)
         target_link_libraries(${_tgt} PRIVATE tfl_internal_flags)
     endif()
 
-    target_compile_features(${_tgt} PRIVATE cxx_std_23)
+    target_compile_features(${_tgt} PRIVATE cxx_std_20)
+
+    # libc++ 的 <syncstream> 仍需启用实验功能；编译和链接阶段都要传递此选项。
+    if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(${_tgt} PRIVATE -fexperimental-library)
+        target_link_options(${_tgt} PRIVATE -fexperimental-library)
+    endif()
 
     set_target_properties(${_tgt} PROPERTIES
         FOLDER "Examples"
@@ -83,6 +89,12 @@ foreach(_src ${TFL_EXAMPLE_SOURCES})
     set_target_properties(${_tgt} PROPERTIES OUTPUT_NAME "${_name}")
 
     tfl_setup_example_target(${_tgt})
+    if(TFL_BUILD_TESTS AND NOT TFL_EXAMPLES_EXCLUDE_FROM_ALL)
+        enable_testing()
+        add_test(NAME example.${_name} COMMAND $<TARGET_FILE:${_tgt}>)
+        set_tests_properties(example.${_name} PROPERTIES
+            TIMEOUT 60 LABELS "example")
+    endif()
     list(APPEND _example_targets ${_tgt})
 endforeach()
 

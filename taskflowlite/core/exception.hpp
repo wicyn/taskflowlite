@@ -63,44 +63,4 @@ protected:
     std::source_location    m_location;      ///< 错误发生的文件/行号/函数名。
 };
 
-#if TFL_HAS_STACKTRACE
-/// @brief 在基础错误消息和源码位置之外保存构造时的调用栈快照。
-///
-/// 类型按值拥有 `std::stacktrace`；帧的可用性和完整程度取决于标准库、平台和编译优化。
-/// 仅在项目检测到 `std::stacktrace` 支持时定义。
-class TraceException : public Exception {
-public:
-    /// @brief 类似 std::format 风格：接收格式字符串和参数，同时捕获源码位置与调用栈。
-    /// @tparam Args 变长参数类型。
-    /// @param fmt 包含格式串、源码位置与调用栈的 Traced 包装器。
-    /// @param args 填充到格式串 {} 中的参数。
-    template <typename... Args>
-    explicit TraceException(Traced<std::format_string<Args...>> fmt, Args&&... args)
-        // 复用 Exception 的消息格式化和源码位置保存逻辑；调用栈由本类独立保存。
-        : Exception{static_cast<const Located<std::format_string<Args...>>&>(fmt), std::forward<Args>(args)...}
-        , m_stacktrace{fmt.stacktrace()}
-    {}
-
-    /// @brief 直接传错误字符串并捕获调用栈的构造函数。
-    /// @param message 错误描述文本。
-    /// @param loc     throw 点的源码位置（默认实参自动捕获）。
-    /// @param trace   捕获时的调用栈快照（默认实参自动抓取）。
-    explicit TraceException(std::string_view message,
-                            std::source_location loc = std::source_location::current(),
-                            std::stacktrace trace = std::stacktrace::current())
-        // 移动保存调用栈，避免复制 trace 对象。
-        : Exception{message, loc}
-        , m_stacktrace{std::move(trace)}
-    {}
-
-    /// @brief 获取构造异常时捕获的实现相关调用栈快照。
-    /// @return 内部 stacktrace 的只读引用；帧完整性取决于平台和优化设置。
-    [[nodiscard]] const std::stacktrace& trace() const noexcept {
-        return m_stacktrace;
-    }
-
-private:
-    std::stacktrace m_stacktrace; ///< 构造异常时捕获的调用栈快照。
-};
-#endif
 }  // namespace tfl

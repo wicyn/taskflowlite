@@ -287,24 +287,24 @@ TEST_CASE("Pattern: AsyncTask dependency graph", "[pattern][async-dag]") {
     std::atomic<bool> ok_b{false}, ok_c{false}, ok_d{false};
 
     // A → {B, C} → D
-    auto a = tfl::NonrepeatAsyncTask([&] { step.fetch_add(1); });
-    auto b = tfl::NonrepeatAsyncTask([&] {
+    auto a = tfl::AsyncTask([&] { step.fetch_add(1); });
+    auto b = tfl::AsyncTask([&] {
         ok_b.store(step.load() >= 1);
         step.fetch_add(1);
     });
-    auto c = tfl::NonrepeatAsyncTask([&] {
+    auto c = tfl::AsyncTask([&] {
         ok_c.store(step.load() >= 1);
         step.fetch_add(1);
     });
-    auto d = tfl::NonrepeatAsyncTask([&] {
+    auto d = tfl::AsyncTask([&] {
         ok_d.store(step.load() >= 3);  // a + b + c 均已运行
         step.fetch_add(1);
     });
 
-    env.executor.submit(d, b, c);
-    env.executor.submit(b, a);
-    env.executor.submit(c, a);
-    env.executor.submit(a);
+    env.executor.run(d, b, c);
+    env.executor.run(b, a);
+    env.executor.run(c, a);
+    env.executor.run(a);
 
     d.wait();
     env.executor.wait_for_all();

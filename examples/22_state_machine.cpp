@@ -41,7 +41,7 @@
 #include <string>
 #include <thread>
 #include <chrono>
-
+#include <syncstream>
 // 模拟外部状态：库存 / 支付服务
 struct OrderContext {
     std::atomic<int>  stock{0};         // 当前库存（每次 reserve 减 1）
@@ -54,10 +54,9 @@ struct OrderContext {
 };
 
 int main() {
-    std::cout << "=== Example 16: Order Processing State Machine ===\n\n";
+    std::osyncstream(std::cout) << "=== Example 16: Order Processing State Machine ===\n\n";
 
-    tfl::ResumeNever handler;
-    tfl::Executor executor(handler, 4);
+    tfl::Executor executor(4);
     tfl::Flow flow;
 
     OrderContext ctx;
@@ -70,11 +69,11 @@ int main() {
     // 1. 状态节点
     // ─────────────────────────────────────────────────────────
     auto created = flow.emplace([] {
-        std::cout << "[State] created  → Order created\n";
+        std::osyncstream(std::cout) << "[State] created  → Order created\n";
     }).name("created");
 
     auto validate = flow.emplace([&ctx](tfl::Branch& br) {
-        std::cout << "[State] validate → Validating order fields...\n";
+        std::osyncstream(std::cout) << "[State] validate → Validating order fields...\n";
         // 校验通过率 80%
         std::uniform_int_distribution<> dist(0, 9);
         thread_local std::mt19937 g(std::random_device{}());
@@ -89,7 +88,7 @@ int main() {
 
     auto reserve = flow.emplace([&ctx](tfl::Jump& jmp) {
         const int s = ctx.stock.load();
-        std::cout << "[State] reserve  → Attempting inventory reserve (current: " << s << ")\n";
+        std::osyncstream(std::cout) << "[State] reserve  → Attempting inventory reserve (current: " << s << ")\n";
         if (s > 0) {
             ctx.stock.fetch_sub(1);
             // 不跳转：走常规依赖路径流向 pay
@@ -104,7 +103,7 @@ int main() {
 
     auto backorder = flow.emplace([&ctx](tfl::Jump& jmp) {
         const int n = ctx.retry_count.fetch_add(1) + 1;
-        std::cout << "[State] backorder → Out of stock, waiting restock (attempt " << n << ")...\n";
+        std::osyncstream(std::cout) << "[State] backorder → Out of stock, waiting restock (attempt " << n << ")...\n";
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
         // 第 2 次重试时模拟补货成功
@@ -117,7 +116,7 @@ int main() {
     }).name("backorder");
 
     auto pay = flow.emplace([&ctx](tfl::Branch& br) {
-        std::cout << "[State] pay      → Calling payment service...\n";
+        std::osyncstream(std::cout) << "[State] pay      → Calling payment service...\n";
         thread_local std::mt19937 g(std::random_device{}());
         std::uniform_int_distribution<> dist(0, 9);
         if (dist(g) < 9) {
@@ -129,21 +128,21 @@ int main() {
     }).name("pay");
 
     auto ship = flow.emplace([&ctx] {
-        std::cout << "[State] ship     → Shipping / logistics dispatch\n";
+        std::osyncstream(std::cout) << "[State] ship     → Shipping / logistics dispatch\n";
         ctx.shipped.store(true);
     }).name("ship");
 
     auto rejected = flow.emplace([] {
-        std::cout << "[State] rejected → Order rejected\n";
+        std::osyncstream(std::cout) << "[State] rejected → Order rejected\n";
     }).name("rejected");
 
     auto refund = flow.emplace([&ctx] {
-        std::cout << "[State] refund   → Payment failed, initiating refund\n";
+        std::osyncstream(std::cout) << "[State] refund   → Payment failed, initiating refund\n";
         ctx.refunded.store(true);
     }).name("refund");
 
     auto done = flow.emplace([&ctx] {
-        std::cout << "[State] done     → Process complete (validated="
+        std::osyncstream(std::cout) << "[State] done     → Process complete (validated="
                   << ctx.validated.load() << ", paid=" << ctx.paid.load()
                   << ", shipped=" << ctx.shipped.load()
                   << ", rejected=" << ctx.rejected.load()
@@ -175,6 +174,6 @@ int main() {
 
     executor.async(flow).wait();
 
-    std::cout << "\n=== State machine execution complete ===\n";
+    std::osyncstream(std::cout) << "\n=== State machine execution complete ===\n";
     return 0;
 }
