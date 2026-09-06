@@ -888,12 +888,14 @@ inline void Executor::_shutdown() noexcept {
 inline void Executor::_spawn(std::size_t num_workers) {
     const std::size_t num_queues = this->num_queues();
 
+    m_tid_to_worker.reserve(num_workers);
+
     for (std::size_t id = 0; id < num_workers; ++id) {
         auto& wr = m_workers[id];
         wr.m_id = id;
         wr.m_vtm = (id + 1) % num_queues;
-        wr.m_adaptive_factor = 4;
-        wr.m_max_steals = static_cast<std::uint32_t>(num_queues * 2);
+        wr.m_max_steals = static_cast<std::uint32_t>((std::min)(num_queues * 2, std::size_t{64}));
+        wr.m_max_yields = 256;
 
         wr.m_thread = std::thread([this, &wr, num_queues]() noexcept {
             wr.m_rng.seed(std::hash<std::thread::id>{}(std::this_thread::get_id()), static_cast<std::uint32_t>(num_queues));
@@ -902,7 +904,7 @@ inline void Executor::_spawn(std::size_t num_workers) {
                 m_handler->on_start(wr);
             }
 
-            std::exception_ptr exception = nullptr;
+            std::exception_ptr exception;
 
             try {
                 Work* w = nullptr;
@@ -933,27 +935,31 @@ inline void Executor::_spawn(std::size_t num_workers) {
 inline Work* Executor::_wait_for_work(Worker& wr) noexcept {
     const std::size_t nw = m_workers.size();
     const std::size_t nb = m_shared_buffers.size();
+    const std::size_t id = wr.m_id;
 
 explore:
     std::size_t vtm = wr.m_vtm;
-    std::size_t num_steals = 0;
-    const std::size_t yield_limit = nw * wr.m_adaptive_factor + wr.m_max_steals;
+    std::uint32_t num_steals = 0;
+    std::uint32_t num_yields = 0;
 
-    // 阶段一：从上次 victim 起点开始持续窃取，并在每次失败后选择新的 victim。
+    // 阶段一、二：
+    // 先在 m_max_steals 预算内持续快速窃取；
+    // 超过快速窃取预算后进入 steal + yield 阶段；
+    // 持续 yield 达到 m_max_yields 后才准备进入阻塞等待。
     for (;;) {
-        Work* w = (vtm < nw) ? m_workers[vtm].m_wslq.steal() : m_shared_buffers[vtm - nw].queue.steal();
+        Work* w = (vtm < nw)
+        ? m_workers[vtm].m_wslq.steal()
+        : m_shared_buffers[vtm - nw].queue.steal();
 
         if (w) {
             wr.m_vtm = vtm;
-            wr.m_adaptive_factor = (std::min)(8u, wr.m_adaptive_factor + 1);
             return w;
         }
 
-        // 阶段二：超过快速窃取预算后开始 yield；持续失败达到自适应上限后准备休眠。
         if (++num_steals > wr.m_max_steals) {
             std::this_thread::yield();
-            if (num_steals > yield_limit) {
-                wr.m_adaptive_factor = (std::max)(1u, wr.m_adaptive_factor - 1);
+
+            if (++num_yields >= wr.m_max_yields) {
                 break;
             }
         }
@@ -966,41 +972,41 @@ explore:
     }
 
     // 阶段三：进入 Notifier 两阶段等待；prepare 后必须重新检查所有可见队列。
-    m_notifier.prepare_wait(wr.m_id);
+    m_notifier.prepare_wait(id);
 
     // 二次确认：prepare_wait 与 commit_wait 之间可能已有任务入队并 notify；
     // 此处重新扫描共享队列和其他 Worker 本地队列，发现工作则 cancel_wait，
     // 从而避免在已有可执行任务时错误进入休眠。
     for (std::size_t i = 0; i < nb; ++i) {
         if (!m_shared_buffers[i].queue.empty()) {
-            m_notifier.cancel_wait(wr.m_id);
+            m_notifier.cancel_wait(id);
             wr.m_vtm = i + nw;
             goto explore;
         }
     }
 
-    for (std::size_t i = 0; i < wr.m_id; ++i) {
+    for (std::size_t i = 0; i < id; ++i) {
         if (!m_workers[i].m_wslq.empty()) {
-            m_notifier.cancel_wait(wr.m_id);
+            m_notifier.cancel_wait(id);
             wr.m_vtm = i;
             goto explore;
         }
     }
 
-    for (std::size_t i = wr.m_id + 1; i < nw; ++i) {
+    for (std::size_t i = id + 1; i < nw; ++i) {
         if (!m_workers[i].m_wslq.empty()) {
-            m_notifier.cancel_wait(wr.m_id);
+            m_notifier.cancel_wait(id);
             wr.m_vtm = i;
             goto explore;
         }
     }
 
     if (wr.m_terminate.test(std::memory_order_acquire)) [[unlikely]] {
-        m_notifier.cancel_wait(wr.m_id);
+        m_notifier.cancel_wait(id);
         return nullptr;
     }
 
-    m_notifier.commit_wait(wr.m_id);
+    m_notifier.commit_wait(id);
     goto explore;
 }
 
@@ -1583,26 +1589,25 @@ inline void Executor::_schedule_from_semaphore(Worker& wr, SmallVector<Work*>& w
 // ============================================================================
 // 协作式等待
 // ============================================================================
-
 template <predicate Pred>
 inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
+    const std::size_t nw = m_workers.size();
+
     while (!std::invoke(pred)) {
         if (auto* w = wr.m_wslq.pop()) [[likely]] {
             _invoke(wr, w);
             continue;
         }
 
-        const std::size_t nw = m_workers.size();
-        std::size_t num_steals = 0;
-        const std::size_t yield_limit = nw * wr.m_adaptive_factor + wr.m_max_steals;
         std::size_t vtm = wr.m_vtm;
+        std::uint32_t num_steals = 0;
+        std::uint32_t num_yields = 0;
 
         while (!std::invoke(pred)) {
             Work* w = (vtm < nw) ? m_workers[vtm].m_wslq.steal() : m_shared_buffers[vtm - nw].queue.steal();
 
             if (w) [[likely]] {
                 wr.m_vtm = vtm;
-                wr.m_adaptive_factor = (std::min)(8u, wr.m_adaptive_factor + 1);
                 _invoke(wr, w);
                 break;
             }
@@ -1610,8 +1615,7 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
             if (++num_steals > wr.m_max_steals) [[unlikely]] {
                 std::this_thread::yield();
 
-                if (num_steals > yield_limit) [[unlikely]] {
-                    wr.m_adaptive_factor = (std::max)(1u, wr.m_adaptive_factor - 1);
+                if (++num_yields >= wr.m_max_yields) [[unlikely]] {
                     break;
                 }
             }
