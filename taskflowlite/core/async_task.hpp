@@ -609,8 +609,7 @@ AsyncTask<R>::AsyncTask(Gh&& gh, P&& predicate, C&& callback)
 
 template <typename R>
 std::string_view AsyncTask<R>::name() const noexcept {
-    TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
-    return m_work->m_name;
+    return m_work ? m_work->_name() : std::string_view{};
 }
 
 template <typename R>
@@ -618,7 +617,7 @@ template <typename S>
     requires std::constructible_from<std::string, S>
 AsyncTask<R>& AsyncTask<R>::name(S&& value) & {
     TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
-    m_work->m_name = std::string(std::forward<S>(value));
+    m_work->_set_name(std::forward<S>(value));
     return *this;
 }
 

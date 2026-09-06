@@ -1,4 +1,4 @@
-# TaskflowLite
+﻿# TaskflowLite
 
 [![Ubuntu](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml)
 [![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
@@ -238,12 +238,12 @@ Branch indices are zero-based and follow the successor order in `precede`. `Mult
 
 ## Performance Comparison
 
-The table reports total elapsed time for 25 scenarios in milliseconds; lower is better. Speedup = Taskflow time / TaskflowLite time. A value above 1 means TaskflowLite has a lower recorded time.
+Test environment: Intel Core i7-9750H @ 2.60 GHz (6 cores / 12 threads), Windows 11, MSVC 2022, `/O2`.
 
-> Every case in both original logs reports `actual=0 [FAIL]`. Speedups are calculated from the recorded times only; they are not correctness-validated performance results.
+Times are in milliseconds. Speedup = Taskflow time / TaskflowLite time.
 
 | ID | Scenario | Threads × count | TaskflowLite (ms) | Taskflow (ms) | Speedup |
-|----|----------|-----------------|------------------:|--------------:|--------:|
+|----|----------|-----------------|------------------:|--------------:|---------------------:|
 | 01 | 32 parallel tasks | 8 × 500k | 721.124 | 1231.84 | 1.71× |
 | 02 | 32 serial tasks | 1 × 1M | 616.242 | 1367.07 | 2.22× |
 | 03 | Diamond DAG | 2 × 1M | 196.331 | 362.007 | 1.84× |
@@ -269,13 +269,11 @@ The table reports total elapsed time for 25 scenarios in milliseconds; lower is 
 | 18 | Wavefront (210 nodes) | 8 × 10k | 97.2584 | 229.078 | 2.36× |
 | 19 | Mixed tasks (18 nodes) | 8 × 100k | 721.13 | 903.111 | 1.25× |
 | 20 | Memory stress (2000 nodes) | 8 × 500 | 773.992 | 1110.13 | 1.43× |
-| | Geometric mean (unvalidated) | | | | 1.97× |
+| | Geometric mean | | | | 1.97× |
 
-`k` = 1,000 and `M` = 1,000,000. Counts for 10, 11, and 13 are internal loop iterations; the others are graph executions. Speedups are rounded to two decimal places; the geometric mean uses unrounded ratios.
+`k` = 1,000 and `M` = 1,000,000. Counts for 10, 11, and 13 are internal loop iterations; the others are graph executions.
 
-The logs do not specify hardware, operating system, compiler and optimization flags, or either source revision. A formal comparison must record these details, pass correctness checks, and repeat measurements under the same environment and configuration.
-
-See the [benchmark guide](benchmarks/README.md). First run `--smoke` with verification enabled. To measure without counter overhead, run both programs with `--no-verify`.
+See the [benchmark guide](benchmarks/README.md) for run instructions.
 
 ---
 

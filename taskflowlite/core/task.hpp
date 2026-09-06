@@ -154,7 +154,7 @@ inline std::size_t TaskView::hash_value() const noexcept {
 }
 
 inline std::string_view TaskView::name() const noexcept {
-    return m_work.m_name;
+    return m_work._name();
 }
 
 inline std::size_t TaskView::num_predecessors() const noexcept {
@@ -971,7 +971,7 @@ inline std::size_t Task::hash_value() const noexcept {
 }
 
 inline std::string_view Task::name() const noexcept {
-    return m_work ? std::string_view{m_work->m_name} : std::string_view{};
+    return m_work ? m_work->_name() : std::string_view{};
 }
 
 inline bool Task::valid() const noexcept {
@@ -1033,7 +1033,7 @@ template <typename S>
     requires std::constructible_from<std::string, S>
 inline Task& Task::name(S&& value) & {
     TFL_ASSERT(m_work);
-    m_work->m_name = std::string(std::forward<S>(value));
+    m_work->_set_name(std::forward<S>(value));
     return *this;
 }
 

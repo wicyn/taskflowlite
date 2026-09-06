@@ -470,7 +470,46 @@ private:
 
     std::exception_ptr                  m_exception_ptr{nullptr};           ///< 当前 Work 获得异常归档权后保存的异常；由完成同步保证读取可见性。
     const Graph*                        m_graph{nullptr};                   ///< 非拥有的静态物理 Graph；仅静态图节点绑定，独立异步 Work 通常为空。
-    std::string                         m_name;                             ///< 节点名称；仅用于调试、诊断和 D2 可视化，不参与调度语义。
+    std::unique_ptr<std::string>        m_name;                             ///< 按需分配的节点名称；仅用于调试、诊断和 D2 可视化。
+
+
+
+    /// @brief 设置当前 Work 的调试名称.
+    ///
+    /// 将 @p value 转换为 `std::string` 后保存到按需分配的名称存储中。
+    /// 空字符串表示清除名称并释放对应存储；已有名称时复用现有 `std::string`
+    /// 对象并更新内容，避免重复分配外层名称对象.
+    ///
+    /// @tparam S 可用于构造 `std::string` 的字符串类型.
+    /// @param value 新的节点名称；转换后为空时清除当前名称.
+    ///
+    /// @throws std::bad_alloc 名称字符串或名称存储分配失败时抛出.
+    template <typename S>
+        requires std::constructible_from<std::string, S>
+    TFL_FORCE_INLINE void _set_name(S&& value) {
+        std::string name(std::forward<S>(value));
+
+        if (name.empty()) {
+            m_name.reset();
+        } else if (m_name) {
+            *m_name = std::move(name);
+        } else {
+            m_name = std::make_unique<std::string>(std::move(name));
+        }
+    }
+
+    /// @brief 获取当前 Work 的调试名称.
+    ///
+    /// 返回指向内部名称存储的只读视图；当前 Work 未设置名称时返回空
+    /// `std::string_view`.
+    ///
+    /// @return 当前节点名称的只读视图；未设置名称时为空.
+    ///
+    /// @warning 返回的视图不拥有底层字符串；调用 `_set_name()`、销毁当前 Work
+    ///          或其他导致名称存储失效的操作后，该视图不得继续使用.
+    [[nodiscard]] TFL_FORCE_INLINE std::string_view _name() const noexcept {
+        return m_name ? std::string_view{*m_name} : std::string_view{};
+    }
 
     /// @brief 阻塞当前线程，直到本 Work 所属 Topology 进入 Finished。
     ///
@@ -1220,7 +1259,6 @@ public:
         TFL_ASSERT(parent.m_topology);
     }
 };
-
 
 // ============================================================================
 // Work Pool：可选的全局分片 Work 对象池

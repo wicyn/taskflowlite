@@ -23,7 +23,7 @@ A clear and concise description of what you expected to happen.
 **Environment:**
  - OS: [e.g. Windows 11, Ubuntu 24.04, macOS 15]
  - Compiler: [e.g. GCC 14.1, Clang 18.1, MSVC 19.40]
- - C++ Standard: [e.g. C++23]
+ - C++ Standard: [e.g. C++20]
  - TaskflowLite version/commit: [e.g. main @ a1b2c3d]
 
 **Additional context**

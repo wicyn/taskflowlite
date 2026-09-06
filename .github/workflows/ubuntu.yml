@@ -1,62 +1,48 @@
 name: Ubuntu
 
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-
-  # Debug + ASan/UBSan
-  debug-asan:
-    runs-on: ubuntu-latest
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: debug-asan, config: Debug, sanitizer: "ASAN" }
+          - { name: debug-tsan, config: Debug, sanitizer: "TSAN" }
+          - { name: release, config: Release, sanitizer: "OFF" }
+    env:
+      ASAN_OPTIONS: halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
     steps:
     - uses: actions/checkout@v4
     - name: Configure
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=ASAN
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+           -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=${{ matrix.sanitizer }}
     - name: Build
-      run: cmake --build build --parallel $(nproc)
+      run: cmake --build build --parallel 4
     - name: Test
-      working-directory: build
-      # 单文件目标(tfl_test_*)默认 EXCLUDE_FROM_ALL，未被构建；用 -LE perfile 跳过它们，
-      # 只跑单体 TaskflowLiteTest（已覆盖全部用例）。
-      run: ctest --output-on-failure -LE perfile
-
-  # Debug + TSan
-  debug-tsan:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - name: Configure
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=TSAN
-    - name: Build
-      run: cmake --build build --parallel $(nproc)
-    - name: Test
-      working-directory: build
-      run: |
-        mkdir -p bin
-        # suppressions: 仅压制"非本库"的已知 sanitizer / 框架噪音，绝不盖本库竞争。
-        # - race:__sanitizer::IsAccessibleMemoryRange
-        #     TSan 与 UBSan 同时启用时, sanitizer 运行时探测内存可读性(内部用 pipe)
-        #     互相踩到, 栈顶全在 __sanitizer:: / libtsan / libubsan, 是 sanitizer
-        #     基础设施之间的竞争, 非本库 bug。
-        # - race:Catch::*  Catch2 运行时的已知噪音。
-        # 本库代码栈顶是 tfl::xxx, 匹配不上这些规则, 真竞争仍会照常报出。
-        printf 'race:__sanitizer::IsAccessibleMemoryRange\nrace:Catch::RunContext\nrace:Catch::Detail\n' > bin/tsan_suppressions.txt
-        # 绝对路径: ctest 运行测试时工作目录是 build/bin, 相对路径会叠加成 build/bin/bin/... 而读不到。
-        export TSAN_OPTIONS="suppressions=$(pwd)/bin/tsan_suppressions.txt halt_on_error=1 second_deadlock_stack=1 history_size=7"
-        ctest --output-on-failure -LE perfile
-
-  # Release
-  release:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - name: Configure
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON
-    - name: Build
-      run: cmake --build build --parallel $(nproc)
-    - name: Test
-      working-directory: build
-      run: ctest --output-on-failure -LE perfile
+      run: ctest --test-dir build --output-on-failure -LE perfile --no-tests=error
+    - name: Upload failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ubuntu-${{ matrix.name }}
+        path: |
+          build/**/CMakeConfigureLog.yaml
+          build/**/CMakeError.log
+          build/**/LastTest.log
+          build/**/LastTestsFailed.log
+        if-no-files-found: ignore
+        retention-days: 7

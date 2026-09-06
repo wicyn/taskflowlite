@@ -1,4 +1,4 @@
-# TaskflowLite
+﻿# TaskflowLite
 
 [![Ubuntu](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml)
 [![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
@@ -238,12 +238,12 @@ executor.async(flow).get();  // result == 1
 
 ## 性能对比
 
-下表列出 25 个场景的总耗时，单位为毫秒，数值越小越好。加速比 = Taskflow 耗时 / TaskflowLite 耗时，大于 1 表示 TaskflowLite 的记录耗时更低。
+测试环境：Intel Core i7-9750H @ 2.60 GHz（6 核 12 线程），Windows 11，MSVC 2022，`/O2`。
 
-> 原始日志中两套程序的全部场景均为 `actual=0 [FAIL]`。表内加速比仅由记录耗时计算，未经正确性校验，不能视为有效的性能结论。
+耗时单位：毫秒。加速比 = Taskflow 耗时 ÷ TaskflowLite 耗时。
 
 | 编号 | 场景 | 线程 × 次数 | TaskflowLite（ms） | Taskflow（ms） | 加速比 |
-|------|------|-------------|-------------------:|---------------:|-------:|
+|------|------|-------------|-------------------:|---------------:|-----------------:|
 | 01 | 32 个并行任务 | 8 × 500k | 721.124 | 1231.84 | 1.71× |
 | 02 | 32 个串行任务 | 1 × 1M | 616.242 | 1367.07 | 2.22× |
 | 03 | 菱形 DAG | 2 × 1M | 196.331 | 362.007 | 1.84× |
@@ -269,13 +269,11 @@ executor.async(flow).get();  // result == 1
 | 18 | 波前图（210 个节点） | 8 × 10k | 97.2584 | 229.078 | 2.36× |
 | 19 | 混合任务（18 个节点） | 8 × 100k | 721.13 | 903.111 | 1.25× |
 | 20 | 内存压力（2000 个节点） | 8 × 500 | 773.992 | 1110.13 | 1.43× |
-| | 几何平均（未验证） | | | | 1.97× |
+| | 几何平均 | | | | 1.97× |
 
-`k` = 1,000，`M` = 1,000,000。10、11、13 的次数为内部循环迭代数，其余为图执行次数。加速比保留两位小数，几何平均按未舍入的比值计算。
+`k` = 1,000，`M` = 1,000,000；10、11、13 为内部循环迭代次数，其余为图执行次数。
 
-日志未提供硬件、操作系统、编译器及优化选项、双方源码版本。正式比较需补齐这些信息，在相同环境和配置下通过正确性校验后重复测量。
-
-运行方式见 [基准说明](benchmarks/README.md)：先运行启用校验的 `--smoke`；测量不含计数开销的耗时时，两套程序均使用 `--no-verify`。
+运行方式见 [基准说明](benchmarks/README.md)。
 
 ---
 

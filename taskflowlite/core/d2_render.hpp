@@ -18,10 +18,10 @@
 #include <string>
 #include <string_view>
 
-#include "work.hpp"
+#include "enums.hpp"
 #include "graph.hpp"
 #include "semaphore.hpp"
-#include "enums.hpp"
+#include "work.hpp"
 
 namespace tfl {
 
@@ -44,9 +44,9 @@ public:
     ///
     /// 该结构是纯值结果，不持有 `Semaphore` 或输出流引用。
     struct Palette {
-        char bg[COLOR_HEX_LEN];   ///< pill 暗底色。
-        char fg[COLOR_HEX_LEN];   ///< pill 亮字色。
-        char md[COLOR_HEX_LEN];   ///< |md 块内文字色。
+        char bg[COLOR_HEX_LEN];  ///< pill 暗底色。
+        char fg[COLOR_HEX_LEN];  ///< pill 亮字色。
+        char md[COLOR_HEX_LEN];  ///< |md 块内文字色。
     };
 
     /// @brief 计算 HSL 转 RGB 过程中的单个颜色通道。
@@ -112,10 +112,8 @@ public:
     /// @param font_color 文字颜色。
     /// @param border_radius 圆角半径。
     /// @param stroke_dash 描边虚线样式；空字符串表示实线。
-    static void render_work(std::ostream& os, const Work& w,
-                            const char* shape,
-                            const char* fill, const char* stroke,
-                            const char* font_color, const char* border_radius,
+    static void render_work(std::ostream& os, const Work& w, const char* shape, const char* fill,
+                            const char* stroke, const char* font_color, const char* border_radius,
                             const char* stroke_dash = "");
 
     /// @brief 渲染包含子图的 Work 节点。
@@ -123,8 +121,7 @@ public:
     /// @param w 要渲染的容器 Work。
     /// @param type_name 节点类型名称。
     /// @param graph 内嵌子图。
-    static void render_graph(std::ostream& os, const Work& w,
-                             const char* type_name,
+    static void render_graph(std::ostream& os, const Work& w, const char* type_name,
                              const Graph& graph);
 };
 // ============================================================================
@@ -137,10 +134,14 @@ inline std::uint8_t D2Renderer::format_hsl_component(float p, float q, float t) 
     if (t < 0.f) t += 1.f;
     if (t > 1.f) t -= 1.f;
     float v;
-    if      (t < 1.f/6.f) v = p + (q - p) * 6.f * t;
-    else if (t < 1.f/2.f) v = q;
-    else if (t < 2.f/3.f) v = p + (q - p) * (2.f/3.f - t) * 6.f;
-    else                  v = p;
+    if (t < 1.f / 6.f)
+        v = p + (q - p) * 6.f * t;
+    else if (t < 1.f / 2.f)
+        v = q;
+    else if (t < 2.f / 3.f)
+        v = p + (q - p) * (2.f / 3.f - t) * 6.f;
+    else
+        v = p;
     return static_cast<std::uint8_t>(v * 255.f + 0.5f);
 }
 
@@ -148,10 +149,8 @@ inline void D2Renderer::format_hsl_hex(float h, float s, float l, char* out) noe
     const float q = (l < 0.5f) ? l * (1.f + s) : l + s - l * s;
     const float p = 2.f * l - q;
 
-    std::snprintf(out, COLOR_HEX_LEN, "#%02x%02x%02x",
-                  format_hsl_component(p, q, h + 1.f/3.f),
-                  format_hsl_component(p, q, h),
-                  format_hsl_component(p, q, h - 1.f/3.f));
+    std::snprintf(out, COLOR_HEX_LEN, "#%02x%02x%02x", format_hsl_component(p, q, h + 1.f / 3.f),
+                  format_hsl_component(p, q, h), format_hsl_component(p, q, h - 1.f / 3.f));
 }
 
 inline D2Renderer::Palette D2Renderer::format_palette(const Semaphore* sem) noexcept {
@@ -159,7 +158,9 @@ inline D2Renderer::Palette D2Renderer::format_palette(const Semaphore* sem) noex
     constexpr float PHI_INV = 0.6180339887498949f;
     // splitmix64 位混合： 指针 -> 64 位 -> xor-shift -> multiply -> xor-shift
     auto v = reinterpret_cast<std::uintptr_t>(sem);
-    v ^= v >> 16; v *= 0x45d9f3bu; v ^= v >> 16;
+    v ^= v >> 16;
+    v *= 0x45d9f3bu;
+    v ^= v >> 16;
     // 取 hi 16 位， 归一化到 [0,1)， 再乘 PHI_INV 旋转
     const float hue = std::fmod(static_cast<float>(v & 0xFFFFu) / 65536.f * PHI_INV, 1.f);
 
@@ -175,12 +176,23 @@ inline D2Renderer::Palette D2Renderer::format_palette(const Semaphore* sem) noex
 inline void D2Renderer::write_html_escaped(std::ostream& os, std::string_view s) {
     for (char c : s) {
         switch (c) {
-        case '"':  os << "&quot;"; break;
-        case '&':  os << "&amp;";  break;
-        case '<':  os << "&lt;";   break;
-        case '>':  os << "&gt;";   break;
-        case '\\': os << "\\\\";   break;
-        default:   os << c;
+            case '"':
+                os << "&quot;";
+                break;
+            case '&':
+                os << "&amp;";
+                break;
+            case '<':
+                os << "&lt;";
+                break;
+            case '>':
+                os << "&gt;";
+                break;
+            case '\\':
+                os << "\\\\";
+                break;
+            default:
+                os << c;
         }
     }
 }
@@ -188,29 +200,31 @@ inline void D2Renderer::write_html_escaped(std::ostream& os, std::string_view s)
 inline void D2Renderer::write_quoted_escaped(std::ostream& os, std::string_view s) {
     for (char c : s) {
         switch (c) {
-        case '"':  os << "\\\""; break;
-        case '\\': os << "\\\\"; break;
-        default:   os << c;
+            case '"':
+                os << "\\\"";
+                break;
+            case '\\':
+                os << "\\\\";
+                break;
+            default:
+                os << c;
         }
     }
 }
 
-
 inline void D2Renderer::format_id(std::ostream& os, const void* pointer) {
-    std::format_to(
-        std::ostreambuf_iterator<char>{os},
-        "p{:x}",
-        reinterpret_cast<std::uintptr_t>(pointer)
-        );
+    std::format_to(std::ostreambuf_iterator<char>{os}, "p{:x}",
+                   reinterpret_cast<std::uintptr_t>(pointer));
 }
 
 // ---- 信号量药丸写入器 -------------------------------------------------
 inline void D2Renderer::write_sem_pill_grid(std::ostream& os, SemReqs reqs, const char* tag) {
-    os << "  " << tag[0] << "_bar: \"\" {\n"
-                            "    style.fill: transparent\n"
-                            "    style.stroke: transparent\n"
-                            "    grid-rows: 1\n"
-                            "    grid-gap: 6\n\n";
+    os << "  " << tag[0]
+       << "_bar: \"\" {\n"
+          "    style.fill: transparent\n"
+          "    style.stroke: transparent\n"
+          "    grid-rows: 1\n"
+          "    grid-gap: 6\n\n";
 
     for (std::size_t i = 0; i < reqs.size(); ++i) {
         const auto& req = reqs[i];
@@ -222,12 +236,16 @@ inline void D2Renderer::write_sem_pill_grid(std::ostream& os, SemReqs reqs, cons
            << "]\" {\n"
               "      shape: rectangle\n"
               "      style.border-radius: 12\n"
-              "      style.fill: \""       << pal.bg << "\"\n"
-                        "      style.font-color: \"" << pal.fg << "\"\n"
-                        "      style.stroke: transparent\n"
-                        "      style.font-size: 10\n"
-                        "      height: 20\n"
-                        "    }\n";
+              "      style.fill: \""
+           << pal.bg
+           << "\"\n"
+              "      style.font-color: \""
+           << pal.fg
+           << "\"\n"
+              "      style.stroke: transparent\n"
+              "      style.font-size: 10\n"
+              "      height: 20\n"
+              "    }\n";
     }
     os << "  }\n\n";
 }
@@ -236,37 +254,34 @@ inline void D2Renderer::write_sem_pill_row(std::ostream& os, SemReqs reqs, const
     for (const auto& req : reqs) {
         const auto pal = format_palette(req.sem);
 
-        os << "  <span style=\"background-color:" << pal.bg
-           << "; color:"           << pal.fg
+        os << "  <span style=\"background-color:" << pal.bg << "; color:" << pal.fg
            << "; border-radius:8px"
               "; padding:1px 6px"
               "; font-size:9px;\">"
            << tag << ":[";
         write_html_escaped(os, req.sem->name());
-        os << "][" << req.count << '/' << req.sem->max_value()
-           << "]</span> ";
+        os << "][" << req.count << '/' << req.sem->max_value() << "]</span> ";
     }
     os << "<br/>\n";
 }
 
 // ---- 公开渲染器 -------------------------------------------------------
 
-inline void D2Renderer::render_work(std::ostream& os, const Work& w,
-                                    const char* shape,
-                                    const char* fill, const char* stroke,
-                                    const char* font_color, const char* border_radius,
-                                    const char* stroke_dash)
-{
-    const char* type_name  = to_string(w.type());
-    const auto* sd         = w.m_semaphores.get();
-    const bool  has_acq    = sd && !sd->acquires.empty();
-    const bool  has_rel    = sd && !sd->releases.empty();
+inline void D2Renderer::render_work(std::ostream& os, const Work& w, const char* shape,
+                                    const char* fill, const char* stroke, const char* font_color,
+                                    const char* border_radius, const char* stroke_dash) {
+    const char* type_name = to_string(w.type());
+    const auto* sd = w.m_semaphores.get();
+    const bool has_acq = sd && !sd->acquires.empty();
+    const bool has_rel = sd && !sd->releases.empty();
     const bool is_rect = std::string_view{shape} == "rectangle";
-    const std::string& raw = w.m_name;
+    std::string_view raw = w._name();
 
-    auto write_name = [&]{
-        if (raw.empty()) format_id(os, std::addressof(w));
-        else             write_html_escaped(os, raw);
+    auto write_name = [&] {
+        if (raw.empty())
+            format_id(os, std::addressof(w));
+        else
+            write_html_escaped(os, raw);
     };
 
     // Path A — |md 块 (无信号量 或 非矩形)
@@ -279,7 +294,8 @@ inline void D2Renderer::render_work(std::ostream& os, const Work& w,
         os << "  <span style=\"color:" << font_color << ";\"><b>";
         write_name();
         os << "</b></span><br/>\n"
-              "  <span style=\"color: #6b7280;\">[ " << type_name << " ]</span>\n";
+              "  <span style=\"color: #6b7280;\">[ "
+           << type_name << " ]</span>\n";
 
         if (has_rel) {
             os << "  <br/>\n";
@@ -287,13 +303,21 @@ inline void D2Renderer::render_work(std::ostream& os, const Work& w,
         }
 
         os << "  </center>\n| {\n"
-              "  shape: "               << shape         << "\n"
-                       "  style.fill: \""        << fill          << "\"\n"
-                      "  style.stroke: \""      << stroke        << "\"\n"
-                        "  style.font-color: \""  << font_color    << "\"\n"
-                            "  style.border-radius: " << border_radius << "\n";
-        if (stroke_dash && stroke_dash[0])
-            os << "  style.stroke-dash: " << stroke_dash << "\n";
+              "  shape: "
+           << shape
+           << "\n"
+              "  style.fill: \""
+           << fill
+           << "\"\n"
+              "  style.stroke: \""
+           << stroke
+           << "\"\n"
+              "  style.font-color: \""
+           << font_color
+           << "\"\n"
+              "  style.border-radius: "
+           << border_radius << "\n";
+        if (stroke_dash && stroke_dash[0]) os << "  style.stroke-dash: " << stroke_dash << "\n";
         os << "  style.font-size: 14\n}";
         return;
     }
@@ -301,44 +325,51 @@ inline void D2Renderer::render_work(std::ostream& os, const Work& w,
     // Path B — rectangle + 信号量： grid pill bar
     format_id(os, std::addressof(w));
     os << ": \"\" {\n"
-          "  style.fill: \""        << fill          << "\"\n"
-                  "  style.stroke: \""      << stroke        << "\"\n"
-                    "  style.border-radius: " << border_radius << "\n";
-    if (stroke_dash && stroke_dash[0])
-        os << "  style.stroke-dash: " << stroke_dash << "\n";
+          "  style.fill: \""
+       << fill
+       << "\"\n"
+          "  style.stroke: \""
+       << stroke
+       << "\"\n"
+          "  style.border-radius: "
+       << border_radius << "\n";
+    if (stroke_dash && stroke_dash[0]) os << "  style.stroke-dash: " << stroke_dash << "\n";
     os << "  grid-columns: 1\n  grid-gap: 6\n\n";
 
     if (has_acq) write_sem_pill_grid(os, sd->acquires, "acq");
 
     os << "  mid: |md\n    <center>\n"
-          "    <span style=\"color:" << font_color << "; font-size:14px;\"><b>";
+          "    <span style=\"color:"
+       << font_color << "; font-size:14px;\"><b>";
     write_name();
     os << "</b></span><br/>\n"
-          "    <span style=\"color:#6b7280; font-size:11px;\">[ " << type_name << " ]</span>\n"
-                       "    </center>\n  | {\n    shape: text\n  }\n\n";
+          "    <span style=\"color:#6b7280; font-size:11px;\">[ "
+       << type_name
+       << " ]</span>\n"
+          "    </center>\n  | {\n    shape: text\n  }\n\n";
 
     if (has_rel) write_sem_pill_grid(os, sd->releases, "rel");
 
     os << "}";
 }
 
-inline void D2Renderer::render_graph(std::ostream& os, const Work& w,
-                                     const char* type_name,
-                                     const Graph& graph)
-{
+inline void D2Renderer::render_graph(std::ostream& os, const Work& w, const char* type_name,
+                                     const Graph& graph) {
     if (graph.empty()) {
         render_work(os, w, "rectangle", "#e8f5e9", "#10b981", "#065f46", "8");
         return;
     }
 
-    const auto* sd      = w.m_semaphores.get();
-    const bool  has_acq = sd && !sd->acquires.empty();
-    const bool  has_rel = sd && !sd->releases.empty();
-    const std::string& raw = w.m_name;
+    const auto* sd = w.m_semaphores.get();
+    const bool has_acq = sd && !sd->acquires.empty();
+    const bool has_rel = sd && !sd->releases.empty();
+    std::string_view raw = w._name();
 
-    auto write_name = [&]{
-        if (raw.empty()) format_id(os, std::addressof(w));
-        else             write_html_escaped(os, raw);
+    auto write_name = [&] {
+        if (raw.empty())
+            format_id(os, std::addressof(w));
+        else
+            write_html_escaped(os, raw);
     };
 
     // Path A — 无信号量： |md 块内嵌子图

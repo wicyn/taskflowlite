@@ -1,12 +1,39 @@
 BasedOnStyle: Google
+Standard: c++20
 IndentWidth: 4
+ContinuationIndentWidth: 4
 TabWidth: 4
 UseTab: Never
-ColumnLimit: 100
+
+# Preserve deliberate line breaks and Chinese/Doxygen comments.
+ColumnLimit: 0
+ReflowComments: false
+KeepEmptyLinesAtTheStartOfBlocks: true
+MaxEmptyLinesToKeep: 2
+
 AccessModifierOffset: -4
-PointerAlignment: Left
-AllowShortFunctionsOnASingleLine: Inline
-AllowShortLambdasOnASingleLine: All
-SpaceBeforeParens: ControlStatements
 NamespaceIndentation: None
-SortIncludes: true
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+AlignConsecutiveDeclarations: Consecutive
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+SpacesBeforeTrailingComments: 1
+
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortLambdasOnASingleLine: All
+RequiresClausePosition: OwnLine
+IndentRequiresClause: true
+SpaceBeforeParens: Custom
+SpaceBeforeParensOptions:
+  AfterControlStatements: true
+  AfterRequiresInClause: true
+  AfterRequiresInExpression: false
+
+# Keep the project's explicit include and using-declaration order.
+SortIncludes: Never
+IncludeBlocks: Preserve
+SortUsingDeclarations: Never
+FixNamespaceComments: false

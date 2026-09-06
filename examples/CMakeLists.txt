@@ -68,7 +68,7 @@ function(tfl_setup_example_target _tgt)
 
     set_target_properties(${_tgt} PROPERTIES
         FOLDER "Examples"
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/examples")
+        RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin/examples")
 endfunction()
 
 # ----------------------------------------------------------------------------
@@ -99,7 +99,7 @@ foreach(_src ${TFL_EXAMPLE_SOURCES})
 endforeach()
 
 # IDE 源码分组（用真实文件路径，分组才有效）
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${TFL_EXAMPLE_SOURCES})
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${TFL_EXAMPLE_SOURCES})
 
 # ----------------------------------------------------------------------------
 #  run_all_examples —— 构建并依次运行全部示例
@@ -109,6 +109,7 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${TFL_EXAMPLE_SOURCES})
 add_custom_target(run_all_examples
     COMMAND ${CMAKE_COMMAND} -E echo "Running all examples..."
     USES_TERMINAL
+    VERBATIM
     COMMENT "Build and run all examples in sequence"
 )
 set_target_properties(run_all_examples PROPERTIES FOLDER "Run")
@@ -118,6 +119,7 @@ foreach(_tgt ${_example_targets})
     add_custom_command(TARGET run_all_examples POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E echo "===== Running ${_tgt} ====="
         COMMAND $<TARGET_FILE:${_tgt}>
+        VERBATIM
     )
 endforeach()
 
@@ -133,6 +135,7 @@ if(TFL_EXAMPLES_RUN_TARGETS)
             COMMAND $<TARGET_FILE:${_tgt}>
             DEPENDS ${_tgt}
             USES_TERMINAL
+            VERBATIM
             COMMENT "Running example: ${_name}"
         )
         set_target_properties(run_example_${_name} PROPERTIES FOLDER "Run/Examples")
@@ -158,5 +161,5 @@ message(STATUS "  Sources       : ${_n} (auto-discovered *.cpp)")
 message(STATUS "  Target naming : tfl_ex_<name> (output keeps original name)")
 message(STATUS "  In ALL build  : ${_ex_in_all}")
 message(STATUS "  Per-ex run    : ${_ex_run}")
-message(STATUS "  Output dir    : ${CMAKE_BINARY_DIR}/bin/examples/")
+message(STATUS "  Output dir    : ${PROJECT_BINARY_DIR}/bin/examples/")
 message(STATUS "-----------------------------------------------")
