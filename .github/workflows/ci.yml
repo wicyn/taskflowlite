@@ -3,100 +3,148 @@ name: CI Extras
 on:
   push:
     branches: [ "main" ]
-    paths-ignore: [ "**.md", "docs/**", "documentation/**" ]
   pull_request:
     branches: [ "main" ]
-    paths-ignore: [ "**.md", "docs/**", "documentation/**" ]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-
-  # clang-format
-  clang-format:
-    name: clang-format
-    runs-on: ubuntu-latest
+  config-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: Install clang-format
-      run: sudo apt-get install -y -qq clang-format-18
-    - name: Run clang-format (changed files, gating)
-      run: |
-        git diff origin/main --name-only --diff-filter=AM \
-          'taskflowlite/**/*.hpp' 'taskflowlite/**/*.cpp' 'test/**/*.cpp' 'examples/**/*.cpp' | \
-        xargs -r clang-format-18 --dry-run --Werror
-  # clang-tidy (PR only)
+    # Formatting remains an optional local tool, not a CI requirement.
+    - name: Test changed-file selection
+      run: python3 -m unittest discover -s .github/scripts -p 'test_check_cpp.py'
+    - name: Test sanitizer configuration
+      run: cmake -P .github/scripts/check_build_options.cmake
+
   clang-tidy:
-    name: clang-tidy
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     steps:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: Install clang-tidy
+    - name: Install Clang
+      # 使用 Ubuntu 24.04 自带仓库，不混入其他发行版的软件源。
       run: |
-        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-        sudo add-apt-repository -y "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main"
         sudo apt-get update -qq
-        sudo apt-get install -y -qq clang-tidy-18
+        sudo apt-get install -y -qq clang-18 clang-tidy-18 ninja-build
     - name: Configure
-      # 需要 compile_commands.json 给 clang-tidy 用；开 TESTS 以便 tidy 能看到测试代码的编译数据库。
-      # 注: 本地无 catch_amalgamated 时, 开 TESTS 会触发 Catch2 下载(走根 TFL_GITHUB_MIRROR)。
-      #     CI runner 可直连 github, 正常; 若偶发因下载失败而红, 即为此处。
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-    - name: Run clang-tidy
-      run: |
-        git diff origin/main --name-only --diff-filter=AM 'taskflowlite/core/*.hpp' | \
-        xargs -r clang-tidy-18 -p build \
-          --checks='-*,bugprone-*,performance-*,modernize-use-nullptr,modernize-use-override' \
-          --warnings-as-errors='bugprone-*'
+      run: cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=clang++-18
+           -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_BUILD_BENCHMARKS=ON
+           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    - name: Check changed translation units
+      run: python3 .github/scripts/check_cpp.py tidy
+    - name: Upload failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: clang-tidy
+        path: |
+          build/**/CMakeConfigureLog.yaml
+          build/**/CMakeError.log
+          build/**/LastTest.log
+          build/**/LastTestsFailed.log
+        if-no-files-found: ignore
+        retention-days: 7
 
-  # install + consumer test
   install-test:
-    name: install + consumer
-    runs-on: ubuntu-latest
+    name: install + consumer (${{ matrix.include-dir }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include-dir: [ include, tfl-headers ]
     steps:
     - uses: actions/checkout@v4
-    - name: Configure
-      # 只装库: 显式关掉 examples / tests / benchmarks。
-      # - 不编 examples: 此 job 只验证"安装 + 下游 consumer 能 find_package 链接", 编 examples 纯属浪费。
-      # - 不编 tests: 同时避免触发 Catch2 下载(本 job 无需测试, 也不该依赖网络)。
-      run: cmake -S . -B build -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
-           -DTFL_BUILD_EXAMPLES=OFF
-           -DTFL_BUILD_TESTS=OFF
-           -DTFL_BUILD_BENCHMARKS=OFF
+    - name: Configure library
+      run: cmake -S . -B build/library -DCMAKE_INSTALL_PREFIX="$PWD/build/install"
+           -DCMAKE_INSTALL_INCLUDEDIR=${{ matrix.include-dir }}
+           -DTFL_BUILD_EXAMPLES=OFF -DTFL_BUILD_TESTS=OFF -DTFL_BUILD_BENCHMARKS=OFF
     - name: Install
-      run: cmake --install build
-    - name: Verify
+      run: cmake --install build/library
+    - name: Configure consumer
+      run: cmake -S .github/tests/consumer -B build/consumer
+           -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PWD/build/install"
+    - name: Build and run consumer
       run: |
-        test -f install/include/taskflowlite/taskflowlite.hpp
-        test -f install/lib/cmake/TaskflowLite/TaskflowLiteConfig.cmake
-    - name: Consumer test
+        cmake --build build/consumer --parallel 4
+        ctest --test-dir build/consumer --output-on-failure --no-tests=error
+    - name: Upload failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: install-${{ matrix.include-dir }}
+        path: |
+          build/**/CMakeConfigureLog.yaml
+          build/**/CMakeError.log
+          build/**/LastTest.log
+          build/**/LastTestsFailed.log
+        if-no-files-found: ignore
+        retention-days: 7
+
+  benchmarks:
+    name: benchmarks + subproject
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+    - name: Configure as a subproject
+      run: cmake -S .github/tests/consumer -B build -DCMAKE_BUILD_TYPE=Release
+           -DTFL_CONSUMER_SUBPROJECT=ON -DTFL_BUILD_EXAMPLES=OFF
+           -DTFL_BUILD_TESTS=ON -DTFL_BUILD_BENCHMARKS=ON -DTFL_NATIVE_ARCH=ON
+    - name: Build benchmarks and consumer
+      run: cmake --build build --target bench_taskflowlite bench_taskflow test_consumer --parallel 4
+    - name: Run correctness smoke and consumer
+      run: ctest --test-dir build -R '^(benchmark[.]|consumer$)' --output-on-failure --no-tests=error
+    - name: Upload failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmarks
+        path: |
+          build/**/CMakeConfigureLog.yaml
+          build/**/CMakeError.log
+          build/**/LastTest.log
+          build/**/LastTestsFailed.log
+        if-no-files-found: ignore
+        retention-days: 7
+
+  documentation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Doxygen
       run: |
-        mkdir -p /tmp/test-consumer
-        cat > /tmp/test-consumer/CMakeLists.txt << 'EOF'
-        cmake_minimum_required(VERSION 3.21)
-        project(TestConsumer LANGUAGES CXX)
-        find_package(TaskflowLite REQUIRED)
-        add_executable(test_consumer main.cpp)
-        target_link_libraries(test_consumer PRIVATE TaskflowLite::taskflowlite)
-        EOF
-        cat > /tmp/test-consumer/main.cpp << 'EOF'
-        #include <taskflowlite/taskflowlite.hpp>
-        int main() {
-            tfl::Flow flow;
-            flow.emplace([]{});
-            tfl::Executor exec(1);
-            exec.async(flow).wait();
-            return 0;
-        }
-        EOF
-        cmake -S /tmp/test-consumer -B /tmp/test-consumer/build \
-          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install
-        cmake --build /tmp/test-consumer/build
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq doxygen
+    - name: Configure and build documentation
+      run: |
+        cmake -S . -B build -DTFL_BUILD_EXAMPLES=OFF -DTFL_BUILD_DOCS=ON
+        cmake --build build --target GenerateDocs
+    - name: Upload failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: documentation
+        path: |
+          build/**/CMakeConfigureLog.yaml
+          build/**/CMakeError.log
+          build/**/LastTest.log
+          build/**/LastTestsFailed.log
+        if-no-files-found: ignore
+        retention-days: 7

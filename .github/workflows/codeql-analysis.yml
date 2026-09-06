@@ -8,10 +8,15 @@ on:
   schedule:
     - cron: '30 2 * * 1'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analyze:
     name: Analyze
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       actions: read
       contents: read
@@ -24,6 +29,7 @@ jobs:
       uses: github/codeql-action/init@v3
       with:
         languages: cpp
+        build-mode: manual
     - name: Build
       # 只编库本体 + examples 供 CodeQL 扫描自有代码。
       # 关掉 TESTS: CodeQL 无需测试代码, 且开 TESTS 会触发下载 Catch2(第三方),
@@ -32,6 +38,16 @@ jobs:
         cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
               -DTFL_BUILD_EXAMPLES=ON \
               -DTFL_BUILD_TESTS=OFF
-        cmake --build build --parallel $(nproc)
+        cmake --build build --parallel 4
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
+    - name: Upload failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: codeql-build
+        path: |
+          build/**/CMakeConfigureLog.yaml
+          build/**/CMakeError.log
+        if-no-files-found: ignore
+        retention-days: 7

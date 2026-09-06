@@ -1,26 +1,24 @@
-cmake_minimum_required(VERSION 3.14)
-project(TaskflowLiteDocs)
+cmake_minimum_required(VERSION 3.21)
+include("../cmake/TflVersion.cmake")
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(TaskflowLiteDocs VERSION "${TFL_VERSION}" LANGUAGES NONE)
+endif()
 
-# Doxygen 是可选的，如果没有安装则跳过文档生成
-find_package(Doxygen QUIET)
+# 仅在显式启用文档构建时查找 Doxygen；缺失时给出明确错误。
+find_package(Doxygen REQUIRED)
 
 if(Doxygen_FOUND)
-    set(doxygen_quietly YES)
-    set(doxygen_WARNINGS NO)
-    set(doxygen_WARN_IF_UNDOCUMENTED NO)
-    set(doxygen_WARN_IF_DOC_ERROR NO)
-
     # Doxyfile configuration
     configure_file(
-      ${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile.in
-      ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile
+      "${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile.in"
+      "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
+      @ONLY
     )
 
     add_custom_target(GenerateDocs
-      ${DOXYGEN_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile
-      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+      COMMAND "${DOXYGEN_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
       COMMENT "Generating API documentation with Doxygen"
+      VERBATIM
     )
-else()
-    message(STATUS "Doxygen not found, skipping documentation generation")
 endif()

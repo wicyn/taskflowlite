@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.21)
+project(TaskflowLiteBuildOptionsCheck LANGUAGES CXX)
+include("../../../cmake/TflBuildOptions.cmake")
+if(NOT TFL_SANITIZER STREQUAL EXPECT_SANITIZER)
+    message(FATAL_ERROR "Expected ${EXPECT_SANITIZER}, got ${TFL_SANITIZER}")
+endif()
+get_target_property(_compile_options tfl_internal_flags INTERFACE_COMPILE_OPTIONS)
+if(EXPECT_SANITIZER STREQUAL "ASAN" AND NOT _compile_options MATCHES "sanitize[=:]address")
+    message(FATAL_ERROR "ASAN compiler options are missing")
+elseif(EXPECT_SANITIZER STREQUAL "TSAN" AND
+       (NOT _compile_options MATCHES "-fsanitize=thread" OR _compile_options MATCHES "address|undefined"))
+    message(FATAL_ERROR "TSAN compiler options are missing or mixed with another sanitizer")
+endif()

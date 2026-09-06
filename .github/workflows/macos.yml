@@ -1,85 +1,59 @@
 ﻿name: macOS
 
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# 使用 Homebrew LLVM 及其配套 libc++，为 C++20 功能提供一致的工具链。
-# examples/CMakeLists.txt 为示例的 <syncstream> 启用 -fexperimental-library。
-# 下方显式选择 libc++，并配置 Homebrew libc++ 的链接和运行时搜索路径。
-env:
-  HOMEBREW_NO_INSTALL_CLEANUP: "1"
-
 jobs:
-
-  # Debug + ASan/UBSan
-  debug-asan:
-    runs-on: macos-latest
+  test:
+    name: ${{ matrix.name }}
+    runs-on: macos-15
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: debug-asan, config: Debug, sanitizer: "ASAN" }
+          - { name: debug-tsan, config: Debug, sanitizer: "TSAN" }
+          - { name: release, config: Release, sanitizer: "OFF" }
+    env:
+      ASAN_OPTIONS: halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
     steps:
     - uses: actions/checkout@v4
     - name: Install LLVM
+      env:
+        HOMEBREW_NO_INSTALL_CLEANUP: "1"
       run: brew install llvm
     - name: Configure
+      # 使用同一套 Homebrew clang++ / libc++。
       run: |
         LLVM="$(brew --prefix llvm)"
         cmake -S . -B build \
-          -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=ASAN \
-          -DCMAKE_C_COMPILER="$LLVM/bin/clang" \
+          -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
+          -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=${{ matrix.sanitizer }} \
           -DCMAKE_CXX_COMPILER="$LLVM/bin/clang++" \
           -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
           -DCMAKE_EXE_LINKER_FLAGS="-L$LLVM/lib/c++ -Wl,-rpath,$LLVM/lib/c++"
     - name: Build
-      run: cmake --build build --parallel $(sysctl -n hw.ncpu)
+      run: cmake --build build --parallel 4
     - name: Test
-      working-directory: build
-      run: ctest --output-on-failure -LE perfile
-
-  # Debug + TSan
-  debug-tsan:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v4
-    - name: Install LLVM
-      run: brew install llvm
-    - name: Configure
-      run: |
-        LLVM="$(brew --prefix llvm)"
-        cmake -S . -B build \
-          -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=TSAN \
-          -DCMAKE_C_COMPILER="$LLVM/bin/clang" \
-          -DCMAKE_CXX_COMPILER="$LLVM/bin/clang++" \
-          -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-          -DCMAKE_EXE_LINKER_FLAGS="-L$LLVM/lib/c++ -Wl,-rpath,$LLVM/lib/c++"
-    - name: Build
-      run: cmake --build build --parallel $(sysctl -n hw.ncpu)
-    - name: Test
-      working-directory: build
-      run: |
-        mkdir -p bin
-        printf 'race:__sanitizer::IsAccessibleMemoryRange\nrace:Catch::RunContext\nrace:Catch::Detail\n' > bin/tsan_suppressions.txt
-        export TSAN_OPTIONS="suppressions=$(pwd)/bin/tsan_suppressions.txt halt_on_error=1 second_deadlock_stack=1 history_size=7"
-        ctest --output-on-failure -LE perfile
-
-  # Release
-  release:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v4
-    - name: Install LLVM
-      run: brew install llvm
-    - name: Configure
-      run: |
-        LLVM="$(brew --prefix llvm)"
-        cmake -S . -B build \
-          -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON \
-          -DCMAKE_C_COMPILER="$LLVM/bin/clang" \
-          -DCMAKE_CXX_COMPILER="$LLVM/bin/clang++" \
-          -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-          -DCMAKE_EXE_LINKER_FLAGS="-L$LLVM/lib/c++ -Wl,-rpath,$LLVM/lib/c++"
-    - name: Build
-      run: cmake --build build --parallel $(sysctl -n hw.ncpu)
-    - name: Test
-      working-directory: build
-      run: ctest --output-on-failure -LE perfile
+      run: ctest --test-dir build --output-on-failure -LE perfile --no-tests=error
+    - name: Upload failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: macos-${{ matrix.name }}
+        path: |
+          build/**/CMakeConfigureLog.yaml
+          build/**/CMakeError.log
+          build/**/LastTest.log
+          build/**/LastTestsFailed.log
+        if-no-files-found: ignore
+        retention-days: 7

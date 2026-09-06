@@ -28,7 +28,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ccache / sccache 加速
 find_program(CCACHE_PROGRAM ccache)
-if(CCACHE_PROGRAM)
+if(CCACHE_PROGRAM AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
     set(CMAKE_C_COMPILER_LAUNCHER   "${CCACHE_PROGRAM}")
     set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
     message(STATUS "[deps] ccache enabled")
@@ -37,32 +37,14 @@ endif()
 # ==============================================================================
 # 魔法开始：从 C++ 源码中逆向提取版本号 (Source-Driven Versioning)
 # ==============================================================================
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/taskflowlite/taskflowlite.hpp" _TFL_HPP_CONTENT)
-
-string(REGEX MATCH "#define TASKFLOWLITE_VERSION_MAJOR ([0-9]+)" _ "${_TFL_HPP_CONTENT}")
-set(_TFL_MAJOR ${CMAKE_MATCH_1})
-
-string(REGEX MATCH "#define TASKFLOWLITE_VERSION_MINOR ([0-9]+)" _ "${_TFL_HPP_CONTENT}")
-set(_TFL_MINOR ${CMAKE_MATCH_1})
-
-string(REGEX MATCH "#define TASKFLOWLITE_VERSION_PATCH ([0-9]+)" _ "${_TFL_HPP_CONTENT}")
-set(_TFL_PATCH ${CMAKE_MATCH_1})
+include(cmake/TflVersion.cmake)
 
 project(TaskflowLite
-    VERSION "${_TFL_MAJOR}.${_TFL_MINOR}.${_TFL_PATCH}"
+    VERSION "${TFL_VERSION}"
     LANGUAGES CXX
     DESCRIPTION "A high-performance, header-only, C++20 task scheduling engine"
     HOMEPAGE_URL "https://github.com/wicyn/taskflowlite"
 )
-
-# MSVC 全局 UTF-8 源码解析
-# Why: 项目源码/头文件含中文注释且为 UTF-8。MSVC 在中文系统(代码页 936)下
-#      默认按 GBK 解析, 会把多字节中文连同后续的 }/*/ 等一起吃掉, 报出一堆
-#      假的 C2059/C2143/C2086(根因是 C4819)。全局加 /utf-8 后, 所有目标
-#      (含第三方 Taskflow benchmark、未来新增目标)都按 UTF-8 解析, 一劳永逸。
-if(MSVC)
-    add_compile_options(/utf-8)
-endif()
 
 # ==============================================================================
 # 依赖获取：GitHub 访问方式
@@ -70,35 +52,7 @@ endif()
 # 放在根 CMake 顶层 => cmake-gui 第一次 Configure 就能看到并修改这些变量，
 # 不必等子目录跑到下载那一步。
 # ==============================================================================
-# --- 常用：GitHub 访问方式（cmake-gui 里是下拉框） ---
-#   direct        = 直连 github.com
-#   ghfast.top 等 = 加速镜像（国内连不上 github 时选；改默认值可永久生效）
-set(TFL_GITHUB_MIRROR "direct" CACHE STRING
-    "[deps] GitHub access: direct=connect directly; others are CN mirrors when github is unreachable")
-set_property(CACHE TFL_GITHUB_MIRROR PROPERTY STRINGS
-    direct ghfast.top gh-proxy.com ghproxy.net)
-
-# --- 进阶：自定义前缀 / 代理 / 克隆策略（默认收进 Advanced，不常调） ---
-set(TFL_GITHUB_PREFIX "" CACHE STRING
-    "[advanced] Custom GitHub prefix; when non-empty overrides the mirror dropdown (prepended to github URL)")
-set(TFL_GIT_PROXY     "" CACHE STRING
-    "[advanced] git via local HTTP(S) proxy, e.g. http://127.0.0.1:7890")
-option(TFL_PARTIAL_CLONE
-    "[advanced] Partial clone via --filter=blob:none (saves bandwidth; turn off if mirror stalls on promisor)" ON)
-option(TFL_UPDATE_DEPS
-    "[advanced] On re-configure, update cloned deps to the latest commit on the branch" OFF)
-
-# 解析出最终生效前缀：自定义 PREFIX > 下拉镜像 > 直连
-if(TFL_GITHUB_PREFIX)
-    set(TFL_EFFECTIVE_PREFIX "${TFL_GITHUB_PREFIX}")
-elseif(TFL_GITHUB_MIRROR STREQUAL "direct")
-    set(TFL_EFFECTIVE_PREFIX "")
-else()
-    set(TFL_EFFECTIVE_PREFIX "https://${TFL_GITHUB_MIRROR}/")
-endif()
-# Note: the resolved-prefix log is intentionally NOT printed here — at this point
-# the user has not yet confirmed the mirror in cmake-gui. The deps log is emitted
-# later, only when a dependency is actually fetched (test/benchmarks subdirs).
+include(cmake/TflDependencies.cmake)
 
 # ==============================================================================
 # Build options & dependencies
@@ -139,48 +93,9 @@ option(TFL_BUILD_BENCHMARKS "[build] Build benchmarks (clones Taskflow baseline 
 # 想跑测试时显式 -DTFL_BUILD_TESTS=ON（CI 已带该参数）。
 option(TFL_BUILD_TESTS "[build] Build unit tests (downloads Catch2 if not present locally)" OFF)
 
-# --- 常用：Sanitizer 三态开关 OFF / ASAN / TSAN (CI 核心) ---
-# Why: ASan 和 TSan 不能同时启用 (运行时互斥)，且各自捕获完全不同类别的 bug，
-#      所以必须独立成 job 才能完整覆盖。
-set(TFL_SANITIZER "OFF" CACHE STRING
-    "[detect] Sanitizer mode: OFF=none; ASAN=memory errors+UB; TSAN=data races (mutually exclusive, build separately)")
-set_property(CACHE TFL_SANITIZER PROPERTY STRINGS OFF ASAN TSAN)
-
-# 向后兼容旧的布尔开关 TASKFLOWLITE_ENABLE_SANITIZER
-# Why: 避免本地脚本和外部 superbuild 突然炸掉，给一个 deprecation 过渡期。
-if(DEFINED TASKFLOWLITE_ENABLE_SANITIZER)
-    message(WARNING
-        "TASKFLOWLITE_ENABLE_SANITIZER is deprecated. "
-        "Use -DTFL_SANITIZER=ASAN|TSAN|OFF instead.")
-    if(TASKFLOWLITE_ENABLE_SANITIZER)
-        if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-            set(TFL_SANITIZER "ASAN")
-        else()
-            set(TFL_SANITIZER "TSAN")
-        endif()
-    endif()
-endif()
-
-# 规范化用户输入 (允许 asan / Asan / ASAN 都生效)
-string(TOUPPER "${TFL_SANITIZER}" TFL_SANITIZER)
-if(NOT TFL_SANITIZER MATCHES "^(OFF|ASAN|TSAN)$")
-    message(FATAL_ERROR
-        "TFL_SANITIZER must be one of: OFF, ASAN, TSAN "
-        "(got: ${TFL_SANITIZER})")
-endif()
-
-# ------------------------------------------------------------------------------
-# cmake-gui 界面整理：把不常调的进阶变量收进 "Advanced"，主界面只留核心开关。
-# 主界面保留：TFL_BUILD_EXAMPLES / _TESTS / _BENCHMARKS、
-#             TFL_SANITIZER、TFL_GITHUB_MIRROR。
-# 勾选 cmake-gui 的 "Advanced" 复选框即可看到被折叠的进阶项。
-# ------------------------------------------------------------------------------
-mark_as_advanced(
-    TFL_GITHUB_PREFIX
-    TFL_GIT_PROXY
-    TFL_PARTIAL_CLONE
-    TFL_UPDATE_DEPS
-)
+option(TFL_BUILD_DOCS "[build] Generate API documentation with Doxygen" OFF)
+include(cmake/TflBuildOptions.cmake)
+include(GNUInstallDirs)
 
 # ==============================================================================
 # 核心库目标定义 (Header-Only Target)
@@ -206,106 +121,20 @@ target_compile_options(taskflowlite INTERFACE
 
 # 纯静态包含目录：对使用者极其友好
 target_include_directories(taskflowlite INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    $<INSTALL_INTERFACE:include>
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
-
-# ==============================================================================
-# 内部编译选项 (仅对 Examples / Benchmarks / Tests 生效)
-# ==============================================================================
-if(TFL_IS_TOP_LEVEL)
-    add_library(tfl_internal_flags INTERFACE)
-
-    # 1. 基础编译警告和优化配置
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(tfl_internal_flags INTERFACE
-            -Wall -Wextra -Wpedantic
-            -Wno-unused-parameter
-            -Wno-unused-variable
-            $<$<CONFIG:Release>:-O3 -march=native>
-        )
-
-        # x86-64 cmpxchg16b 硬件普遍支持，但 GCC 需要 -mcx16 才暴露 __GCC_HAVE_SYNC_COMPARE_AND_SWAP_16
-        # FreeStack128 (128-bit DWCAS) 依赖此宏判定可用性
-        if((CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64)" OR
-            CMAKE_SYSTEM_PROCESSOR MATCHES "(i[3456]86)"))
-            target_compile_options(tfl_internal_flags INTERFACE -mcx16)
-        endif()
-    elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-        target_compile_options(tfl_internal_flags INTERFACE
-            /W4 /Zc:preprocessor
-            /wd4819 # 屏蔽编码警告
-            /wd4324 # 屏蔽 C4324: 由于 alignas 导致的结构体对齐填充警告 (重要机制，无需警告)
-            /wd4100 # 屏蔽 C4100: 未引用的参数 (方便编写占位闭包)
-            /wd4189 # 屏蔽 C4189: 局部变量已初始化但不引用
-            $<$<CONFIG:Release>:/O2 /Ob2>
-        )
-    endif()
-
-    # 2. Sanitizer 注入逻辑 (按值分发：ASAN / TSAN)
-    # Why: ASan 抓 use-after-free / heap-buffer-overflow / stack-overflow，
-    #      TSan 抓 data race / lock order inversion。两者必须分开 job 跑，
-    #      运行时不能共存。
-    if(TFL_SANITIZER STREQUAL "ASAN")
-        message(STATUS "[sanitizer] AddressSanitizer (ASan) enabled")
-
-        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-            target_compile_options(tfl_internal_flags INTERFACE /fsanitize=address /Zi)
-
-            # MSVC ASan 必须用 release CRT (/MD)，不能是 /MDd。
-            # 否则各 target 的 _ITERATOR_DEBUG_LEVEL 不一致，链接时报 LNK2038。
-            set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
-
-            # GlobalDebugHook 与 ASan 的 GlobalDebug 实现冲突
-            string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
-            string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
-
-            # 解决 LNK4300: Debug 模式下开启 ASan 必须禁用增量链接
-            target_link_options(tfl_internal_flags INTERFACE
-                $<$<CONFIG:Debug>:/INCREMENTAL:NO>)
-
-            # 解决 LNK4302: Release 等非 Debug 模式下开启 ASan 必须生成调试符号
-            target_link_options(tfl_internal_flags INTERFACE
-                $<$<NOT:$<CONFIG:Debug>>:/DEBUG>
-                $<$<NOT:$<CONFIG:Debug>>:/OPT:REF>
-                $<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>
-            )
-
-        elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-            # Unix (含 clang-cl) 上 ASan 顺便带 UBSan，两者运行时兼容
-            target_compile_options(tfl_internal_flags INTERFACE
-                -fsanitize=address,undefined
-                -fno-omit-frame-pointer
-                -fno-sanitize-recover=all
-                -g)
-            target_link_options(tfl_internal_flags INTERFACE
-                -fsanitize=address,undefined)
-        endif()
-
-    elseif(TFL_SANITIZER STREQUAL "TSAN")
-        message(STATUS "[sanitizer] ThreadSanitizer (TSan) enabled")
-
-        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-            message(FATAL_ERROR
-                "ThreadSanitizer is not supported on MSVC. "
-                "Use TFL_SANITIZER=ASAN on Windows, "
-                "or switch to clang-cl / a Unix host for TSan coverage.")
-        elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-            target_compile_options(tfl_internal_flags INTERFACE
-                -fsanitize=thread,undefined
-                -fno-omit-frame-pointer
-                -g
-                -O1
-                -Wno-tsan) # 不支持独立 atomic_thread_fence，压制已知警告
-            target_link_options(tfl_internal_flags INTERFACE
-                -fsanitize=thread,undefined)
-        endif()
-    endif()
-endif()
 
 # ==============================================================================
 # 子目录
 # ==============================================================================
+if(TFL_BUILD_TESTS)
+    enable_testing()
+endif()
+if(TFL_BUILD_DOCS)
+    add_subdirectory(documentation)
+endif()
+
 # 将内部编译 flag 传递给子模块使用 (确保子模块内的可执行文件/测试链接 tfl_internal_flags)
 if(TFL_BUILD_EXAMPLES)
     add_subdirectory(examples)
@@ -316,24 +145,21 @@ if(TFL_BUILD_BENCHMARKS)
 endif()
 
 if(TFL_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(test)
 endif()
 
 # ==============================================================================
 # 安装与包导出规则 (Install & Export)
 # ==============================================================================
-include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 install(DIRECTORY taskflowlite
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     FILES_MATCHING PATTERN "*.hpp"
 )
 
 install(TARGETS taskflowlite
     EXPORT TaskflowLiteTargets
-    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
 set(TFL_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/TaskflowLite")
@@ -341,25 +167,26 @@ set(TFL_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/TaskflowLite")
 install(EXPORT TaskflowLiteTargets
     FILE TaskflowLiteTargets.cmake
     NAMESPACE TaskflowLite::
-    DESTINATION ${TFL_INSTALL_CMAKEDIR}
+    DESTINATION "${TFL_INSTALL_CMAKEDIR}"
 )
 
 configure_package_config_file(
     "${CMAKE_CURRENT_LIST_DIR}/cmake/TaskflowLiteConfig.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/TaskflowLiteConfig.cmake"
-    INSTALL_DESTINATION ${TFL_INSTALL_CMAKEDIR}
+    INSTALL_DESTINATION "${TFL_INSTALL_CMAKEDIR}"
 )
 
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/TaskflowLiteConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMajorVersion
+    ARCH_INDEPENDENT
 )
 
 install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/TaskflowLiteConfig.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/TaskflowLiteConfigVersion.cmake"
-    DESTINATION ${TFL_INSTALL_CMAKEDIR}
+    DESTINATION "${TFL_INSTALL_CMAKEDIR}"
 )
 
 # ==============================================================================
@@ -373,6 +200,8 @@ if(TFL_IS_TOP_LEVEL)
     message(STATUS "  Examples      : ${TFL_BUILD_EXAMPLES}")
     message(STATUS "  Tests         : ${TFL_BUILD_TESTS}")
     message(STATUS "  Benchmarks    : ${TFL_BUILD_BENCHMARKS}")
+    message(STATUS "  Docs          : ${TFL_BUILD_DOCS}")
+    message(STATUS "  Native arch   : ${TFL_NATIVE_ARCH}")
     message(STATUS "  Sanitizer     : ${TFL_SANITIZER}")
     message(STATUS "-----------------------------------------------")
 endif()

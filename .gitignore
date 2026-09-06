@@ -1,6 +1,10 @@
 # Build directories
 build/
 cmake-build-*/
+install/
+CMakeUserPresets.json
+compile_commands.json
+__pycache__/
 
 # IDE
 .vs/

@@ -1,72 +1,47 @@
 ﻿name: Windows
 
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-
-  # Debug + ASan
-  debug-asan:
-    runs-on: windows-latest
+  test:
+    name: ${{ matrix.name }}
+    runs-on: windows-2022
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: debug-asan, config: Debug, sanitizer: "ASAN" }
+          - { name: release, config: Release, sanitizer: "OFF" }
     steps:
     - uses: actions/checkout@v4
-
     - name: Configure
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=ASAN
-
+      run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+           -DTFL_BUILD_TESTS=ON -DTFL_SANITIZER=${{ matrix.sanitizer }}
     - name: Build
-      run: cmake --build build --config Debug --parallel 4
-
+      run: cmake --build build --config ${{ matrix.config }} --parallel 4
     - name: Prepare ASan runtime
+      if: matrix.sanitizer == 'ASAN'
       shell: pwsh
-      run: |
-        $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-
-        if (-not $vsPath) {
-          throw "Visual Studio installation was not found."
-        }
-
-        $msvcVer = (Get-ChildItem "$vsPath\VC\Tools\MSVC" -Directory |
-          Sort-Object Name -Descending |
-          Select-Object -First 1).Name
-
-        if (-not $msvcVer) {
-          throw "MSVC toolset was not found."
-        }
-
-        $asanDir = "$vsPath\VC\Tools\MSVC\$msvcVer\bin\Hostx64\x64"
-        $asanDlls = Get-ChildItem -Path $asanDir -Filter "clang_rt.asan*.dll" -File -ErrorAction Stop
-
-        if (-not $asanDlls) {
-          throw "ASan runtime DLLs were not found in: $asanDir"
-        }
-
-        # 将 ASan 运行库目录加入后续步骤的 PATH。
-        # 测试和示例位于不同目录，统一通过 PATH 查找 DLL。
-        $asanDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-        Write-Host "ASan runtime directory: $asanDir"
-
+      run: ./.github/scripts/asan_runtime.ps1 -BuildDirectory build
     - name: Test
-      working-directory: build
-      # 排除按文件重复测试，运行单体测试及已注册的示例。
-      run: ctest -C Debug --output-on-failure -LE perfile
-
-  # Release
-  release:
-    runs-on: windows-latest
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Configure
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON
-
-    - name: Build
-      run: cmake --build build --config Release --parallel 4
-
-    - name: Test
-      working-directory: build
-      run: ctest -C Release --output-on-failure -LE perfile
+      run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure -LE perfile --no-tests=error
+    - name: Upload failure logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-${{ matrix.name }}
+        path: |
+          build/**/CMakeConfigureLog.yaml
+          build/**/CMakeError.log
+          build/**/LastTest.log
+          build/**/LastTestsFailed.log
+        if-no-files-found: ignore
+        retention-days: 7

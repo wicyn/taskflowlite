@@ -1,0 +1,88 @@
+# 内部构建选项：不导出到安装包，也不修改父项目的编译参数。
+# 此文件须在创建 examples / benchmarks / tests 目标之前包含。
+
+set(_tfl_sanitizer_explicit OFF)
+if(DEFINED TFL_SANITIZER)
+    set(_tfl_sanitizer_explicit ON)
+endif()
+set(TFL_SANITIZER "OFF" CACHE STRING "Sanitizer: OFF, ASAN or TSAN")
+set_property(CACHE TFL_SANITIZER PROPERTY STRINGS OFF ASAN TSAN)
+string(TOUPPER "${TFL_SANITIZER}" TFL_SANITIZER)
+if(NOT TFL_SANITIZER MATCHES "^(OFF|ASAN|TSAN)$")
+    message(FATAL_ERROR "TFL_SANITIZER must be OFF, ASAN or TSAN")
+endif()
+
+# 兼容旧开关，但不得静默覆盖显式选择或同时启用 ASan / TSan。
+set(_tfl_legacy_modes "")
+foreach(_mode ASAN TSAN)
+    if(TFL_TEST_ENABLE_${_mode})
+        list(APPEND _tfl_legacy_modes "${_mode}")
+        message(DEPRECATION "Use -DTFL_SANITIZER=${_mode} instead of TFL_TEST_ENABLE_${_mode}")
+    endif()
+endforeach()
+if(TASKFLOWLITE_ENABLE_SANITIZER)
+    if(WIN32)
+        list(APPEND _tfl_legacy_modes ASAN)
+    else()
+        list(APPEND _tfl_legacy_modes TSAN)
+    endif()
+    message(DEPRECATION "Use TFL_SANITIZER instead of TASKFLOWLITE_ENABLE_SANITIZER")
+endif()
+list(REMOVE_DUPLICATES _tfl_legacy_modes)
+list(LENGTH _tfl_legacy_modes _tfl_legacy_count)
+if(_tfl_legacy_count GREATER 1)
+    message(FATAL_ERROR "Conflicting sanitizer options: ASAN and TSAN cannot be combined")
+elseif(_tfl_legacy_count EQUAL 1)
+    list(GET _tfl_legacy_modes 0 _tfl_legacy_mode)
+    if(_tfl_sanitizer_explicit AND NOT TFL_SANITIZER STREQUAL _tfl_legacy_mode)
+        message(FATAL_ERROR "Conflicting sanitizer options: TFL_SANITIZER=${TFL_SANITIZER}, legacy=${_tfl_legacy_mode}")
+    endif()
+    set(TFL_SANITIZER "${_tfl_legacy_mode}" CACHE STRING "Sanitizer: OFF, ASAN or TSAN" FORCE)
+    set(TFL_SANITIZER "${_tfl_legacy_mode}")
+endif()
+
+option(TFL_NATIVE_ARCH "Optimize internal Release targets for the build machine" OFF)
+add_library(tfl_internal_flags INTERFACE)
+if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    target_compile_options(tfl_internal_flags INTERFACE
+        /W4 /utf-8 /Zc:__cplusplus /Zc:preprocessor
+        /wd4324 /wd4100 /wd4189
+        "$<$<CONFIG:Release>:/O2;/Ob2>")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(tfl_internal_flags INTERFACE
+        -Wall -Wextra -Wpedantic -Wno-unused-parameter -Wno-unused-variable
+        "$<$<CONFIG:Release>:-O3>")
+    if(TFL_NATIVE_ARCH)
+        target_compile_options(tfl_internal_flags INTERFACE "$<$<CONFIG:Release>:-march=native>")
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+        target_compile_options(tfl_internal_flags INTERFACE -mcx16)
+    endif()
+endif()
+
+if(TFL_SANITIZER STREQUAL "ASAN")
+    if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        # 保留 /MDd、/MTd 等用户 CRT 选择；ASan 仅与 /RTC 和增量链接不兼容。
+        foreach(_config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+            string(REGEX REPLACE "/RTC[1csu]+" "" CMAKE_CXX_FLAGS_${_config}
+                "${CMAKE_CXX_FLAGS_${_config}}")
+        endforeach()
+        string(REGEX REPLACE "/RTC[1csu]+" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT ProgramDatabase)
+        target_compile_options(tfl_internal_flags INTERFACE /fsanitize=address /Zi)
+        target_link_options(tfl_internal_flags INTERFACE /INCREMENTAL:NO /DEBUG)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(tfl_internal_flags INTERFACE
+            -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -g)
+        target_link_options(tfl_internal_flags INTERFACE -fsanitize=address,undefined)
+    else()
+        message(FATAL_ERROR "ASAN is not configured for ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+elseif(TFL_SANITIZER STREQUAL "TSAN")
+    if(WIN32 OR NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(FATAL_ERROR "TSAN requires GCC/Clang on a supported Unix host; use ASAN on Windows")
+    endif()
+    target_compile_options(tfl_internal_flags INTERFACE
+        -fsanitize=thread -fno-omit-frame-pointer -g -O1)
+    target_link_options(tfl_internal_flags INTERFACE -fsanitize=thread)
+endif()

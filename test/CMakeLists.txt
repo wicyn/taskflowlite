@@ -18,7 +18,7 @@
 #        raw.githubusercontent.com，部分镜像不一定代理 raw；若下载失败，
 #        换个镜像重试，或手动把两个文件放到 test/ 走本地路径。
 #
-#  下载 ref（默认 devel）：非 GUI 变量，需要时 -DTFL_CATCH2_REF=v3.15.0 覆盖。
+#  默认固定 Catch2 v3.15.0；自定义 ref 时须同时提供两个文件的 SHA256。
 #
 #  两种构建模式：
 #    1. TaskflowLiteTest（单体）   ：全部 test_*.cpp 编进一个可执行文件。
@@ -27,8 +27,10 @@
 
 cmake_minimum_required(VERSION 3.21)
 
-if(NOT CMAKE_PROJECT_NAME)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     project(TaskflowLiteTest LANGUAGES CXX)
+    include("../cmake/TflDependencies.cmake")
+    include("../cmake/TflBuildOptions.cmake")
 endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -46,8 +48,7 @@ endif()
 # ----------------------------------------------------------------------------
 #  可选：Sanitizer 支持
 # ----------------------------------------------------------------------------
-option(TFL_TEST_ENABLE_ASAN "Enable AddressSanitizer for tests" OFF)
-option(TFL_TEST_ENABLE_TSAN "Enable ThreadSanitizer for tests" OFF)
+# TFL_SANITIZER 由根项目或独立构建入口统一处理。
 
 # ----------------------------------------------------------------------------
 #  可选：是否生成按文件的 run_* 便捷目标（默认 OFF）
@@ -56,18 +57,17 @@ option(TFL_TEST_RUN_TARGETS
     "Generate per-file (run_test_<name>) convenience targets" OFF)
 
 # ----------------------------------------------------------------------------
-#  Catch2 下载 ref —— 非 CACHE 变量，不出现在 cmake-gui；可用 -D 覆盖。
+#  Catch2 v3.15.0：固定提交及下载内容，缓存不会跨版本复用。
 # ----------------------------------------------------------------------------
-if(NOT DEFINED TFL_CATCH2_REF)
-    set(TFL_CATCH2_REF "devel")
-endif()
-
-# 独立构建 test（不经根 CMake）时的兜底，避免引用未定义变量。
-if(NOT DEFINED TFL_EFFECTIVE_PREFIX)
-    set(TFL_EFFECTIVE_PREFIX "")
-endif()
-if(NOT DEFINED TFL_GIT_PROXY)
-    set(TFL_GIT_PROXY "")
+set(TFL_CATCH2_REF "6ee0826dcae55ed1e06b2c5701981221e979e1e6" CACHE STRING "Catch2 ref")
+if(TFL_CATCH2_REF STREQUAL "6ee0826dcae55ed1e06b2c5701981221e979e1e6" OR
+   TFL_CATCH2_REF STREQUAL "v3.15.0")
+    # 使用固定提交的原始 Git blob 哈希，不受本地 checkout 的 CRLF 转换影响。
+    set(_catch_cpp_hash 2ab441b2fa0051a547e88af4ad98151c1ce1f2fbe3d5e9ad9367cfc2fd44dbf8)
+    set(_catch_hpp_hash ddf4e42976dea2bbbe8e7464ad5ab156e7061cc8ccef290e6e406477283483ee)
+else()
+    set(_catch_cpp_hash "${TFL_CATCH2_CPP_SHA256}")
+    set(_catch_hpp_hash "${TFL_CATCH2_HPP_SHA256}")
 endif()
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -91,6 +91,12 @@ endif()
 # ============================================================================
 set(_local_found OFF)
 set(TFL_CATCH2_LOCAL_PATH "" CACHE PATH "Local Catch2 amalgamated directory (contains catch_amalgamated.cpp/.hpp)")
+# 显式路径错误须立即报告，不能悄悄回退到联网下载。
+if(TFL_CATCH2_LOCAL_PATH AND
+   (NOT EXISTS "${TFL_CATCH2_LOCAL_PATH}/catch_amalgamated.cpp" OR
+    NOT EXISTS "${TFL_CATCH2_LOCAL_PATH}/catch_amalgamated.hpp"))
+    message(FATAL_ERROR "TFL_CATCH2_LOCAL_PATH must contain catch_amalgamated.cpp and catch_amalgamated.hpp")
+endif()
 # 优先使用显式指定的目录，其次搜索仓库内目录。
 if(TFL_CATCH2_LOCAL_PATH
    AND EXISTS "${TFL_CATCH2_LOCAL_PATH}/catch_amalgamated.cpp"
@@ -118,39 +124,21 @@ if(_local_found)
     # ---- 本地存在：直接用 ----
     message(STATUS "[catch2] using local source (${TFL_CATCH2_SOURCE}) -> ${CATCH2_INC_DIR}")
 else()
-    # ---- ③ 本地缺失：自动下载，复用根 CMake 已选的镜像前缀 ----
-    set(TFL_CATCH2_SOURCE "downloaded(${TFL_CATCH2_REF})")
-    set(_dl_dir "${CMAKE_BINARY_DIR}/third_party/catch2")
-    file(MAKE_DIRECTORY "${_dl_dir}")
-
-    set(_raw "https://raw.githubusercontent.com/catchorg/Catch2/${TFL_CATCH2_REF}/extras")
-    set(_base "${TFL_EFFECTIVE_PREFIX}${_raw}")
-
-    message(STATUS "[catch2] not found locally, downloading amalgamated (ref=${TFL_CATCH2_REF}, prefix='${TFL_EFFECTIVE_PREFIX}')")
-
-    foreach(_f catch_amalgamated.cpp catch_amalgamated.hpp)
-        if(NOT EXISTS "${_dl_dir}/${_f}")
-            message(STATUS "[catch2] downloading ${_f} ...")
-            file(DOWNLOAD
-                "${_base}/${_f}"
-                "${_dl_dir}/${_f}"
-                STATUS  _dl_status
-                TLS_VERIFY ON
-                INACTIVITY_TIMEOUT 30
-            )
-            list(GET _dl_status 0 _dl_code)
-            if(NOT _dl_code EQUAL 0)
-                list(GET _dl_status 1 _dl_msg)
-                file(REMOVE "${_dl_dir}/${_f}")
-                message(FATAL_ERROR
-                    "[catch2] download failed: ${_f}\n"
-                    "  URL   : ${_base}/${_f}\n"
-                    "  error : ${_dl_msg}\n"
-                    "  fix   : try another TFL_GITHUB_MIRROR, or manually place "
-                    "catch_amalgamated.cpp/.hpp into ${CMAKE_CURRENT_SOURCE_DIR}/catch2/")
-            endif()
+    foreach(_hash "${_catch_cpp_hash}" "${_catch_hpp_hash}")
+        string(LENGTH "${_hash}" _hash_length)
+        if(NOT _hash_length EQUAL 64 OR NOT _hash MATCHES "^[0-9a-fA-F]+$")
+            message(FATAL_ERROR "A custom Catch2 ref requires TFL_CATCH2_CPP_SHA256 and TFL_CATCH2_HPP_SHA256")
         endif()
     endforeach()
+    string(TOLOWER "${_catch_cpp_hash}" _catch_cpp_hash)
+    string(TOLOWER "${_catch_hpp_hash}" _catch_hpp_hash)
+    string(SHA256 _cache_key "${TFL_CATCH2_REF}|${_catch_cpp_hash}|${_catch_hpp_hash}")
+    set(TFL_CATCH2_SOURCE "downloaded(${TFL_CATCH2_REF})")
+    set(_dl_dir "${PROJECT_BINARY_DIR}/third_party/catch2-${_cache_key}")
+    file(MAKE_DIRECTORY "${_dl_dir}")
+    set(_base "${TFL_EFFECTIVE_PREFIX}https://raw.githubusercontent.com/catchorg/Catch2/${TFL_CATCH2_REF}/extras")
+    tfl_download_checked("${_base}/catch_amalgamated.cpp" "${_dl_dir}/catch_amalgamated.cpp" "${_catch_cpp_hash}")
+    tfl_download_checked("${_base}/catch_amalgamated.hpp" "${_dl_dir}/catch_amalgamated.hpp" "${_catch_hpp_hash}")
 
     set(CATCH2_SRC     "${_dl_dir}/catch_amalgamated.cpp")
     set(CATCH2_INC_DIR "${_dl_dir}")
@@ -167,9 +155,6 @@ target_compile_features(tfl_catch2_main PRIVATE cxx_std_20)
 if(TARGET tfl_internal_flags)
     target_link_libraries(tfl_catch2_main PRIVATE tfl_internal_flags)
 endif()
-if(MSVC AND TFL_SANITIZER STREQUAL "ASAN")
-    target_compile_options(tfl_catch2_main PRIVATE /fsanitize=address /Zi)
-endif()
 if(MSVC)
     target_compile_options(tfl_catch2_main PRIVATE /W3 /utf-8 /bigobj)
 else()
@@ -183,7 +168,7 @@ set_target_properties(tfl_catch2_main PROPERTIES FOLDER "ThirdParty")
 #  辅助函数: tfl_setup_test_target
 # ============================================================================
 function(tfl_setup_test_target _tgt)
-    target_link_libraries(${_tgt} PRIVATE tfl_catch2_main)
+    target_link_libraries(${_tgt} PRIVATE tfl_catch2_main tfl_internal_flags)
 
     target_compile_features(${_tgt} PRIVATE cxx_std_20)
     target_include_directories(${_tgt} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -192,9 +177,6 @@ function(tfl_setup_test_target _tgt)
         target_link_libraries(${_tgt} PRIVATE
             TaskflowLite::taskflowlite
             Threads::Threads)
-        if(TARGET tfl_internal_flags)
-            target_link_libraries(${_tgt} PRIVATE tfl_internal_flags)
-        endif()
     else()
         message(STATUS
             "[tests] TaskflowLite::taskflowlite unavailable, ${_tgt} falls back to include-path mode")
@@ -210,29 +192,11 @@ function(tfl_setup_test_target _tgt)
     endif()
 
     if(MSVC)
-        target_compile_options(${_tgt} PRIVATE
-            /W4 /permissive- /Zc:preprocessor /utf-8
-            $<$<CONFIG:Release>:/O2>)
-    else()
-        target_compile_options(${_tgt} PRIVATE
-            -Wall -Wextra -Wpedantic
-            -Wno-unused-parameter
-            $<$<CONFIG:Release>:-O3>
-            $<$<CONFIG:Debug>:-O0 -g>)
-        if(TFL_TEST_ENABLE_ASAN)
-            target_compile_options(${_tgt} PRIVATE
-                -fsanitize=address -fno-omit-frame-pointer)
-            target_link_options(${_tgt} PRIVATE -fsanitize=address)
-        endif()
-        if(TFL_TEST_ENABLE_TSAN)
-            target_compile_options(${_tgt} PRIVATE
-                -fsanitize=thread -fno-omit-frame-pointer)
-            target_link_options(${_tgt} PRIVATE -fsanitize=thread)
-        endif()
+        target_compile_options(${_tgt} PRIVATE /permissive- /bigobj)
     endif()
 
     set_target_properties(${_tgt} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+        RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
 endfunction()
 
 # ============================================================================
@@ -279,7 +243,7 @@ enable_testing()
 
 add_test(
     NAME TaskflowLiteTest
-    COMMAND TaskflowLiteTest -s -d yes
+    COMMAND TaskflowLiteTest -d yes
     WORKING_DIRECTORY $<TARGET_FILE_DIR:TaskflowLiteTest>
 )
 set_tests_properties(TaskflowLiteTest PROPERTIES
@@ -299,7 +263,7 @@ foreach(_src ${TFL_TEST_SOURCES})
 
     add_test(
         NAME tfl_test.${_test_name}
-        COMMAND ${_target} -s -d yes
+        COMMAND ${_target} -d yes
         WORKING_DIRECTORY $<TARGET_FILE_DIR:${_target}>
     )
     set_tests_properties(tfl_test.${_test_name} PROPERTIES
@@ -316,9 +280,10 @@ add_custom_target(run_all_tests
             --output-on-failure
             -C $<CONFIG>
             -R "^TaskflowLiteTest$"
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
     DEPENDS TaskflowLiteTest
     USES_TERMINAL
+    VERBATIM
     COMMENT "Running all TaskflowLite unit tests..."
 )
 set_target_properties(run_all_tests PROPERTIES FOLDER "Run")
@@ -330,10 +295,11 @@ if(TFL_TEST_RUN_TARGETS)
         set(_target "tfl_test_${_test_name}")
 
         add_custom_target(run_test_${_test_name}
-            COMMAND ${_target} -s -d yes
+            COMMAND ${_target} -d yes
             WORKING_DIRECTORY $<TARGET_FILE_DIR:${_target}>
             DEPENDS ${_target}
             USES_TERMINAL
+            VERBATIM
             COMMENT "Running standalone test: ${_test_name}"
         )
         set_target_properties(run_test_${_test_name} PROPERTIES FOLDER "Run/ByFile")
@@ -350,8 +316,6 @@ message(STATUS "  Catch2 source : ${TFL_CATCH2_SOURCE}")
 message(STATUS "  Monolithic    : TaskflowLiteTest")
 message(STATUS "  Per-file      : ${_nfiles} (tfl_test_*, in ALL=${TFL_TEST_PER_FILE_DEFAULT})")
 message(STATUS "  C++ Standard  : C++${CMAKE_CXX_STANDARD}")
-if(NOT MSVC)
-    message(STATUS "  ASan / TSan   : ${TFL_TEST_ENABLE_ASAN} / ${TFL_TEST_ENABLE_TSAN}")
-endif()
-message(STATUS "  Output dir    : ${CMAKE_BINARY_DIR}/bin/")
+message(STATUS "  Sanitizer     : ${TFL_SANITIZER}")
+message(STATUS "  Output dir    : ${PROJECT_BINARY_DIR}/bin/")
 message(STATUS "-----------------------------------------------")

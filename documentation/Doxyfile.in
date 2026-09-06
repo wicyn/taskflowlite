@@ -1,13 +1,13 @@
 # Doxyfile configuration for TaskflowLite
 
 PROJECT_NAME = "TaskflowLite"
-PROJECT_NUMBER = 1.0.0
-PROJECT_BRIEF = "A high-performance, header-only, C++23 task scheduling engine"
-OUTPUT_DIRECTORY = @CMAKE_CURRENT_BINARY_DIR@/doxygen
+PROJECT_NUMBER = @TFL_VERSION@
+PROJECT_BRIEF = "A high-performance, header-only, C++20 task scheduling engine"
+OUTPUT_DIRECTORY = "@CMAKE_CURRENT_BINARY_DIR@/doxygen"
 CREATE_SUBDIRS = NO
 
 # Header-only library settings
-INPUT = @CMAKE_CURRENT_SOURCE_DIR@/../taskflowlite
+INPUT = "@CMAKE_CURRENT_SOURCE_DIR@/../taskflowlite"
 FILE_PATTERNS = *.hpp
 RECURSIVE = YES
 EXCLUDE = 
@@ -30,6 +30,10 @@ HTML_EXTRA_STYLESHEET =
 HTML_EXTRA_FILES = 
 
 # Doxygen settings
+QUIET = YES
+WARNINGS = YES
+WARN_IF_UNDOCUMENTED = NO
+WARN_IF_DOC_ERROR = YES
 EXTRACT_ALL = YES
 EXTRACT_PRIVATE = YES
 EXTRACT_PACKAGE = YES

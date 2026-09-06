@@ -153,29 +153,20 @@ public:
         requires capturable<P>
     [[nodiscard]] Task emplace(Gh&& gh, P&& pred);
 
-    /// @brief 按参数顺序批量插入多个无参 callable 或子图节点。
-    /// @tparam Ts 至少两个满足 `callback` 或 `graph_holder` 的类型。
-    /// @param tasks 要逐个插入的 callable 或子图持有者。
-    /// @return 与参数顺序一致的非拥有 `Task` 元组。
-    /// @throws std::bad_alloc 任一节点或图存储分配失败。
-    /// @throws ... 任一 callable 或子图持有者的存储构造失败时原样传播。
-    /// @note 每个元素的保存方式和生命周期要求与对应的单节点 emplace 重载相同。
-    /// @warning 批量插入不提供事务回滚；后续元素创建失败时，先前节点仍保留在图中。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 1) && ((callback<Ts> || graph_holder<Ts>) && ...)
-    [[nodiscard]] auto emplace(Ts&&... tasks);
-
-    /// @brief 按参数顺序展开多个 `tfl::pack` 并批量插入节点。
-    /// @tparam Packs 至少两个满足 `task_pack` 的参数包类型。
-    /// @param task_packs 每个参数包的数据将转发给一次 `emplace` 调用。
-    /// @return 与参数包顺序一致的非拥有 `Task` 元组。
+    /// @brief 按参数顺序批量插入任务，支持 callable、子图与 `tfl::pack` 混合传入。
+    /// @tparam Ts 至少两个参数，每个类型满足 `callback`、`graph_holder` 或 `task_pack`。
+    /// @param tasks 无参 void callable、子图持有者或任务参数包。
+    /// @return 与参数顺序一致的结果元组；单节点插入返回的 `Task` 为非拥有句柄。
     /// @throws std::bad_alloc 任一节点或图存储分配失败。
     /// @throws ... 任一节点参数的存储构造失败时原样传播。
-    /// @note 每个元素的保存方式和生命周期要求与对应的单节点 emplace 重载相同。
+    /// @note 普通参数直接转发给 emplace；参数包展开其 data 后转发给 emplace。
+    /// @note 参数包展开后的参数必须匹配有效的 emplace 重载；返回结果不做元组扁平化。
+    /// @note 每个元素的保存方式和生命周期要求与对应的 emplace 重载相同。
     /// @warning 批量插入不提供事务回滚；后续元素创建失败时，先前节点仍保留在图中。
-    template <typename... Packs>
-        requires (sizeof...(Packs) > 1) && (task_pack<Packs> && ...)
-    [[nodiscard]] auto emplace(Packs&&... task_packs);
+    template <typename... Ts>
+        requires (sizeof...(Ts) > 1) &&
+                ((callback<Ts> || graph_holder<Ts> || task_pack<Ts>) && ...)
+    [[nodiscard]] auto emplace(Ts&&... tasks);
 
     /// @brief 从当前图断开并销毁指定节点。
     /// @param task 待删除节点的非拥有句柄；空句柄或其他图的节点会被忽略。
@@ -379,21 +370,28 @@ inline Task FlowBuilder::emplace(Gh&& gh, P&& pred) {
 }
 
 template <typename... Ts>
-    requires (sizeof...(Ts) > 1) && ((callback<Ts> || graph_holder<Ts>) && ...)
+    requires (sizeof...(Ts) > 1) &&
+            ((callback<Ts> || graph_holder<Ts> || task_pack<Ts>) && ...)
 inline auto FlowBuilder::emplace(Ts&&... tasks) {
-    return std::tuple{this->emplace(std::forward<Ts>(tasks))...};
-}
+    // 按参数类型选择直接插入或展开参数包。
+    auto emplace_one = [this]<typename T>(T&& task) {
+        if constexpr (task_pack<T>) {
+            return std::apply(
+                [this](auto&&... args) {
+                    return this->emplace(
+                        std::forward<decltype(args)>(args)...
+                        );
+                },
+                std::forward<T>(task).data
+                );
+        } else {
+            return this->emplace(std::forward<T>(task));
+        }
+    };
 
-template <typename... Packs>
-    requires (sizeof...(Packs) > 1) && (task_pack<Packs> && ...)
-inline auto FlowBuilder::emplace(Packs&&... task_packs) {
+    // 花括号初始化保证各次插入按参数顺序执行。
     return std::tuple{
-        std::apply(
-            [this](auto&&... args) {
-                return this->emplace(std::forward<decltype(args)>(args)...);
-            },
-            std::forward<Packs>(task_packs).data
-            )...
+        emplace_one(std::forward<Ts>(tasks))...
     };
 }
 
