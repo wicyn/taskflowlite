@@ -101,6 +101,13 @@ struct SmallVectorInlineStorage<T, 0> {
 /// 容器限制在约 4 GiB。对于指针及常见 TaskflowLite 元素，N == 0 时基础元数据通常
 /// 为 16 字节。
 ///
+/// @note 需要 C++20；from_range 构造仅在标准库支持对应 C++23 特性时提供。
+///       resize/已知长度 append 扩容时先构造新增元素，再提交新存储。
+///       若 T 仅能进行可能抛出的移动，失败后原元素值可能改变；原地插入/赋值
+///       也仅提供基本异常保证。单遍 append 失败会撤销新增元素，容量可能保留。
+///       自引用范围支持本容器指针、连续迭代器及可解包 base() 的标准适配器；
+///       无法识别底层地址的自定义范围必须与目标存储不重叠。
+///
 /// @tparam T 元素类型。
 /// @tparam N 内联元素容量；N == 0 表示纯堆存储。
 template <typename T, std::size_t N = 4>
@@ -130,6 +137,7 @@ class SmallVector final
     static_assert(!std::is_const_v<T> && !std::is_volatile_v<T>, "SmallVector<T, N> does not support cv-qualified T");
     static_assert(N <= std::numeric_limits<storage_size_type>::max(), "SmallVector inline capacity exceeds internal size type");
     static_assert(N <= std::numeric_limits<std::size_t>::max() / sizeof(T), "SmallVector inline storage size overflows size_t");
+    static_assert(N <= static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()), "SmallVector inline capacity exceeds iterator difference type");
 
 public:
     using value_type             = T;
@@ -183,7 +191,7 @@ public:
     SmallVector(It first, S last)
         : SmallVector() {
         try {
-            _construct_range(first, last);
+            _construct_range(std::move(first), std::move(last));
         }
         catch (...) {
             _cleanup_failed_construction();
@@ -595,15 +603,15 @@ public:
 
         if constexpr (std::forward_iterator<It>) {
             if (_self_iterator_range(first, last)) {
-                SmallVector<T, 0> temporary(first, last);
+                SmallVector<T, 0> temporary(std::move(first), std::move(last));
                 return _insert_temporary(index, temporary);
             }
 
             const storage_size_type count = _checked_distance(std::ranges::distance(first, last));
-            return _insert_forward(index, first, count);
+            return _insert_forward(index, std::move(first), count);
         }
         else {
-            SmallVector<T, 0> temporary(first, last);
+            SmallVector<T, 0> temporary(std::move(first), std::move(last));
             return _insert_temporary(index, temporary);
         }
     }
@@ -689,19 +697,10 @@ public:
             return;
         }
 
-        reserve(count);
-        const storage_size_type old_size = m_size;
-        try {
-            while (m_size < new_size) {
-                std::construct_at(m_data + m_size);
-                ++m_size;
-            }
-        }
-        catch (...) {
-            _destroy_n(m_data + old_size, m_size - old_size);
-            m_size = old_size;
-            throw;
-        }
+        const storage_size_type added = new_size - m_size;
+        _append_constructed(added, [added](T* target) {
+            _default_construct_n<true>(target, added);
+        });
     }
 
     void resize(size_type count, const T& value)
@@ -718,15 +717,10 @@ public:
             return;
         }
 
-        if (new_size > m_capacity && _contains_address(std::addressof(value))) {
-            T temporary(value);
-            reserve(count);
-            _append_fill_unchecked(new_size - m_size, temporary);
-            return;
-        }
-
-        reserve(count);
-        _append_fill_unchecked(new_size - m_size, value);
+        const storage_size_type added = new_size - m_size;
+        _append_constructed(added, [added, &value](T* target) {
+            _fill_construct_n(target, added, value);
+        });
     }
 
     /// @brief 调整大小；新增元素使用 default-initialization。
@@ -743,21 +737,10 @@ public:
         if (new_size == m_size) {
             return;
         }
-        if (new_size > m_capacity) {
-            reserve(count);
-        }
-
-        storage_size_type constructed = 0;
-        try {
-            for (; m_size + constructed < new_size; ++constructed) {
-                ::new (static_cast<void*>(m_data + m_size + constructed)) T;
-            }
-        }
-        catch (...) {
-            _destroy_n(m_data + m_size, constructed);
-            throw;
-        }
-        m_size = new_size;
+        const storage_size_type added = new_size - m_size;
+        _append_constructed(added, [added](T* target) {
+            _default_construct_n<false>(target, added);
+        });
     }
 
     /// @brief 将 size 缩小到 count，不允许增加 size。
@@ -815,18 +798,33 @@ public:
             std::is_assignable_v<T&, std::iter_reference_t<It>>
             )
     void assign(It first, S last) {
+        if (first == last) {
+            clear();
+            return;
+        }
+
         if (_self_iterator_range(first, last)) {
-            SmallVector<T, 0> temporary(first, last);
-            assign(temporary.begin(), temporary.end());
+            SmallVector<T, 0> temporary(std::move(first), std::move(last));
+            if constexpr (std::is_constructible_v<T, T&&> && std::is_assignable_v<T&, T&&>) {
+                _assign_forward(std::make_move_iterator(temporary.begin()), temporary.m_size);
+            }
+            else if constexpr (std::is_copy_constructible_v<T> && std::is_copy_assignable_v<T>) {
+                _assign_forward(temporary.begin(), temporary.m_size);
+            }
+            else {
+                // T may only be assignable from the source reference type.
+                // Steal the materialized range without requiring T = T.
+                _move_assign_from(temporary);
+            }
             return;
         }
 
         if constexpr (std::forward_iterator<It>) {
             const storage_size_type count = _checked_distance(std::ranges::distance(first, last));
-            _assign_forward(first, count);
+            _assign_forward(std::move(first), count);
         }
         else {
-            _assign_input(first, last);
+            _assign_input(std::move(first), std::move(last));
         }
     }
 
@@ -861,17 +859,9 @@ public:
         }
 
         const storage_size_type append_count = _checked_storage_size(count);
-        const storage_size_type new_size = _checked_add(m_size, append_count);
-
-        if (new_size > m_capacity && _contains_address(std::addressof(value))) {
-            T temporary(value);
-            reserve(new_size);
-            _append_fill_unchecked(append_count, temporary);
-            return;
-        }
-
-        reserve(new_size);
-        _append_fill_unchecked(append_count, value);
+        _append_constructed(append_count, [append_count, &value](T* target) {
+            _fill_construct_n(target, append_count, value);
+        });
     }
 
     template <std::input_iterator It, std::sentinel_for<It> S>
@@ -882,18 +872,33 @@ public:
         }
 
         if (_self_iterator_range(first, last)) {
-            SmallVector<T, 0> temporary(first, last);
-            append(temporary.begin(), temporary.end());
+            SmallVector<T, 0> temporary(std::move(first), std::move(last));
+            const storage_size_type count = temporary.m_size;
+            _append_constructed(count, [&temporary, count](T* target) {
+                _relocate_construct_n(target, temporary.data(), count);
+            });
             return;
         }
 
         if constexpr (std::forward_iterator<It>) {
             const storage_size_type count = _checked_distance(std::ranges::distance(first, last));
-            reserve(_checked_add(m_size, count));
+            _append_constructed(count, [&first, count](T* target) {
+                _copy_construct_n(target, std::move(first), count);
+            });
         }
-
-        for (; first != last; ++first) {
-            emplace_back(*first);
+        else {
+            // 单遍范围可能逐次扩容；失败时撤销已追加元素，保留当前容量。
+            const storage_size_type old_size = m_size;
+            try {
+                for (; first != last; ++first) {
+                    emplace_back(*first);
+                }
+            }
+            catch (...) {
+                _destroy_n(_ptr_at(old_size), m_size - old_size);
+                m_size = old_size;
+                throw;
+            }
         }
     }
 
@@ -983,7 +988,8 @@ private:
     [[nodiscard]] static constexpr size_type _max_size() noexcept {
         constexpr size_type size_limit = std::numeric_limits<size_type>::max() / sizeof(T);
         constexpr size_type storage_limit = std::numeric_limits<storage_size_type>::max();
-        return size_limit < storage_limit ? size_limit : storage_limit;
+        constexpr size_type difference_limit = static_cast<size_type>(std::numeric_limits<difference_type>::max());
+        return std::min({size_limit, storage_limit, difference_limit});
     }
 
     [[noreturn]] static void _throw_length_error() {
@@ -1007,17 +1013,21 @@ private:
 
     template <typename D>
     [[nodiscard]] static storage_size_type _checked_distance(D distance) {
-        if constexpr (std::is_signed_v<D>) {
-            if (distance < 0) [[unlikely]] {
+        // ranges 的 difference_type 可为实现提供的宽整数类（如 MSVC _Signed128）。
+        if (distance < 0) [[unlikely]] {
+            _throw_length_error();
+        }
+        if constexpr (std::is_integral_v<D>) {
+            if (std::cmp_greater(distance, _max_size())) [[unlikely]] {
                 _throw_length_error();
             }
         }
-        using U = std::make_unsigned_t<D>;
-        const auto value = static_cast<U>(distance);
-        if (value > _max_size()) [[unlikely]] {
-            _throw_length_error();
+        else {
+            if (distance > static_cast<D>(_max_size())) [[unlikely]] {
+                _throw_length_error();
+            }
         }
-        return static_cast<storage_size_type>(value);
+        return static_cast<storage_size_type>(distance);
     }
 
     [[nodiscard]] static storage_size_type _next_capacity(storage_size_type current, storage_size_type required) {
@@ -1074,17 +1084,27 @@ private:
     }
 
     template <typename It>
-    [[nodiscard]] static auto _iterator_pointer(const It& it) noexcept -> std::pair<bool, const T*> {
+    [[nodiscard]] static auto _iterator_pointer(const It& it) -> std::pair<bool, const T*> {
         using I = std::remove_cvref_t<It>;
 
         if constexpr (
             std::is_pointer_v<I> &&
             std::same_as<std::remove_cv_t<std::remove_pointer_t<I>>, T>
             ) {
-            return {true, it};
+            // 这里只比较地址；实际访问仍通过原迭代器，保留 volatile 语义。
+            return {true, const_cast<const T*>(it)};
+        }
+        else if constexpr (!std::is_pointer_v<I> && std::contiguous_iterator<I>) {
+            return _iterator_pointer(std::to_address(it));
         }
         else if constexpr (requires { it.base(); }) {
-            return _iterator_pointer(it.base());
+            using Base = std::remove_cvref_t<decltype(it.base())>;
+            if constexpr (std::input_iterator<Base> && !std::same_as<Base, I>) {
+                return _iterator_pointer(it.base());
+            }
+            else {
+                return {false, nullptr};
+            }
         }
         else {
             return {false, nullptr};
@@ -1092,22 +1112,20 @@ private:
     }
 
     template <typename It, typename S>
-    [[nodiscard]] bool _self_iterator_range(const It& first, const S& last) const noexcept {
+    [[nodiscard]] bool _self_iterator_range(const It& first, const S&) const {
+        if (m_size == 0) {
+            return false;
+        }
         const auto [has_first, first_ptr] = _iterator_pointer(first);
-        const auto [has_last, last_ptr] = _iterator_pointer(last);
-        if (!has_first || !has_last) {
+        if (!has_first) {
             return false;
         }
 
-        if (m_size == 0) {
-            return first_ptr == m_data && last_ptr == m_data;
-        }
-
+        // 只需识别起点，支持 counted_iterator + default_sentinel 等异型哨兵。
+        // reverse_iterator 的 base() 可指向 end()，故使用闭区间。
         const std::less<const T*> less{};
         const T* finish = m_data + m_size;
-        const bool first_inside = !less(first_ptr, m_data) && !less(finish, first_ptr);
-        const bool last_inside = !less(last_ptr, m_data) && !less(finish, last_ptr);
-        return first_inside && last_inside;
+        return !less(first_ptr, m_data) && !less(finish, first_ptr);
     }
 
     // ========================================================================
@@ -1212,6 +1230,25 @@ private:
         }
     }
 
+    template <bool ValueInitialize>
+    static void _default_construct_n(T* destination, storage_size_type count) {
+        storage_size_type constructed = 0;
+        try {
+            for (; constructed < count; ++constructed) {
+                if constexpr (ValueInitialize) {
+                    std::construct_at(destination + constructed);
+                }
+                else {
+                    ::new (static_cast<void*>(destination + constructed)) T;
+                }
+            }
+        }
+        catch (...) {
+            _destroy_n(destination, constructed);
+            throw;
+        }
+    }
+
     TFL_SMALL_VECTOR_NOINLINE void _reallocate(storage_size_type new_capacity) {
         assert(new_capacity >= m_size);
         assert(new_capacity != m_capacity);
@@ -1265,7 +1302,7 @@ private:
                 m_data = _allocate_raw(count);
                 m_capacity = count;
             }
-            _copy_construct_n(m_data, first, count);
+            _copy_construct_n(m_data, std::move(first), count);
             m_size = count;
         }
         else {
@@ -1383,7 +1420,7 @@ private:
         return m_data + index;
     }
 
-    template <std::forward_iterator It>
+    template <std::input_iterator It>
     TFL_SMALL_VECTOR_NOINLINE iterator _grow_and_insert_forward(
         storage_size_type index,
         It first,
@@ -1397,7 +1434,7 @@ private:
         bool range_done = false;
         bool prefix_done = false;
         try {
-            _copy_construct_n(new_data + index, first, count);
+            _copy_construct_n(new_data + index, std::move(first), count);
             range_done = true;
             _relocate_construct_n(new_data, m_data, index);
             prefix_done = true;
@@ -1475,7 +1512,8 @@ private:
         return m_data + index;
     }
 
-    template <std::forward_iterator It>
+    // count 已知；输入为多遍迭代器，或指向暂存数组的 move_iterator。
+    template <std::input_iterator It>
     iterator _insert_forward(storage_size_type index, It first, storage_size_type count) {
         if (count == 0) {
             return _ptr_at(index);
@@ -1485,25 +1523,10 @@ private:
         const storage_size_type new_size = _checked_add(old_size, count);
 
         if (new_size > m_capacity) {
-            return _grow_and_insert_forward(index, first, count);
+            return _grow_and_insert_forward(index, std::move(first), count);
         }
 
         const storage_size_type tail = old_size - index;
-
-        if constexpr (trivial_relocate_v) {
-            if (tail != 0) {
-                std::memmove(
-                    m_data + index + count,
-                    m_data + index,
-                    static_cast<size_type>(tail) * sizeof(T)
-                    );
-            }
-            for (storage_size_type i = 0; i < count; ++i, ++first) {
-                m_data[index + i] = *first;
-            }
-            m_size = new_size;
-            return m_data + index;
-        }
 
         if (count <= tail) {
             _relocate_construct_n(m_data + old_size, m_data + old_size - count, count);
@@ -1552,20 +1575,42 @@ private:
     // assign / append 辅助
     // ========================================================================
 
-    void _append_fill_unchecked(storage_size_type count, const T& value) {
+    // construct_tail 在成功时构造 count 个元素，失败时自行销毁已构造部分。
+    // 新存储中先构造追加元素，再搬迁旧元素，最后一次性提交状态。
+    template <typename ConstructTail>
+    void _append_constructed(storage_size_type count, ConstructTail&& construct_tail) {
+        if (count == 0) {
+            return;
+        }
         const storage_size_type old_size = m_size;
+        const storage_size_type new_size = _checked_add(old_size, count);
+        if (new_size <= m_capacity) {
+            construct_tail(m_data + old_size);
+            m_size = new_size;
+            return;
+        }
+
+        const storage_size_type new_capacity = _next_capacity(m_capacity, new_size);
+        T* new_data = _allocate_raw(new_capacity);
+        bool tail_done = false;
         try {
-            while (count != 0) {
-                std::construct_at(m_data + m_size, value);
-                ++m_size;
-                --count;
-            }
+            construct_tail(new_data + old_size);
+            tail_done = true;
+            _relocate_construct_n(new_data, m_data, old_size);
         }
         catch (...) {
-            _destroy_n(m_data + old_size, m_size - old_size);
-            m_size = old_size;
+            if (tail_done) {
+                _destroy_n(new_data + old_size, count);
+            }
+            _deallocate_raw(new_data);
             throw;
         }
+
+        _destroy_n(m_data, old_size);
+        _release_heap();
+        m_data = new_data;
+        m_size = new_size;
+        m_capacity = new_capacity;
     }
 
     void _assign_fill(storage_size_type count, const T& value) {
@@ -1611,12 +1656,12 @@ private:
         }
     }
 
-    template <std::forward_iterator It>
+    template <std::input_iterator It>
     void _assign_forward(It first, storage_size_type count) {
         if (count > m_capacity) {
             T* new_data = _allocate_raw(count);
             try {
-                _copy_construct_n(new_data, first, count);
+                _copy_construct_n(new_data, std::move(first), count);
             }
             catch (...) {
                 _deallocate_raw(new_data);
@@ -1685,6 +1730,9 @@ private:
     template <std::size_t M>
     void _move_construct_from(SmallVector<T, M>& rhs) {
         if constexpr (M == 0) {
+            if (rhs.m_data == nullptr) {
+                return;  // 目标已经处于自己的初始内联状态。
+            }
             m_data = rhs.m_data;
             m_size = rhs.m_size;
             m_capacity = rhs.m_capacity;
@@ -1716,6 +1764,11 @@ private:
         if constexpr (M == 0) {
             _destroy_n(m_data, m_size);
             _release_heap();
+
+            if (rhs.m_data == nullptr) {
+                _reset_empty();
+                return;
+            }
 
             m_data = rhs.m_data;
             m_size = rhs.m_size;

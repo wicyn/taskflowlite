@@ -50,7 +50,7 @@ public:
     /// @param gh 要捕获或借用并执行的子图.
     /// @param cb 子图全部完成后调用的无参回调.
     /// @note 新任务始终计入当前 Work 的 join_counter；InheritTopology 只控制 Topology 父链.
-    template <bool InheritTopology = true, graph_holder Gh, callback C = noop_callback>
+    template <bool InheritTopology = false, graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
     void silent_async(Gh&& gh, C&& cb = C{});
 
@@ -62,7 +62,7 @@ public:
     /// @param num 请求执行的循环次数.
     /// @param cb 全部循环结束后调用的无参回调.
     /// @note 新任务始终计入当前 Work 的 join_counter；InheritTopology 只控制 Topology 父链.
-    template <bool InheritTopology = true, graph_holder Gh, callback C = noop_callback>
+    template <bool InheritTopology = false, graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
     void silent_async(Gh&& gh, std::uint64_t num, C&& cb = C{});
 
@@ -75,7 +75,7 @@ public:
     /// @param pred 每轮执行前调用的终止谓词；返回 true 时结束循环.
     /// @param cb 循环结束后调用的无参回调.
     /// @note 新任务始终计入当前 Work 的 join_counter；InheritTopology 只控制 Topology 父链.
-    template <bool InheritTopology = true, graph_holder Gh, predicate P, callback C = noop_callback>
+    template <bool InheritTopology = false, graph_holder Gh, predicate P, callback C = noop_callback>
         requires capturable<P, C>
     void silent_async(Gh&& gh, P&& pred, C&& cb = C{});
 
@@ -84,7 +84,7 @@ public:
     /// @tparam T 满足 basic_invocable concept 的 callable 类型.
     /// @param task 要捕获并执行的 callable.
     /// @note 本函数立即返回，不提供结果访问句柄；任务仍计入当前 Work 的 join_counter.
-    template <bool InheritTopology = true, typename T>
+    template <bool InheritTopology = false, typename T>
         requires (basic_invocable<T> && capturable<T>)
     void silent_async(T&& task);
 
@@ -93,7 +93,7 @@ public:
     /// @tparam T 满足 runtime_invocable concept 的 callable 类型.
     /// @param task 要捕获并执行的 callable.
     /// @note 子任务可通过框架注入的 Runtime 继续派生任务或进行协作式等待.
-    template <bool InheritTopology = true, typename T>
+    template <bool InheritTopology = false, typename T>
         requires (runtime_invocable<T> && capturable<T>)
     void silent_async(T&& task);
 
@@ -103,7 +103,7 @@ public:
     /// @param task 要捕获并执行的 callable；框架在调用时注入栈绑定 `SubFlow&`.
     /// @note 本函数立即返回且不提供结果句柄.
     /// @warning callable 不得保存或使框架注入的 `SubFlow&` 逸出本次调用.
-    template <bool InheritTopology = true, typename T>
+    template <bool InheritTopology = false, typename T>
         requires (subflow_invocable<T> && capturable<T>)
     void silent_async(T&& task);
 
@@ -115,7 +115,7 @@ public:
     /// @param deps 可选前驱任务；只有所有未完成依赖解除后当前任务才进入调度队列.
     /// @return 共享该任务完成状态和结果槽的 `AsyncFuture<void>`.
     /// @warning `InheritTopology` 为 true 时，父 Topology 必须在子任务仍可能访问其停止继承链期间保持有效.
-    template <bool InheritTopology = true, graph_holder Gh, async_future... Deps>
+    template <bool InheritTopology = false, graph_holder Gh, async_future... Deps>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, Deps&&... deps);
 
     /// @brief 派生一个带结果通道的子图任务，并执行子图一次，在完成后调用回调.
@@ -128,7 +128,7 @@ public:
     /// @param deps 可选前驱任务；只有所有未完成依赖解除后当前任务才进入调度队列.
     /// @return 共享该任务完成状态和结果槽的 `AsyncFuture<void>`.
     /// @warning `InheritTopology` 为 true 时，父 Topology 必须在子任务仍可能访问其停止继承链期间保持有效.
-    template <bool InheritTopology = true, graph_holder Gh, callback C, async_future... Deps>
+    template <bool InheritTopology = false, graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, C&& cb, Deps&&... deps);
 
@@ -141,7 +141,7 @@ public:
     /// @param deps 可选前驱任务；只有所有未完成依赖解除后当前任务才进入调度队列.
     /// @return 共享该任务完成状态和结果槽的 `AsyncFuture<void>`.
     /// @warning `InheritTopology` 为 true 时，父 Topology 必须在子任务仍可能访问其停止继承链期间保持有效.
-    template <bool InheritTopology = true, graph_holder Gh, async_future... Deps>
+    template <bool InheritTopology = false, graph_holder Gh, async_future... Deps>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, Deps&&... deps);
 
     /// @brief 派生一个带结果通道的子图任务，循环执行指定次数并在完成后调用回调.
@@ -155,7 +155,7 @@ public:
     /// @param deps 可选前驱任务；只有所有未完成依赖解除后当前任务才进入调度队列.
     /// @return 共享该任务完成状态和结果槽的 `AsyncFuture<void>`.
     /// @warning `InheritTopology` 为 true 时，父 Topology 必须在子任务仍可能访问其停止继承链期间保持有效.
-    template <bool InheritTopology = true, graph_holder Gh, callback C, async_future... Deps>
+    template <bool InheritTopology = false, graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps);
 
@@ -169,7 +169,7 @@ public:
     /// @param deps 可选前驱任务；只有所有未完成依赖解除后当前任务才进入调度队列.
     /// @return 共享该任务完成状态和结果槽的 `AsyncFuture<void>`.
     /// @warning `InheritTopology` 为 true 时，父 Topology 必须在子任务仍可能访问其停止继承链期间保持有效.
-    template <bool InheritTopology = true, graph_holder Gh, predicate P, async_future... Deps>
+    template <bool InheritTopology = false, graph_holder Gh, predicate P, async_future... Deps>
         requires capturable<P>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, Deps&&... deps);
 
@@ -185,7 +185,7 @@ public:
     /// @param deps 可选前驱任务；只有所有未完成依赖解除后当前任务才进入调度队列.
     /// @return 共享该任务完成状态和结果槽的 `AsyncFuture<void>`.
     /// @warning `InheritTopology` 为 true 时，父 Topology 必须在子任务仍可能访问其停止继承链期间保持有效.
-    template <bool InheritTopology = true, graph_holder Gh, predicate P, callback C, async_future... Deps>
+    template <bool InheritTopology = false, graph_holder Gh, predicate P, callback C, async_future... Deps>
         requires capturable<P, C>
     [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps);
 
@@ -198,7 +198,7 @@ public:
     /// @return `AsyncFuture<R>`，其中 `R = basic_return_t<T>`.
     /// @note 新任务计入当前 Work 的 join_counter，返回 Future 额外持有任务强引用.
     /// @warning `InheritTopology` 为 true 时，父 Topology 必须在子任务仍可能访问其停止继承链期间保持有效.
-    template <bool InheritTopology = true, typename T, async_future... Deps>
+    template <bool InheritTopology = false, typename T, async_future... Deps>
         requires (basic_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<basic_return_t<T>>;
 
@@ -211,7 +211,7 @@ public:
     /// @return `AsyncFuture<R>`，其中 `R = runtime_return_t<T>`.
     /// @note 子任务可通过框架注入的 Runtime 继续进行动态调度.
     /// @warning `InheritTopology` 为 true 时，父 Topology 必须在子任务仍可能访问其停止继承链期间保持有效.
-    template <bool InheritTopology = true, typename T, async_future... Deps>
+    template <bool InheritTopology = false, typename T, async_future... Deps>
         requires (runtime_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<runtime_return_t<T>>;
 
@@ -224,7 +224,7 @@ public:
     /// @return `AsyncFuture<R>`，其中 `R = subflow_return_t<T>`.
     /// @warning callable 不得保存或使框架注入的 `SubFlow&` 逸出本次调用.
     /// @warning `InheritTopology` 为 true 时，父 Topology 必须在子任务仍可能访问其停止继承链期间保持有效.
-    template <bool InheritTopology = true, typename T, async_future... Deps>
+    template <bool InheritTopology = false, typename T, async_future... Deps>
         requires (subflow_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_return_t<T>>;
 
@@ -254,7 +254,7 @@ public:
     ///
     /// @note 启动成功后 task 占用当前 Work 的一个 join_counter slot；本函数不等待其完成.
     /// @warning `InheritTopology` 为 true 时，父 Topology 必须在 task 仍可能访问其停止继承链期间保持有效.
-    template <bool InheritTopology = true, async_task T, async_future... Deps>
+    template <bool InheritTopology = false, async_task T, async_future... Deps>
     auto run(T&& task, Deps&&... deps) -> forward_return_t<T>;
 
 

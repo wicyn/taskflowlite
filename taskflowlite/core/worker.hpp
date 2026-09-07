@@ -68,11 +68,11 @@ private:
     /// @note Owner 按 LIFO 顺序访问，Stealer 按 FIFO 顺序窃取。
     BoundedQueue<Work*, TFL_DEFAULT_QUEUE_SIZE> m_wslq;
 
-    SplitMix64    m_rng;                ///< 随机数生成器（每个 Worker 独立序列）。
-    std::size_t   m_vtm{0};             ///< 上次成功窃取的队列索引。
-    std::uint32_t m_adaptive_factor{4}; ///< 动态退避系数（窃取失败阈值调整）。
-    std::uint32_t m_max_steals{0};      ///< 单轮最大窃取尝试次数。
-    std::size_t   m_id{0};              ///< 全局唯一 ID。
+    SplitMix64      m_rng;                ///< 随机数生成器（每个 Worker 独立序列）。
+    std::uint32_t   m_vtm{0};             ///< 上次成功窃取的队列索引。
+    std::uint32_t   m_max_steals{0}; ///< 进入 yield 阶段前允许连续执行的窃取次数。
+    std::uint32_t   m_max_yields{0}; ///< 进入阻塞等待前允许连续执行的 yield 窃取次数。
+    std::uint32_t   m_id{0};              ///< 全局唯一 ID。
 
     /// @brief 跨线程终止信号。
     ///

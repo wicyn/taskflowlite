@@ -104,7 +104,7 @@ TEST_CASE("TaskGroup: stop domain inheritance is explicit", "[task-group][stop]"
     TestEnv env(1);
     auto parent = env.executor.async([](tfl::Runtime& rt) {
         tfl::TaskGroup group(rt);
-        auto inherited = group.async([] {});
+        auto           inherited = group.async<true>([] {});
         auto independent = group.async<false>([] {});
         const bool first = group.request_stop();
         const bool second = group.request_stop();
