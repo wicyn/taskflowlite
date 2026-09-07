@@ -1565,8 +1565,9 @@ inline void Executor::_schedule(Work* w) {
 }
 
 inline void Executor::_schedule_parent(Work* parent, Worker& wr, Work*& cache) {
+    const bool preempted = parent->m_properties & Work::Properties::PREEMPTED;
     if (parent->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        if (parent->m_properties & Work::Properties::PREEMPTED) {
+        if (preempted) {
             if (cache) {
                 _schedule(wr, cache);
             }
