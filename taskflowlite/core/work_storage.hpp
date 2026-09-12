@@ -29,10 +29,12 @@ public:
 
 protected:
     /// @brief 构造绑定父拓扑和 Executor 的独立拓扑状态。
-    /// @param parent_topology 父 Topology；根级任务允许为空。
-    /// @param executor 非拥有 Executor 指针。
-    explicit TopologyStorage(Topology* parent_topology, Executor* executor) noexcept
-        : m_topology{parent_topology, executor} {}
+    /// @param parent_topology 父 Topology；为空表示不继承父拓扑的停止请求。
+    /// @param executor 非拥有 Executor 引用；构造时绑定，绑定后不可更换。
+    /// @pre executor 必须在任务执行期间及通过拓扑访问它时保持有效。
+    /// @pre parent_topology 必须在任务仍可能访问其父拓扑链期间保持有效。
+    explicit TopologyStorage(Executor& executor, Topology* parent_topology = nullptr) noexcept
+        : m_topology{executor, parent_topology} {}
 
     ~TopologyStorage() noexcept = default;
 
@@ -66,10 +68,12 @@ public:
 
 protected:
     /// @brief 构造结果存储并初始化所属拓扑。
-    /// @param parent_topology 父 Topology；根级任务允许为空。
-    /// @param executor 非拥有 Executor 指针。
-    explicit ResultStorage(Topology* parent_topology, Executor* executor) noexcept
-        : TopologyStorage{parent_topology, executor} {}
+    /// @param parent_topology 父 Topology；为空表示不继承父拓扑的停止请求。
+    /// @param executor 非拥有 Executor 引用；构造时绑定，绑定后不可更换。
+    /// @pre executor 必须在任务执行期间及通过拓扑访问它时保持有效。
+    /// @pre parent_topology 必须在任务仍可能访问其父拓扑链期间保持有效。
+    explicit ResultStorage(Executor& executor, Topology* parent_topology = nullptr) noexcept
+        : TopologyStorage{executor, parent_topology} {}
 
     ~ResultStorage() noexcept = default;
 

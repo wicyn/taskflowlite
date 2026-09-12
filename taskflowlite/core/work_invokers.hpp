@@ -905,8 +905,8 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit SilentAsyncBasicInvoker(Topology* parent_topology, Executor* executor, U&& f)
-        : TopologyStorage{parent_topology, executor}
+    explicit SilentAsyncBasicInvoker(Executor& executor, Topology* parent_topology, U&& f)
+        : TopologyStorage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
@@ -943,8 +943,8 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit SilentAsyncRuntimeInvoker(Topology* parent_topology, Executor* executor, U&& f)
-        : TopologyStorage{parent_topology, executor}
+    explicit SilentAsyncRuntimeInvoker(Executor& executor, Topology* parent_topology, U&& f)
+        : TopologyStorage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
@@ -1008,8 +1008,8 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit SilentAsyncSubFlowInvoker(Topology* parent_topology, Executor* executor, U&& f)
-        : TopologyStorage{parent_topology, executor}
+    explicit SilentAsyncSubFlowInvoker(Executor& executor, Topology* parent_topology, U&& f)
+        : TopologyStorage{executor, parent_topology}
         , m_func{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
@@ -1078,8 +1078,8 @@ public:
 
     template <typename Ghs, typename V, typename W>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&> && std::constructible_from<C, W&&>
-    explicit SilentAsyncModuleInvoker(Topology* parent_topology, Executor* executor, Ghs&& ghs, V&& pred, W&& callback)
-        : TopologyStorage{parent_topology, executor}
+    explicit SilentAsyncModuleInvoker(Executor& executor, Topology* parent_topology, Ghs&& ghs, V&& pred, W&& callback)
+        : TopologyStorage{executor, parent_topology}
         , m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(callback)} {}
@@ -1158,8 +1158,8 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncBasicInvoker(Topology* parent_topology, Executor* executor, U&& f)
-        : Storage{parent_topology, executor}
+    explicit AsyncBasicInvoker(Executor& executor, Topology* parent_topology, U&& f)
+        : Storage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
@@ -1199,8 +1199,8 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncRuntimeInvoker(Topology* parent_topology, Executor* executor, U&& f)
-        : Storage{parent_topology, executor}
+    explicit AsyncRuntimeInvoker(Executor& executor, Topology* parent_topology, U&& f)
+        : Storage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
@@ -1265,8 +1265,8 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit AsyncSubFlowInvoker(Topology* parent_topology, Executor* executor, U&& f)
-        : Storage{parent_topology, executor}
+    explicit AsyncSubFlowInvoker(Executor& executor, Topology* parent_topology, U&& f)
+        : Storage{executor, parent_topology}
         , m_func{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
@@ -1336,8 +1336,8 @@ public:
 
     template <typename Ghs, typename V, typename W>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&> && std::constructible_from<C, W&&>
-    explicit AsyncModuleInvoker(Topology* parent_topology, Executor* executor, Ghs&& ghs, V&& pred, W&& callback)
-        : Storage{parent_topology, executor}
+    explicit AsyncModuleInvoker(Executor& executor, Topology* parent_topology, Ghs&& ghs, V&& pred, W&& callback)
+        : Storage{executor, parent_topology}
         , m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(callback)} {}
@@ -1415,8 +1415,8 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncTaskBasicInvoker(Topology* parent_topology, Executor* executor, U&& f)
-        : Storage{parent_topology, executor}
+    explicit AsyncTaskBasicInvoker(Executor& executor, U&& f)
+        : Storage{executor}
         , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
@@ -1475,8 +1475,8 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncTaskRuntimeInvoker(Topology* parent_topology, Executor* executor, U&& f)
-        : Storage{parent_topology, executor}
+    explicit AsyncTaskRuntimeInvoker(Executor& executor, U&& f)
+        : Storage{executor}
         , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
@@ -1563,8 +1563,8 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit AsyncTaskSubFlowInvoker(Topology* parent_topology, Executor* executor, U&& f)
-        : Storage{parent_topology, executor}
+    explicit AsyncTaskSubFlowInvoker(Executor& executor, U&& f)
+        : Storage{executor}
         , m_func{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
@@ -1655,8 +1655,8 @@ public:
 
     template <typename Ghs, typename V, typename W>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&> && std::constructible_from<C, W&&>
-    explicit AsyncTaskModuleInvoker(Topology* parent_topology, Executor* executor, Ghs&& ghs, V&& pred, W&& callback)
-        : Storage{parent_topology, executor}
+    explicit AsyncTaskModuleInvoker(Executor& executor, Ghs&& ghs, V&& pred, W&& callback)
+        : Storage{executor}
         , m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(callback)} {}

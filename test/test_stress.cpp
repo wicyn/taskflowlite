@@ -288,14 +288,14 @@ TEST_CASE("Stress: mixed Flow + silent_async", "[stress][mixed]") {
     for (int i = 0; i < 50; ++i) {
         flow.emplace([&] { flow_hits.fetch_add(1); });
     }
-    auto flow_task = tfl::AsyncTask(flow);
+    auto flow_task = env.executor.defer_async(flow);
 
     // 同时大量 silent_async
     for (int i = 0; i < 500; ++i) {
         env.executor.silent_async([&] { async_hits.fetch_add(1); });
     }
 
-    env.executor.run(flow_task);
+    flow_task.start();
     flow_task.wait();
     env.executor.wait_for_all();
 

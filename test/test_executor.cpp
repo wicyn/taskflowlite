@@ -8,8 +8,8 @@
 ///   - Executor::async(Flow, num)                 固定次数循环
 ///   - Executor::async(Flow, num, callback)       固定次数 + 回调
 ///   - Executor::async(Flow, predicate)           谓词驱动循环
-///   - tfl::AsyncTask(callable, args...)        独立异步任务
-///   - Executor::run / AsyncTask::wait         独立任务提交与等待
+///   - env.executor.defer_async(callable, args...)        独立异步任务
+///   - AsyncTask::start / AsyncTask::wait         独立任务提交与等待
 ///   - Executor::silent_async                           即发即忘
 ///   - Executor::async(single)                    返回 Future
 ///   - Executor::wait_for_all                     全局等待
@@ -79,7 +79,7 @@ TEST_CASE("Executor: diamond DAG synchronization semantics", "[executor][dag][di
 
 /// @test [executor][dag] N 个完全独立的任务并行调度。
 /// @details 不验证执行顺序，仅验证计数 —— 所有任务必须已被调度。
-TEST_CASE("Executor: N independent tasks run in parallel", "[executor][dag][parallel]") {
+TEST_CASE("Executor: N independent tasks start in parallel", "[executor][dag][parallel]") {
     TestEnv env(4);
     tfl::Flow flow;
     constexpr int N = 64;
@@ -160,36 +160,36 @@ TEST_CASE("Executor: async(flow, predicate) predicate loop", "[executor][async][
 }
 
 // ============================================================================
-// SECTION 3: AsyncTask<>(callable, args...) + run —— 独立任务
+// SECTION 3: Executor::defer_async(bound_callable) + start —— 独立任务
 // ============================================================================
 
-/// @test [executor][async] AsyncTask<>(基本任务) + run 提交执行。
+/// @test [executor][async] AsyncTask<>(基本任务) + start 提交执行。
 TEST_CASE("Executor: AsyncTask single basic task", "[executor][async][standalone]") {
     TestEnv env;
     std::atomic<int> v{0};
 
-    auto t = tfl::AsyncTask([&] { v.store(42); });
-    env.executor.run(t); t.wait();
+    auto t = env.executor.defer_async([&] { v.store(42); });
+    t.start(); t.wait();
 
     REQUIRE(v.load() == 42);
 }
 
-/// @test [executor][async] AsyncTask<>(callable, args...) 参数转发 + run。
+/// @test [executor][async] Executor::defer_async(bound_callable) 参数转发 + start。
 TEST_CASE("Executor: AsyncTask single task with arguments", "[executor][async][standalone][args]") {
     TestEnv env;
     int v = 0;
-    auto t = tfl::AsyncTask(std::bind_front([](int& r) { r = 99; }, std::ref(v)));
-    env.executor.run(t); t.wait();
+    auto t = env.executor.defer_async(std::bind_front([](int& r) { r = 99; }, std::ref(v)));
+    t.start(); t.wait();
     REQUIRE(v == 99);
 }
 
-/// @test [executor][async] AsyncTask<>(Runtime 可调用对象) + run。
+/// @test [executor][async] Executor::defer_async(Runtime 可调用对象) + start。
 TEST_CASE("Executor: AsyncTask single Runtime task", "[executor][async][runtime]") {
     TestEnv env;
     std::atomic<int> v{0};
 
-    auto t = tfl::AsyncTask([&](tfl::Runtime&) { v.store(7); });
-    env.executor.run(t); t.wait();
+    auto t = env.executor.defer_async([&](tfl::Runtime&) { v.store(7); });
+    t.start(); t.wait();
 
     REQUIRE(v.load() == 7);
 }

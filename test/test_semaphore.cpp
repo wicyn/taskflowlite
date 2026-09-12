@@ -261,9 +261,9 @@ TEST_CASE("Semaphore: multi-Flow contention stress", "[semaphore][stress][mt]") 
     // Start all in parallel
     std::vector<tfl::AsyncTask<void>> tasks;
     for (auto& f : flows) {
-        tasks.push_back(tfl::AsyncTask(f));
+        tasks.push_back(env.executor.defer_async(f));
     }
-    for (auto& t : tasks) env.executor.run(t);
+    for (auto& t : tasks) t.start();
     for (auto& t : tasks) t.wait();
 
     REQUIRE(total_done.load() == kFlows * kTasksPerFlow);
@@ -371,8 +371,8 @@ TEST_CASE("Semaphore: reset with pending waiters throws", "[semaphore][error]") 
     });
     waiter.acquire(gate);  // 阻塞：current=0，无法获取
 
-    auto task = tfl::AsyncTask(flow);
-    env.executor.run(task);
+    auto task = env.executor.defer_async(flow);
+    task.start();
 
     // 给调度器时间把任务放入信号量等待队列
     std::this_thread::sleep_for(std::chrono::milliseconds(20));

@@ -33,8 +33,8 @@ int main() {
             }).name("Step_" + std::to_string(i));
         }
 
-        auto task = tfl::AsyncTask(flow, 100ULL);
-        executor.run(task);
+        auto task = executor.defer_async(flow, 100ULL);
+        task.start();
 
         // 等一小会然后取消
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -58,29 +58,29 @@ int main() {
 
         std::atomic<int> a_done{0}, b_done{0}, c_done{0};
 
-        auto task_a = tfl::AsyncTask([&a_done] {
+        auto task_a = executor.defer_async([&a_done] {
             for (int i = 0; i < 100; ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 a_done.fetch_add(1, std::memory_order_relaxed);
             }
         });
         tfl::AsyncTask<void> task_b;
-        task_b = tfl::AsyncTask([&b_done, &task_b] {
+        task_b = executor.defer_async([&b_done, &task_b] {
             for (int i = 0; i < 100 && !task_b.stop_requested(); ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 b_done.fetch_add(1, std::memory_order_relaxed);
             }
         });
-        auto task_c = tfl::AsyncTask([&c_done] {
+        auto task_c = executor.defer_async([&c_done] {
             for (int i = 0; i < 100; ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 c_done.fetch_add(1, std::memory_order_relaxed);
             }
         });
 
-        executor.run(task_a);
-        executor.run(task_b);
-        executor.run(task_c);
+        task_a.start();
+        task_b.start();
+        task_c.start();
 
         // 只请求 task_b 停止；其 callable 主动查询句柄状态后退出。
         std::this_thread::sleep_for(std::chrono::milliseconds(10));

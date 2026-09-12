@@ -273,23 +273,23 @@ TEST_CASE("Executor: AsyncTask Explicit Dependencies", "[executor]") {
     // 修复：不要在 worker 线程内调用 REQUIRE，使用原子标志收集结果
     std::atomic<bool> t1_ok{false}, t2_ok{false}, t3_ok{false};
 
-    auto t1 = tfl::AsyncTask([&] {
+    auto t1 = executor.defer_async([&] {
         t1_ok.store(step.load() == 0, std::memory_order_relaxed);
         step.store(1);
     });
-    auto t2 = tfl::AsyncTask([&] {
+    auto t2 = executor.defer_async([&] {
         t2_ok.store(step.load() == 1, std::memory_order_relaxed);
         step.store(2);
     });
-    auto t3 = tfl::AsyncTask([&] {
+    auto t3 = executor.defer_async([&] {
         t3_ok.store(step.load() == 2, std::memory_order_relaxed);
         step.store(3);
     });
 
-    // 逆序组装并启动：t3 依赖 t2，t2 依赖 t1
-    executor.run(t3, t2);
-    executor.run(t2, t1);
-    executor.run(t1); // 触发点
+    // 按依赖顺序启动：t3 依赖 t2，t2 依赖 t1
+    t1.start();
+    t2.start(t1);
+    t3.start(t2);
 
     t3.wait();
     executor.wait_for_all();

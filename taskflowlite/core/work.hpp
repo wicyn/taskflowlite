@@ -474,6 +474,7 @@ private:
 
 
 
+
     /// @brief 设置当前 Work 的调试名称.
     ///
     /// 将 @p value 转换为 `std::string` 后保存到按需分配的名称存储中。
@@ -886,6 +887,18 @@ private:
     // ---- 静态图建边合法性与无 Jump 路径检测 ----
     [[nodiscard]] bool _has_path_without_jump(const Work* from, const Work* to) const;
     [[nodiscard]] std::optional<std::string_view> _can_precede(Work* target) const;
+
+    /// @brief 销毁当前零引用异步 Work，并迭代回收前驱依赖链。
+    ///
+    /// @pre 当前 Work 的强引用已归零，由当前线程独占回收。
+    /// @pre 所处理节点的前驱区均拥有强引用。
+    /// @pre 零引用节点的原 m_parent 不再被执行路径或销毁逻辑使用。
+    /// @pre destroy_work 只销毁节点，不再次释放前驱引用。
+    /// @pre 析构逻辑不依赖节点原来的边表内容。
+    /// @note 前驱引用覆盖当前 Work 的完整析构过程。
+    /// @note 借用零引用节点的 m_parent 连接待回收链表，不额外分配内存。
+    /// @warning 本函数会销毁当前 Work，调用后不得继续访问。
+    void _destroy_async() noexcept;
 };
 
 
@@ -1242,8 +1255,8 @@ class AnchorWork final : public Work {
         static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
         static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
 
-        explicit Invoker(Topology* parent_topology, Executor* executor) noexcept
-            : TopologyStorage{parent_topology, executor} {}
+        explicit Invoker(Executor& executor, Topology* parent_topology) noexcept
+            : TopologyStorage{executor, parent_topology} {}
 
         void invoke(Work&, Worker&, Executor&, Work*&) noexcept {}
 
@@ -1254,8 +1267,8 @@ public:
     explicit AnchorWork(Work& parent, Executor& executor) noexcept
         : Work{std::in_place_type<Invoker>,
                std::addressof(parent),
-               parent.m_topology,
-               std::addressof(executor)} {
+               executor,
+               parent.m_topology} {
         TFL_ASSERT(parent.m_topology);
     }
 };
@@ -1301,6 +1314,40 @@ TFL_FORCE_INLINE void destroy_work(Work* work) noexcept {
 #else
     delete work;
 #endif
+}
+
+inline void Work::_destroy_async() noexcept {
+    Work* pending = this;
+    pending->m_parent = nullptr;
+
+    while (pending) {
+        Work* const current = pending;
+        pending = std::exchange(current->m_parent, nullptr);
+
+        TFL_ASSERT(current->m_num_successors <= current->m_edges.size());
+
+        const auto num_successors = current->m_num_successors;
+
+        // 接管边表及前驱引用，并将当前节点的边表恢复为空。
+        std::vector<Work*> edges;
+        edges.swap(current->m_edges);
+        current->m_num_successors = 0;
+
+        // 前驱引用尚未释放，覆盖当前 Work 的完整析构。
+        destroy_work(current);
+
+        // current 已销毁，此后仅访问局部变量和其他待回收节点。
+        while (edges.size() > num_successors) {
+            Work* const predecessor = edges.back();
+            TFL_ASSERT(predecessor);
+            edges.pop_back();
+
+            if (predecessor->_decrement_ref()) {
+                predecessor->m_parent = pending;
+                pending = predecessor;
+            }
+        }
+    }
 }
 
 }  // namespace tfl

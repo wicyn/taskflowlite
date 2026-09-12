@@ -15,14 +15,19 @@ ctest --test-dir build/check -C Release --output-on-failure
 
 离线构建可指定 `TFL_CATCH2_LOCAL_PATH`（包含 amalgamated 两个文件的目录）和
 `TASKFLOW_LOCAL_PATH`（包含 `taskflow/taskflow.hpp` 的目录）。
-默认只构建并注册单体测试，避免 CTest 运行尚未构建的按文件目标。
+默认构建并注册单体测试，以及 Topology 独立头文件、延迟任务构造分配失败两个独立程序，
+避免 CTest 运行尚未构建的按文件目标。
 需要同时构建/注册按文件测试时开启 `TFL_TEST_PER_FILE_DEFAULT`；
 `TFL_TEST_RUN_TARGETS` 则提供按文件的一键构建运行目标。
 
 ## 当前接口约定
 
 - callable 不再接收额外业务参数；使用 lambda 捕获或 `std::bind_front`。
-- `AsyncTask<R>` 是延迟启动句柄，使用 `run(task, deps...)`；已启动任务不可重启。
+- `executor.defer_async(...)` 返回绑定执行器的 Idle `AsyncTask<R>`；配置后用
+  `task.start(deps...)` 启动一次。Idle 任务不计入 `wait_for_all()`。
+- `start()` / `async()` 接受混合结果类型的 AsyncTask / AsyncFuture 前驱，
+  前驱必须已启动或完成；空依赖忽略，重复依赖分别持有强引用。
+- 前驱引用保留到后继 Work 销毁；任务完成或 `get()` 不会提前释放它们。
 - `async` 返回 `AsyncFuture<R>`，`silent_async` 不返回结果句柄。
 - `AsyncFuture::get()` 不消耗句柄；值返回 `const R&`，引用结果返回 `R`，void 无返回值。
 - `Runtime::wait/wait_until/corun` 提供协作等待。不能用阻塞 Future 等待占住唯一 worker。
@@ -31,43 +36,40 @@ ctest --test-dir build/check -C Release --output-on-failure
 - 同一图只在前一次运行完成后复用，不能同时挂载执行同一可变子图。
 - `TaskObserver` 回调必须 `noexcept`。普通节点的异常标记不代表本节点拥有异常对象；
   异常可能已归档到上层 Future。
-- 当前 `run` 的公开约束接受 Future，但内部 `_start` 只接受 AsyncTask 前驱；
-  本次不修改 core，Future 前驱通过 `async(callable, future...)` 测试。
+- Runtime / TaskGroup 子任务使用各自的 `async()`，独立任务的 `start()` 不加入父任务计数。
+  两者的 `run(graph)` 仍用于直接提交图。
 
 新增独立模块覆盖 FlowBuilder、TaskGroup、TaskView、Worker/Context、ResultSlot、
 SplitMix64、枚举/版本和三个提交上下文的重载矩阵；原模块中补充了动态 SubFlow、
 Task::work 重绑定、AsyncTask 返回值/配置、共享 Future 生命周期等用例。
 
-## 已复现的核心回归（未隐藏）
+## 回归覆盖与验证
 
-Windows x64 / MSVC 19.44 下，下面两项默认启用的测试会触发访问异常：
+`test_async_task_dependencies.cpp` 覆盖依赖校验失败后的再次启动、混合结果、空依赖、
+重复引用、右值句柄、跨执行器、子任务作用域、256 个后继扩容、并发启动和登记竞争，
+以及 20,000 个节点的依赖长链回收。
+
+下面两项历史回归继续默认启用：
 
 - `TaskGroup: result types and dependency fan-in`
 - `SubFlow: child exception reaches the future`
 
-两项使用 `[core-regression]` 标签，**没有 skip、预期失败或默认过滤**。
-完整套件仍会暴露问题，不能将其余测试通过报告为全套通过。
+两项保留 `[core-regression]` 标签，没有 skip、预期失败或默认过滤。
+2026-09-11 在 Windows x64 / MSVC 19.44 Release 下，不带过滤的 347 个单元测试通过，
+包括这两项；旧文档中的“当前必然崩溃”结论不再适用于该次实测。
 
-独立 ASan 程序同样复现无捕获 SubFlow callable 的崩溃，最小形式为：
+独立程序均通过 CMake 构建并由 CTest 注册：
 
-```cpp
-tfl::Executor executor(1);
-auto future = executor.async([](tfl::SubFlow& sf) {
-    (void)sf.emplace([] {});
-    sf.run();
-    return 3;
-});
-future.get();
-```
+| CTest 名称 | 检查内容 |
+| --- | --- |
+| `tfl_test.topology_header` | 仅包含 topology.hpp 的翻译单元能使用另一个翻译单元提供的 Executor 构造、销毁 Topology |
+| `tfl_test.async_task_allocation_failure` | 关闭任务池，注入 defer_async 构造失败，检查捕获清理、活动计数与重新创建 |
 
-调用栈位于 `AsyncSubFlowInvoker::invoke` 创建 SubFlow 时的 `Graph::clear()`，
-在用户 callable 进入之前发生。使用非空捕获的对照程序通过。
-这不是因测试未等待或捕获对象已析构导致的问题；根因修复需要单独修改 core。
+`run_all_tests` 同时运行单体与上述两个独立程序。
 
-仅为继续诊断其余用例，可显式运行：
+## 尚未提供的保证
 
-```sh
-build/check/bin/Release/TaskflowLiteTest "~[core-regression]"
-```
-
-修复 core 后应重新执行不带过滤的完整套件及两个回归测试。
+当前 core 暂不恢复 `start()` / 依赖插边期间的内存分配失败，不能保证捕获
+`std::bad_alloc` 后重试提交或继续等待。这项限制没有通过预期失败或过滤掩盖：
+构造分配测试明确只验证创建阶段，不再使用旧批量提交接口来断言提交回滚安全。
+源码位置、生命周期规则及迁移说明见[异步任务依赖说明](../documentation/async-task-dependency-design.md)。

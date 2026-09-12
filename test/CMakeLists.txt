@@ -168,7 +168,10 @@ set_target_properties(tfl_catch2_main PROPERTIES FOLDER "ThirdParty")
 #  辅助函数: tfl_setup_test_target
 # ============================================================================
 function(tfl_setup_test_target _tgt)
-    target_link_libraries(${_tgt} PRIVATE tfl_catch2_main tfl_internal_flags)
+    target_link_libraries(${_tgt} PRIVATE tfl_internal_flags)
+    if(NOT "${ARGV1}" STREQUAL "NO_CATCH")
+        target_link_libraries(${_tgt} PRIVATE tfl_catch2_main)
+    endif()
 
     target_compile_features(${_tgt} PRIVATE cxx_std_20)
     target_include_directories(${_tgt} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -241,6 +244,23 @@ endforeach()
 # ============================================================================
 enable_testing()
 
+# 独立 main 的回归程序不匹配 test_*.cpp，必须显式构建和注册。
+add_executable(tfl_test_topology_header topology_header.cpp topology_header_main.cpp)
+tfl_setup_test_target(tfl_test_topology_header NO_CATCH)
+add_test(NAME tfl_test.topology_header COMMAND tfl_test_topology_header)
+set_tests_properties(tfl_test.topology_header PROPERTIES TIMEOUT 30 LABELS "unit;header")
+
+add_executable(tfl_test_async_task_allocation_failure async_task_allocation_failure.cpp)
+tfl_setup_test_target(tfl_test_async_task_allocation_failure NO_CATCH)
+target_compile_definitions(tfl_test_async_task_allocation_failure PRIVATE TFL_ENABLE_TASK_POOL=0)
+if(TFL_SANITIZER STREQUAL "ASAN")
+    target_compile_definitions(tfl_test_async_task_allocation_failure PRIVATE TFL_SKIP_ALLOCATION_FAILURE=1)
+endif()
+add_test(NAME tfl_test.async_task_allocation_failure COMMAND tfl_test_async_task_allocation_failure)
+set_tests_properties(tfl_test.async_task_allocation_failure PROPERTIES TIMEOUT 30 LABELS "unit;allocation")
+set_target_properties(tfl_test_topology_header tfl_test_async_task_allocation_failure
+    PROPERTIES FOLDER "Tests/Standalone")
+
 add_test(
     NAME TaskflowLiteTest
     COMMAND TaskflowLiteTest -d yes
@@ -279,9 +299,9 @@ add_custom_target(run_all_tests
     COMMAND ${CMAKE_CTEST_COMMAND}
             --output-on-failure
             -C $<CONFIG>
-            -R "^TaskflowLiteTest$"
+            -R "^TaskflowLiteTest$|^tfl_test[.](topology_header|async_task_allocation_failure)$"
     WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
-    DEPENDS TaskflowLiteTest
+    DEPENDS TaskflowLiteTest tfl_test_topology_header tfl_test_async_task_allocation_failure
     USES_TERMINAL
     VERBATIM
     COMMENT "Running all TaskflowLite unit tests..."

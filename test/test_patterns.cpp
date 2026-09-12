@@ -287,24 +287,24 @@ TEST_CASE("Pattern: AsyncTask dependency graph", "[pattern][async-dag]") {
     std::atomic<bool> ok_b{false}, ok_c{false}, ok_d{false};
 
     // A → {B, C} → D
-    auto a = tfl::AsyncTask([&] { step.fetch_add(1); });
-    auto b = tfl::AsyncTask([&] {
+    auto a = env.executor.defer_async([&] { step.fetch_add(1); });
+    auto b = env.executor.defer_async([&] {
         ok_b.store(step.load() >= 1);
         step.fetch_add(1);
     });
-    auto c = tfl::AsyncTask([&] {
+    auto c = env.executor.defer_async([&] {
         ok_c.store(step.load() >= 1);
         step.fetch_add(1);
     });
-    auto d = tfl::AsyncTask([&] {
+    auto d = env.executor.defer_async([&] {
         ok_d.store(step.load() >= 3);  // a + b + c 均已运行
         step.fetch_add(1);
     });
 
-    env.executor.run(d, b, c);
-    env.executor.run(b, a);
-    env.executor.run(c, a);
-    env.executor.run(a);
+    a.start();
+    b.start(a);
+    c.start(a);
+    d.start(b, c);
 
     d.wait();
     env.executor.wait_for_all();

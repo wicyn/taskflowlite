@@ -8,9 +8,10 @@
 
 #pragma once
 
-#include <stop_token>
+#include <atomic>
+#include <bit>
 #include <cstddef>
-#include <cstdint>
+#include <limits>
 
 #include "forward.hpp"
 #include "utility.hpp"
@@ -19,10 +20,11 @@ namespace tfl {
 
 /// @brief 表示一次独立任务提交或异步任务的运行控制块。
 ///
-/// `Topology` 集中保存启动状态、强引用计数、协作式停止源及可选父停止转发，
+/// `Topology` 集中保存启动状态、强引用计数、协作式停止请求标志及可选父拓扑，
 /// 并借用负责调度的 `Executor`。它不拥有任务图或 Executor，由所属 Work 状态管理生命周期。
 ///
 /// @note 原子状态允许执行、等待和句柄引用跨线程协作；对象本身不可复制或移动。
+/// @note Executor 在构造时绑定，绑定后不可更换。
 class Topology : public Immovable<Topology> {
 
     friend class Work;
@@ -36,13 +38,16 @@ class Topology : public Immovable<Topology> {
 
 public:
     /// @brief 构造 Topology 并绑定到 Executor。
-    /// @param executor 非拥有指针；执行期间对应 Executor 必须保持存活。
-    explicit Topology(Topology* parent, Executor* executor) noexcept
-        : m_parent{parent}
-        , m_executor{executor} {}
+    /// @param parent 非拥有指针；父级运行拓扑，无父级时为空。
+    /// @param executor 非拥有引用；执行期间及通过本对象访问它时必须保持有效。
+    /// @pre parent 必须在本对象仍可能访问其父拓扑链期间保持有效。
+    /// @note 初始状态为 Idle，强引用计数为零，所有控制标志均未设置。
+    explicit Topology(Executor& executor, Topology* parent = nullptr) noexcept
+        : m_executor{executor}
+        , m_parent{parent}{}
 
 
-    /// @brief 销毁停止回调和拓扑状态；调用方必须已完成全部引用计数协议。
+    /// @brief 销毁拓扑状态；调用方必须已完成全部引用计数协议且不存在并发访问。
     ~Topology() = default;
 
 private:
@@ -61,10 +66,10 @@ private:
         /// @brief Topology 生命周期状态。
         ///
         /// Finished 保持编码为 3，使 Running -> Finished 可以直接通过 fetch_or
-        /// 设置完成位，而不需要清除已有状态位。
+        /// 设置完成位，而不需要清除已有状态位；完成发布仍须遵守动态依赖锁协议。
         enum class Status : type {
             Idle     = 0, ///< 尚未启动。
-            Running  = 1, ///< 正在执行。
+            Running  = 1, ///< 已启动，正在执行。
             Finished = 3  ///< 已完成。
         };
 
@@ -74,7 +79,7 @@ private:
         /// @brief 当前 Topology 已收到协作式停止请求。
         static constexpr type STOP_REQUESTED = type{1} << (BITS - 1);
 
-        /// @brief 动态依赖后继表正在被独占修改。
+        /// @brief 动态依赖边表正在被独占访问。
         static constexpr type LOCKED = type{1} << (BITS - 2);
 
         /// @brief 所有独立控制标志。
@@ -132,12 +137,9 @@ private:
         }
     };
 
-
-
-    Topology*                  m_parent{nullptr};              ///< 非拥有指针；父级运行拓扑，无父级时为空。
-    std::atomic<Control::type> m_control{Control::NONE};       ///< 原子控制字：停止请求、生命周期状态和引用计数。
-    Executor*                  m_executor{nullptr};            ///< 非拥有指针；执行期间必须保持有效。
-
+    std::atomic<Control::type>  m_control{Control::NONE}; ///< 原子控制字：停止请求、依赖锁、生命周期状态和引用计数。
+    Executor&                   m_executor;               ///< 非拥有引用；构造时绑定，访问期间必须保持有效。
+    Topology*                   m_parent{nullptr};        ///< 非拥有指针；父级运行拓扑，无父级时为空。
 };
 
 }  // namespace tfl

@@ -126,13 +126,13 @@ TEST_CASE("Observer: no longer called after unregister", "[observer][unregister]
 // ============================================================================
 
 /// @section async-task-registration
-/// @test [observer][async] AsyncTask<> 可在 run 前注册 observer。
+/// @test [observer][async] AsyncTask<> 可在 start 前注册 observer。
 TEST_CASE("Observer: AsyncTask<> registration", "[observer][async]") {
     TestEnv env;
 
-    auto t = tfl::AsyncTask([] {});
+    auto t = env.executor.defer_async([] {});
     auto obs = t.register_observer<CountingObserver>();
-    env.executor.run(t); t.wait();
+    t.start(); t.wait();
 
     REQUIRE(obs->before.load() == 1);
     REQUIRE(obs->after.load() == 1);
