@@ -59,19 +59,19 @@ template <graph_holder Gh, predicate P>
 
 template <typename F>
     requires (basic_invocable<F> && capturable<F>)
-[[nodiscard]] Work* make_silent_async_basic(Executor& executor, Work* parent, Topology* parent_topology, F&& func);
+[[nodiscard]] Work* make_silent_async_basic(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
 
 template <typename F>
     requires (runtime_invocable<F> && capturable<F>)
-[[nodiscard]] Work* make_silent_async_runtime(Executor& executor, Work* parent, Topology* parent_topology, F&& func);
+[[nodiscard]] Work* make_silent_async_runtime(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
 
 template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
-[[nodiscard]] Work* make_silent_async_subflow(Executor& executor, Work* parent, Topology* parent_topology, F&& func);
+[[nodiscard]] Work* make_silent_async_subflow(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
 
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
-[[nodiscard]] Work* make_silent_async_module(Executor& executor, Work* parent, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback);
+[[nodiscard]] Work* make_silent_async_module(Work* parent, Executor& executor, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback);
 
 // ============================================================================
 // Async 异步节点
@@ -79,19 +79,19 @@ template <graph_holder Gh, predicate P, callback C>
 
 template <typename F>
     requires (basic_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<basic_return_t<F>>*> make_async_basic(Executor& executor, Work* parent, Topology* parent_topology, F&& func);
+[[nodiscard]] std::pair<Work*, ResultSlot<basic_return_t<F>>*> make_async_basic(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
 
 template <typename F>
     requires (runtime_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<runtime_return_t<F>>*> make_async_runtime(Executor& executor, Work* parent, Topology* parent_topology, F&& func);
+[[nodiscard]] std::pair<Work*, ResultSlot<runtime_return_t<F>>*> make_async_runtime(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
 
 template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<subflow_return_t<F>>*> make_async_subflow(Executor& executor, Work* parent, Topology* parent_topology, F&& func);
+[[nodiscard]] std::pair<Work*, ResultSlot<subflow_return_t<F>>*> make_async_subflow(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
 
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
-[[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_module(Executor& executor, Work* parent, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback);
+[[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_module(Work* parent, Executor& executor, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback);
 
 // ============================================================================
 // AsyncTask 异步节点
@@ -99,18 +99,18 @@ template <graph_holder Gh, predicate P, callback C>
 
 template <typename F>
     requires (basic_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<basic_return_t<F>>*> make_async_task_basic(F&& func);
+[[nodiscard]] std::pair<Work*, ResultSlot<basic_return_t<F>>*> make_async_task_basic(Executor& executor, F&& func);
 
 template <typename F>
     requires (runtime_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<runtime_return_t<F>>*> make_async_task_runtime(F&& func);
+[[nodiscard]] std::pair<Work*, ResultSlot<runtime_return_t<F>>*> make_async_task_runtime(Executor& executor, F&& func);
 
 template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<subflow_return_t<F>>*> make_async_task_subflow(F&& func);
+[[nodiscard]] std::pair<Work*, ResultSlot<subflow_return_t<F>>*> make_async_task_subflow(Executor& executor, F&& func);
 
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
-[[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_task_module(Gh&& graph_holder, P&& pred, C&& callback);
+[[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_task_module(Executor& executor, Gh&& graph_holder, P&& pred, C&& callback);
 
 }  // namespace tfl

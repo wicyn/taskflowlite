@@ -857,12 +857,12 @@ int main() {
         std::osyncstream(std::cout) << "K6. count=" << c.load() << "\n";
     }
 
-    // K7. run(basic_task) — 独立基础任务
+    // K7. async(basic_task) — 独立基础任务
     {
-        exe.async([]{ std::osyncstream(std::cout) << "K7. run basic task\n"; }).wait();
+        exe.async([]{ std::osyncstream(std::cout) << "K7. async basic task\n"; }).wait();
     }
 
-    // K8. run(basic_task, args) — 独立基础任务 + 参数
+    // K8. async(bound_callable) — 通过 bind_front 绑定业务参数
     {
         int x = 0;
         exe.async(std::bind_front([](int& v) { v = 42; std::osyncstream(std::cout) << "K8. v=" << v << "\n"; },
@@ -870,14 +870,14 @@ int main() {
         exe.wait_for_all();
     }
 
-    // K9. run(runtime_task)
+    // K9. async(runtime_task)
     {
         exe.async([](tfl::Runtime& rt) {
             std::osyncstream(std::cout) << "K9. async runtime task\n";
         }).wait();
     }
 
-    // K10. run(runtime_task, args)
+    // K10. async(bound_runtime_callable)
     {
         int x = 0;
         exe.async(std::bind_front([](int& v, tfl::Runtime& rt) {
@@ -962,18 +962,18 @@ int main() {
     }
 
     // ========================================================================
-    // 类别 L: AsyncTask 依赖链 — run(task, deps...)
+    // 类别 L: AsyncTask 依赖链 — task.start(deps...)
     // ========================================================================
 
     // L1. 两个独立任务，t2 依赖 t1
     {
         std::atomic<int> order{0};
-        auto t1 = tfl::AsyncTask([&order]{ order.store(1); std::osyncstream(std::cout) << "L1. t1\n"; });
-        auto t2 = tfl::AsyncTask([&order]{
+        auto t1 = exe.defer_async([&order]{ order.store(1); std::osyncstream(std::cout) << "L1. t1\n"; });
+        auto t2 = exe.defer_async([&order]{
             std::osyncstream(std::cout) << "L1. t2, order=" << order.load() << "\n";
         });
-        exe.run(t2, t1);
-        exe.run(t1);
+        t1.start();
+        t2.start(t1);
         t2.wait();
         exe.wait_for_all();
     }
@@ -981,14 +981,14 @@ int main() {
     // L2. 三级依赖链
     {
         std::atomic<int> step{0};
-        auto s1 = tfl::AsyncTask([&step]{ step.store(1); });
-        auto s2 = tfl::AsyncTask([&step]{ step.store(2); });
-        auto s3 = tfl::AsyncTask([&step]{
+        auto s1 = exe.defer_async([&step]{ step.store(1); });
+        auto s2 = exe.defer_async([&step]{ step.store(2); });
+        auto s3 = exe.defer_async([&step]{
             std::osyncstream(std::cout) << "L2. final step=" << step.load() << "\n";
         });
-        exe.run(s2, s1);
-        exe.run(s3, s2);
-        exe.run(s1);
+        s1.start();
+        s2.start(s1);
+        s3.start(s2);
         s3.wait();
         exe.wait_for_all();
     }

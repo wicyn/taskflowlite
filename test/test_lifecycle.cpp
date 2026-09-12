@@ -116,12 +116,12 @@ TEST_CASE("Lifecycle: multiple AsyncTask handles share a node", "[lifecycle][ref
 
     {
         TestEnv env;
-        auto t = tfl::AsyncTask(Probe{});
+        auto t = env.executor.defer_async(Probe{});
         auto copy1 = t;
         auto copy2 = t;
         // 三个句柄指向同一节点；仅 1 个 Probe 实例（在节点内部）
 
-        env.executor.run(t);
+        t.start();
         t.wait();
     }
 

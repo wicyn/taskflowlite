@@ -182,7 +182,7 @@ TEST_CASE("SubFlow: repeated parent rebuilds children", "[subflow][dynamic][repe
 }
 
 /// @test [subflow][dynamic][exception] 子图异常通过 wait/get 传播。
-/// @note 当前 core 在无捕获 SubFlow 的 Graph 初始化路径崩溃；保留默认回归测试。
+/// @note 保留无捕获 SubFlow 初始化的历史回归覆盖。
 TEST_CASE("SubFlow: child exception reaches the future", "[subflow][dynamic][exception][core-regression]") {
     TestEnv env(1);
     auto future = env.executor.async([](tfl::SubFlow& sf) {

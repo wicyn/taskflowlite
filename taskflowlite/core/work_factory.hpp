@@ -200,21 +200,21 @@ template <graph_holder Gh, predicate P>
 /// SilentAsync 节点使用隐式归档锚点，不向调用方暴露 ResultSlot。
 ///
 /// @tparam F callable 类型。
-/// @param executor 当前任务所属 Executor。
 /// @param parent 父 Work；根级异步任务允许为空。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定。
 /// @param parent_topology 新任务 Topology 的父 Topology；传 nullptr 表示独立停止域。
 /// @param func 用户 callable。
 /// @return 创建完成的 Work。
 template <typename F>
     requires (basic_invocable<F> && capturable<F>)
-[[nodiscard]] Work* make_silent_async_basic(Executor& executor, Work* parent, Topology* parent_topology, F&& func) {
+[[nodiscard]] Work* make_silent_async_basic(Work* parent, Executor& executor, Topology* parent_topology, F&& func) {
     using Invoker = SilentAsyncBasicInvoker<std::decay_t<F>>;
 
     return create_work(
         std::in_place_type<Invoker>,
         parent,
+        executor,
         parent_topology,
-        std::addressof(executor),
         std::forward<F>(func)
         );
 }
@@ -222,21 +222,21 @@ template <typename F>
 /// @brief 创建 fire-and-forget Runtime 异步任务。
 ///
 /// @tparam F callable 类型。
-/// @param executor 当前任务所属 Executor。
 /// @param parent 父 Work；根级异步任务允许为空。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定。
 /// @param parent_topology 新任务 Topology 的父 Topology；传 nullptr 表示独立停止域。
 /// @param func Runtime callable。
 /// @return 创建完成的 Work。
 template <typename F>
     requires (runtime_invocable<F> && capturable<F>)
-[[nodiscard]] Work* make_silent_async_runtime(Executor& executor, Work* parent, Topology* parent_topology, F&& func) {
+[[nodiscard]] Work* make_silent_async_runtime(Work* parent, Executor& executor, Topology* parent_topology, F&& func) {
     using Invoker = SilentAsyncRuntimeInvoker<std::decay_t<F>>;
 
     return create_work(
         std::in_place_type<Invoker>,
         parent,
+        executor,
         parent_topology,
-        std::addressof(executor),
         std::forward<F>(func)
         );
 }
@@ -244,21 +244,21 @@ template <typename F>
 /// @brief 创建 fire-and-forget SubFlow 异步任务。
 ///
 /// @tparam F callable 类型。
-/// @param executor 当前任务所属 Executor。
 /// @param parent 父 Work；根级异步任务允许为空。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定。
 /// @param parent_topology 新任务 Topology 的父 Topology；传 nullptr 表示独立停止域。
 /// @param func SubFlow callable。
 /// @return 创建完成的 Work。
 template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
-[[nodiscard]] Work* make_silent_async_subflow(Executor& executor, Work* parent, Topology* parent_topology, F&& func) {
+[[nodiscard]] Work* make_silent_async_subflow(Work* parent, Executor& executor, Topology* parent_topology, F&& func) {
     using Invoker = SilentAsyncSubFlowInvoker<std::decay_t<F>>;
 
     return create_work(
         std::in_place_type<Invoker>,
         parent,
+        executor,
         parent_topology,
-        std::addressof(executor),
         std::forward<F>(func)
         );
 }
@@ -268,8 +268,8 @@ template <typename F>
 /// @tparam Gh Graph holder 类型。
 /// @tparam P predicate 类型。
 /// @tparam C callback 类型。
-/// @param executor 当前任务所属 Executor。
 /// @param parent 父 Work；根级异步任务允许为空。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定。
 /// @param parent_topology 新任务 Topology 的父 Topology；传 nullptr 表示独立停止域。
 /// @param graph_holder 被执行的子图持有对象。
 /// @param pred 迭代终止谓词。
@@ -277,14 +277,14 @@ template <typename F>
 /// @return 创建完成的 Work。
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
-[[nodiscard]] Work* make_silent_async_module(Executor& executor, Work* parent, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback) {
+[[nodiscard]] Work* make_silent_async_module(Work* parent, Executor& executor, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback) {
     using Invoker = SilentAsyncModuleInvoker<detail::captured_t<Gh>, std::decay_t<P>, std::decay_t<C>>;
 
     return create_work(
         std::in_place_type<Invoker>,
         parent,
+        executor,
         parent_topology,
-        std::addressof(executor),
         detail::capture(std::forward<Gh>(graph_holder)),
         std::forward<P>(pred),
         std::forward<C>(callback)
@@ -300,21 +300,21 @@ template <graph_holder Gh, predicate P, callback C>
 /// Async 节点建立显式归档锚点，并返回 Work 与 ResultSlot。
 ///
 /// @tparam F callable 类型。
-/// @param executor 当前任务所属 Executor。
 /// @param parent 父 Work；根级异步任务允许为空。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定。
 /// @param parent_topology 新任务 Topology 的父 Topology；传 nullptr 表示独立停止域。
 /// @param func 用户 callable。
 /// @return 创建完成的 Work 和 ResultSlot。
 template <typename F>
     requires (basic_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<basic_return_t<F>>*> make_async_basic(Executor& executor, Work* parent, Topology* parent_topology, F&& func) {
+[[nodiscard]] std::pair<Work*, ResultSlot<basic_return_t<F>>*> make_async_basic(Work* parent, Executor& executor, Topology* parent_topology, F&& func) {
     using Invoker = AsyncBasicInvoker<std::decay_t<F>>;
 
     Work* work = create_work(
         std::in_place_type<Invoker>,
         parent,
+        executor,
         parent_topology,
-        std::addressof(executor),
         std::forward<F>(func)
         );
 
@@ -324,21 +324,21 @@ template <typename F>
 /// @brief 创建带结果槽的 Runtime Async 异步任务。
 ///
 /// @tparam F callable 类型。
-/// @param executor 当前任务所属 Executor。
 /// @param parent 父 Work；根级异步任务允许为空。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定。
 /// @param parent_topology 新任务 Topology 的父 Topology；传 nullptr 表示独立停止域。
 /// @param func Runtime callable。
 /// @return 创建完成的 Work 和 ResultSlot。
 template <typename F>
     requires (runtime_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<runtime_return_t<F>>*> make_async_runtime(Executor& executor, Work* parent, Topology* parent_topology, F&& func) {
+[[nodiscard]] std::pair<Work*, ResultSlot<runtime_return_t<F>>*> make_async_runtime(Work* parent, Executor& executor, Topology* parent_topology, F&& func) {
     using Invoker = AsyncRuntimeInvoker<std::decay_t<F>>;
 
     Work* work = create_work(
         std::in_place_type<Invoker>,
         parent,
+        executor,
         parent_topology,
-        std::addressof(executor),
         std::forward<F>(func)
         );
 
@@ -348,21 +348,21 @@ template <typename F>
 /// @brief 创建带结果槽的 SubFlow Async 异步任务。
 ///
 /// @tparam F callable 类型。
-/// @param executor 当前任务所属 Executor。
 /// @param parent 父 Work；根级异步任务允许为空。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定。
 /// @param parent_topology 新任务 Topology 的父 Topology；传 nullptr 表示独立停止域。
 /// @param func SubFlow callable。
 /// @return 创建完成的 Work 和 ResultSlot。
 template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<subflow_return_t<F>>*> make_async_subflow(Executor& executor, Work* parent, Topology* parent_topology, F&& func) {
+[[nodiscard]] std::pair<Work*, ResultSlot<subflow_return_t<F>>*> make_async_subflow(Work* parent, Executor& executor, Topology* parent_topology, F&& func) {
     using Invoker = AsyncSubFlowInvoker<std::decay_t<F>>;
 
     Work* work = create_work(
         std::in_place_type<Invoker>,
         parent,
+        executor,
         parent_topology,
-        std::addressof(executor),
         std::forward<F>(func)
         );
 
@@ -376,8 +376,8 @@ template <typename F>
 /// @tparam Gh Graph holder 类型。
 /// @tparam P predicate 类型。
 /// @tparam C callback 类型。
-/// @param executor 当前任务所属 Executor。
 /// @param parent 父 Work；根级异步任务允许为空。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定。
 /// @param parent_topology 新任务 Topology 的父 Topology；传 nullptr 表示独立停止域。
 /// @param graph_holder 被执行的子图持有对象。
 /// @param pred 迭代终止谓词。
@@ -385,14 +385,14 @@ template <typename F>
 /// @return 创建完成的 Work 和 ResultSlot<void>。
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
-[[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_module(Executor& executor, Work* parent, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback) {
+[[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_module(Work* parent, Executor& executor, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback) {
     using Invoker = AsyncModuleInvoker<detail::captured_t<Gh>, std::decay_t<P>, std::decay_t<C>>;
 
     Work* work = create_work(
         std::in_place_type<Invoker>,
         parent,
+        executor,
         parent_topology,
-        std::addressof(executor),
         detail::capture(std::forward<Gh>(graph_holder)),
         std::forward<P>(pred),
         std::forward<C>(callback)
@@ -405,91 +405,95 @@ template <graph_holder Gh, predicate P, callback C>
 // AsyncTask 异步节点
 // ============================================================================
 
-/// @brief 创建尚未绑定执行作用域的普通 AsyncTask 异步任务。
+/// @brief 创建已绑定执行器、尚未启动的普通 AsyncTask 异步任务。
 ///
-/// AsyncTask 节点在构造阶段只创建独立 Topology 和结果槽；Executor、父 Work 与父
-/// Topology 在 `AsyncTask::_start` 成功取得启动权后再绑定。
+/// AsyncTask 节点在构造阶段创建独立 Topology 和结果槽，并绑定 Executor。
+/// 父 Work 与父 Topology 初始为空。
 ///
 /// @tparam F callable 类型。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
 /// @param func 用户 callable。
 /// @return 创建完成的 Work 和 ResultSlot。
+/// @note 本函数只创建节点，不启动任务。
 template <typename F>
     requires (basic_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<basic_return_t<F>>*> make_async_task_basic(F&& func) {
+[[nodiscard]] std::pair<Work*, ResultSlot<basic_return_t<F>>*> make_async_task_basic(Executor& executor, F&& func) {
     using Invoker = AsyncTaskBasicInvoker<std::decay_t<F>>;
 
     Work* work = create_work(
         std::in_place_type<Invoker>,
         static_cast<Work*>(nullptr),
-        static_cast<Topology*>(nullptr),
-        static_cast<Executor*>(nullptr),
+        executor,
         std::forward<F>(func)
         );
 
     return {work, work->template target<Invoker>().get_result_slot()};
 }
 
-/// @brief 创建尚未绑定执行作用域的 Runtime AsyncTask 异步任务。
+/// @brief 创建已绑定执行器、尚未启动的 Runtime AsyncTask 异步任务。
 /// @tparam F callable 类型。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
 /// @param func Runtime callable。
 /// @return 创建完成的 Work 和 ResultSlot。
+/// @note 本函数只创建节点，不启动任务。
 template <typename F>
     requires (runtime_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<runtime_return_t<F>>*> make_async_task_runtime(F&& func) {
+[[nodiscard]] std::pair<Work*, ResultSlot<runtime_return_t<F>>*> make_async_task_runtime(Executor& executor, F&& func) {
     using Invoker = AsyncTaskRuntimeInvoker<std::decay_t<F>>;
 
     Work* work = create_work(
         std::in_place_type<Invoker>,
         static_cast<Work*>(nullptr),
-        static_cast<Topology*>(nullptr),
-        static_cast<Executor*>(nullptr),
+        executor,
         std::forward<F>(func)
         );
 
     return {work, work->template target<Invoker>().get_result_slot()};
 }
 
-/// @brief 创建尚未绑定执行作用域的 SubFlow AsyncTask 异步任务。
+/// @brief 创建已绑定执行器、尚未启动的 SubFlow AsyncTask 异步任务。
 /// @tparam F callable 类型。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
 /// @param func SubFlow callable。
 /// @return 创建完成的 Work 和 ResultSlot。
+/// @note 本函数只创建节点，不启动任务。
 template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
-[[nodiscard]] std::pair<Work*, ResultSlot<subflow_return_t<F>>*> make_async_task_subflow(F&& func) {
+[[nodiscard]] std::pair<Work*, ResultSlot<subflow_return_t<F>>*> make_async_task_subflow(Executor& executor, F&& func) {
     using Invoker = AsyncTaskSubFlowInvoker<std::decay_t<F>>;
 
     Work* work = create_work(
         std::in_place_type<Invoker>,
         static_cast<Work*>(nullptr),
-        static_cast<Topology*>(nullptr),
-        static_cast<Executor*>(nullptr),
+        executor,
         std::forward<F>(func)
         );
 
     return {work, work->template target<Invoker>().get_result_slot()};
 }
 
-/// @brief 创建尚未绑定执行作用域的 Module AsyncTask 异步任务。
+/// @brief 创建已绑定执行器、尚未启动的 Module AsyncTask 异步任务。
 ///
 /// Module 没有值结果，使用 `ResultSlot<void>` 表示完成状态。
 ///
 /// @tparam Gh Graph holder 类型。
 /// @tparam P predicate 类型。
 /// @tparam C callback 类型。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
 /// @param graph_holder 被执行的子图持有对象。
 /// @param pred 迭代终止谓词。
 /// @param callback 完成回调。
 /// @return 创建完成的 Work 和 ResultSlot<void>。
+/// @note 本函数只创建节点，不启动任务。
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
-[[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_task_module(Gh&& graph_holder, P&& pred, C&& callback) {
+[[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_task_module(Executor& executor, Gh&& graph_holder, P&& pred, C&& callback) {
     using Invoker = AsyncTaskModuleInvoker<detail::captured_t<Gh>, std::decay_t<P>, std::decay_t<C>>;
 
     Work* work = create_work(
         std::in_place_type<Invoker>,
         static_cast<Work*>(nullptr),
-        static_cast<Topology*>(nullptr),
-        static_cast<Executor*>(nullptr),
+        executor,
         detail::capture(std::forward<Gh>(graph_holder)),
         std::forward<P>(pred),
         std::forward<C>(callback)

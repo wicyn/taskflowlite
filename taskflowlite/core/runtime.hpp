@@ -15,7 +15,6 @@
 #include <utility>
 
 #include "context.hpp"
-#include "task.hpp"
 #include "async_future.hpp"
 #include "work_factory_fwd.hpp"
 
@@ -243,21 +242,6 @@ public:
     template <graph_holder Gh>
     void run(Gh& gh);
 
-    /// @brief 启动一个 AsyncTask，并将其挂接为当前 Work 的动态子任务.
-    /// @tparam InheritTopology 是否将当前 Work 的 Topology 作为新任务的父 Topology.
-    /// @tparam T 满足 async_task concept 的任务句柄类型.
-    /// @tparam Deps 满足 async_future concept 的前置依赖类型.
-    /// @param task 要启动的 AsyncTask，必须非空且尚未成功启动.
-    /// @param deps task 的动态前置依赖；空依赖和 task 自身不会形成等待边.
-    /// @return 若 task 为左值则返回其引用，否则按值返回移动后的句柄.
-    /// @throws Exception task 为空或已经启动时抛出异常.
-    ///
-    /// @note 启动成功后 task 占用当前 Work 的一个 join_counter slot；本函数不等待其完成.
-    /// @warning `InheritTopology` 为 true 时，父 Topology 必须在 task 仍可能访问其停止继承链期间保持有效.
-    template <bool InheritTopology = false, async_task T, async_future... Deps>
-    auto run(T&& task, Deps&&... deps) -> forward_return_t<T>;
-
-
     // ============================================================================
     // 独立子图协作执行
     // ============================================================================
@@ -354,10 +338,40 @@ inline void Runtime::_launch_silent_async(Work* work) {
 
 template <typename R, async_future... Deps>
 inline AsyncFuture<R> Runtime::_launch_async(Work* work, ResultSlot<R>* result, const Deps&... deps) {
+    static_assert(sizeof...(Deps) < std::numeric_limits<std::uint32_t>::max());
+
     TFL_ASSERT(work);
     TFL_ASSERT(result);
+    TFL_ASSERT(work->m_edges.empty() && work->m_num_successors == 0);
 
+    constexpr std::size_t num_predecessors = sizeof...(Deps);
     AsyncFuture<R> future{work, result};
+
+    if constexpr (num_predecessors != 0) {
+        std::array<Work*, num_predecessors> predecessors{deps.m_work...};
+
+        // 先校验全部非空依赖，未启动的依赖不允许提交。
+        for (Work* predecessor : predecessors) {
+            if (predecessor) {
+                const auto current = predecessor->m_topology->m_control.load(std::memory_order_acquire);
+
+                if (Topology::Control::status(current) == Topology::Control::Status::Idle) [[unlikely]] {
+                    throw Exception{"Runtime::async: dependency has not been started."};
+                }
+            }
+        }
+
+        auto& edges = work->m_edges;
+        edges.reserve(num_predecessors);
+
+        // 每个非空条目持有一份前驱强引用，直到当前 Work 销毁。
+        for (Work* predecessor : predecessors) {
+            if (predecessor) {
+                edges.push_back(predecessor);
+                predecessor->_increment_ref();
+            }
+        }
+    }
 
     auto& control = work->m_topology->m_control;
     const auto current = control.load(std::memory_order_relaxed);
@@ -367,20 +381,20 @@ inline AsyncFuture<R> Runtime::_launch_async(Work* work, ResultSlot<R>* result, 
 
     control.store(Topology::Control::set_status(current, Topology::Control::Status::Running), std::memory_order_relaxed);
 
-    // 执行生命周期额外持有一份强引用，直到 Async tear-down 完成。
+    // 执行生命周期额外持有一份强引用，由 Async tear-down 释放。
     work->_increment_ref();
 
-    // 当前 Runtime 等待时必须把该异步任务计入派生任务数量。
+    // 将当前异步任务计入 Runtime 的派生任务数量。
     m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
 
-    if constexpr (sizeof...(Deps) != 0) {
-        std::array<Work*, sizeof...(Deps)> predecessors{deps.m_work...};
-        std::size_t num_predecessors = sizeof...(Deps);
+    if constexpr (num_predecessors != 0) {
+        auto& edges = work->m_edges;
 
-        work->m_join_counter.store(num_predecessors, std::memory_order_relaxed);
-        m_executor._link_predecessors(work, predecessors.begin(), predecessors.end(), num_predecessors);
+        // 使用实际保存的前驱数量，额外保留一个提交保护计数。
+        work->m_join_counter.store(edges.size() + 1, std::memory_order_relaxed);
+        m_executor._link_predecessors(work, edges.begin(), edges.end());
 
-        if (num_predecessors != 0) {
+        if (work->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
             return future;
         }
     }
@@ -415,7 +429,7 @@ inline void Runtime::silent_async(Gh&& gh, P&& pred, C&& cb) {
         TFL_ASSERT(parent_topology);
     }
 
-    Work* work = make_silent_async_module(m_executor, std::addressof(m_work), parent_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
+    Work* work = make_silent_async_module(std::addressof(m_work), m_executor, parent_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
     _launch_silent_async(work);
 }
 
@@ -429,7 +443,7 @@ inline void Runtime::silent_async(T&& task) {
         TFL_ASSERT(parent_topology);
     }
 
-    Work* work = make_silent_async_basic(m_executor, std::addressof(m_work), parent_topology, std::forward<T>(task));
+    Work* work = make_silent_async_basic(std::addressof(m_work), m_executor, parent_topology, std::forward<T>(task));
     _launch_silent_async(work);
 }
 
@@ -443,7 +457,7 @@ inline void Runtime::silent_async(T&& task) {
         TFL_ASSERT(parent_topology);
     }
 
-    Work* work = make_silent_async_runtime(m_executor, std::addressof(m_work), parent_topology, std::forward<T>(task));
+    Work* work = make_silent_async_runtime(std::addressof(m_work), m_executor, parent_topology, std::forward<T>(task));
     _launch_silent_async(work);
 }
 
@@ -457,7 +471,7 @@ inline void Runtime::silent_async(T&& task) {
         TFL_ASSERT(parent_topology);
     }
 
-    Work* work = make_silent_async_subflow(m_executor, std::addressof(m_work), parent_topology, std::forward<T>(task));
+    Work* work = make_silent_async_subflow(std::addressof(m_work), m_executor, parent_topology, std::forward<T>(task));
     _launch_silent_async(work);
 }
 
@@ -503,7 +517,7 @@ inline AsyncFuture<void> Runtime::async(Gh&& gh, P&& pred, C&& cb, Deps&&... dep
         TFL_ASSERT(parent_topology);
     }
 
-    auto [work, result] = make_async_module(m_executor, std::addressof(m_work), parent_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
+    auto [work, result] = make_async_module(std::addressof(m_work), m_executor, parent_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
@@ -517,7 +531,7 @@ inline auto Runtime::async(T&& task, Deps&&... deps) -> AsyncFuture<basic_return
         TFL_ASSERT(parent_topology);
     }
 
-    auto [work, result] = make_async_basic(m_executor, std::addressof(m_work), parent_topology, std::forward<T>(task));
+    auto [work, result] = make_async_basic(std::addressof(m_work), m_executor, parent_topology, std::forward<T>(task));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
@@ -531,7 +545,7 @@ inline auto Runtime::async(T&& task, Deps&&... deps) -> AsyncFuture<runtime_retu
         TFL_ASSERT(parent_topology);
     }
 
-    auto [work, result] = make_async_runtime(m_executor, std::addressof(m_work), parent_topology, std::forward<T>(task));
+    auto [work, result] = make_async_runtime(std::addressof(m_work), m_executor, parent_topology, std::forward<T>(task));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
@@ -545,18 +559,23 @@ inline auto Runtime::async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_retu
         TFL_ASSERT(parent_topology);
     }
 
-    auto [work, result] = make_async_subflow(m_executor, std::addressof(m_work), parent_topology, std::forward<T>(task));
+    auto [work, result] = make_async_subflow(std::addressof(m_work), m_executor, parent_topology, std::forward<T>(task));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
 // ============================================================================
 // Runtime::run
 // ============================================================================
+template <graph_holder Gh>
+inline void Runtime::run(Gh& gh) {
+    auto& graph = detail::to_graph(gh);
+    auto num_srcs = m_executor._set_up_graph(graph, m_work);
+    if(num_srcs == 0) {
+        return;
+    }
 
-template <bool InheritTopology, async_task T, async_future... Deps>
-inline auto Runtime::run(T&& task, Deps&&... deps) -> forward_return_t<T> {
-    task.template _start<InheritTopology>(m_work, m_worker, m_executor, std::forward<Deps>(deps)...);
-    return std::forward<T>(task);
+    m_work.m_join_counter.fetch_add(num_srcs, std::memory_order_relaxed);
+    m_executor._schedule(m_worker, graph.begin(), num_srcs);
 }
 
 template <graph_holder Gh>
@@ -571,18 +590,6 @@ inline void Runtime::corun(Gh& gh) {
 
     m_executor._corun_graph(graph, anchor, m_worker);
     anchor._rethrow_exception();
-}
-
-template <graph_holder Gh>
-inline void Runtime::run(Gh& gh) {
-    auto& graph = detail::to_graph(gh);
-    auto num_srcs = m_executor._set_up_graph(graph, m_work);
-    if(num_srcs == 0) {
-        return;
-    }
-
-    m_work.m_join_counter.fetch_add(num_srcs, std::memory_order_relaxed);
-    m_executor._schedule(m_worker, graph.begin(), num_srcs);
 }
 
 inline void Runtime::wait() {

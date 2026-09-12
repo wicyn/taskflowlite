@@ -4,6 +4,9 @@
 默认运行完整工作量，并启用原子计数校验；校验不匹配会返回非零退出码。
 默认计时包含这些计数操作，不代表纯调度开销。
 
+TaskflowLite 使用 `executor.defer_async(flow, runs)` 在计时前创建任务，
+在计时区间内执行 `task.start().wait()`；任务创建成本不计入测量。
+
 ```sh
 bench_taskflowlite --smoke
 bench_taskflow --smoke

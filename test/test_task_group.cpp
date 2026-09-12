@@ -25,8 +25,8 @@ TEST_CASE("TaskGroup: explicit and destructor wait", "[task-group][wait]") {
     REQUIRE(parent.get() == 16);
 }
 
-/// @test [task-group][async] Future 依赖、延迟任务、Runtime/SubFlow 返回值。
-/// @note 当前 core 在无捕获 SubFlow 的 Graph 初始化路径崩溃；保留默认回归测试。
+/// @test [task-group][async] Future 依赖、Runtime/SubFlow 返回值。
+/// @note 保留无捕获 SubFlow 初始化的历史回归覆盖。
 TEST_CASE("TaskGroup: result types and dependency fan-in", "[task-group][async][core-regression]") {
     TestEnv env(1);
     auto parent = env.executor.async([](tfl::Runtime& rt) {
@@ -34,15 +34,14 @@ TEST_CASE("TaskGroup: result types and dependency fan-in", "[task-group][async][
         auto first = group.async([] { return 20; });
         auto second = group.async([](tfl::Runtime&) { return 22; });
         auto sum = group.async([first, second] { return first.get() + second.get(); }, first, second);
-        auto delayed = tfl::AsyncTask([] { return 7; });
-        group.run(delayed);
+        auto value = group.async([] { return 7; });
         auto dynamic = group.async([](tfl::SubFlow& sf) {
             (void)sf.emplace([] {});
             sf.run();
             return 3;
         });
         group.wait();
-        return sum.get() + delayed.get() + dynamic.get() + static_cast<int>(group.size());
+        return sum.get() + value.get() + dynamic.get() + static_cast<int>(group.size());
     });
     REQUIRE(parent.get() == 52);
 }
