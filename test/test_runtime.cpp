@@ -203,15 +203,13 @@ TEST_CASE("Runtime: run and corun graphs on one worker", "[runtime][run]") {
     REQUIRE(parent.get() == 1);
 }
 
-/// @test [runtime][async-task] 反向登记延迟任务依赖后启动根任务。
-TEST_CASE("Runtime: run delayed tasks with dependencies", "[runtime][async-task]") {
+/// @test [runtime][async-task] Runtime::async 依赖链纳入父任务的协作等待。
+TEST_CASE("Runtime: async children with dependencies", "[runtime][async-task]") {
     TestEnv env(1);
     auto parent = env.executor.async([](tfl::Runtime& rt) {
         int value = 0;
-        auto a = tfl::AsyncTask([&] { value = 20; });
-        auto b = tfl::AsyncTask([&] { value += 22; });
-        rt.run(b, a);
-        rt.run(a);
+        auto a = rt.async([&] { value = 20; });
+        auto b = rt.async([&] { value += 22; }, a);
         rt.wait();
         return value;
     });

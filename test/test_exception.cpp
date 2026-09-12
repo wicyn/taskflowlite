@@ -27,19 +27,19 @@ TEST_CASE("Exception: wait does not rethrow, get does", "[exception][wait-vs-get
 
     /// @section wait-is-silent
     SECTION("wait is silent") {
-        auto t = tfl::AsyncTask([] {
+        auto t = env.executor.defer_async([] {
             throw std::runtime_error("boom");
         });
-        env.executor.run(t);
+        t.start();
         REQUIRE_NOTHROW(t.wait());
     }
 
     /// @section get-rethrows
     SECTION("get rethrows runtime_error") {
-        auto t = tfl::AsyncTask([] {
+        auto t = env.executor.defer_async([] {
             throw std::runtime_error("boom");
         });
-        env.executor.run(t);
+        t.start();
         REQUIRE_THROWS_AS(t.get(), std::runtime_error);
     }
 }
@@ -48,14 +48,14 @@ TEST_CASE("Exception: wait does not rethrow, get does", "[exception][wait-vs-get
 TEST_CASE("Exception: has_exception query", "[exception][query]") {
     TestEnv env;
 
-    auto bad = tfl::AsyncTask([] {
+    auto bad = env.executor.defer_async([] {
         throw std::runtime_error("oops");
     });
-    env.executor.run(bad);
+    bad.start();
     bad.wait();
 
-    auto good = tfl::AsyncTask([] {});
-    env.executor.run(good);
+    auto good = env.executor.defer_async([] {});
+    good.start();
     good.wait();
 }
 
@@ -68,15 +68,15 @@ TEST_CASE("Exception: Executor still usable after exception", "[exception][clean
     TestEnv env;
 
     {
-        auto bad = tfl::AsyncTask([] { throw std::runtime_error("err"); });
-        env.executor.run(bad);
+        auto bad = env.executor.defer_async([] { throw std::runtime_error("err"); });
+        bad.start();
         bad.wait();
     }
 
     // 发生异常后，执行器仍能接受新任务
     std::atomic<int> n{0};
-    auto good = tfl::AsyncTask([&] { n.store(7); });
-    env.executor.run(good);
+    auto good = env.executor.defer_async([&] { n.store(7); });
+    good.start();
     good.wait();
     REQUIRE(n.load() == 7);
 }
@@ -134,8 +134,8 @@ TEST_CASE("Exception: has_exception after Flow completes", "[exception][has_exce
     SECTION("Flow with exception") {
         tfl::Flow flow;
         flow.emplace([] { throw std::runtime_error("planned"); });
-        auto task = tfl::AsyncTask(flow);
-        env.executor.run(task);
+        auto task = env.executor.defer_async(flow);
+        task.start();
         task.wait();
     }
 
@@ -143,8 +143,8 @@ TEST_CASE("Exception: has_exception after Flow completes", "[exception][has_exce
         tfl::Flow flow;
         flow.emplace([] {});
         flow.emplace([] {});
-        auto task = tfl::AsyncTask(flow);
-        env.executor.run(task);
+        auto task = env.executor.defer_async(flow);
+        task.start();
         task.wait();
     }
 }
@@ -184,7 +184,7 @@ TEST_CASE("Exception: multiple exceptions only first one is captured", "[excepti
     auto c = flow.emplace([] { throw std::runtime_error("second"); });
     a.precede(b, c);
 
-    auto task = tfl::AsyncTask(flow);
-    env.executor.run(task);
+    auto task = env.executor.defer_async(flow);
+    task.start();
     task.wait();
 }

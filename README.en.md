@@ -146,16 +146,21 @@ int result = sum.get();  // 42
 ### Deferred Execution
 
 ```cpp
-tfl::AsyncTask first([] { return 21; });
-tfl::AsyncTask second([first] { return first.get() * 2; });
+auto first = executor.defer_async([] { return 21; });
+auto second = executor.defer_async([first] { return first.get() * 2; });
 
-executor.run(second, first);
-executor.run(first);
+first.start();
+second.start(first);
 
 int result = second.get();  // 42
 ```
 
-`AsyncTask` is submitted by `run()`. Each task can be started only once, and its dependencies must also be started explicitly.
+`defer_async()` creates an idle task bound to the executor. Configure it, then call `start(dependencies...)` once.
+Predecessors must already be started or finished. Mixed `AsyncTask` / `AsyncFuture` dependencies are supported; empty handles are ignored.
+Each duplicate dependency retains a strong reference until the successor task object is destroyed. The executor must outlive submission and execution.
+Use `Runtime::async()` or `TaskGroup::async()` for child tasks; `defer_async().start()` creates an independent top-level task.
+
+See the [dependency notes](documentation/async-task-dependency-design.md) for the full contract and allocation-failure limitations.
 
 ### Repeated Execution
 

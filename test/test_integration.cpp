@@ -32,8 +32,8 @@ TEST_CASE("Integration: executor with many workers does not crash", "[integratio
     REQUIRE_NOTHROW([&] {
         tfl::Executor exec(kN);
         std::atomic<int> n{0};
-        auto t = tfl::AsyncTask([&] { n.store(42); });
-        exec.run(t); t.wait();
+        auto t = exec.defer_async([&] { n.store(42); });
+        t.start(); t.wait();
         REQUIRE(n.load() == 42);
     }());
 }

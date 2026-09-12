@@ -189,8 +189,8 @@ TEST_CASE("AsyncFuture: Runtime cooperatively waits for a result", "[future][run
 /// @test [future][dump] 字符串与流输出一致，并包含方向和任务名称。
 TEST_CASE("AsyncFuture: dump and task type", "[future][dump]") {
     TestEnv env;
-    auto task = tfl::AsyncTask([] { return 7; }).name("result_node");
-    env.executor.run(task).wait();
+    auto task = env.executor.defer_async([] { return 7; }).name("result_node");
+    task.start().wait();
     const tfl::AsyncFuture<int> future = task;
     REQUIRE(future.type() != tfl::TaskType::None);
     std::ostringstream stream;

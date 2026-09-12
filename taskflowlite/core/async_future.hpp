@@ -411,7 +411,7 @@ void AsyncFuture<R>::_decrement_ref() noexcept {
     m_result = nullptr;
 
     if (work && work->_decrement_ref()) {
-        destroy_work(work);
+        work->_destroy_async();
     }
 }
 

@@ -146,16 +146,21 @@ int result = sum.get();  // 42
 ### 延迟启动
 
 ```cpp
-tfl::AsyncTask first([] { return 21; });
-tfl::AsyncTask second([first] { return first.get() * 2; });
+auto first = executor.defer_async([] { return 21; });
+auto second = executor.defer_async([first] { return first.get() * 2; });
 
-executor.run(second, first);
-executor.run(first);
+first.start();
+second.start(first);
 
 int result = second.get();  // 42
 ```
 
-`AsyncTask` 在 `run()` 时提交，每个任务只能启动一次；依赖中的任务也需要显式启动。
+`defer_async()` 创建绑定当前执行器的 Idle 任务，配置后通过 `start(依赖...)` 启动一次。
+前驱必须已启动或完成；支持混合 `AsyncTask` / `AsyncFuture`，空依赖忽略。
+重复依赖分别持有强引用，直到后继任务对象销毁；执行器须在启动及执行期间保持有效。
+Runtime / TaskGroup 的子任务使用各自的 `async()`；通过 `defer_async().start()` 启动的是独立顶层任务。
+
+完整语义及内存分配失败限制见[异步任务依赖说明](documentation/async-task-dependency-design.md)。
 
 ### 重复执行
 
