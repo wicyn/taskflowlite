@@ -29,15 +29,9 @@
 // ============================================================================
 // 编译期版本宏：版本号的源码定义。
 // ============================================================================
-<<<<<<< HEAD
 #define TASKFLOWLITE_VERSION_MAJOR 0
 #define TASKFLOWLITE_VERSION_MINOR 4
 #define TASKFLOWLITE_VERSION_PATCH 1
-=======
-#define TASKFLOWLITE_VERSION_MAJOR 3
-#define TASKFLOWLITE_VERSION_MINOR 0
-#define TASKFLOWLITE_VERSION_PATCH 0
->>>>>>> eb321c7 (refactor(async): 重构 AsyncTask 延迟启动与动态依赖模型)
 
 namespace tfl {
 
