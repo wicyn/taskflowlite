@@ -38,7 +38,7 @@ public:
     /// @brief 向当前图插入不执行用户 callable 的占位节点。
     /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
     /// @throws std::bad_alloc 节点或图存储分配失败。
-    [[nodiscard]] Task placeholder();
+    Task placeholder();
 
     /// @brief 向当前图插入普通 callable 节点。
     /// @tparam T 满足 `basic_invocable` 的 callable 类型。
@@ -49,7 +49,7 @@ public:
     /// @note callable 按衰减类型保存：左值构造副本，右值转发到节点存储。
     template <typename T>
         requires (basic_invocable<T> && capturable<T>)
-    [[nodiscard]] Task emplace(T&& task);
+    Task emplace(T&& task);
 
     /// @brief 向当前图插入可选择一个后继的条件分支节点。
     /// @tparam T 满足 `branch_invocable` 的 callable 类型。
@@ -60,7 +60,7 @@ public:
     /// @note 注入的 `Branch&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
     template <typename T>
         requires (branch_invocable<T> && capturable<T>)
-    [[nodiscard]] Task emplace(T&& task);
+    Task emplace(T&& task);
 
     /// @brief 向当前图插入可选择多个后继的条件分支节点。
     /// @tparam T 满足 `multi_branch_invocable` 的 callable 类型。
@@ -71,7 +71,7 @@ public:
     /// @note 注入的 `MultiBranch&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
     template <typename T>
         requires (multi_branch_invocable<T> && capturable<T>)
-    [[nodiscard]] Task emplace(T&& task);
+    Task emplace(T&& task);
 
     /// @brief 向当前图插入可强制激活一个后继的跳转节点。
     /// @tparam T 满足 `jump_invocable` 的 callable 类型。
@@ -82,7 +82,7 @@ public:
     /// @note 注入的 `Jump&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
     template <typename T>
         requires (jump_invocable<T> && capturable<T>)
-    [[nodiscard]] Task emplace(T&& task);
+    Task emplace(T&& task);
 
     /// @brief 向当前图插入可强制激活多个后继的跳转节点。
     /// @tparam T 满足 `multi_jump_invocable` 的 callable 类型。
@@ -93,7 +93,7 @@ public:
     /// @note 注入的 `MultiJump&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
     template <typename T>
         requires (multi_jump_invocable<T> && capturable<T>)
-    [[nodiscard]] Task emplace(T&& task);
+    Task emplace(T&& task);
 
     /// @brief 向当前图插入可在执行期间动态派发任务的运行时节点。
     /// @tparam T 满足 `runtime_invocable` 的 callable 类型。
@@ -104,7 +104,7 @@ public:
     /// @note 注入的 `Runtime&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
     template <typename T>
         requires (runtime_invocable<T> && capturable<T>)
-    [[nodiscard]] Task emplace(T&& task);
+    Task emplace(T&& task);
 
     /// @brief 向当前图插入可在执行期间构建动态子图的节点。
     /// @tparam T 满足 `subflow_invocable` 的 callable 类型。
@@ -115,7 +115,7 @@ public:
     /// @note 注入的 `SubFlow&` 仅在本次 callable 调用期间有效，不得保存或跨线程使用。
     template <typename T>
         requires (subflow_invocable<T> && capturable<T>)
-    [[nodiscard]] Task emplace(T&& task);
+    Task emplace(T&& task);
 
     /// @brief 向当前图插入执行指定子图一次的模块节点。
     /// @tparam Gh 满足 `graph_holder` 的子图持有者类型。
@@ -125,7 +125,7 @@ public:
     /// @throws ... 子图持有者存储构造失败时原样传播。
     /// @warning 左值子图必须存活到该模块节点完成最后一次执行。
     template <graph_holder Gh>
-    [[nodiscard]] Task emplace(Gh&& gh);
+    Task emplace(Gh&& gh);
 
     /// @brief 向当前图插入最多执行指定子图 `num` 次的模块节点。
     /// @tparam Gh 满足 `graph_holder` 的子图持有者类型。
@@ -137,7 +137,7 @@ public:
     /// @warning 左值子图必须存活到该模块节点完成最后一次执行。
     /// @note 子图为空、拓扑停止或执行异常时，实际迭代次数可能少于 `num`。
     template <graph_holder Gh>
-    [[nodiscard]] Task emplace(Gh&& gh, std::uint64_t num);
+    Task emplace(Gh&& gh, std::uint64_t num);
 
     /// @brief 向当前图插入由谓词控制迭代次数的模块节点。
     /// @tparam Gh 满足 `graph_holder` 的子图持有者类型。
@@ -151,7 +151,7 @@ public:
     /// @note 谓词按衰减类型保存；空子图会直接结束迭代。
     template <graph_holder Gh, predicate P>
         requires capturable<P>
-    [[nodiscard]] Task emplace(Gh&& gh, P&& pred);
+    Task emplace(Gh&& gh, P&& pred);
 
     /// @brief 按参数顺序批量插入任务，支持 callable、子图与 `tfl::pack` 混合传入。
     /// @tparam Ts 至少两个参数，每个类型满足 `callback`、`graph_holder` 或 `task_pack`。
@@ -166,7 +166,7 @@ public:
     template <typename... Ts>
         requires (sizeof...(Ts) > 1) &&
                 ((callback<Ts> || graph_holder<Ts> || task_pack<Ts>) && ...)
-    [[nodiscard]] auto emplace(Ts&&... tasks);
+    auto emplace(Ts&&... tasks);
 
     /// @brief 从当前图断开并销毁指定节点。
     /// @param task 待删除节点的非拥有句柄；空句柄或其他图的节点会被忽略。
