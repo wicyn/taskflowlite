@@ -55,7 +55,7 @@ namespace tfl {
 /// @warning 创建任务的 Executor 必须在 start 调用及任务执行期间保持有效。
 /// @warning 任务配置不得与启动、执行或其他配置修改并发进行。
 template <typename R>
-class AsyncTask final : public AsyncFuture<R> {
+class AsyncTask : public AsyncFuture<R> {
 
     friend class Runtime;
     friend class Executor;

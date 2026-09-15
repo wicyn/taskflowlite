@@ -19,6 +19,7 @@
 #include "core/jump.hpp"
 #include "core/executor.hpp"
 #include "core/async_task.hpp"
+#include "core/async_task_object.hpp"
 #include "core/task.hpp"
 #include "core/flow.hpp"
 #include "core/async_future.hpp"
