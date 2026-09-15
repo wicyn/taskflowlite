@@ -9,8 +9,11 @@
 
 #pragma once
 #include <cmath>
+#include <concepts>
 #include <cstring>
 #include <functional>
+#include <type_traits>
+#include <utility>
 
 #include "work.hpp"
 #include "runtime.hpp"
@@ -78,6 +81,7 @@ do {                                                                            
         explicit PlaceholderWork() noexcept = default;
     };
 
+
 // ============================================================================
 // TaskType::Basic 家族
 // ============================================================================
@@ -93,10 +97,29 @@ class BasicWork {
 public:
     static constexpr TaskType TYPE = TaskType::Basic;
 
+    /// @brief 从传入的 callable 复制或移动构造内部对象。
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit BasicWork(U&& f)
+    explicit BasicWork(U&& f) noexcept(noexcept(F{std::forward<U>(f)}))
         : m_func{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit BasicWork(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<F, Args&&...>)
+        : m_func(std::forward<Args>(args)...) {}
+
+    /// @brief 返回内部保存的 callable 引用。
+    /// @warning 引用不延长对象生命周期；对象销毁或被替换后失效。
+    [[nodiscard]] F& object() noexcept {
+        return m_func;
+    }
+
+    /// @brief 返回内部保存的 callable 常量引用。
+    [[nodiscard]] const F& object() const noexcept {
+        return m_func;
+    }
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "rectangle", "#f5f5f5", "#9ca3af", "#1f2937", "8");
@@ -105,7 +128,6 @@ public:
 protected:
     TFL_NO_UNIQUE_ADDRESS F m_func;
 };
-
 
 /// @brief 为单目标条件分支节点提供 callable 存储、`TaskType::Branch` 和 D2 渲染语义。
 ///
@@ -121,8 +143,26 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit BranchWork(U&& f)
+    explicit BranchWork(U&& f) noexcept(noexcept(F{std::forward<U>(f)}))
         : m_func{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit BranchWork(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<F, Args&&...>)
+        : m_func(std::forward<Args>(args)...) {}
+
+    /// @brief 返回内部保存的 callable 引用。
+    /// @warning 引用不延长对象生命周期；对象销毁或被替换后失效。
+    [[nodiscard]] F& object() noexcept {
+        return m_func;
+    }
+
+    /// @brief 返回内部保存的 callable 常量引用。
+    [[nodiscard]] const F& object() const noexcept {
+        return m_func;
+    }
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "diamond", "#dbeafe", "#3b82f6", "#1e3a5f", "8");
@@ -146,8 +186,26 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit MultiBranchWork(U&& f)
+    explicit MultiBranchWork(U&& f) noexcept(noexcept(F{std::forward<U>(f)}))
         : m_func{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit MultiBranchWork(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<F, Args&&...>)
+        : m_func(std::forward<Args>(args)...) {}
+
+    /// @brief 返回内部保存的 callable 引用。
+    /// @warning 引用不延长对象生命周期；对象销毁或被替换后失效。
+    [[nodiscard]] F& object() noexcept {
+        return m_func;
+    }
+
+    /// @brief 返回内部保存的 callable 常量引用。
+    [[nodiscard]] const F& object() const noexcept {
+        return m_func;
+    }
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "hexagon", "#bfdbfe", "#2563eb", "#1e3a5f", "8");
@@ -171,8 +229,26 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit JumpWork(U&& f)
+    explicit JumpWork(U&& f) noexcept(noexcept(F{std::forward<U>(f)}))
         : m_func{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit JumpWork(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<F, Args&&...>)
+        : m_func(std::forward<Args>(args)...) {}
+
+    /// @brief 返回内部保存的 callable 引用。
+    /// @warning 引用不延长对象生命周期；对象销毁或被替换后失效。
+    [[nodiscard]] F& object() noexcept {
+        return m_func;
+    }
+
+    /// @brief 返回内部保存的 callable 常量引用。
+    [[nodiscard]] const F& object() const noexcept {
+        return m_func;
+    }
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "diamond", "#fee2e2", "#ef4444", "#7f1d1d", "8", "5");
@@ -196,8 +272,26 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit MultiJumpWork(U&& f)
+    explicit MultiJumpWork(U&& f) noexcept(noexcept(F{std::forward<U>(f)}))
         : m_func{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit MultiJumpWork(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<F, Args&&...>)
+        : m_func(std::forward<Args>(args)...) {}
+
+    /// @brief 返回内部保存的 callable 引用。
+    /// @warning 引用不延长对象生命周期；对象销毁或被替换后失效。
+    [[nodiscard]] F& object() noexcept {
+        return m_func;
+    }
+
+    /// @brief 返回内部保存的 callable 常量引用。
+    [[nodiscard]] const F& object() const noexcept {
+        return m_func;
+    }
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "hexagon", "#fecaca", "#dc2626", "#7f1d1d", "8", "5");
@@ -221,8 +315,26 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit RuntimeWork(U&& f)
+    explicit RuntimeWork(U&& f) noexcept(noexcept(F{std::forward<U>(f)}))
         : m_func{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit RuntimeWork(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<F, Args&&...>)
+        : m_func(std::forward<Args>(args)...) {}
+
+    /// @brief 返回内部保存的 callable 引用。
+    /// @warning 引用不延长对象生命周期；对象销毁或被替换后失效。
+    [[nodiscard]] F& object() noexcept {
+        return m_func;
+    }
+
+    /// @brief 返回内部保存的 callable 常量引用。
+    [[nodiscard]] const F& object() const noexcept {
+        return m_func;
+    }
 
     void dump(const Work& w, std::ostream& os) const {
         D2Renderer::render_work(os, w, "rectangle", "#fce4ec", "#e57373", "#6d1b1b", "30");
@@ -261,6 +373,54 @@ protected:
 
 };
 
+/// @brief 为 SubFlow 节点提供 callable、内部 Graph 存储和统一图渲染语义。
+///
+/// 按值保存 callable 和内部 Graph，通过 GraphWork 提供固定 TaskType::Graph 与 D2 渲染。
+/// 本类不处理停止检查、Semaphore、Observer、挂起恢复或依赖传播。
+/// 具体执行协议由各个 SubFlow Invoker 与 Executor 完成。
+///
+/// @tparam F 节点按值拥有的 SubFlow callable 类型。
+template <typename F>
+class SubFlowWork : public GraphWork<SubFlowWork<F>> {
+    friend class GraphWork<SubFlowWork<F>>;
+
+public:
+    /// @brief 从传入的 callable 复制或移动构造内部对象。
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit SubFlowWork(U&& f) noexcept(noexcept(F{std::forward<U>(f)}) && std::is_nothrow_default_constructible_v<Graph>)
+        : m_func{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit SubFlowWork(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<F, Args&&...> && std::is_nothrow_default_constructible_v<Graph>)
+        : m_func(std::forward<Args>(args)...) {}
+
+    /// @brief 返回内部保存的 callable 引用。
+    /// @warning 引用不延长对象生命周期；对象销毁或被替换后失效。
+    [[nodiscard]] F& object() noexcept {
+        return m_func;
+    }
+
+    /// @brief 返回内部保存的 callable 常量引用。
+    [[nodiscard]] const F& object() const noexcept {
+        return m_func;
+    }
+
+protected:
+    TFL_NO_UNIQUE_ADDRESS F m_func;
+    Graph m_graph;
+
+    [[nodiscard]] Graph& graph() noexcept {
+        return m_graph;
+    }
+
+    [[nodiscard]] const Graph& graph() const noexcept {
+        return m_graph;
+    }
+};
 
 
 // ============================================================================
@@ -302,10 +462,17 @@ public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::STRONG;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
+    /// @brief 从传入的 callable 复制或移动构造任务主体。
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit BasicInvoker(U&& f)
+    explicit BasicInvoker(U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Base{std::forward<U>(f)} {}
+
+    /// @brief 将参数转发到内部 callable 的原地构造函数。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit BasicInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         if (w._stop_requested()) [[unlikely]] {
@@ -366,8 +533,15 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit BranchInvoker(U&& f)
+    explicit BranchInvoker(U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Base{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit BranchInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         if (w._stop_requested()) [[unlikely]] {
@@ -429,8 +603,15 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit MultiBranchInvoker(U&& f)
+    explicit MultiBranchInvoker(U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Base{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit MultiBranchInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         if (w._stop_requested()) [[unlikely]] {
@@ -493,8 +674,15 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit JumpInvoker(U&& f)
+    explicit JumpInvoker(U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Base{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit JumpInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         if (w._stop_requested()) [[unlikely]] {
@@ -557,8 +745,15 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit MultiJumpInvoker(U&& f)
+    explicit MultiJumpInvoker(U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Base{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit MultiJumpInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         if (w._stop_requested()) [[unlikely]] {
@@ -625,8 +820,15 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit RuntimeInvoker(U&& f)
+    explicit RuntimeInvoker(U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Base{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit RuntimeInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入：尚未因动态 child / 子图进入 PREEMPTED 挂起状态。
@@ -692,22 +894,11 @@ public:
 ///
 /// @tparam F 节点按值拥有的 SubFlow callable 类型。
 template <typename F>
-class SubFlowInvoker final : public GraphWork<SubFlowInvoker<F>> {
-    using Self = SubFlowInvoker<F>;
-    using Base = GraphWork<Self>;
+class SubFlowInvoker final : public SubFlowWork<F> {
+    using Base = SubFlowWork<F>;
 
-    friend class GraphWork<Self>;
-
-    TFL_NO_UNIQUE_ADDRESS F m_func;
-    Graph m_graph;
-
-    [[nodiscard]] Graph& graph() noexcept {
-        return m_graph;
-    }
-
-    [[nodiscard]] const Graph& graph() const noexcept {
-        return m_graph;
-    }
+    using Base::m_func;
+    using Base::m_graph;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::STRONG;
@@ -715,8 +906,15 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit SubFlowInvoker(U&& f)
-        : m_func{std::forward<U>(f)} {}
+    explicit SubFlowInvoker(U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
+        : Base{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit SubFlowInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入：尚未因动态 child / 子图进入 PREEMPTED 挂起状态。
@@ -807,10 +1005,33 @@ public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::STRONG;
     static constexpr Work::Control::type CONTROL = Work::Control::NONE;
 
+    /// @brief 从传入的子图持有者存储和终止谓词构造模块。
     template <typename Ghs, typename V>
-    explicit ModuleInvoker(Ghs&& ghs, V&& pred)
+        requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&>
+    explicit ModuleInvoker(Ghs&& ghs, V&& pred) noexcept(noexcept(GhStore{std::forward<Ghs>(ghs)}) && noexcept(P{std::forward<V>(pred)}))
         : m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)} {}
+
+    /// @brief 原地构造子图持有者，并保存终止谓词。
+    /// @param pred 终止谓词；返回 true 时停止迭代。
+    /// @param args 完美转发给 GhStore 构造函数的参数。
+    /// @note 不创建 GhStore 临时对象，不要求 GhStore 可复制或可移动。
+    template <typename V, typename... Args>
+        requires std::constructible_from<P, V&&> && std::constructible_from<GhStore, Args&&...>
+    explicit ModuleInvoker(std::in_place_t, V&& pred, Args&&... args) noexcept(std::is_nothrow_constructible_v<GhStore, Args&&...> && noexcept(P{std::forward<V>(pred)}))
+        : m_gh_store(std::forward<Args>(args)...)
+        , m_pred{std::forward<V>(pred)} {}
+
+    /// @brief 返回内部保存的子图持有者存储对象引用。
+    /// @warning 引用不延长对象生命周期；对象销毁或被替换后失效。
+    [[nodiscard]] GhStore& object() noexcept {
+        return m_gh_store;
+    }
+
+    /// @brief 返回内部保存的子图持有者存储对象常量引用。
+    [[nodiscard]] const GhStore& object() const noexcept {
+        return m_gh_store;
+    }
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         Graph& graph = this->graph();
@@ -878,7 +1099,6 @@ public:
     }
 };
 
-
 // ============================================================================
 // SilentAsync Invoker 家族
 // ============================================================================
@@ -905,7 +1125,7 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit SilentAsyncBasicInvoker(Executor& executor, Topology* parent_topology, U&& f)
+    explicit SilentAsyncBasicInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : TopologyStorage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
@@ -943,7 +1163,7 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit SilentAsyncRuntimeInvoker(Executor& executor, Topology* parent_topology, U&& f)
+    explicit SilentAsyncRuntimeInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : TopologyStorage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
@@ -985,22 +1205,11 @@ public:
 ///
 /// @tparam F 按值拥有的 SubFlow callable 类型。
 template <typename F>
-class SilentAsyncSubFlowInvoker final : public TopologyStorage, public GraphWork<SilentAsyncSubFlowInvoker<F>> {
-    using Self = SilentAsyncSubFlowInvoker<F>;
-    using Base = GraphWork<Self>;
+class SilentAsyncSubFlowInvoker final : public TopologyStorage, public SubFlowWork<F> {
+    using Base = SubFlowWork<F>;
 
-    friend class GraphWork<Self>;
-
-    TFL_NO_UNIQUE_ADDRESS F m_func;
-    Graph m_graph;
-
-    [[nodiscard]] Graph& graph() noexcept {
-        return m_graph;
-    }
-
-    [[nodiscard]] const Graph& graph() const noexcept {
-        return m_graph;
-    }
+    using Base::m_func;
+    using Base::m_graph;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::IMPLICIT_ANCHOR;
@@ -1008,9 +1217,9 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit SilentAsyncSubFlowInvoker(Executor& executor, Topology* parent_topology, U&& f)
+    explicit SilentAsyncSubFlowInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : TopologyStorage{executor, parent_topology}
-        , m_func{std::forward<U>(f)} {}
+        , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入。
@@ -1078,7 +1287,7 @@ public:
 
     template <typename Ghs, typename V, typename W>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&> && std::constructible_from<C, W&&>
-    explicit SilentAsyncModuleInvoker(Executor& executor, Topology* parent_topology, Ghs&& ghs, V&& pred, W&& callback)
+    explicit SilentAsyncModuleInvoker(Executor& executor, Topology* parent_topology, Ghs&& ghs, V&& pred, W&& callback) noexcept(noexcept(GhStore{std::forward<Ghs>(ghs)}) && noexcept(P{std::forward<V>(pred)}) && noexcept(C{std::forward<W>(callback)}))
         : TopologyStorage{executor, parent_topology}
         , m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)}
@@ -1158,7 +1367,7 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncBasicInvoker(Executor& executor, Topology* parent_topology, U&& f)
+    explicit AsyncBasicInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Storage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
@@ -1199,7 +1408,7 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncRuntimeInvoker(Executor& executor, Topology* parent_topology, U&& f)
+    explicit AsyncRuntimeInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Storage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
@@ -1240,24 +1449,13 @@ public:
 ///
 /// @tparam F 按值拥有的 SubFlow callable 类型。
 template <typename F>
-class AsyncSubFlowInvoker final : public ResultStorage<subflow_return_t<F>>, public GraphWork<AsyncSubFlowInvoker<F>> {
+class AsyncSubFlowInvoker final : public ResultStorage<subflow_return_t<F>>, public SubFlowWork<F> {
     using R = subflow_return_t<F>;
-    using Self = AsyncSubFlowInvoker<F>;
     using Storage = ResultStorage<R>;
-    using Base = GraphWork<Self>;
+    using Base = SubFlowWork<F>;
 
-    friend class GraphWork<Self>;
-
-    TFL_NO_UNIQUE_ADDRESS F m_func;
-    Graph m_graph;
-
-    [[nodiscard]] Graph& graph() noexcept {
-        return m_graph;
-    }
-
-    [[nodiscard]] const Graph& graph() const noexcept {
-        return m_graph;
-    }
+    using Base::m_func;
+    using Base::m_graph;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
@@ -1265,9 +1463,9 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit AsyncSubFlowInvoker(Executor& executor, Topology* parent_topology, U&& f)
+    explicit AsyncSubFlowInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Storage{executor, parent_topology}
-        , m_func{std::forward<U>(f)} {}
+        , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入。
@@ -1336,7 +1534,7 @@ public:
 
     template <typename Ghs, typename V, typename W>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&> && std::constructible_from<C, W&&>
-    explicit AsyncModuleInvoker(Executor& executor, Topology* parent_topology, Ghs&& ghs, V&& pred, W&& callback)
+    explicit AsyncModuleInvoker(Executor& executor, Topology* parent_topology, Ghs&& ghs, V&& pred, W&& callback) noexcept(noexcept(GhStore{std::forward<Ghs>(ghs)}) && noexcept(P{std::forward<V>(pred)}) && noexcept(C{std::forward<W>(callback)}))
         : Storage{executor, parent_topology}
         , m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)}
@@ -1415,9 +1613,17 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncTaskBasicInvoker(Executor& executor, U&& f)
+    explicit AsyncTaskBasicInvoker(Executor& executor, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Storage{executor}
         , Base{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit AsyncTaskBasicInvoker(Executor& executor, std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Storage{executor}
+        , Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 执行前获取 Semaphore；失败时当前 Work 进入 waiter，本次 invoke 立即让出 Worker。
@@ -1475,9 +1681,17 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncTaskRuntimeInvoker(Executor& executor, U&& f)
+    explicit AsyncTaskRuntimeInvoker(Executor& executor, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Storage{executor}
         , Base{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit AsyncTaskRuntimeInvoker(Executor& executor, std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Storage{executor}
+        , Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入。
@@ -1538,24 +1752,13 @@ public:
 ///
 /// @tparam F 按值拥有的 SubFlow callable 类型。
 template <typename F>
-class AsyncTaskSubFlowInvoker final : public ResultStorage<subflow_return_t<F>>, public GraphWork<AsyncTaskSubFlowInvoker<F>> {
+class AsyncTaskSubFlowInvoker final : public ResultStorage<subflow_return_t<F>>, public SubFlowWork<F> {
     using R = subflow_return_t<F>;
-    using Self = AsyncTaskSubFlowInvoker<F>;
     using Storage = ResultStorage<R>;
-    using Base = GraphWork<Self>;
+    using Base = SubFlowWork<F>;
 
-    friend class GraphWork<Self>;
-
-    TFL_NO_UNIQUE_ADDRESS F m_func;
-    Graph m_graph;
-
-    [[nodiscard]] Graph& graph() noexcept {
-        return m_graph;
-    }
-
-    [[nodiscard]] const Graph& graph() const noexcept {
-        return m_graph;
-    }
+    using Base::m_func;
+    using Base::m_graph;
 
 public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
@@ -1563,9 +1766,17 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit AsyncTaskSubFlowInvoker(Executor& executor, U&& f)
+    explicit AsyncTaskSubFlowInvoker(Executor& executor, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
         : Storage{executor}
-        , m_func{std::forward<U>(f)} {}
+        , Base{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit AsyncTaskSubFlowInvoker(Executor& executor, std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Storage{executor}
+        , Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         // 首次进入。
@@ -1653,13 +1864,39 @@ public:
     static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
     static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
 
+    /// @brief 从传入的子图持有者存储、终止谓词和完成回调构造模块。
     template <typename Ghs, typename V, typename W>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&> && std::constructible_from<C, W&&>
-    explicit AsyncTaskModuleInvoker(Executor& executor, Ghs&& ghs, V&& pred, W&& callback)
+    explicit AsyncTaskModuleInvoker(Executor& executor, Ghs&& ghs, V&& pred, W&& callback) noexcept(noexcept(GhStore{std::forward<Ghs>(ghs)}) && noexcept(P{std::forward<V>(pred)}) && noexcept(C{std::forward<W>(callback)}))
         : Storage{executor}
         , m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(callback)} {}
+
+    /// @brief 原地构造子图持有者，并保存终止谓词和完成回调。
+    /// @param executor 模块绑定的执行器。
+    /// @param pred 终止谓词；返回 true 时停止迭代。
+    /// @param callback 模块整体结束时调用的完成回调。
+    /// @param args 完美转发给 GhStore 构造函数的参数。
+    /// @note 不创建 GhStore 临时对象，不要求 GhStore 可复制或可移动。
+    template <typename V, typename W, typename... Args>
+        requires std::constructible_from<P, V&&> && std::constructible_from<C, W&&> && std::constructible_from<GhStore, Args&&...>
+    explicit AsyncTaskModuleInvoker(Executor& executor, std::in_place_t, V&& pred, W&& callback, Args&&... args) noexcept(std::is_nothrow_constructible_v<GhStore, Args&&...> && noexcept(P{std::forward<V>(pred)}) && noexcept(C{std::forward<W>(callback)}))
+        : Storage{executor}
+        , m_gh_store(std::forward<Args>(args)...)
+        , m_pred{std::forward<V>(pred)}
+        , m_callback{std::forward<W>(callback)} {}
+
+    /// @brief 返回内部保存的子图持有者存储对象引用。
+    /// @warning 引用不延长对象生命周期；对象销毁或被替换后失效。
+    [[nodiscard]] GhStore& object() noexcept {
+        return m_gh_store;
+    }
+
+    /// @brief 返回内部保存的子图持有者存储对象常量引用。
+    [[nodiscard]] const GhStore& object() const noexcept {
+        return m_gh_store;
+    }
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
         Graph& graph = this->graph();
@@ -1718,5 +1955,4 @@ public:
     }
 
 };
-
 }  // namespace tfl

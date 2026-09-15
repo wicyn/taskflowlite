@@ -195,7 +195,7 @@ public:
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
     template <graph_holder Gh, async_future... Deps>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图一次，并在完成后执行回调。
     /// @tparam Gh 满足 graph_holder concept。
@@ -207,7 +207,7 @@ public:
     /// @return AsyncFuture<void>。
     template <graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, C&& cb, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图 @p num 次，并在全部前置依赖完成后开始执行。
     /// @tparam Gh 满足 graph_holder concept。
@@ -217,7 +217,7 @@ public:
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
     template <graph_holder Gh, async_future... Deps>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, std::uint64_t num, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图 @p num 次，并在完成后执行回调。
     /// @tparam Gh 满足 graph_holder concept。
@@ -230,7 +230,7 @@ public:
     /// @return AsyncFuture<void>。
     template <graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图按谓词条件循环，并在全部前置依赖完成后开始执行。
     /// @tparam Gh 满足 graph_holder concept。
@@ -242,7 +242,7 @@ public:
     /// @return AsyncFuture<void>。
     template <graph_holder Gh, predicate P, async_future... Deps>
         requires capturable<P>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图按谓词条件循环，并在完成后执行回调。
     /// @tparam Gh 满足 graph_holder concept。
@@ -256,7 +256,7 @@ public:
     /// @return AsyncFuture<void>。
     template <graph_holder Gh, predicate P, callback C, async_future... Deps>
         requires capturable<P, C>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
 
     // ============================================================================
@@ -300,7 +300,7 @@ public:
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     template <graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
-    [[nodiscard]] AsyncTask<void> defer_async(Gh&& gh, C&& callback = C{});
+    [[nodiscard]] auto defer_async(Gh&& gh, C&& callback = C{}) -> AsyncTask<void>;
 
     /// @brief 创建定次执行任务图、尚未启动的异步任务。
     /// @tparam Gh 满足 graph_holder concept 的任务图持有者类型。
@@ -312,7 +312,7 @@ public:
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     template <graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
-    [[nodiscard]] AsyncTask<void> defer_async(Gh&& gh, std::uint64_t num, C&& callback = C{});
+    [[nodiscard]] auto defer_async(Gh&& gh, std::uint64_t num, C&& callback = C{}) -> AsyncTask<void>;
 
     /// @brief 创建按谓词循环执行任务图、尚未启动的异步任务。
     /// @tparam Gh 满足 graph_holder concept 的任务图持有者类型。
@@ -325,7 +325,131 @@ public:
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     template <graph_holder Gh, predicate P, callback C = noop_callback>
         requires capturable<P, C>
-    [[nodiscard]] AsyncTask<void> defer_async(Gh&& gh, P&& pred, C&& callback = C{});
+    [[nodiscard]] auto defer_async(Gh&& gh, P&& pred, C&& callback = C{}) -> AsyncTask<void>;
+
+    /// @brief 原地构造普通 callable 对象，并创建尚未启动的异步任务。
+    /// @tparam T 节点实际保存的 callable 类型。
+    /// @tparam Args 构造参数类型包。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return 关联新任务及业务对象的 AsyncTaskObject。
+    /// @note 不要求 T 可复制或可移动；调用 start() 后才提交执行。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && basic_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] auto defer_async_object(Args&&... args) -> AsyncTaskObject<basic_return_t<T>, T>;
+
+    /// @brief 原地构造 Runtime callable 对象，并创建尚未启动的异步任务。
+    /// @tparam T 节点实际保存的 callable 类型。
+    /// @tparam Args 构造参数类型包。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return 关联新任务及业务对象的 AsyncTaskObject。
+    /// @note 执行时注入 Runtime&；调用 start() 后才提交执行。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && runtime_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] auto defer_async_object(Args&&... args) -> AsyncTaskObject<runtime_return_t<T>, T>;
+
+    /// @brief 原地构造 SubFlow callable 对象，并创建尚未启动的异步任务。
+    /// @tparam T 节点实际保存的 callable 类型。
+    /// @tparam Args 构造参数类型包。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return 关联新任务及业务对象的 AsyncTaskObject。
+    /// @note 执行时注入 SubFlow&；调用 start() 后才提交执行。
+    /// @warning callable 不得保存框架注入的 SubFlow&。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && subflow_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] auto defer_async_object(Args&&... args) -> AsyncTaskObject<subflow_return_t<T>, T>;
+
+    // ============================================================================
+    // 延迟异步 Module 对象节点 —— 默认构造
+    // ============================================================================
+
+    /// @brief 原地默认构造子图持有者，并创建执行该子图一次、尚未启动的异步任务。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam C 完成回调类型，默认为 noop_callback。
+    /// @param callback 完成回调，省略时使用默认空回调。
+    /// @return 绑定当前 Executor、关联内部子图持有者的 AsyncTaskObject。
+    /// @note 本函数只创建任务，调用 start() 后才提交执行。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    template <graph_holder Gh, callback C = noop_callback>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && std::constructible_from<Gh>)
+    [[nodiscard]] auto defer_async_object(C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
+
+    /// @brief 原地默认构造子图持有者，并创建最多执行该子图 num 次、尚未启动的异步任务。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam C 完成回调类型，默认为 noop_callback。
+    /// @param num 最大执行次数；0 表示不执行子图，但仍会构造 Gh。
+    /// @param callback 完成回调，省略时使用默认空回调。
+    /// @return 绑定当前 Executor、关联内部子图持有者的 AsyncTaskObject。
+    /// @note 本函数只创建任务，调用 start() 后才提交执行。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
+    template <graph_holder Gh, callback C = noop_callback>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && std::constructible_from<Gh>)
+    [[nodiscard]] auto defer_async_object(std::uint64_t num, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
+
+    /// @brief 原地默认构造子图持有者，并创建由终止谓词控制迭代、尚未启动的异步任务。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam P 无参终止谓词类型。
+    /// @tparam C 完成回调类型，默认为 noop_callback。
+    /// @param pred 返回 true 时停止迭代，返回 false 时执行下一轮。
+    /// @param callback 完成回调，省略时使用默认空回调。
+    /// @return 绑定当前 Executor、关联内部子图持有者的 AsyncTaskObject。
+    /// @note 本函数只创建任务，调用 start() 后才提交执行。
+    /// @note 谓词和回调按衰减类型保存；使用 std::ref 显式借用外部对象。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    template <graph_holder Gh, predicate P, callback C = noop_callback>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P, C> && std::constructible_from<Gh>)
+    [[nodiscard]] auto defer_async_object(P&& pred, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
+
+    // ============================================================================
+    // 延迟异步 Module 对象节点 —— Tuple 参数构造
+    // ============================================================================
+
+    /// @brief 使用 tuple 中的参数原地构造子图持有者，并创建执行该子图一次、尚未启动的异步任务。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam Tuple 构造参数 tuple 类型，可带 cv/ref 属性。
+    /// @tparam C 完成回调类型，默认为 noop_callback。
+    /// @param args 构造参数 tuple，保留实际 cv/ref 属性展开并转发。
+    /// @param callback 完成回调，省略时使用默认空回调。
+    /// @return 绑定当前 Executor、关联内部子图持有者的 AsyncTaskObject。
+    /// @note 本次调用内立即展开 args，不保存 tuple 本身。
+    /// @note 本函数只创建任务，调用 start() 后才提交执行。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    template <graph_holder Gh, typename Tuple, callback C = noop_callback>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && tuple_constructible_from<Gh, Tuple&&>)
+    [[nodiscard]] auto defer_async_object(Tuple&& args, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
+
+    /// @brief 使用 tuple 中的参数原地构造子图持有者，并创建最多执行该子图 num 次、尚未启动的异步任务。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam Tuple 构造参数 tuple 类型，可带 cv/ref 属性。
+    /// @tparam C 完成回调类型，默认为 noop_callback。
+    /// @param args 构造参数 tuple，保留实际 cv/ref 属性展开并转发。
+    /// @param num 最大执行次数；0 表示不执行子图，但仍会构造 Gh。
+    /// @param callback 完成回调，省略时使用默认空回调。
+    /// @return 绑定当前 Executor、关联内部子图持有者的 AsyncTaskObject。
+    /// @note 本次调用内立即展开 args，不保存 tuple 本身。
+    /// @note 本函数只创建任务，调用 start() 后才提交执行。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
+    template <graph_holder Gh, typename Tuple, callback C = noop_callback>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && tuple_constructible_from<Gh, Tuple&&>)
+    [[nodiscard]] auto defer_async_object(Tuple&& args, std::uint64_t num, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
+
+    /// @brief 使用 tuple 中的参数原地构造子图持有者，并创建由终止谓词控制迭代、尚未启动的异步任务。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam Tuple 构造参数 tuple 类型，可带 cv/ref 属性。
+    /// @tparam P 无参终止谓词类型。
+    /// @tparam C 完成回调类型，默认为 noop_callback。
+    /// @param args 构造参数 tuple，保留实际 cv/ref 属性展开并转发。
+    /// @param pred 返回 true 时停止迭代，返回 false 时执行下一轮。
+    /// @param callback 完成回调，省略时使用默认空回调。
+    /// @return 绑定当前 Executor、关联内部子图持有者的 AsyncTaskObject。
+    /// @note 本次调用内立即展开 args，不保存 tuple 本身。
+    /// @note 本函数只创建任务，调用 start() 后才提交执行。
+    /// @note 谓词和回调按衰减类型保存；使用 std::ref 显式借用外部对象。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    template <graph_holder Gh, typename Tuple, predicate P, callback C = noop_callback>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P, C> && tuple_constructible_from<Gh, Tuple&&>)
+    [[nodiscard]] auto defer_async_object(Tuple&& args, P&& pred, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
 
     // ============================================================================
     // 同步与状态查询
@@ -857,18 +981,18 @@ inline auto Executor::async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_ret
 }
 
 template <graph_holder Gh, async_future... Deps>
-inline AsyncFuture<void> Executor::async(Gh&& gh, Deps&&... deps) {
+inline auto Executor::async(Gh&& gh, Deps&&... deps) -> AsyncFuture<void> {
     return async(std::forward<Gh>(gh), std::uint64_t{1}, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
 template <graph_holder Gh, callback C, async_future... Deps>
     requires capturable<C>
-inline AsyncFuture<void> Executor::async(Gh&& gh, C&& cb, Deps&&... deps) {
+inline auto Executor::async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     return async(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
 template <graph_holder Gh, async_future... Deps>
-inline AsyncFuture<void> Executor::async(Gh&& gh, std::uint64_t num, Deps&&... deps) {
+inline auto Executor::async(Gh&& gh, std::uint64_t num, Deps&&... deps) -> AsyncFuture<void> {
     return async(std::forward<Gh>(gh),
                  [num]() mutable noexcept -> bool { return num-- == 0; },
                  noop_callback{},
@@ -877,7 +1001,7 @@ inline AsyncFuture<void> Executor::async(Gh&& gh, std::uint64_t num, Deps&&... d
 
 template <graph_holder Gh, callback C, async_future... Deps>
     requires capturable<C>
-inline AsyncFuture<void> Executor::async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) {
+inline auto Executor::async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     return async(std::forward<Gh>(gh),
                  [num]() mutable noexcept -> bool { return num-- == 0; },
                  std::forward<C>(cb),
@@ -886,7 +1010,7 @@ inline AsyncFuture<void> Executor::async(Gh&& gh, std::uint64_t num, C&& cb, Dep
 
 template <graph_holder Gh, predicate P, async_future... Deps>
     requires capturable<P>
-inline AsyncFuture<void> Executor::async(Gh&& gh, P&& pred, Deps&&... deps) {
+inline auto Executor::async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void> {
     return async(std::forward<Gh>(gh),
                  std::forward<P>(pred),
                  noop_callback{},
@@ -895,7 +1019,7 @@ inline AsyncFuture<void> Executor::async(Gh&& gh, P&& pred, Deps&&... deps) {
 
 template <graph_holder Gh, predicate P, callback C, async_future... Deps>
     requires capturable<P, C>
-inline AsyncFuture<void> Executor::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) {
+inline auto Executor::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     auto [work, result] = make_async_module(nullptr,
                                             *this,
                                             nullptr,

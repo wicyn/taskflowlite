@@ -130,7 +130,7 @@ public:
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
     /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = false, graph_holder Gh, async_future... Deps>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行子图一次，在完成后调用回调并返回结果通道。
     /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
@@ -144,7 +144,7 @@ public:
     /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = false, graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, C&& cb, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步循环执行子图指定次数并返回结果通道。
     /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
@@ -156,7 +156,7 @@ public:
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
     /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = false, graph_holder Gh, async_future... Deps>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, std::uint64_t num, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步循环执行子图指定次数，在完成后调用回调并返回结果通道。
     /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
@@ -171,7 +171,7 @@ public:
     /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = false, graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行由谓词控制循环终止的子图并返回结果通道。
     /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
@@ -185,7 +185,7 @@ public:
     /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = false, graph_holder Gh, predicate P, async_future... Deps>
         requires capturable<P>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行由谓词控制循环终止的子图，在结束后调用回调并返回结果通道。
     /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
@@ -201,7 +201,7 @@ public:
     /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
     template <bool InheritTopology = false, graph_holder Gh, predicate P, callback C, async_future... Deps>
         requires capturable<P, C>
-    [[nodiscard]] AsyncFuture<void> async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps);
+    [[nodiscard]] auto async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行普通 callable 并保存其返回值。
     /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
@@ -476,36 +476,36 @@ inline void TaskGroup::silent_async(T&& task) {
 // ============================================================================
 
 template <bool InheritTopology, graph_holder Gh, async_future... Deps>
-inline AsyncFuture<void> TaskGroup::async(Gh&& gh, Deps&&... deps) {
+inline auto TaskGroup::async(Gh&& gh, Deps&&... deps) -> AsyncFuture<void> {
     return async<InheritTopology>(std::forward<Gh>(gh), 1ULL, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
 template <bool InheritTopology, graph_holder Gh, callback C, async_future... Deps>
     requires capturable<C>
-inline AsyncFuture<void> TaskGroup::async(Gh&& gh, C&& cb, Deps&&... deps) {
+inline auto TaskGroup::async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     return async<InheritTopology>(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
 template <bool InheritTopology, graph_holder Gh, async_future... Deps>
-inline AsyncFuture<void> TaskGroup::async(Gh&& gh, std::uint64_t num, Deps&&... deps) {
+inline auto TaskGroup::async(Gh&& gh, std::uint64_t num, Deps&&... deps) -> AsyncFuture<void> {
     return async<InheritTopology>(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
 template <bool InheritTopology, graph_holder Gh, callback C, async_future... Deps>
     requires capturable<C>
-inline AsyncFuture<void> TaskGroup::async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) {
+inline auto TaskGroup::async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     return async<InheritTopology>(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
 template <bool InheritTopology, graph_holder Gh, predicate P, async_future... Deps>
     requires capturable<P>
-inline AsyncFuture<void> TaskGroup::async(Gh&& gh, P&& pred, Deps&&... deps) {
+inline auto TaskGroup::async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void> {
     return async<InheritTopology>(std::forward<Gh>(gh), std::forward<P>(pred), noop_callback{}, std::forward<Deps>(deps)...);
 }
 
 template <bool InheritTopology, graph_holder Gh, predicate P, callback C, async_future... Deps>
     requires capturable<P, C>
-inline AsyncFuture<void> TaskGroup::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) {
+inline auto TaskGroup::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     Topology* parent_topology = nullptr;
 
     if constexpr (InheritTopology) {

@@ -22,6 +22,7 @@
 
 #include "graph.hpp"
 #include "task.hpp"
+#include "task_object.hpp"
 #include "traits.hpp"
 #include "utility.hpp"
 #include "work_factory_fwd.hpp"
@@ -31,7 +32,7 @@ namespace tfl {
 /// @brief 为 `Flow` 与 `SubFlow` 提供统一的任务节点创建和图结构修改接口。
 ///
 /// 构建器以非拥有引用绑定一个 `Graph`，通过 Work 工厂创建节点，再把节点所有权
-/// 交给 Graph。它不单独管理图的生命周期，返回的 `Task` 也只是节点句柄。
+/// 交给 Graph。它不单独管理图的生命周期，返回的 `Task` 和 `TaskObject` 也只是节点句柄。
 /// @warning 图结构修改不得与图执行并发；构建器及其句柄不得超过底层图的生命周期。
 class FlowBuilder : public Immovable<FlowBuilder> {
 public:
@@ -164,24 +165,188 @@ public:
     /// @note 每个元素的保存方式和生命周期要求与对应的 emplace 重载相同。
     /// @warning 批量插入不提供事务回滚；后续元素创建失败时，先前节点仍保留在图中。
     template <typename... Ts>
-        requires (sizeof...(Ts) > 1) &&
-                ((callback<Ts> || graph_holder<Ts> || task_pack<Ts>) && ...)
+        requires (sizeof...(Ts) > 1) && ((callback<Ts> || graph_holder<Ts> || task_pack<Ts>) && ...)
     auto emplace(Ts&&... tasks);
+
+    /// @brief 原地构造普通 callable，并返回带对象类型信息的任务句柄。
+    /// @tparam T 节点实际保存的 callable 类型。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return 非拥有的 TaskObject<T>；通过 object() 访问内部对象。
+    /// @throws std::bad_alloc 节点或图存储分配失败。
+    /// @throws ... T 构造失败时原样传播。
+    /// @note 不创建 T 临时对象，不要求 T 可复制或可移动。
+    /// @warning 节点销毁或 callable 被替换后，对象引用失效。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && basic_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] TaskObject<T> emplace_object(Args&&... args);
+
+    /// @brief 原地构造单目标条件分支 callable，并返回带对象类型信息的任务句柄。
+    /// @tparam T 节点实际保存的 callable 类型。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return 非拥有的 TaskObject<T>；通过 object() 访问内部对象。
+    /// @throws std::bad_alloc 节点或图存储分配失败。
+    /// @throws ... T 构造失败时原样传播。
+    /// @note 不创建 T 临时对象，不要求 T 可复制或可移动。
+    /// @warning 节点销毁或 callable 被替换后，对象引用失效。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && branch_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] TaskObject<T> emplace_object(Args&&... args);
+
+    /// @brief 原地构造多目标条件分支 callable，并返回带对象类型信息的任务句柄。
+    /// @tparam T 节点实际保存的 callable 类型。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return 非拥有的 TaskObject<T>；通过 object() 访问内部对象。
+    /// @throws std::bad_alloc 节点或图存储分配失败。
+    /// @throws ... T 构造失败时原样传播。
+    /// @note 不创建 T 临时对象，不要求 T 可复制或可移动。
+    /// @warning 节点销毁或 callable 被替换后，对象引用失效。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && multi_branch_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] TaskObject<T> emplace_object(Args&&... args);
+
+    /// @brief 原地构造单目标跳转 callable，并返回带对象类型信息的任务句柄。
+    /// @tparam T 节点实际保存的 callable 类型。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return 非拥有的 TaskObject<T>；通过 object() 访问内部对象。
+    /// @throws std::bad_alloc 节点或图存储分配失败。
+    /// @throws ... T 构造失败时原样传播。
+    /// @note 不创建 T 临时对象，不要求 T 可复制或可移动。
+    /// @warning 节点销毁或 callable 被替换后，对象引用失效。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && jump_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] TaskObject<T> emplace_object(Args&&... args);
+
+    /// @brief 原地构造多目标跳转 callable，并返回带对象类型信息的任务句柄。
+    /// @tparam T 节点实际保存的 callable 类型。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return 非拥有的 TaskObject<T>；通过 object() 访问内部对象。
+    /// @throws std::bad_alloc 节点或图存储分配失败。
+    /// @throws ... T 构造失败时原样传播。
+    /// @note 不创建 T 临时对象，不要求 T 可复制或可移动。
+    /// @warning 节点销毁或 callable 被替换后，对象引用失效。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && multi_jump_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] TaskObject<T> emplace_object(Args&&... args);
+
+    /// @brief 原地构造 Runtime callable，并返回带对象类型信息的任务句柄。
+    /// @tparam T 节点实际保存的 callable 类型。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return 非拥有的 TaskObject<T>；通过 object() 访问内部对象。
+    /// @throws std::bad_alloc 节点或图存储分配失败。
+    /// @throws ... T 构造失败时原样传播。
+    /// @note 不创建 T 临时对象，不要求 T 可复制或可移动。
+    /// @warning 节点销毁或 callable 被替换后，对象引用失效。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && runtime_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] TaskObject<T> emplace_object(Args&&... args);
+
+    /// @brief 原地构造 SubFlow callable，并返回带对象类型信息的任务句柄。
+    /// @tparam T 节点实际保存的 callable 类型。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return 非拥有的 TaskObject<T>；通过 object() 访问内部对象。
+    /// @throws std::bad_alloc 节点或图存储分配失败。
+    /// @throws ... T 构造失败时原样传播。
+    /// @note 不创建 T 临时对象，不要求 T 可复制或可移动。
+    /// @warning 节点销毁或 callable 被替换后，对象引用失效。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && subflow_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] TaskObject<T> emplace_object(Args&&... args);
+
+    // ============================================================================
+    // Module 对象节点 —— 默认构造
+    // ============================================================================
+
+    /// @brief 原地默认构造子图持有者，并插入执行该子图一次的模块节点。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @return 关联新节点及内部子图持有者的非拥有 TaskObject。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
+    template <graph_holder Gh>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
+    [[nodiscard]] TaskObject<Gh> emplace_object();
+
+    /// @brief 原地默认构造子图持有者，并插入最多执行该子图 num 次的模块节点。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @param num 最大执行次数；0 表示不执行子图，但仍会构造 Gh。
+    /// @return 关联新节点及内部子图持有者的非拥有 TaskObject。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
+    /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
+    template <graph_holder Gh>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
+    [[nodiscard]] TaskObject<Gh> emplace_object(std::uint64_t num);
+
+    /// @brief 原地默认构造子图持有者，并插入由终止谓词控制迭代的模块节点。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam P 无参终止谓词类型。
+    /// @param pred 返回 true 时停止迭代，返回 false 时执行下一轮。
+    /// @return 关联新节点及内部子图持有者的非拥有 TaskObject。
+    /// @note 谓词按衰减类型保存；使用 std::ref 显式借用外部谓词。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
+    template <graph_holder Gh, predicate P>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
+    [[nodiscard]] TaskObject<Gh> emplace_object(P&& pred);
+
+    // ============================================================================
+    // Module 对象节点 —— Tuple 参数构造
+    // ============================================================================
+
+    /// @brief 使用 tuple 中的参数原地构造子图持有者，并插入执行该子图一次的模块节点。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam Tuple 构造参数 tuple 类型，可带 cv/ref 属性。
+    /// @param args 构造参数 tuple，保留实际 cv/ref 属性展开并转发。
+    /// @return 关联新节点及内部子图持有者的非拥有 TaskObject。
+    /// @note 本次调用内立即展开 args，不保存 tuple 本身。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
+    template <graph_holder Gh, typename Tuple>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
+    [[nodiscard]] TaskObject<Gh> emplace_object(Tuple&& args);
+
+    /// @brief 使用 tuple 中的参数原地构造子图持有者，并插入最多执行该子图 num 次的模块节点。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam Tuple 构造参数 tuple 类型，可带 cv/ref 属性。
+    /// @param args 构造参数 tuple，保留实际 cv/ref 属性展开并转发。
+    /// @param num 最大执行次数；0 表示不执行子图，但仍会构造 Gh。
+    /// @return 关联新节点及内部子图持有者的非拥有 TaskObject。
+    /// @note 本次调用内立即展开 args，不保存 tuple 本身。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
+    /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
+    template <graph_holder Gh, typename Tuple>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
+    [[nodiscard]] TaskObject<Gh> emplace_object(Tuple&& args, std::uint64_t num);
+
+    /// @brief 使用 tuple 中的参数原地构造子图持有者，并插入由终止谓词控制迭代的模块节点。
+    /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam Tuple 构造参数 tuple 类型，可带 cv/ref 属性。
+    /// @tparam P 无参终止谓词类型。
+    /// @param args 构造参数 tuple，保留实际 cv/ref 属性展开并转发。
+    /// @param pred 返回 true 时停止迭代，返回 false 时执行下一轮。
+    /// @return 关联新节点及内部子图持有者的非拥有 TaskObject。
+    /// @note 本次调用内立即展开 args，不保存 tuple 本身。
+    /// @note 谓词按衰减类型保存；使用 std::ref 显式借用外部谓词。
+    /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+    /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
+    template <graph_holder Gh, typename Tuple, predicate P>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
+    [[nodiscard]] TaskObject<Gh> emplace_object(Tuple&& args, P&& pred);
 
     /// @brief 从当前图断开并销毁指定节点。
     /// @param task 待删除节点的非拥有句柄；空句柄或其他图的节点会被忽略。
     /// @post 成功删除后，节点及其全部连接关系失效；传入句柄本身不会被置空。
-    /// @warning 成功删除后，所有指向该节点的 `Task` 和 `TaskView` 都会悬空。
+    /// @warning 成功删除后，所有指向该节点的句柄和业务对象引用都会悬空。
     void erase(Task task) noexcept;
 
     /// @brief 按参数顺序从当前图断开并销毁多个节点。
-    /// @tparam Ts 一个或多个 `Task` 句柄类型。
+    /// @tparam Ts 一个或多个 Task 或其公有派生句柄类型。
     /// @param tasks 待删除节点的非拥有句柄；空句柄或其他图的节点会被忽略。
     /// @pre 任意两个有效句柄不得指向同一个底层节点。
     /// @post 每个成功删除的节点及其连接关系失效；传入句柄不会被置空。
-    /// @warning 成功删除后，所有指向对应节点的 `Task` 和 `TaskView` 都会悬空。
+    /// @warning 成功删除后，所有指向对应节点的句柄和业务对象引用都会悬空。
     template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+        requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
     void erase(Ts&&... tasks) noexcept;
 
     /// @brief 返回当前构建器所绑定图对象的身份哈希。
@@ -190,7 +355,7 @@ public:
 
     /// @brief 断开并销毁当前图中的全部节点。
     /// @post `empty()` 返回 true，原有节点及其连接关系全部失效。
-    /// @warning 所有指向原有节点的 `Task` 和 `TaskView` 都会悬空。
+    /// @warning 所有指向原有节点的句柄和业务对象引用都会悬空。
     void clear() noexcept;
 
     /// @brief 判断当前图是否不包含节点。
@@ -216,10 +381,10 @@ public:
     /// 对范围中的每一对相邻任务建立前驱关系：
     /// `tasks[0] -> tasks[1] -> ... -> tasks[n - 1]`。
     ///
-    /// 支持所有元素类型为 Task 的 forward_range，例如：
+    /// 支持元素类型为 Task 或其公有派生类的 forward_range，例如：
     /// std::vector、std::array、std::list、std::span、std::set 以及 ranges view。
     ///
-    /// @tparam R 满足 forward_range，且迭代元素去除 cvref 后必须为 Task。
+    /// @tparam R 满足 forward_range，且迭代元素去除 cvref 后为 Task 或其公有派生类。
     /// @param tasks 待串联的任务范围。
     ///
     /// @note 空范围或仅包含一个任务时不执行任何操作。
@@ -227,7 +392,7 @@ public:
     /// @note 本函数只修改 Work 节点之间的依赖边，不修改范围本身。
     /// @note 应当仅在任务图构建阶段调用，不得与图执行并发进行。
     template <std::ranges::forward_range R>
-        requires std::same_as<std::remove_cvref_t<std::ranges::range_reference_t<R>>, Task>
+        requires std::derived_from<std::remove_cvref_t<std::ranges::range_reference_t<R>>, Task>
     void linearize(R&& tasks);
 
     /// @brief 按参数排列顺序将多个任务串联为线性依赖链。
@@ -241,14 +406,14 @@ public:
     /// // 等价于：task1.precede(task2); task2.precede(task3);
     /// @endcode
     ///
-    /// @tparam Ts Task 参数类型包。所有参数去除 cvref 后必须为 Task。
+    /// @tparam Ts Task 参数类型包。所有参数去除 cvref 后为 Task 或其公有派生类。
     /// @param tasks 待串联的任务句柄，至少需要两个。
     ///
     /// @note 参数顺序决定任务的依赖顺序。
     /// @note 本函数只修改底层 Work 节点之间的依赖边，不修改 Task 句柄。
     /// @note 应当仅在任务图构建阶段调用，不得与任务图执行并发进行。
     template <typename... Ts>
-        requires (sizeof...(Ts) > 1) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+        requires (sizeof...(Ts) > 1) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
     void linearize(Ts&&... tasks);
 
     /// @brief 按初始化列表顺序将任务串联为线性依赖链。
@@ -297,7 +462,6 @@ inline const Graph& FlowBuilder::graph() const noexcept {
 // ============================================================================
 // 节点创建
 // ============================================================================
-
 inline Task FlowBuilder::placeholder() {
     return Task{m_graph.emplace(make_placeholder(std::addressof(m_graph)))};
 }
@@ -370,8 +534,7 @@ inline Task FlowBuilder::emplace(Gh&& gh, P&& pred) {
 }
 
 template <typename... Ts>
-    requires (sizeof...(Ts) > 1) &&
-            ((callback<Ts> || graph_holder<Ts> || task_pack<Ts>) && ...)
+    requires (sizeof...(Ts) > 1) && ((callback<Ts> || graph_holder<Ts> || task_pack<Ts>) && ...)
 inline auto FlowBuilder::emplace(Ts&&... tasks) {
     // 按参数类型选择直接插入或展开参数包。
     auto emplace_one = [this]<typename T>(T&& task) {
@@ -395,12 +558,124 @@ inline auto FlowBuilder::emplace(Ts&&... tasks) {
     };
 }
 
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && basic_invocable<T> && std::constructible_from<T, Args&&...>)
+inline TaskObject<T> FlowBuilder::emplace_object(Args&&... args) {
+    auto [work, object] = make_basic_object<T>(std::addressof(m_graph), std::forward<Args>(args)...);
+    return TaskObject<T>{Task{m_graph.emplace(work)}, object};
+}
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && branch_invocable<T> && std::constructible_from<T, Args&&...>)
+inline TaskObject<T> FlowBuilder::emplace_object(Args&&... args) {
+    auto [work, object] = make_branch_object<T>(std::addressof(m_graph), std::forward<Args>(args)...);
+    return TaskObject<T>{Task{m_graph.emplace(work)}, object};
+}
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && multi_branch_invocable<T> && std::constructible_from<T, Args&&...>)
+inline TaskObject<T> FlowBuilder::emplace_object(Args&&... args) {
+    auto [work, object] = make_multi_branch_object<T>(std::addressof(m_graph), std::forward<Args>(args)...);
+    return TaskObject<T>{Task{m_graph.emplace(work)}, object};
+}
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && jump_invocable<T> && std::constructible_from<T, Args&&...>)
+inline TaskObject<T> FlowBuilder::emplace_object(Args&&... args) {
+    auto [work, object] = make_jump_object<T>(std::addressof(m_graph), std::forward<Args>(args)...);
+    return TaskObject<T>{Task{m_graph.emplace(work)}, object};
+}
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && multi_jump_invocable<T> && std::constructible_from<T, Args&&...>)
+inline TaskObject<T> FlowBuilder::emplace_object(Args&&... args) {
+    auto [work, object] = make_multi_jump_object<T>(std::addressof(m_graph), std::forward<Args>(args)...);
+    return TaskObject<T>{Task{m_graph.emplace(work)}, object};
+}
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && runtime_invocable<T> && std::constructible_from<T, Args&&...>)
+inline TaskObject<T> FlowBuilder::emplace_object(Args&&... args) {
+    auto [work, object] = make_runtime_object<T>(std::addressof(m_graph), std::forward<Args>(args)...);
+    return TaskObject<T>{Task{m_graph.emplace(work)}, object};
+}
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && subflow_invocable<T> && std::constructible_from<T, Args&&...>)
+inline TaskObject<T> FlowBuilder::emplace_object(Args&&... args) {
+    auto [work, object] = make_subflow_object<T>(std::addressof(m_graph), std::forward<Args>(args)...);
+    return TaskObject<T>{Task{m_graph.emplace(work)}, object};
+}
+
+// ============================================================================
+// FlowBuilder::emplace_object —— 默认构造
+// ============================================================================
+
+template <graph_holder Gh>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
+inline TaskObject<Gh> FlowBuilder::emplace_object() {
+    return emplace_object<Gh>(std::tuple{});
+}
+
+template <graph_holder Gh>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
+inline TaskObject<Gh> FlowBuilder::emplace_object(std::uint64_t num) {
+    return emplace_object<Gh>(std::tuple{}, num);
+}
+
+template <graph_holder Gh, predicate P>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
+inline TaskObject<Gh> FlowBuilder::emplace_object(P&& pred) {
+    return emplace_object<Gh>(std::tuple{}, std::forward<P>(pred));
+}
+
+// ============================================================================
+// FlowBuilder::emplace_object —— Tuple 参数构造
+// ============================================================================
+
+template <graph_holder Gh, typename Tuple>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
+inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args) {
+    return emplace_object<Gh>(std::forward<Tuple>(args), std::uint64_t{1});
+}
+
+template <graph_holder Gh, typename Tuple>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
+inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args, std::uint64_t num) {
+    auto pred = [num, remaining = num]() mutable noexcept -> bool {
+        if (remaining == 0) {
+            // 正常完成指定次数后恢复计数，供外层图下一次执行使用。
+            remaining = num;
+            return true;
+        }
+
+        --remaining;
+        return false;
+    };
+
+    return emplace_object<Gh>(std::forward<Tuple>(args), std::move(pred));
+}
+
+template <graph_holder Gh, typename Tuple, predicate P>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
+inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args, P&& pred) {
+    return std::apply([this, &pred](auto&&... values) -> TaskObject<Gh> {
+        auto [work, object] = make_module_object<Gh>(
+            std::addressof(m_graph),
+            std::forward<P>(pred),
+            std::forward<decltype(values)>(values)...
+            );
+
+        return TaskObject<Gh>{Task{m_graph.emplace(work)}, object};
+    }, std::forward<Tuple>(args));
+}
+
 inline void FlowBuilder::erase(Task task) noexcept {
     m_graph.erase(task.m_work);
 }
 
 template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
 inline void FlowBuilder::erase(Ts&&... tasks) noexcept {
     (m_graph.erase(tasks.m_work), ...);
 }
@@ -430,7 +705,7 @@ inline void FlowBuilder::for_each(F&& visitor) noexcept(std::is_nothrow_invocabl
 }
 
 template <std::ranges::forward_range R>
-    requires std::same_as< std::remove_cvref_t<std::ranges::range_reference_t<R>>, Task>
+    requires std::derived_from<std::remove_cvref_t<std::ranges::range_reference_t<R>>, Task>
 inline void FlowBuilder::linearize(R&& tasks) {
     auto current = std::ranges::begin(tasks);
     const auto last = std::ranges::end(tasks);
@@ -449,7 +724,7 @@ inline void FlowBuilder::linearize(R&& tasks) {
 }
 
 template <typename... Ts>
-    requires (sizeof...(Ts) > 1) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    requires (sizeof...(Ts) > 1) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
 inline void FlowBuilder::linearize(Ts&&... tasks) {
     const std::array<Work*, sizeof...(Ts)> works{tasks.m_work...};
 

@@ -8,6 +8,9 @@
 
 #pragma once
 
+#include <concepts>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 
 #include "traits.hpp"
@@ -52,6 +55,42 @@ template <typename F>
 template <graph_holder Gh, predicate P>
     requires capturable<P>
 [[nodiscard]] Work* make_module(const Graph* graph, Gh&& graph_holder, P&& pred);
+
+// ============================================================================
+// Graph 内同步节点 —— 原地构造对象
+// ============================================================================
+
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && basic_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_basic_object(const Graph* graph, Args&&... args);
+
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && branch_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_branch_object(const Graph* graph, Args&&... args);
+
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && multi_branch_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_multi_branch_object(const Graph* graph, Args&&... args);
+
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && jump_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_jump_object(const Graph* graph, Args&&... args);
+
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && multi_jump_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_multi_jump_object(const Graph* graph, Args&&... args);
+
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && runtime_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_runtime_object(const Graph* graph, Args&&... args);
+
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && subflow_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_subflow_object(const Graph* graph, Args&&... args);
+
+template <typename Gh, predicate P, typename... Args>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && graph_holder<Gh> && capturable<P> && std::constructible_from<Gh, Args&&...>)
+[[nodiscard]] std::pair<Work*, Gh&> make_module_object(const Graph* graph, P&& pred, Args&&... args);
 
 // ============================================================================
 // SilentAsync 异步节点
@@ -112,5 +151,25 @@ template <typename F>
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
 [[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_task_module(Executor& executor, Gh&& graph_holder, P&& pred, C&& callback);
+
+// ============================================================================
+// AsyncTask 异步节点 —— 原地构造对象
+// ============================================================================
+
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && basic_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::tuple<Work*, ResultSlot<basic_return_t<F>>*, F&> make_async_task_basic_object(Executor& executor, Args&&... args);
+
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && runtime_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::tuple<Work*, ResultSlot<runtime_return_t<F>>*, F&> make_async_task_runtime_object(Executor& executor, Args&&... args);
+
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && subflow_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::tuple<Work*, ResultSlot<subflow_return_t<F>>*, F&> make_async_task_subflow_object(Executor& executor, Args&&... args);
+
+template <typename Gh, predicate P, callback C, typename... Args>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && graph_holder<Gh> && capturable<P, C> && std::constructible_from<Gh, Args&&...>)
+[[nodiscard]] std::tuple<Work*, ResultSlot<void>*, Gh&> make_async_task_module_object(Executor& executor, P&& pred, C&& callback, Args&&... args);
 
 }  // namespace tfl
