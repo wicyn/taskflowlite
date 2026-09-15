@@ -19,6 +19,7 @@ TaskflowLite（简称 tfl）是一个轻量级、仅头文件的 C++20 任务并
 
 - **任务图**：构建 DAG，管理任务依赖，支持占位节点和任务重绑定。
 - **异步任务**：即时提交、延迟启动、依赖编排与共享结果。
+- **对象任务**：`TaskObject<T>` / `AsyncTaskObject<R, T>` 原地构造业务对象，通过 `object()` 访问状态，支持不可复制、不可移动类型。
 - **动态调度**：Runtime、动态 SubFlow 和作用域 TaskGroup。
 - **控制流**：条件分支、多分支、跳转、重复执行和模块嵌套。
 - **执行控制**：协作等待、异常传播、协作取消和信号量限流。
@@ -63,6 +64,12 @@ int main() {
 ```
 
 A、B 可以并行执行，C 在两者完成后执行。任务参数通过 lambda 捕获传入；`get()` 等待完成并传播异常。
+
+有状态的 callable 也可用 `flow.emplace_object<T>(构造参数...)` 或
+`executor.defer_async_object<T>(构造参数...)` 直接在任务内部构造。
+前者返回 `TaskObject<T>`，后者返回尚未启动的 `AsyncTaskObject<R, T>`，用 `start()` 启动。
+`object()` 访问业务对象，异步句柄的 `get()` 访问执行结果。
+完整示例：[对象任务与子图](examples/31_task_object.cpp)、[异步对象、依赖与 Module](examples/32_async_task_object.cpp)。
 
 ---
 

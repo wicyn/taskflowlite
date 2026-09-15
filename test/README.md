@@ -45,6 +45,50 @@ Task::work 重绑定、AsyncTask 返回值/配置、共享 Future 生命周期�
 
 ## 回归覆盖与验证
 
+### 对象任务接口
+
+`test_task_object.cpp` 使用不可复制、不可移动的业务对象，覆盖 Basic、Branch、
+MultiBranch、Jump、MultiJump、Runtime、SubFlow 和 Module，包含 Module 默认/tuple
+构造、定次执行复用、predicate、派生句柄的 `linearize()` / `erase()`、句柄值语义、
+弱引用生命周期以及构造异常后的图复用。
+
+`test_async_task_object.cpp` 覆盖 Basic、Runtime、SubFlow、Module 四种异步对象，
+包括 Module 六组重载及可选 callback、零次执行、Idle 延迟启动、重复启动、
+void/值/引用结果、句柄复制/移动/重置、依赖保活、停止请求、异常和对象销毁。
+
+两组测试由 CMake 自动加入单体测试，也可单独构建和运行：
+
+```sh
+cmake --build build/check --config Release --target tfl_test_task_object tfl_test_async_task_object
+# Windows 多配置生成器的路径；单配置构建去掉 Release/。
+build/check/bin/Release/tfl_test_task_object
+build/check/bin/Release/tfl_test_async_task_object
+```
+
+运行例子见 [31_task_object.cpp](../examples/31_task_object.cpp) 和
+[32_async_task_object.cpp](../examples/32_async_task_object.cpp)。
+
+```sh
+cmake --build build/check --config Release --target tfl_ex_31_task_object tfl_ex_32_async_task_object
+build/check/bin/examples/Release/31_task_object
+build/check/bin/examples/Release/32_async_task_object
+```
+
+先保存类型句柄，再调用继承的配置/启动接口；链式返回值可能只保留基类类型。
+`object()` 不等待或加锁，应在启动前或等待完成后访问。
+`SubFlow::run()` 只提交子图；callable 若要返回子图计算出的值，必须先调用
+`SubFlow::wait()`，外部再通过异步句柄的 `get()` 取得结果。
+`TaskObject` 不拥有节点，擦除节点或替换 callable 后不可再访问业务对象；
+`AsyncTaskObject` 复制句柄共享任务所有权，最后一个强引用释放后对象才销毁。
+
+2026-09-15 本地验证（Windows x64 / MSVC 19.44）：
+
+- Release 单体测试：364 个用例、1,009,876 条断言通过；两个独立回归程序通过。
+- 新增对象测试：17 个用例、222 条断言，Release 和 ASan / RelWithDebInfo 均通过。
+- 示例 31、32：Release 编译和执行通过，返回码均为 0。
+
+### 已有回归
+
 `test_async_task_dependencies.cpp` 覆盖依赖校验失败后的再次启动、混合结果、空依赖、
 重复引用、右值句柄、跨执行器、子任务作用域、256 个后继扩容、并发启动和登记竞争，
 以及 20,000 个节点的依赖长链回收。

@@ -19,6 +19,7 @@ TaskflowLite (tfl) is a lightweight, header-only C++20 task-parallel library ins
 
 - **Task graphs**: DAG construction, dependencies, placeholders, and task rebinding.
 - **Asynchronous tasks**: immediate submission, deferred execution, dependencies, and shared results.
+- **Object tasks**: `TaskObject<T>` / `AsyncTaskObject<R, T>` construct business objects in place and expose their state through `object()`, including non-copyable, non-movable types.
 - **Dynamic scheduling**: Runtime, dynamic SubFlow, and scoped TaskGroup.
 - **Control flow**: branches, multi-branches, jumps, repeated execution, and nested modules.
 - **Execution control**: cooperative waiting, exception propagation, cooperative cancellation, and semaphore limits.
@@ -63,6 +64,13 @@ int main() {
 ```
 
 A and B may run in parallel; C runs after both finish. Pass task data through lambda captures. `get()` waits for completion and propagates exceptions.
+
+For stateful callables, use `flow.emplace_object<T>(constructor_args...)` or
+`executor.defer_async_object<T>(constructor_args...)` to construct the object directly inside the task.
+They return `TaskObject<T>` and an idle `AsyncTaskObject<R, T>` respectively; call `start()` on the latter.
+Use `object()` for business state and the asynchronous handle's `get()` for its result.
+See [object tasks and subgraphs](examples/31_task_object.cpp) and
+[asynchronous objects, dependencies, and modules](examples/32_async_task_object.cpp).
 
 ---
 
