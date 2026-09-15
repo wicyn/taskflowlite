@@ -37,12 +37,16 @@ class FlowBuilder;
 class ScopedExceptionAnchor;
 
 template <typename>
+class TaskObject;
+
+template <typename>
 class AsyncFuture;
 
 template <typename>
 class AsyncTask;
 
-
+template <typename, typename>
+class AsyncTaskObject;
 // ============================================================================
 // Work Invoker
 // ============================================================================
@@ -110,7 +114,8 @@ class AsyncTaskSubFlowInvoker;
 template <typename, typename, typename>
 class AsyncTaskModuleInvoker;
 
-
+template <typename>
+class SubFlowWork;
 // ============================================================================
 // Work Invoker friend 声明
 // ============================================================================
@@ -141,6 +146,7 @@ friend class ::tfl::AnchorWork;                                                 
     template <typename>                                  friend class ::tfl::AsyncTaskBasicInvoker;                 \
     template <typename>                                  friend class ::tfl::AsyncTaskRuntimeInvoker;               \
     template <typename>                                  friend class ::tfl::AsyncTaskSubFlowInvoker;               \
-    template <typename, typename, typename>              friend class ::tfl::AsyncTaskModuleInvoker
+    template <typename, typename, typename>              friend class ::tfl::AsyncTaskModuleInvoker;                \
+    template <typename>                                  friend class ::tfl::SubFlowWork
 
 } // namespace tfl
