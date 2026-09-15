@@ -9,6 +9,7 @@
 #pragma once
 
 #include <memory>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -21,12 +22,12 @@ namespace tfl {
 // Graph 内同步节点
 // ============================================================================
 
-/// @brief 创建不执行用户 callable 的静态占位节点.
+/// @brief 创建不执行用户 callable 的静态占位节点。
 ///
-/// 节点参与普通静态图依赖传播和 join 计数，但不执行用户 callable.
+/// 节点参与普通静态图依赖传播和 join 计数，但不执行用户 callable。
 ///
-/// @param graph 节点所属物理 Graph.
-/// @return 创建完成的 Work.
+/// @param graph 节点所属物理 Graph。
+/// @return 创建完成的 Work。
 [[nodiscard]] inline Work* make_placeholder(const Graph* graph) {
     return create_work(
         std::in_place_type<PlaceholderInvoker>,
@@ -189,6 +190,195 @@ template <graph_holder Gh, predicate P>
         detail::capture(std::forward<Gh>(graph_holder)),
         std::forward<P>(pred)
         );
+}
+
+/// @brief 原地构造指定类型的 callable，并创建普通静态任务节点。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param graph 节点所属物理 Graph。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work 和内部 callable 引用。
+/// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && basic_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_basic_object(const Graph* graph, Args&&... args) {
+    using Invoker = BasicInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        graph,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    return {work, work->template target<Invoker>().object()};
+}
+
+/// @brief 原地构造指定类型的 callable，并创建单目标条件分支节点。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param graph 节点所属物理 Graph。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work 和内部 callable 引用。
+/// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && branch_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_branch_object(const Graph* graph, Args&&... args) {
+    using Invoker = BranchInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        graph,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    return {work, work->template target<Invoker>().object()};
+}
+
+/// @brief 原地构造指定类型的 callable，并创建多目标条件分支节点。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param graph 节点所属物理 Graph。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work 和内部 callable 引用。
+/// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && multi_branch_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_multi_branch_object(const Graph* graph, Args&&... args) {
+    using Invoker = MultiBranchInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        graph,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    return {work, work->template target<Invoker>().object()};
+}
+
+/// @brief 原地构造指定类型的 callable，并创建单目标强制跳转节点。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param graph 节点所属物理 Graph。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work 和内部 callable 引用。
+/// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && jump_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_jump_object(const Graph* graph, Args&&... args) {
+    using Invoker = JumpInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        graph,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    return {work, work->template target<Invoker>().object()};
+}
+
+
+/// @brief 原地构造指定类型的 callable，并创建多目标强制跳转节点。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param graph 节点所属物理 Graph。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work 和内部 callable 引用。
+/// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && multi_jump_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_multi_jump_object(const Graph* graph, Args&&... args) {
+    using Invoker = MultiJumpInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        graph,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    return {work, work->template target<Invoker>().object()};
+}
+
+/// @brief 原地构造指定类型的 callable，并创建 Runtime 静态任务节点。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param graph 节点所属物理 Graph。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work 和内部 callable 引用。
+/// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && runtime_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_runtime_object(const Graph* graph, Args&&... args) {
+    using Invoker = RuntimeInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        graph,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    return {work, work->template target<Invoker>().object()};
+}
+
+/// @brief 原地构造指定类型的 callable，并创建 SubFlow 静态任务节点。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param graph 节点所属物理 Graph。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work 和内部 callable 引用。
+/// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && subflow_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_subflow_object(const Graph* graph, Args&&... args) {
+    using Invoker = SubFlowInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        graph,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    return {work, work->template target<Invoker>().object()};
+}
+
+/// @brief 原地构造子图持有者，并创建循环执行指定子图的静态 Module 节点。
+///
+/// @tparam Gh 节点实际保存的 Graph holder 类型。
+/// @tparam P predicate 类型。
+/// @tparam Args Graph holder 构造参数类型包。
+/// @param graph 节点所属物理 Graph。
+/// @param pred 迭代终止谓词。
+/// @param args 完美转发给 Gh 构造函数的参数。
+/// @return 创建完成的 Work 和内部 Graph holder 引用。
+/// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename Gh, predicate P, typename... Args>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && graph_holder<Gh> && capturable<P> && std::constructible_from<Gh, Args&&...>)
+[[nodiscard]] std::pair<Work*, Gh&> make_module_object(const Graph* graph, P&& pred, Args&&... args) {
+    using Invoker = ModuleInvoker<Gh, std::decay_t<P>>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        graph,
+        std::in_place,
+        std::forward<P>(pred),
+        std::forward<Args>(args)...
+        );
+
+    return {work, work->template target<Invoker>().object()};
 }
 
 // ============================================================================
@@ -431,6 +621,7 @@ template <typename F>
 }
 
 /// @brief 创建已绑定执行器、尚未启动的 Runtime AsyncTask 异步任务。
+///
 /// @tparam F callable 类型。
 /// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
 /// @param func Runtime callable。
@@ -452,6 +643,7 @@ template <typename F>
 }
 
 /// @brief 创建已绑定执行器、尚未启动的 SubFlow AsyncTask 异步任务。
+///
 /// @tparam F callable 类型。
 /// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
 /// @param func SubFlow callable。
@@ -500,6 +692,116 @@ template <graph_holder Gh, predicate P, callback C>
         );
 
     return {work, work->template target<Invoker>().get_result_slot()};
+}
+
+/// @brief 原地构造指定类型的 callable，并创建尚未启动的普通 AsyncTask 异步任务。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work、ResultSlot 和内部 callable 引用。
+/// @note 本函数只创建节点，不启动任务；不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && basic_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::tuple<Work*, ResultSlot<basic_return_t<F>>*, F&> make_async_task_basic_object(Executor& executor, Args&&... args) {
+    using Invoker = AsyncTaskBasicInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        static_cast<Work*>(nullptr),
+        executor,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    Invoker& invoker = work->template target<Invoker>();
+    return {work, invoker.get_result_slot(), invoker.object()};
+}
+
+/// @brief 原地构造指定类型的 callable，并创建尚未启动的 Runtime AsyncTask 异步任务。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work、ResultSlot 和内部 callable 引用。
+/// @note 本函数只创建节点，不启动任务；不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && runtime_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::tuple<Work*, ResultSlot<runtime_return_t<F>>*, F&> make_async_task_runtime_object(Executor& executor, Args&&... args) {
+    using Invoker = AsyncTaskRuntimeInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        static_cast<Work*>(nullptr),
+        executor,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    Invoker& invoker = work->template target<Invoker>();
+    return {work, invoker.get_result_slot(), invoker.object()};
+}
+
+/// @brief 原地构造指定类型的 callable，并创建尚未启动的 SubFlow AsyncTask 异步任务。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work、ResultSlot 和内部 callable 引用。
+/// @note 本函数只创建节点，不启动任务；不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && subflow_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::tuple<Work*, ResultSlot<subflow_return_t<F>>*, F&> make_async_task_subflow_object(Executor& executor, Args&&... args) {
+    using Invoker = AsyncTaskSubFlowInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        static_cast<Work*>(nullptr),
+        executor,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    Invoker& invoker = work->template target<Invoker>();
+    return {work, invoker.get_result_slot(), invoker.object()};
+}
+
+/// @brief 原地构造子图持有者，并创建已绑定执行器、尚未启动的 Module AsyncTask 异步任务。
+///
+/// Module 没有值结果，使用 `ResultSlot<void>` 表示完成状态。
+///
+/// @tparam Gh 节点实际保存的 Graph holder 类型。
+/// @tparam P predicate 类型。
+/// @tparam C callback 类型。
+/// @tparam Args Graph holder 构造参数类型包。
+/// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
+/// @param pred 迭代终止谓词。
+/// @param callback 完成回调。
+/// @param args 完美转发给 Gh 构造函数的参数。
+/// @return 创建完成的 Work、ResultSlot<void> 和内部 Graph holder 引用。
+/// @note 本函数只创建节点，不启动任务；不创建 Gh 临时对象。
+/// @note 不要求 Gh 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename Gh, predicate P, callback C, typename... Args>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && graph_holder<Gh> && capturable<P, C> && std::constructible_from<Gh, Args&&...>)
+[[nodiscard]] std::tuple<Work*, ResultSlot<void>*, Gh&> make_async_task_module_object(Executor& executor, P&& pred, C&& callback, Args&&... args) {
+    using Invoker = AsyncTaskModuleInvoker<Gh, std::decay_t<P>, std::decay_t<C>>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        static_cast<Work*>(nullptr),
+        executor,
+        std::in_place,
+        std::forward<P>(pred),
+        std::forward<C>(callback),
+        std::forward<Args>(args)...
+        );
+
+    Invoker& invoker = work->template target<Invoker>();
+    return {work, invoker.get_result_slot(), invoker.object()};
 }
 
 }  // namespace tfl

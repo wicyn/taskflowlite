@@ -375,4 +375,27 @@ concept async_task = is_async_task_v<T>;
 template <typename T>
 using forward_return_t = std::conditional_t<std::is_lvalue_reference_v<T>, T, std::remove_cvref_t<T>>;
 
+// ============================================================================
+// Tuple 构造约束
+// ============================================================================
+
+/// @brief 判断指定类型是否为未经 cv/ref 修饰的 std::tuple 特化。
+template <typename T>
+inline constexpr bool is_tuple_v = false;
+
+template <typename... Ts>
+inline constexpr bool is_tuple_v<std::tuple<Ts...>> = true;
+
+/// @brief 判断按照 Tuple 的实际 cv/ref 属性展开元素后，能否构造 T。
+/// @tparam T 待构造的目标类型。
+/// @tparam Tuple 参数 tuple 的类型，保留实际传递时的 cv/ref 属性。
+/// @note 用于转发引用参数时，应传入 Tuple&&。
+/// @note 元素访问不合法或无法构造 T 时，约束结果为 false。
+template <typename T, typename Tuple>
+concept tuple_constructible_from = is_tuple_v<std::remove_cvref_t<Tuple>> && []<std::size_t... I>(std::index_sequence<I...>) {
+    return requires {
+        requires std::constructible_from<T, decltype(std::get<I>(std::declval<Tuple>()))...>;
+    };
+}(std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<Tuple>>>{});
+
 } // namespace tfl

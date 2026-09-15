@@ -58,7 +58,6 @@ template <typename R>
 class AsyncTask final : public AsyncFuture<R> {
 
     friend class Runtime;
-    friend class SubFlow;
     friend class Executor;
     friend class TaskGroup;
     template <typename> friend class AsyncTask;
@@ -381,6 +380,13 @@ private:
     /// @note 基类取得一份 Work 强引用；不保存依赖，不启动任务，不增加活动拓扑计数。
     explicit AsyncTask(std::pair<Work*, ResultSlot<R>*> state) noexcept;
 
+    /// @brief 从工厂创建的 Work 和结果槽构造有效 AsyncTask。
+    /// @param work 工厂创建的 Work。
+    /// @param result 与 Work 关联的结果槽。
+    /// @pre Work 和结果槽均非空且相互匹配，Topology 已绑定创建任务的 Executor。
+    /// @pre Work 尚未发布，状态为 Idle，边表为空，父 Work 和父 Topology 均为空。
+    /// @note 基类取得一份 Work 强引用；不保存依赖，不启动任务，不增加活动拓扑计数。
+    explicit AsyncTask(Work* work, ResultSlot<R>* result) noexcept;
 };
 
 // ============================================================================
@@ -400,7 +406,11 @@ AsyncTask<R>& AsyncTask<R>::operator=(std::nullptr_t) noexcept {
 
 template <typename R>
 AsyncTask<R>::AsyncTask(std::pair<Work*, ResultSlot<R>*> state) noexcept
-    : Base{state.first, state.second} {
+    : AsyncTask{state.first, state.second} {}
+
+template <typename R>
+AsyncTask<R>::AsyncTask(Work* work, ResultSlot<R>* result) noexcept
+    : Base{work, result} {
     TFL_ASSERT(m_work);
     TFL_ASSERT(m_result);
     TFL_ASSERT(m_work->m_topology);
@@ -841,19 +851,19 @@ inline auto Executor::defer_async(T&& task) -> AsyncTask<subflow_return_t<T>> {
 
 template <graph_holder Gh, callback C>
     requires capturable<C>
-inline AsyncTask<void> Executor::defer_async(Gh&& gh, C&& callback) {
+inline auto Executor::defer_async(Gh&& gh, C&& callback) -> AsyncTask<void> {
     return defer_async(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(callback));
 }
 
 template <graph_holder Gh, callback C>
     requires capturable<C>
-inline AsyncTask<void> Executor::defer_async(Gh&& gh, std::uint64_t num, C&& callback) {
+inline auto Executor::defer_async(Gh&& gh, std::uint64_t num, C&& callback) -> AsyncTask<void> {
     return defer_async(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, std::forward<C>(callback));
 }
 
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
-inline AsyncTask<void> Executor::defer_async(Gh&& gh, P&& pred, C&& callback) {
+inline auto Executor::defer_async(Gh&& gh, P&& pred, C&& callback) -> AsyncTask<void> {
     return AsyncTask<void>{make_async_task_module(*this, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(callback))};
 }
 

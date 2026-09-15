@@ -55,7 +55,6 @@ template <typename R>
 class AsyncFuture {
     friend class Executor;
     friend class Runtime;
-    friend class SubFlow;
     friend class TaskGroup;
     template <typename> friend class AsyncTask;
 
