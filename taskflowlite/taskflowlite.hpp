@@ -14,24 +14,27 @@
 #include <ostream>
 #include <string>
 
-#include "core/runtime.hpp"
+
+#include "core/task.hpp"
+#include "core/async_future.hpp"
+#include "core/async_task.hpp"
+#include "core/task_object.hpp"
+#include "core/async_task_object.hpp"
+#include "core/task_group.hpp"
+#include "core/flow.hpp"
 #include "core/branch.hpp"
 #include "core/jump.hpp"
+#include "core/runtime.hpp"
+#include "core/subflow.hpp"
 #include "core/executor.hpp"
-#include "core/async_task.hpp"
-#include "core/async_task_object.hpp"
-#include "core/task.hpp"
-#include "core/flow.hpp"
-#include "core/async_future.hpp"
 #include "core/work_factory.hpp"
-#include "core/task_group.hpp"
 
 
 // ============================================================================
 // 编译期版本宏：版本号的源码定义。
 // ============================================================================
 #define TASKFLOWLITE_VERSION_MAJOR 3
-#define TASKFLOWLITE_VERSION_MINOR 1
+#define TASKFLOWLITE_VERSION_MINOR 2
 #define TASKFLOWLITE_VERSION_PATCH 0
 
 namespace tfl {
