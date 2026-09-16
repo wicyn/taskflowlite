@@ -261,6 +261,15 @@ set_tests_properties(tfl_test.async_task_allocation_failure PROPERTIES TIMEOUT 3
 set_target_properties(tfl_test_topology_header tfl_test_async_task_allocation_failure
     PROPERTIES FOLDER "Tests/Standalone")
 
+add_executable(tfl_test_task_link_allocation_failure task_link_allocation_failure.cpp)
+tfl_setup_test_target(tfl_test_task_link_allocation_failure NO_CATCH)
+if(TFL_SANITIZER STREQUAL "ASAN")
+    target_compile_definitions(tfl_test_task_link_allocation_failure PRIVATE TFL_SKIP_ALLOCATION_FAILURE=1)
+endif()
+add_test(NAME tfl_test.task_link_allocation_failure COMMAND tfl_test_task_link_allocation_failure)
+set_tests_properties(tfl_test.task_link_allocation_failure PROPERTIES TIMEOUT 30 LABELS "unit;allocation")
+set_target_properties(tfl_test_task_link_allocation_failure PROPERTIES FOLDER "Tests/Standalone")
+
 add_test(
     NAME TaskflowLiteTest
     COMMAND TaskflowLiteTest -d yes
@@ -299,9 +308,9 @@ add_custom_target(run_all_tests
     COMMAND ${CMAKE_CTEST_COMMAND}
             --output-on-failure
             -C $<CONFIG>
-            -R "^TaskflowLiteTest$|^tfl_test[.](topology_header|async_task_allocation_failure)$"
+            -R "^TaskflowLiteTest$|^tfl_test[.](topology_header|async_task_allocation_failure|task_link_allocation_failure)$"
     WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
-    DEPENDS TaskflowLiteTest tfl_test_topology_header tfl_test_async_task_allocation_failure
+    DEPENDS TaskflowLiteTest tfl_test_topology_header tfl_test_async_task_allocation_failure tfl_test_task_link_allocation_failure
     USES_TERMINAL
     VERBATIM
     COMMENT "Running all TaskflowLite unit tests..."

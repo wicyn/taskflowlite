@@ -384,6 +384,7 @@ public:
     /// 支持元素类型为 Task 或其公有派生类的 forward_range，例如：
     /// std::vector、std::array、std::list、std::span、std::set 以及 ranges view。
     ///
+    /// @tparam Check 默认校验每条边；false 时由调用方保证句柄及拓扑合法。
     /// @tparam R 满足 forward_range，且迭代元素去除 cvref 后为 Task 或其公有派生类。
     /// @param tasks 待串联的任务范围。
     ///
@@ -391,7 +392,8 @@ public:
     /// @note 任务串联顺序完全取决于范围的遍历顺序。
     /// @note 本函数只修改 Work 节点之间的依赖边，不修改范围本身。
     /// @note 应当仅在任务图构建阶段调用，不得与图执行并发进行。
-    template <std::ranges::forward_range R>
+    /// @note 跳过检查仍可能抛出分配异常；失败不撤销此前成功插入的边。
+    template <bool Check = true, std::ranges::forward_range R>
         requires std::derived_from<std::remove_cvref_t<std::ranges::range_reference_t<R>>, Task>
     void linearize(R&& tasks);
 
@@ -406,13 +408,14 @@ public:
     /// // 等价于：task1.precede(task2); task2.precede(task3);
     /// @endcode
     ///
+    /// @tparam Check 默认校验每条边；false 时由调用方保证句柄及拓扑合法。
     /// @tparam Ts Task 参数类型包。所有参数去除 cvref 后为 Task 或其公有派生类。
     /// @param tasks 待串联的任务句柄，至少需要两个。
     ///
     /// @note 参数顺序决定任务的依赖顺序。
     /// @note 本函数只修改底层 Work 节点之间的依赖边，不修改 Task 句柄。
     /// @note 应当仅在任务图构建阶段调用，不得与任务图执行并发进行。
-    template <typename... Ts>
+    template <bool Check = true, typename... Ts>
         requires (sizeof...(Ts) > 1) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
     void linearize(Ts&&... tasks);
 
@@ -424,6 +427,8 @@ public:
     /// @param tasks 待串联的任务初始化列表。
     ///
     /// @note 本重载仅负责适配初始化列表，实际逻辑转发到 ranges 主实现。
+    /// @tparam Check 默认校验每条边；false 时由调用方保证句柄及拓扑合法。
+    template <bool Check = true>
     void linearize(std::initializer_list<Task> tasks);
 
     /// @brief 返回当前构建器所绑定图的可修改引用。
@@ -704,7 +709,7 @@ inline void FlowBuilder::for_each(F&& visitor) noexcept(std::is_nothrow_invocabl
     }
 }
 
-template <std::ranges::forward_range R>
+template <bool Check, std::ranges::forward_range R>
     requires std::derived_from<std::remove_cvref_t<std::ranges::range_reference_t<R>>, Task>
 inline void FlowBuilder::linearize(R&& tasks) {
     auto current = std::ranges::begin(tasks);
@@ -719,22 +724,23 @@ inline void FlowBuilder::linearize(R&& tasks) {
     auto next = current;
 
     for (++next; next != last; ++current, ++next) {
-        (*current).m_work->_precede((*next).m_work);
+        (*current).m_work->template _precede<Check>((*next).m_work);
     }
 }
 
-template <typename... Ts>
+template <bool Check, typename... Ts>
     requires (sizeof...(Ts) > 1) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
 inline void FlowBuilder::linearize(Ts&&... tasks) {
     const std::array<Work*, sizeof...(Ts)> works{tasks.m_work...};
 
     for (std::size_t i = 1; i < works.size(); ++i) {
-        works[i - 1]->_precede(works[i]);
+        works[i - 1]->template _precede<Check>(works[i]);
     }
 }
 
+template <bool Check>
 inline void FlowBuilder::linearize(std::initializer_list<Task> tasks) {
-    this->template linearize<std::initializer_list<Task>&>(tasks);
+    this->template linearize<Check, std::initializer_list<Task>&>(tasks);
 }
 
 }  // namespace tfl
