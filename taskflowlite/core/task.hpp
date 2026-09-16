@@ -481,31 +481,37 @@ public:
     Task name(S&& name) &&;
 
     /// @brief 将当前任务设为 @p ts 中每个任务的前驱，建立 this -> each(t) 依赖。
-    /// @tparam Ts 每个参数必须为 Task 类型。
+    /// @tparam Check 默认检查拓扑；precede<false>() 跳过建边校验。
+    /// @tparam Ts 每个参数必须为 Task 或其公有派生类型。
+    /// @pre Check 为 false 时，调用方保证句柄有效、同属一图、边不重复且无非法闭环。
+    /// @note 跳过检查仍可能分配内存并抛出异常。参数包逐边插入，失败不撤销此前成功的边。
     /// @param ts 一个或多个后继任务。
     /// @return *this（lvalue 链式调用）。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    template <bool Check = true, typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
     Task& precede(Ts&&... ts) &;
 
     /// @brief 在右值句柄上建立当前任务到指定任务的依赖。
     /// @return 修改后的任务句柄。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    template <bool Check = true, typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
     Task precede(Ts&&... ts) &&;
 
     /// @brief 将当前任务设为 @p ts 中每个任务的后继，建立 each(t) -> this 依赖。
-    /// @tparam Ts 每个参数必须为 Task 类型。
+    /// @tparam Check 默认检查拓扑；succeed<false>() 跳过建边校验。
+    /// @tparam Ts 每个参数必须为 Task 或其公有派生类型。
+    /// @pre Check 为 false 时，调用方保证句柄有效、同属一图、边不重复且无非法闭环。
+    /// @note 跳过检查仍可能分配内存并抛出异常。参数包逐边插入，失败不撤销此前成功的边。
     /// @param ts 一个或多个前驱任务。
     /// @return *this（lvalue 链式调用）。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    template <bool Check = true, typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
     Task& succeed(Ts&&... ts) &;
 
     /// @brief 在右值句柄上建立指定任务到当前任务的依赖。
     /// @return 修改后的任务句柄。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+    template <bool Check = true, typename... Ts>
+        requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
     Task succeed(Ts&&... ts) &&;
 
     /// @brief 移除当前任务的一个或多个前驱关系，解除 each(task) -> this 依赖。
@@ -1044,35 +1050,35 @@ inline Task Task::name(S&& value) && {
     return std::move(*this);
 }
 
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+template <bool Check, typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
 inline Task& Task::precede(Ts&&... tasks) & {
     TFL_ASSERT(m_work);
     TFL_ASSERT((tasks.m_work && ...));
-    (m_work->_precede(tasks.m_work), ...);
+    (m_work->template _precede<Check>(tasks.m_work), ...);
     return *this;
 }
 
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+template <bool Check, typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
 inline Task Task::precede(Ts&&... tasks) && {
-    static_cast<Task&>(*this).precede(std::forward<Ts>(tasks)...);
+    static_cast<Task&>(*this).precede<Check>(std::forward<Ts>(tasks)...);
     return std::move(*this);
 }
 
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+template <bool Check, typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
 inline Task& Task::succeed(Ts&&... tasks) & {
     TFL_ASSERT(m_work);
     TFL_ASSERT((tasks.m_work && ...));
-    (tasks.m_work->_precede(m_work), ...);
+    (tasks.m_work->template _precede<Check>(m_work), ...);
     return *this;
 }
 
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
+template <bool Check, typename... Ts>
+    requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
 inline Task Task::succeed(Ts&&... tasks) && {
-    static_cast<Task&>(*this).succeed(std::forward<Ts>(tasks)...);
+    static_cast<Task&>(*this).succeed<Check>(std::forward<Ts>(tasks)...);
     return std::move(*this);
 }
 

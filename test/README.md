@@ -15,7 +15,7 @@ ctest --test-dir build/check -C Release --output-on-failure
 
 离线构建可指定 `TFL_CATCH2_LOCAL_PATH`（包含 amalgamated 两个文件的目录）和
 `TASKFLOW_LOCAL_PATH`（包含 `taskflow/taskflow.hpp` 的目录）。
-默认构建并注册单体测试，以及 Topology 独立头文件、延迟任务构造分配失败两个独立程序，
+默认构建并注册单体测试，以及 Topology、延迟任务构造、建边回滚三个独立程序，
 避免 CTest 运行尚未构建的按文件目标。
 需要同时构建/注册按文件测试时开启 `TFL_TEST_PER_FILE_DEFAULT`；
 `TFL_TEST_RUN_TARGETS` 则提供按文件的一键构建运行目标。
@@ -108,8 +108,9 @@ build/check/bin/examples/Release/32_async_task_object
 | --- | --- |
 | `tfl_test.topology_header` | 仅包含 topology.hpp 的翻译单元能使用另一个翻译单元提供的 Executor 构造、销毁 Topology |
 | `tfl_test.async_task_allocation_failure` | 关闭任务池，注入 defer_async 构造失败，检查捕获清理、活动计数与重新创建 |
+| `tfl_test.task_link_allocation_failure` | 注入双向邻接表扩容失败，检查建边回滚；同时覆盖检查/跳过检查入口 |
 
-`run_all_tests` 同时运行单体与上述两个独立程序。
+`run_all_tests` 同时运行单体与上述三个独立程序。
 
 ## 尚未提供的保证
 
