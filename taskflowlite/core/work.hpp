@@ -879,6 +879,7 @@ private:
     // ---- 静态图双向边表维护 ----
     void _erase_successor_at(std::size_t idx) noexcept;
     void _erase_predecessor_at(std::size_t idx) noexcept;
+    template <bool Check = true>
     void _precede(Work* target);
     void _remove_successor(Work* target) noexcept;
     void _clear_predecessors() noexcept;
@@ -942,15 +943,20 @@ inline void Work::_erase_predecessor_at(std::size_t idx) noexcept {
 /// @brief 建立逻辑有向边 `this -> target`，并在两端维护对称的邻接记录。
 ///
 /// @param target 新后继节点。
+/// @tparam Check 默认校验建边规则；false 时由调用方保证节点和拓扑合法。
 ///
-/// @throws Exception target 为空、跨 Graph、重复边或形成不允许的严格闭环时抛出。
+/// @throws Exception Check 为 true 且建边规则不满足时抛出。
+/// @throws std::bad_alloc 邻接表分配失败；当前这条边不会部分插入。
 ///
 /// @note 当前 Work 的 `m_edges` 前缀保存 target，target 的前驱后缀保存 this；
 ///       两侧记录共同表示一条逻辑有向边，运行期 join weight 和后继传播直接
 ///       复用这套静态边表。
+template <bool Check>
 inline void Work::_precede(Work* const target) {
-    if (auto error = _can_precede(target)) {
-        throw Exception("cannot precede: {}.", *error);
+    if constexpr (Check) {
+        if (auto error = _can_precede(target)) {
+            throw Exception("cannot precede: {}.", *error);
+        }
     }
 
     // 先在 this 侧插入后继，并通过交换维持“后继在前、前驱在后”的统一布局。
@@ -959,7 +965,13 @@ inline void Work::_precede(Work* const target) {
         std::swap(m_edges[m_num_successors], m_edges.back());
     }
     ++m_num_successors;
-    target->m_edges.push_back(this);
+    try {
+        target->m_edges.push_back(this);
+    } catch (...) {
+        // 第二端扩容失败时撤销第一端，保留已有前驱/后继和分区布局。
+        _erase_successor_at(m_num_successors - 1);
+        throw;
+    }
 }
 
 /// @brief 删除逻辑边 `this -> target`，并同步删除 target 侧对应的前驱记录。
