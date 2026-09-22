@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +28,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <functional>
 
 #include "enums.hpp"
 #include "topology.hpp"
@@ -36,7 +36,6 @@
 #include "exception.hpp"
 #include "observer.hpp"
 #include "semaphore.hpp"
-#include "small_vector.hpp"
 #include "work_storage.hpp"
 #include "object_pool.hpp"
 #include "macros.hpp"
@@ -67,6 +66,7 @@ class Work : public Immovable<Work> {
     friend class D2Renderer;
     friend class TaskGroup;
     friend class FlowBuilder;
+    friend class SharedWorkStack;
     template <typename> friend class AsyncFuture;
     template <typename> friend class AsyncTask;
     TFL_WORK_SUBCLASS_FRIENDS;
@@ -139,7 +139,7 @@ public:
 
         /// @brief 当前配置下所有原子控制标志位。
         static constexpr type FLAG_MASK = EXPLICIT_ANCHOR | EXCEPTION | EXCEPTION_CAUGHT | EXECUTION;
-#else \
+#else
         /// @brief 当前配置下所有原子控制标志位。
         static constexpr type FLAG_MASK = EXPLICIT_ANCHOR | EXCEPTION | EXCEPTION_CAUGHT;
 #endif
@@ -147,7 +147,8 @@ public:
 
     /// @brief 描述当前 Work 对一个外部 Semaphore 的非拥有配额请求。
     ///
-    /// `sem` 的生命周期必须覆盖相关 Work 执行期；`count` 表示一次完整 acquire/release 的配额数量。
+    /// `sem` 的生命周期必须覆盖相关 Work 执行期；`count` 表示一次完整
+    /// acquire/release 操作需要取得或归还的配额数量。
     struct SemaphoreReq {
         Semaphore* sem;     ///< 非拥有的目标信号量。
         std::size_t count;  ///< 单次请求或归还的配额数量。
@@ -155,16 +156,110 @@ public:
 
     /// @brief 保存当前 Work 配置的执行前 acquire 与执行后 release 请求。
     ///
-    /// 容器拥有请求描述符本身，但其中的 Semaphore 指针均为非拥有引用。
+    /// `acquires` 按 Semaphore 指针的全局顺序严格递增且无重复，使运行期能够
+    /// 按固定顺序锁定全部 acquire Semaphore，避免多锁场景形成循环等待。
+    ///
+    /// `releases` 无顺序要求，但同一 Semaphore 最多存在一条 release 请求。
+    ///
+    /// 容器拥有请求描述符本身，其中的 Semaphore 指针均为非拥有引用。
     struct SemaphoreData {
-        std::vector<SemaphoreReq> acquires; ///< invoke body 前必须全部获取的请求。
-        std::vector<SemaphoreReq> releases; ///< invoke body 完成后执行的归还请求。
+        std::vector<SemaphoreReq> acquires; ///< 执行前必须原子式全部取得的请求；严格有序且无重复。
+        std::vector<SemaphoreReq> releases; ///< 执行完成后逐个归还的请求；无顺序要求且无重复。
 
         [[nodiscard]] bool empty() const noexcept {
             return acquires.empty() && releases.empty();
         }
     };
 
+    /// @brief 按固定全局顺序锁定当前 Work 的全部 acquire Semaphore。
+    ///
+    /// 构造时按照 `acquires` 的既定顺序依次取得每个 Semaphore 的内部锁；
+    /// 析构时释放全部锁。acquire 列表必须按照 Semaphore 指针的全局顺序
+    /// 严格递增且无重复，从而保证不同 Work 的多锁获取顺序一致，避免循环等待。
+    ///
+    /// acquire 失败并将当前 Work 加入某个 Semaphore 的 waiter 链后，可通过
+    /// `blocker()` 标记对应阻塞 Semaphore。析构时先释放其余全部锁，最后才
+    /// 释放 blocker 的锁，使当前 Work 在仍可能访问自身 acquire 数据期间不会
+    /// 被其他线程从 waiter 链摘出并重新发布。
+    ///
+    /// @pre acquires 中所有 Semaphore 指针均非空。
+    /// @pre acquires 按 Semaphore 指针的全局顺序严格递增且无重复。
+    /// @note 本类型只管理 Semaphore 内部锁，不直接修改配额或 waiter 链。
+    /// @warning blocker 的锁一旦释放，当前 Work 可能立即被其他线程重新调度甚至销毁；
+    ///          此后不得再访问 `m_acquires` 或当前 Work 的任何内部状态。
+    class SemaphoreLock final : public Immovable<SemaphoreLock> {
+    public:
+        /// @brief 按 acquire 列表的固定全局顺序取得全部 Semaphore 锁。
+        ///
+        /// 调试模式下同时校验 Semaphore 非空，并通过相邻 Semaphore 指针严格递增
+        /// 验证 acquire 列表保持有序且无重复。
+        ///
+        /// @param acquires 当前 Work 的 acquire 请求只读视图。
+        TFL_FORCE_INLINE explicit SemaphoreLock(std::span<const SemaphoreReq> acquires) noexcept
+            : m_acquires{acquires} {
+
+            Semaphore* previous = nullptr;
+
+            for (const auto& req : m_acquires) {
+                TFL_ASSERT(req.sem);
+
+                if (previous) {
+                    TFL_ASSERT(std::less<>{}(previous, req.sem));
+                }
+
+                req.sem->m_lock.lock();
+                previous = req.sem;
+            }
+        }
+
+        /// @brief 释放构造期间取得的全部 Semaphore 锁。
+        ///
+        /// 正常路径按照 acquire 顺序的逆序释放全部锁。
+        ///
+        /// 若设置了 blocker，则当前 Work 已加入对应 Semaphore 的 waiter 链；
+        /// 此时先释放其他全部 Semaphore，最后释放 blocker，使当前析构路径完成
+        /// 对 `m_acquires` 的最后一次访问后，当前 Work 才能够被其他线程重新发布。
+        TFL_FORCE_INLINE ~SemaphoreLock() noexcept {
+            Semaphore* const blocker = m_blocker;
+
+            if (blocker) {
+                for (std::size_t i = m_acquires.size(); i > 0; --i) {
+                    Semaphore* const sem = m_acquires[i - 1].sem;
+
+                    if (sem != blocker) {
+                        sem->m_lock.unlock();
+                    }
+                }
+
+                blocker->m_lock.unlock();
+                return;
+            }
+
+            for (std::size_t i = m_acquires.size(); i > 0; --i) {
+                m_acquires[i - 1].sem->m_lock.unlock();
+            }
+        }
+
+        /// @brief 标记保存当前 Work 的阻塞 Semaphore。
+        ///
+        /// 设置后，该 Semaphore 的内部锁将在析构时最后释放，以保证当前 Work
+        /// 加入 waiter 链后，在当前执行路径仍访问 acquire 数据期间不会被其他线程
+        /// 提前摘出并重新调度。
+        ///
+        /// @param sem 当前 Work 已加入其 waiter 链的 Semaphore。
+        /// @pre sem 非空。
+        /// @pre 当前尚未设置 blocker。
+        TFL_FORCE_INLINE void blocker(Semaphore* sem) noexcept {
+            TFL_ASSERT(sem);
+            TFL_ASSERT(m_blocker == nullptr);
+
+            m_blocker = sem;
+        }
+
+    private:
+        std::span<const SemaphoreReq> m_acquires; ///< 当前 Work 的 acquire 请求只读视图。
+        Semaphore* m_blocker{nullptr};            ///< 保存当前 Work 的阻塞 Semaphore；其内部锁必须最后释放。
+    };
 
     /// @brief 以共享所有权保存当前 Work 执行前后需要通知的观察者。
     ///
@@ -179,7 +274,7 @@ public:
 
 
     class Payload : public Immovable<Payload> {
-        using Invoke = void (*)(Payload&, Work&, Worker&, Executor&, Work*&);
+        using Invoke = void (*)(Payload&, Work&, Worker&, Executor&, Work*&) noexcept;
 
         struct Operations {
             void (*destroy)(Payload&) noexcept;
@@ -207,7 +302,7 @@ public:
                                            };
         template <typename T, typename... Args>
             requires (valid_type<T> && std::constructible_from<T, Args&&...>)
-        explicit Payload(std::in_place_type_t<T>, Args&&... args) {
+        explicit Payload(std::in_place_type_t<T>, Args&&... args) noexcept(noexcept(_construct<T>(std::forward<Args>(args)...))) {
             _construct<T>(std::forward<Args>(args)...);
         }
 
@@ -217,7 +312,7 @@ public:
 
         template <typename T, typename... Args>
             requires (valid_type<T> && std::constructible_from<T, Args&&...>)
-        T* emplace(Args&&... args) {
+        T* emplace(Args&&... args) noexcept(noexcept(_construct<T>(std::forward<Args>(args)...))) {
             reset();
             _construct<T>(std::forward<Args>(args)...);
             return _target<T>();
@@ -237,7 +332,7 @@ public:
             return _target<T>();
         }
 
-        void invoke(Work& work, Worker& worker, Executor& executor, Work*& cache) {
+        void invoke(Work& work, Worker& worker, Executor& executor, Work*& cache) noexcept {
             TFL_ASSERT(m_invoke);
             m_invoke(*this, work, worker, executor, cache);
         }
@@ -271,9 +366,10 @@ public:
         }
 
     private:
+
         template <typename T, typename... Args>
             requires (valid_type<T> && std::constructible_from<T, Args&&...>)
-        void _construct(Args&&... args) {
+        void _construct(Args&&... args) noexcept(!uses_heap<T> && std::is_nothrow_constructible_v<T, Args&&...>) {
             if constexpr (uses_heap<T>) {
                 T* pointer = ::new T(std::forward<Args>(args)...);
                 _set_large_ptr(pointer);
@@ -333,7 +429,7 @@ public:
         }
 
         template <typename T>
-        static void _invoke(Payload& payload, Work& work, Worker& worker, Executor& executor, Work*& cache) {
+        static void _invoke(Payload& payload, Work& work, Worker& worker, Executor& executor, Work*& cache) noexcept {
             payload.template _target<T>()->invoke(work, worker, executor, cache);
         }
 
@@ -407,7 +503,7 @@ public:
     /// @return 新构造并安装到 Payload 中的 Invoker 引用。
     template <typename T, typename... Args>
         requires (Payload::template valid_type<T> && std::constructible_from<T, Args&&...>)
-    T& emplace(Args&&... args) {
+    T& emplace(Args&&... args) noexcept(noexcept(m_payload.template emplace<T>(std::forward<Args>(args)...))) {
         T& payload = *m_payload.template emplace<T>(std::forward<Args>(args)...);
 
         if constexpr (requires(T& value) {
@@ -435,7 +531,7 @@ public:
         return *m_payload.template target<T>();
     }
 
-    void invoke(Worker& worker, Executor& executor, Work*& cache) {
+    void invoke(Worker& worker, Executor& executor, Work*& cache) noexcept {
         m_payload.invoke(*this, worker, executor, cache);
     }
 
@@ -458,21 +554,20 @@ public:
 private:
     Payload m_payload;
 
+    Work*                               m_next{nullptr};                    ///< 运行期 intrusive 链链接槽；未链接时必须为空，同一时刻只能属于一条运行期链。
     Topology*                           m_topology{nullptr};                ///< 非拥有的执行拓扑上下文；提供停止域、完成状态和强引用计数。
     Work*                               m_parent{nullptr};                  ///< 非拥有的运行期父 Work；当前节点完成时向其归还或转移一个 join slot。
     Properties::type                    m_properties{Properties::NONE};     ///< 非原子属性、独占运行状态及静态 join weight 的位编码。
     std::atomic<Control::type>          m_control{Control::NONE};           ///< 并发控制位；保存异常锚点、异常传播/归档及可选执行检查状态。
     std::atomic<std::uint32_t>          m_join_counter{0};                  ///< 运行期 join 计数；用于 strong predecessor 到达、动态子任务等待及父节点恢复。
     std::uint32_t                       m_num_successors{0};                ///< `m_edges` 的后继数量，同时作为 `[后继 | 前驱]` 两个逻辑区间的分割点。
-    std::vector<Work*>                  m_edges;                            ///< 非拥有的统一邻接表；布局固定为 `[后继 | 前驱]`，同时服务调度传播和 join weight 计算。
+    std::vector<Work*>                  m_edges;                            ///< 非拥有的统一邻接表；布局固定为 `[后继 | 前驱]`：静态边和动态后继非拥有；异步前驱各持一份强引用。
     std::unique_ptr<SemaphoreData>      m_semaphores;                       ///< 按需分配的信号量约束；保存执行前 acquire 与执行后 release 请求。
     std::unique_ptr<ObserverData>       m_observers;                        ///< 按需分配的观察者集合；在节点执行前后触发生命周期通知。
 
     std::exception_ptr                  m_exception_ptr{nullptr};           ///< 当前 Work 获得异常归档权后保存的异常；由完成同步保证读取可见性。
     const Graph*                        m_graph{nullptr};                   ///< 非拥有的静态物理 Graph；仅静态图节点绑定，独立异步 Work 通常为空。
     std::unique_ptr<std::string>        m_name;                             ///< 按需分配的节点名称；仅用于调试、诊断和 D2 可视化。
-
-
 
 
     /// @brief 设置当前 Work 的调试名称.
@@ -776,11 +871,15 @@ private:
     /// @return predicate 的返回值；发生异常时返回 true。
     template <predicate P>
     TFL_FORCE_INLINE bool _invoke_predicate(P& predicate) noexcept {
-        try {
+        if constexpr (noexcept(std::invoke(predicate))) {
             return std::invoke(predicate);
-        } catch (...) {
-            _process_exception();
-            return true;
+        } else {
+            try {
+                return std::invoke(predicate);
+            } catch (...) {
+                _process_exception();
+                return true;
+            }
         }
     }
 
@@ -793,81 +892,219 @@ private:
     /// @param callback 要调用的完成回调。
     template <callback C>
     TFL_FORCE_INLINE void _invoke_callback(C& callback) noexcept {
-        try {
+        if constexpr (noexcept(std::invoke(callback))) {
             std::invoke(callback);
-        } catch (...) {
-            _process_exception();
+        } else {
+            try {
+                std::invoke(callback);
+            } catch (...) {
+                _process_exception();
+            }
         }
     }
 
-    /// @brief 获取 `m_edges` 中后继前缀的 span 视图。
+    /// @brief 获取 `m_edges` 中后继前缀的可修改 span 视图。
+    ///
+    /// `m_edges` 始终按照 `[successors | predecessors]` 保存，前 `m_num_successors`
+    /// 个元素构成当前 Work 的物理后继区间。
+    ///
+    /// @return 指向当前后继区间的非拥有可修改视图。
+    /// @note 返回视图仅在 `m_edges` 未发生重新分配、插入、删除或销毁期间有效。
+    /// @warning 直接修改视图中的元素不会自动维护目标 Work 的反向 predecessor 关系；
+    ///          通常应通过专用建边/删边接口修改静态图关系。
     [[nodiscard]] std::span<Work*> _successors() noexcept {
         return {m_edges.data(), m_num_successors};
     }
+
+    /// @brief 获取 `m_edges` 中后继前缀的只读 span 视图。
+    ///
+    /// @return 指向当前后继区间的非拥有只读视图。
+    /// @note 返回视图仅在 `m_edges` 未发生重新分配、插入、删除或销毁期间有效。
     [[nodiscard]] std::span<Work* const> _successors() const noexcept {
         return {m_edges.data(), m_num_successors};
     }
 
-    /// @brief 获取 `m_edges` 中前驱后缀的 span 视图。
+    /// @brief 获取 `m_edges` 中前驱后缀的可修改 span 视图。
+    ///
+    /// 前驱区间固定为 `[m_num_successors, m_edges.size())`，与后继前缀共同组成
+    /// `m_edges == [successors | predecessors]` 的统一物理布局。
+    ///
+    /// @return 指向当前前驱区间的非拥有可修改视图。
+    /// @note 返回视图仅在 `m_edges` 未发生重新分配、插入、删除或销毁期间有效。
+    /// @warning 直接修改视图中的元素不会自动维护对应前驱 Work 的 successor 关系；
+    ///          通常应通过专用静态边维护接口修改依赖关系。
     [[nodiscard]] std::span<Work*> _predecessors() noexcept {
         return {m_edges.data() + m_num_successors, m_edges.size() - m_num_successors};
     }
+
+    /// @brief 获取 `m_edges` 中前驱后缀的只读 span 视图。
+    ///
+    /// @return 指向当前前驱区间的非拥有只读视图。
+    /// @note 返回视图仅在 `m_edges` 未发生重新分配、插入、删除或销毁期间有效。
     [[nodiscard]] std::span<Work* const> _predecessors() const noexcept {
         return {m_edges.data() + m_num_successors, m_edges.size() - m_num_successors};
     }
 
-    /// @brief 返回当前物理前驱数量。
+    /// @brief 返回当前 Work 的物理前驱数量。
+    ///
+    /// 前驱数量由统一边表总长度减去后继前缀长度得到，不额外保存独立计数字段。
+    ///
+    /// @return 当前 `m_edges` 前驱后缀中的元素数量。
+    /// @pre `m_num_successors <= m_edges.size()`。
     [[nodiscard]] std::size_t _num_predecessors() const noexcept {
         return m_edges.size() - m_num_successors;
     }
 
     /// @brief 按需创建 SemaphoreData，并返回其可修改引用。
-    [[nodiscard]] SemaphoreData& _ensure_semaphores() {
+    ///
+    /// 当前 Work 尚未配置任何 Semaphore 数据时分配一个新的 `SemaphoreData`；
+    /// 已存在时直接复用原对象。
+    ///
+    /// @return 当前 Work 唯一拥有的 SemaphoreData 引用。
+    /// @throws std::bad_alloc 首次创建 SemaphoreData 分配失败时抛出。
+    /// @note 调用成功后 `m_semaphores` 必定非空。
+    [[nodiscard]] SemaphoreData& _ensure_semaphore_data() {
         if (!m_semaphores) {
             m_semaphores = std::make_unique<SemaphoreData>();
         }
         return *m_semaphores;
     }
 
-    /// @brief 当 acquire/release 列表均为空时释放按需分配的 SemaphoreData。
-    void _try_release_semaphores() noexcept {
+    /// @brief 在 acquire/release 配置均为空时回收 SemaphoreData。
+    ///
+    /// 仅当当前 Work 已存在 SemaphoreData，且其中 acquire 与 release 两个列表
+    /// 均为空时释放该按需存储；任一列表仍有配置时保持对象不变。
+    ///
+    /// @post 若 acquire/release 均为空，则 `m_semaphores == nullptr`。
+    /// @note 本函数只回收配置存储，不修改任何 Semaphore 对象或运行期配额。
+    void _cleanup_semaphore_data() noexcept {
         if (m_semaphores && m_semaphores->empty()) {
             m_semaphores.reset();
         }
     }
 
+    /// @brief 获取当前 Work 的 acquire 请求可修改视图。
+    ///
+    /// @return 已配置 acquire 请求的非拥有可修改 span；未创建 SemaphoreData 时返回空视图。
+    /// @note acquire 列表按照 Semaphore 指针的全局顺序严格递增且无重复。
+    /// @note 返回视图仅在 acquire vector 未发生插入、删除、清空、重新分配或
+    ///       `m_semaphores` 未被释放期间有效。
+    /// @warning 修改 `SemaphoreReq::sem` 会破坏 acquire 列表的全局排序不变量；
+    ///          正常配置修改应通过 `_acquire()`、`_remove_acquire()` 或 `_clear_acquires()` 完成。
     [[nodiscard]] std::span<SemaphoreReq> _acquires() noexcept {
         return m_semaphores ? std::span<SemaphoreReq>{m_semaphores->acquires} : std::span<SemaphoreReq>{};
     }
+
+    /// @brief 获取当前 Work 的 acquire 请求只读视图。
+    ///
+    /// @return 已配置 acquire 请求的非拥有只读 span；未创建 SemaphoreData 时返回空视图。
+    /// @note acquire 列表按照 Semaphore 指针的全局顺序严格递增且无重复。
+    /// @note 返回视图仅在 acquire vector 未发生结构修改或 `m_semaphores` 未被释放期间有效。
     [[nodiscard]] std::span<SemaphoreReq const> _acquires() const noexcept {
         return m_semaphores ? std::span<SemaphoreReq const>{m_semaphores->acquires} : std::span<SemaphoreReq const>{};
     }
+
+    /// @brief 获取当前 Work 的 release 请求可修改视图。
+    ///
+    /// @return 已配置 release 请求的非拥有可修改 span；未创建 SemaphoreData 时返回空视图。
+    /// @note release 列表无固定排序要求，但同一 Semaphore 最多存在一条请求。
+    /// @note 返回视图仅在 release vector 未发生插入、删除、清空、重新分配或
+    ///       `m_semaphores` 未被释放期间有效。
     [[nodiscard]] std::span<SemaphoreReq> _releases() noexcept {
         return m_semaphores ? std::span<SemaphoreReq>{m_semaphores->releases} : std::span<SemaphoreReq>{};
     }
+
+    /// @brief 获取当前 Work 的 release 请求只读视图。
+    ///
+    /// @return 已配置 release 请求的非拥有只读 span；未创建 SemaphoreData 时返回空视图。
+    /// @note release 列表无固定排序要求，但同一 Semaphore 最多存在一条请求。
+    /// @note 返回视图仅在 release vector 未发生结构修改或 `m_semaphores` 未被释放期间有效。
     [[nodiscard]] std::span<SemaphoreReq const> _releases() const noexcept {
         return m_semaphores ? std::span<SemaphoreReq const>{m_semaphores->releases} : std::span<SemaphoreReq const>{};
     }
+
+    /// @brief 返回当前 Work 配置的 acquire 请求数量。
+    ///
+    /// @return acquire 请求数量；尚未创建 SemaphoreData 时返回 0。
     [[nodiscard]] std::size_t _num_acquires() const noexcept {
         return m_semaphores ? m_semaphores->acquires.size() : 0;
     }
+
+    /// @brief 返回当前 Work 配置的 release 请求数量。
+    ///
+    /// @return release 请求数量；尚未创建 SemaphoreData 时返回 0。
     [[nodiscard]] std::size_t _num_releases() const noexcept {
         return m_semaphores ? m_semaphores->releases.size() : 0;
     }
+
+    /// @brief 返回当前 Work 注册的观察者数量。
+    ///
+    /// @return 已注册观察者数量；尚未创建 ObserverData 时返回 0。
     [[nodiscard]] std::size_t _num_observers() const noexcept {
         return m_observers ? m_observers->observers.size() : 0;
     }
 
     // ---- Semaphore 配置与运行期 acquire/release ----
+
+    /// @brief 添加一条执行前 Semaphore acquire 请求。
+    ///
+    /// acquire 请求按 Semaphore 指针的全局顺序严格递增保存，同一 Semaphore
+    /// 最多存在一条请求。
+    ///
+    /// @param sem 非拥有的目标 Semaphore。
+    /// @param count 每次执行需要一次性取得的配额数量。
+    /// @throws Exception sem 为空或同一 Semaphore 已存在于 acquire 列表时抛出。
+    /// @note count == 0 时忽略该请求。
     void _acquire(Semaphore* sem, std::size_t count);
+
+    /// @brief 添加一条执行后 Semaphore release 请求。
+    ///
+    /// @param sem 非拥有的目标 Semaphore。
+    /// @param count 每次执行完成后需要归还的配额数量。
+    /// @throws Exception sem 为空或同一 Semaphore 已存在于 release 列表时抛出。
+    /// @note count == 0 时忽略该请求。
     void _release(Semaphore* sem, std::size_t count);
+
+    /// @brief 移除指定 Semaphore 的 acquire 请求。
+    ///
+    /// @param sem 要移除的 Semaphore；为空或不存在时无操作。
+    /// @note 删除后 acquire 列表继续保持严格有序且无重复。
     void _remove_acquire(Semaphore* sem) noexcept;
+
+    /// @brief 移除指定 Semaphore 的 release 请求。
+    ///
+    /// @param sem 要移除的 Semaphore；为空或不存在时无操作。
     void _remove_release(Semaphore* sem) noexcept;
+
+    /// @brief 清空当前 Work 的全部 acquire 请求。
     void _clear_acquires() noexcept;
+
+    /// @brief 清空当前 Work 的全部 release 请求。
     void _clear_releases() noexcept;
 
-    [[nodiscard]] bool _try_acquire_semaphores(SmallVector<Work*>& out);
-    void _release_semaphores(SmallVector<Work*>& out);
+    /// @brief 原子式尝试取得当前 Work 配置的全部 acquire 配额。
+    ///
+    /// 按 acquire 列表的全局固定顺序锁定全部 Semaphore，在所有锁保护下先检查
+    /// 每条请求是否能够同时满足。全部满足时一次性扣减全部配额；任一请求不满足时
+    /// 不修改任何配额，并将当前 Work 加入首个不满足请求的 Semaphore waiter 链。
+    ///
+    /// @return 全部 acquire 成功时返回 true；当前 Work 进入 waiter 链时返回 false。
+    /// @pre acquire 列表非空、严格有序且无重复。
+    /// @note 本操作具有 all-or-nothing 语义，不存在部分获取和失败回滚。
+    /// @warning 返回 false 后当前 Work 已被发布到某个 Semaphore waiter 链，
+    ///          调用方不得继续执行当前 Work，本次 invoke 应立即返回。
+    [[nodiscard]] TFL_FORCE_INLINE bool _try_acquire_semaphores() noexcept;
+
+    /// @brief 执行当前 Work 配置的全部 Semaphore release 请求。
+    ///
+    /// 每条 release 请求独立锁定对应 Semaphore 并归还配额。release 解冻的 waiter
+    /// 通过 intrusive 链依次追加到 `[first, last]`，最终由调用方统一重新调度。
+    ///
+    /// @param first 接收全部 release 解冻的 waiter 链首节点；空链时为 nullptr。
+    /// @param last 接收全部 release 解冻的 waiter 链尾节点；空链时为 nullptr。
+    /// @pre first 和 last 必须同时为空或同时非空。
+    /// @note release 路径不会同时持有多个 Semaphore 锁，因此 releases 无需固定排序。
+    TFL_FORCE_INLINE void _release_semaphores(Work*& first, Work*& last) noexcept;
 
     // ---- 观察者执行前/后通知 ----
     /// @brief 在 callable 正式执行前依次通知当前 Work 注册的全部观察者。
@@ -877,41 +1114,139 @@ private:
     TFL_FORCE_INLINE void _notify_after(Worker& wr) const noexcept;
 
     // ---- 静态图双向边表维护 ----
+
+    /// @brief 删除后继区间中指定位置的一个后继节点。
+    ///
+    /// `m_edges` 固定保存为 `[successors | predecessors]` 两个连续区间。
+    /// 删除时通过常数次交换维持该分区布局，不保证后继区间内部顺序稳定。
+    ///
+    /// @param idx 要删除的后继在 `_successors()` 中的相对下标。
+    /// @pre `idx < m_num_successors`。
+    /// @post `m_edges` 总长度减少 1，`m_num_successors` 减少 1。
+    /// @post 前驱数量保持不变，`m_edges` 继续满足 `[successors | predecessors]` 布局。
     void _erase_successor_at(std::size_t idx) noexcept;
+
+    /// @brief 删除前驱区间中指定位置的一个前驱节点。
+    ///
+    /// 前驱区间位于 `m_edges[m_num_successors, m_edges.size())`。
+    /// 删除时使用最后一个前驱覆盖目标位置，因此不保证前驱区间内部顺序稳定。
+    ///
+    /// @param idx 要删除的前驱在 `_predecessors()` 中的相对下标。
+    /// @pre `idx < _num_predecessors()`。
+    /// @post `m_edges` 总长度减少 1，`m_num_successors` 保持不变。
+    /// @post 后继区间及 `[successors | predecessors]` 分区布局保持有效。
     void _erase_predecessor_at(std::size_t idx) noexcept;
+
+    /// @brief 建立当前 Work 到目标 Work 的静态有向边。
+    ///
+    /// 在当前 Work 的后继区间加入 @p target，同时在 @p target 的前驱区间加入
+    /// 当前 Work，从而维护双向对称的静态邻接关系。
+    ///
+    /// 当 @p Check 为 true 时，建立边之前会检查空目标、Graph 一致性、重复边、
+    /// 非 Jump 自环以及不经过 Jump/MultiJump 的严格闭环等合法性约束。
+    ///
+    /// @tparam Check 是否执行静态建边合法性检查。
+    /// @param target 要建立为当前 Work 后继的目标节点。
+    ///
+    /// @pre 当 Check 为 false 时，调用方必须保证 target 非空且建边关系合法。
+    /// @throws Exception Check 为 true 且新增边不满足拓扑约束时抛出。
+    /// @throws std::bad_alloc 任一侧边表扩容失败时抛出。
+    /// @note 若 target 侧插入失败，会撤销当前 Work 侧已经完成的插入，保持逻辑边不存在。
+    /// @post 成功后当前 Work 的后继区和 target 的前驱区各存在一条对应记录。
     template <bool Check = true>
     void _precede(Work* target);
+
+    /// @brief 删除当前 Work 到指定目标 Work 的静态有向边。
+    ///
+    /// 若 @p target 当前是本 Work 的后继，则同时删除当前 Work 后继区中的 target
+    /// 以及 target 前驱区中的当前 Work，保持双向邻接关系一致。
+    ///
+    /// @param target 要解除连接的目标后继；为空或当前不存在该边时无操作。
+    /// @post 成功删除后，两端均不再保存该逻辑边对应的邻接记录。
+    /// @note 本函数不保证剩余前驱或后继的相对顺序稳定。
     void _remove_successor(Work* target) noexcept;
+
+    /// @brief 清除当前 Work 的全部静态前驱关系。
+    ///
+    /// 遍历当前前驱区间，并从每个前驱 Work 的后继区中删除当前 Work，
+    /// 随后清空本 Work 的整个前驱区间。
+    ///
+    /// @pre 当前双向边表保持一致，每个本地前驱都必须在其后继区中包含当前 Work。
+    /// @post `_num_predecessors() == 0`。
+    /// @post 所有原前驱均不再以当前 Work 作为后继。
+    /// @post 当前 Work 的后继区和 `m_num_successors` 保持不变。
     void _clear_predecessors() noexcept;
+
+    /// @brief 清除当前 Work 的全部静态后继关系。
+    ///
+    /// 遍历当前后继区间，并从每个后继 Work 的前驱区中删除当前 Work，
+    /// 随后删除本 Work 的整个后继前缀，使原前驱区整体前移到 `m_edges` 起始位置。
+    ///
+    /// @pre 当前双向边表保持一致，每个本地后继都必须在其前驱区中包含当前 Work。
+    /// @post `m_num_successors == 0`。
+    /// @post 所有原后继均不再以当前 Work 作为前驱。
+    /// @post 当前 Work 原有前驱关系保持不变。
     void _clear_successors() noexcept;
 
+
     // ---- 静态图建边合法性与无 Jump 路径检测 ----
+
+    /// @brief 检查从 @p from 到 @p to 是否存在一条不经过 Jump/MultiJump 的有向路径。
+    ///
+    /// 使用 DFS 沿静态 successor 边搜索。遇到 Jump 或 MultiJump 节点时停止从该节点
+    /// 继续向后展开，使结果只反映普通控制流节点形成的严格路径关系。
+    ///
+    /// @param from 搜索起点。
+    /// @param to 搜索目标。
+    /// @return 存在满足条件的路径时返回 true，否则返回 false。
+    /// @note 本函数可能为 DFS 工作集和 visited 集合进行动态内存分配。
+    /// @note 本函数只读取静态边表，调用期间相关 Graph 结构不得被并发修改。
     [[nodiscard]] bool _has_path_without_jump(const Work* from, const Work* to) const;
+
+    /// @brief 检查新增静态边 `this -> target` 是否满足当前图的建边规则。
+    ///
+    /// 校验内容包括：
+    /// 1. target 非空；
+    /// 2. 当前 Work 已绑定 Graph，且双方属于同一 Graph；
+    /// 3. 不允许重复建立同一条边；
+    /// 4. 普通节点不允许自环；
+    /// 5. 普通节点之间不得形成完全不经过 Jump/MultiJump 的严格闭环。
+    ///
+    /// Jump 和 MultiJump 节点参与的循环由专用控制流语义处理，因此相关路径不会
+    /// 按普通严格 DAG 规则直接判定为非法。
+    ///
+    /// @param target 待连接的目标后继。
+    /// @return 合法时返回 `std::nullopt`；非法时返回对应错误描述。
+    /// @note 本函数只负责检查，不修改任何边表。
     [[nodiscard]] std::optional<std::string_view> _can_precede(Work* target) const;
 
-    /// @brief 销毁当前零引用异步 Work，并迭代回收前驱依赖链。
+
+    /// @brief 销毁当前零引用异步 Work，并迭代回收其前驱强引用链。
     ///
-    /// @pre 当前 Work 的强引用已归零，由当前线程独占回收。
-    /// @pre 所处理节点的前驱区均拥有强引用。
-    /// @pre 零引用节点的原 m_parent 不再被执行路径或销毁逻辑使用。
-    /// @pre destroy_work 只销毁节点，不再次释放前驱引用。
-    /// @pre 析构逻辑不依赖节点原来的边表内容。
-    /// @note 前驱引用覆盖当前 Work 的完整析构过程。
-    /// @note 借用零引用节点的 m_parent 连接待回收链表，不额外分配内存。
-    /// @warning 本函数会销毁当前 Work，调用后不得继续访问。
+    /// 当前 Work 的 Topology 强引用已经归零后，由唯一回收线程进入本函数。
+    /// 实现先接管当前节点的边表，再销毁当前 Work，随后逐个释放其中异步前驱持有的
+    /// 强引用；若某个前驱的引用同时归零，则借用该前驱的 `m_parent` 字段将其挂入
+    /// 待回收链，并继续以迭代方式处理，避免递归销毁造成调用栈增长。
+    ///
+    /// 当前节点销毁前会先将需要继续使用的数据转移到局部对象中，因此 `destroy_work()`
+    /// 返回后不再访问已经销毁节点的任何成员。
+    ///
+    /// @pre 当前 Work 的强引用已归零，并由当前线程独占回收。
+    /// @pre 当前 Work 不再可能进入执行、调度、等待或其他并发访问路径。
+    /// @pre `m_num_successors <= m_edges.size()`，且前驱区保存的异步前驱各持有一份强引用。
+    /// @pre 待回收节点原有 `m_parent` 不再承担正常执行期父子关系语义，可安全借作回收链链接槽。
+    /// @pre `destroy_work()` 只负责销毁当前节点自身，不再次递归释放其前驱引用。
+    /// @pre 节点析构逻辑不得依赖已经从节点中接管出去的边表内容。
+    ///
+    /// @note 前驱强引用覆盖当前 Work 的完整析构过程，确保析构期间所有前驱仍然有效。
+    /// @note 整个回收过程使用迭代链完成，不因依赖深度增加递归栈消耗。
+    /// @note 借用零引用节点的 `m_parent` 串联待回收链，不额外分配辅助链表节点。
+    /// @warning 本函数会销毁 `this`；进入实际销毁后不得再访问当前 Work。
+    /// @warning 调用返回时 `this` 已经失效，调用方不得再读取、写入、比较解引用或重新调度该指针。
     void _destroy_async() noexcept;
 };
 
 
-/// @brief 删除指定后继并维持 `m_edges == [后继 | 前驱]` 的分区不变式。
-///
-/// 实现使用 swap-with-last 风格的常数次指针搬移：
-/// 1. 目标不是最后一个后继时，用最后一个后继覆盖目标；
-/// 2. 存在前驱时，用边表最后一个前驱填补原最后后继位置；
-/// 3. `pop_back()` 并递减 `m_num_successors`。
-///
-/// @pre `idx < m_num_successors`。
-/// @post 边表总长度和后继数量各减少 1，前驱数量保持不变。
 inline void Work::_erase_successor_at(std::size_t idx) noexcept {
     TFL_ASSERT(idx < m_num_successors);
     const std::size_t last_succ = m_num_successors - 1;
@@ -927,12 +1262,6 @@ inline void Work::_erase_successor_at(std::size_t idx) noexcept {
     --m_num_successors;
 }
 
-/// @brief 删除前驱区间中的指定元素，后继分区保持不变。
-///
-/// 前驱区间为 `[m_num_successors, m_edges.size())`；用整个边表最后一个前驱覆盖目标后 `pop_back()`。
-///
-/// @pre `idx < _num_predecessors()`。
-/// @post 边表总长度减少 1，`m_num_successors` 保持不变。
 inline void Work::_erase_predecessor_at(std::size_t idx) noexcept {
     TFL_ASSERT(idx < _num_predecessors());
     const std::size_t abs_idx = m_num_successors + idx;
@@ -940,17 +1269,6 @@ inline void Work::_erase_predecessor_at(std::size_t idx) noexcept {
     m_edges.pop_back();
 }
 
-/// @brief 建立逻辑有向边 `this -> target`，并在两端维护对称的邻接记录。
-///
-/// @param target 新后继节点。
-/// @tparam Check 默认校验建边规则；false 时由调用方保证节点和拓扑合法。
-///
-/// @throws Exception Check 为 true 且建边规则不满足时抛出。
-/// @throws std::bad_alloc 邻接表分配失败；当前这条边不会部分插入。
-///
-/// @note 当前 Work 的 `m_edges` 前缀保存 target，target 的前驱后缀保存 this；
-///       两侧记录共同表示一条逻辑有向边，运行期 join weight 和后继传播直接
-///       复用这套静态边表。
 template <bool Check>
 inline void Work::_precede(Work* const target) {
     if constexpr (Check) {
@@ -974,9 +1292,6 @@ inline void Work::_precede(Work* const target) {
     }
 }
 
-/// @brief 删除逻辑边 `this -> target`，并同步删除 target 侧对应的前驱记录。
-///
-/// @param target 要解除连接的后继；nullptr 或当前不存在该边时无操作。
 inline void Work::_remove_successor(Work* const target) noexcept {
     if (!target) return;
 
@@ -991,9 +1306,6 @@ inline void Work::_remove_successor(Work* const target) noexcept {
     target->_erase_predecessor_at(static_cast<std::size_t>(pit - pred.begin()));
 }
 
-/// @brief 清除当前 Work 的全部前驱，并同步删除每个前驱侧对应的后继记录。
-///
-/// @post 当前 Work 的前驱区间为空，原前驱的 successor 列表均不再包含 this。
 inline void Work::_clear_predecessors() noexcept {
     for (Work* pred : _predecessors()) {
         auto succ = pred->_successors();
@@ -1005,10 +1317,6 @@ inline void Work::_clear_predecessors() noexcept {
     m_edges.erase(m_edges.begin() + m_num_successors, m_edges.end());
 }
 
-/// @brief 清除当前 Work 的全部后继，并同步删除每个后继侧对应的前驱记录。
-/// @note 删除前缀后由 vector 将现有前驱区间整体前移，其相对顺序保持不变。
-///
-/// @post `m_num_successors == 0`，`m_edges` 仅保留原前驱。
 inline void Work::_clear_successors() noexcept {
     for (Work* succ : _successors()) {
         auto pred = succ->_predecessors();
@@ -1022,17 +1330,6 @@ inline void Work::_clear_successors() noexcept {
     m_num_successors = 0;
 }
 
-/// @brief 校验新增逻辑边 `this -> target` 是否符合当前图的建边规则。
-///
-/// 检查规则：
-/// 1. target 必须非空并与 this 属于同一 Graph；
-/// 2. 不允许重复建立同一条逻辑边；
-/// 3. 非 Jump 节点不允许自环；
-/// 4. 不含 Jump/MultiJump 的严格闭环非法，跳转型节点参与的循环由专用控制流语义允许。
-///
-/// @param target 待连接的后继节点。
-/// @note 若 this 或 target 为 Jump/MultiJump，当前实现直接允许该连接；其他情况
-///       通过 `_has_path_without_jump(target, this)` 检测新增边是否形成严格闭环。
 inline std::optional<std::string_view> Work::_can_precede(Work* const target) const {
     if (!target) return std::string_view{"target is null"};
     if (!m_graph) return std::string_view{"work not attached to graph"};
@@ -1066,14 +1363,6 @@ inline std::optional<std::string_view> Work::_can_precede(Work* const target) co
     return std::nullopt;
 }
 
-/// @brief 查询 `from` 到 `to` 是否存在一条不穿过 Jump/MultiJump 节点的有向路径。
-///
-/// @param from 搜索起点。
-/// @param to 目标节点。
-/// @return 找到符合约束的路径时返回 true。
-///
-/// @note DFS 使用 `std::stack<const Work*, std::vector<const Work*>>` 保存待访问节点，
-///       visited 预留常见小图容量；更大图仍可能触发动态扩容。
 inline bool Work::_has_path_without_jump(const Work* from, const Work* to) const {
     if (!from || !to) return false;
 
@@ -1108,42 +1397,31 @@ inline bool Work::_has_path_without_jump(const Work* from, const Work* to) const
     return false;
 }
 
-/// @brief 为当前 Work 添加一条执行前 Semaphore acquire 请求。
-///
-/// @param sem 非拥有的目标 Semaphore。
-/// @param count 每次执行需要一次性获取的配额。
-///
-/// @throws Exception sem 为空或同一 Semaphore 已存在于 acquire 列表时抛出。
-///
-/// @note `count == 0` 时忽略该配置。
-/// @note acquire 列表预期较小，因此使用线性扫描去重。
 inline void Work::_acquire(Semaphore* sem, std::size_t count) {
     if (!sem) throw Exception("cannot acquire null semaphore.");
-    if (count == 0) return; // 空 acquire 请求不建立配置项。
+    if (count == 0) return;
 
-    auto& sd = _ensure_semaphores();
+    auto& acquires = _ensure_semaphore_data().acquires;
 
-    // acquire 列表通常较小，直接线性检查同一 Semaphore 是否已存在。
-    for (std::size_t i = 0; i < sd.acquires.size(); ++i) {
-        if (sd.acquires[i].sem == sem) {
-            throw Exception("semaphore already in acquire list.");
-        }
+    auto it = std::ranges::lower_bound(
+        acquires,
+        sem,
+        std::less<>{},
+        &SemaphoreReq::sem
+        );
+
+    if (it != acquires.end() && it->sem == sem) {
+        throw Exception("semaphore already in acquire list.");
     }
 
-    sd.acquires.emplace_back(sem, count);
+    acquires.insert(it, SemaphoreReq{sem, count});
 }
 
-/// @brief 为当前 Work 添加一条执行后 Semaphore release 请求。
-///
-/// @param sem 非拥有的目标 Semaphore。
-/// @param count 每次执行需要归还的配额。
-///
-/// @throws Exception sem 为空或同一 Semaphore 已存在于 release 列表时抛出。
 inline void Work::_release(Semaphore* sem, std::size_t count) {
     if (!sem) throw Exception("cannot release null semaphore.");
     if (count == 0) return;
 
-    auto& sd = _ensure_semaphores();
+    auto& sd = _ensure_semaphore_data();
 
     // release 列表通常较小，直接线性检查同一 Semaphore 是否已存在。
     for (std::size_t i = 0; i < sd.releases.size(); ++i) {
@@ -1155,26 +1433,24 @@ inline void Work::_release(Semaphore* sem, std::size_t count) {
     sd.releases.emplace_back(sem, count);
 }
 
-/// @brief 以 swap-with-last 方式移除指定 Semaphore 的 acquire 配置。
-///
-/// @param sem 要移除的 Semaphore；不存在时无操作。
 inline void Work::_remove_acquire(Semaphore* sem) noexcept {
-    if (m_semaphores) {
-        auto& acqs = m_semaphores->acquires;
-        for (std::size_t i = 0; i < acqs.size(); ++i) {
-            if (acqs[i].sem == sem) {
-                acqs[i] = acqs.back();
-                acqs.pop_back();
-                _try_release_semaphores();
-                return;
-            }
-        }
+    if (!m_semaphores || !sem) return;
+
+    auto& acquires = m_semaphores->acquires;
+
+    auto it = std::ranges::lower_bound(
+        acquires,
+        sem,
+        std::less<>{},
+        &SemaphoreReq::sem
+        );
+
+    if (it != acquires.end() && it->sem == sem) {
+        acquires.erase(it);
+        _cleanup_semaphore_data();
     }
 }
 
-/// @brief 以 swap-with-last 方式移除指定 Semaphore 的 release 配置。
-///
-/// @param sem 要移除的 Semaphore；不存在时无操作。
 inline void Work::_remove_release(Semaphore* sem) noexcept {
     if (m_semaphores) {
         auto& rels = m_semaphores->releases;
@@ -1183,59 +1459,94 @@ inline void Work::_remove_release(Semaphore* sem) noexcept {
             if (rels[i].sem == sem) {
                 rels[i] = rels.back();
                 rels.pop_back();
-                _try_release_semaphores();
+                _cleanup_semaphore_data();
                 return;
             }
         }
     }
 }
 
-/// @brief 清空全部 acquire 配置，并在两张列表都为空时释放 SemaphoreData。
 inline void Work::_clear_acquires() noexcept {
     if (m_semaphores) {
         m_semaphores->acquires.clear();
-        _try_release_semaphores();
+        _cleanup_semaphore_data();
     }
 }
 
-/// @brief 清空全部 release 配置，并在两张列表都为空时释放 SemaphoreData。
 inline void Work::_clear_releases() noexcept {
     if (m_semaphores) {
         m_semaphores->releases.clear();
-        _try_release_semaphores();
+        _cleanup_semaphore_data();
     }
 }
 
-/// @brief 按配置顺序尝试一次性取得当前 Work 的全部 acquire 配额。
-///
-/// @param out 接收回滚此前已获取配额时被解冻的其他 waiter；调用方负责重新调度。
-/// @return 全部 acquire 成功返回 true；任一请求失败时释放此前已成功获取的配额并返回 false。
-///
-/// @warning 返回 false 时当前 Work 已登记在失败 Semaphore 的 waiter 中；`out` 还可能包含
-///          回滚其他 Semaphore 时被解冻的 Work，调用方必须将这些 Work 重新发布。
-TFL_FORCE_INLINE bool Work::_try_acquire_semaphores(SmallVector<Work*>& out) {
-    auto& acqs = m_semaphores->acquires;
-    for (std::size_t i = 0; i < acqs.size(); ++i) {
-        if (!acqs[i].sem->_try_acquire(this, acqs[i].count)) {
-            for (std::size_t j = i; j > 0; --j) {
-                acqs[j - 1].sem->_release(acqs[j - 1].count, out);
-            }
-            return false;
+TFL_FORCE_INLINE bool Work::_try_acquire_semaphores() noexcept {
+    auto acquires = _acquires();
+
+    TFL_ASSERT(!acquires.empty());
+
+    SemaphoreLock lock{acquires};
+
+    Semaphore* blocker = nullptr;
+
+    // 第一阶段：在全部 Semaphore 锁保护下检查所有请求。
+    //
+    // 本阶段只读取配额，不修改任何 m_value，因此任一请求失败时无需回滚。
+    for (const auto& req : acquires) {
+        TFL_ASSERT(req.sem);
+        TFL_ASSERT(req.count != 0);
+        TFL_ASSERT(req.sem->m_value <= req.sem->m_max_value);
+
+        if (req.sem->m_value < req.count) {
+            blocker = req.sem;
+            break;
         }
     }
-    return true;
+
+    // 第二阶段：只有所有请求全部满足时才统一提交配额扣减。
+    if (!blocker) {
+        for (const auto& req : acquires) {
+            req.sem->m_value -= req.count;
+        }
+
+        return true;
+    }
+
+    // 当前 Work 即将加入 blocker 的 waiter intrusive 链，因此链接槽必须为空。
+    //
+    // blocker 的内部锁此时仍由 SemaphoreLock 持有，所以其他 release 线程不能
+    // 同时修改 waiter 链，也不能在当前路径完成前提前摘出当前 Work。
+    TFL_ASSERT(m_next == nullptr);
+
+    if (blocker->m_waiter_tail) {
+        blocker->m_waiter_tail->m_next = this;
+    } else {
+        blocker->m_waiter_head = this;
+    }
+
+    blocker->m_waiter_tail = this;
+
+    // 当前 Work 已发布到 blocker waiter 链。
+    //
+    // 将 blocker 标记为最后解锁对象；SemaphoreLock 析构时先释放其余锁，
+    // 最后释放 blocker。blocker 解锁后当前 Work 可能立即被重新调度，因此
+    // 此后不得再访问当前 Work 的 acquire 数据。
+    lock.blocker(blocker);
+
+    return false;
 }
 
-/// @brief 执行当前 Work 配置的全部 Semaphore release 请求。
-///
-/// @param out 汇总各次 release 解冻的 waiter；调用方负责重新调度。
-TFL_FORCE_INLINE void Work::_release_semaphores(SmallVector<Work*>& out) {
+TFL_FORCE_INLINE void Work::_release_semaphores(Work*& first, Work*& last) noexcept {
+    TFL_ASSERT((first == nullptr) == (last == nullptr));
+
     for (const auto& req : m_semaphores->releases) {
-        req.sem->_release(req.count, out);
+        TFL_ASSERT(req.sem);
+        TFL_ASSERT(req.count != 0);
+
+        req.sem->_release(first, last, req.count);
     }
 }
 
-/// @brief 在 callable 正式执行前依次通知当前 Work 注册的全部观察者。
 TFL_FORCE_INLINE void Work::_notify_before(Worker& wr) const noexcept {
     if (m_observers) [[unlikely]] {
         for (auto& observer : m_observers->observers) {
@@ -1244,13 +1555,59 @@ TFL_FORCE_INLINE void Work::_notify_before(Worker& wr) const noexcept {
     }
 }
 
-/// @brief 在 callable 执行结束后依次通知当前 Work 注册的全部观察者。
 TFL_FORCE_INLINE void Work::_notify_after(Worker& wr) const noexcept {
     if (m_observers) [[unlikely]] {
         for (auto& observer : m_observers->observers) {
             observer->on_after(WorkerView{wr});
         }
     }
+}
+
+inline void Semaphore::_release(Work*& out_first, Work*& out_last, std::size_t count) noexcept {
+    TFL_ASSERT((out_first == nullptr) == (out_last == nullptr));
+
+    std::lock_guard lock{m_lock};
+
+    // 当前可用配额必须始终位于合法范围内。
+    TFL_ASSERT(m_value <= m_max_value);
+
+    // release 不允许使可用配额超过配置上限。
+    // 使用差值判断避免直接计算 m_value + count 时发生无符号溢出。
+    TFL_ASSERT(count <= m_max_value - m_value);
+
+    m_value += count;
+
+    // 当前没有 waiter 时只完成配额归还，不修改调用方输出链。
+    if (!m_waiter_head) {
+        TFL_ASSERT(m_waiter_tail == nullptr);
+        return;
+    }
+
+    TFL_ASSERT(m_waiter_tail);
+
+    // 将 Semaphore 的整条 waiter 链 O(1) 追加到调用方输出链尾部。
+    //
+    // out 非空：
+    //     out_first -> ... -> out_last
+    //                               |
+    //                               v
+    //     waiter_head -> ... -> waiter_tail
+    //
+    // out 为空：
+    //     out_first = waiter_head
+    //
+    // 最终 out_last 统一指向原 waiter_tail。
+    if (out_last) {
+        out_last->m_next = m_waiter_head;
+    } else {
+        out_first = m_waiter_head;
+    }
+
+    out_last = m_waiter_tail;
+
+    // waiter 已整体转移给调用方，Semaphore 内部恢复为空链状态。
+    m_waiter_head = nullptr;
+    m_waiter_tail = nullptr;
 }
 
 /// @brief 内部协作执行作用域使用的栈绑定异常/完成锚点 Work。

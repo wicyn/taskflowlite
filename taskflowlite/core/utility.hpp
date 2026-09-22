@@ -8,59 +8,14 @@
 
 #pragma once
 
-#include <atomic>
+#include <concepts>
+#include <cstddef>
+#include <new>
 #include <source_location>
-#include <limits>
 #include <type_traits>
-#include <string>
-#include <string_view>
-#include <cstring>
-#include <typeinfo>
-#include <vector>
 #include <utility>
-#include <optional>
-#include <bit>
-#include <cstddef>
-#include <type_traits>
-#include <cstddef>
-#include <type_traits>
-#include <version>
-
-#include "macros.hpp"
 
 namespace tfl {
-
-/// @brief 编译目标使用的缓存行大小估计值。
-#if defined(__cpp_lib_hardware_interference_size) && !defined(__GNUC__)
-    // 优先使用标准库提供的硬件干扰大小。
-inline constexpr std::size_t cache_line_size = std::hardware_destructive_interference_size;
-#else
-    // 标准库常量不可用时按目标架构选择。
-#if defined(__APPLE__) && defined(__aarch64__)
-    // Apple Silicon 使用 128 字节。
-inline constexpr std::size_t cache_line_size = 128;
-#elif defined(__powerpc64__)
-    // PowerPC64 使用 128 字节。
-inline constexpr std::size_t cache_line_size = 128;
-#elif defined(__s390x__)
-    // IBM z/Architecture 使用 256 字节。
-inline constexpr std::size_t cache_line_size = 256;
-#elif defined(__arm__)
-    // 32 位 ARM 按架构版本选择。
-#if defined(__ARM_ARCH_5T__)
-inline constexpr std::size_t cache_line_size = 32;
-#else
-inline constexpr std::size_t cache_line_size = 64;
-#endif
-#elif defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
-    // x86 与 x64 使用 64 字节。
-inline constexpr std::size_t cache_line_size = 64;
-#else
-    // 未识别的架构使用 64 字节。
-inline constexpr std::size_t cache_line_size = 64;
-#endif
-#endif
-
 
 /// @brief 为需要稳定对象地址的 CRTP 派生类型统一禁用复制和移动。
 ///
@@ -129,10 +84,6 @@ static_assert(std::is_empty_v<MoveOnly<void>>);
 /// @tparam T 被包装并按值拥有的类型。
 template <class T>
 struct Located {
-private:
-    T m_inner;                    ///< 实际存储的值。
-    std::source_location m_loc;   ///< 对象构造时的源码位置。
-
 public:
     /// @brief 构造包装值并捕获调用点源码位置。
     /// @tparam U 用于构造 T 的输入类型。
@@ -154,6 +105,11 @@ public:
     /// @brief 获取该包装器构造时自动捕获的源码位置（文件、行号、函数名）。
     /// @return std::source_location 结构体的常量引用。
     constexpr const std::source_location& location() const noexcept { return m_loc; }
+
+private:
+    T m_inner;                    ///< 实际存储的值。
+    std::source_location m_loc;   ///< 对象构造时的源码位置。
+
 };
 
 } // namespace tfl

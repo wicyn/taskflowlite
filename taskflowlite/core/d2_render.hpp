@@ -8,9 +8,12 @@
 
 #pragma once
 
+#include <cstdio>
+#include <memory>
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <format>
 #include <iterator>
 #include <ostream>

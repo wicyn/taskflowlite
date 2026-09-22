@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "utility.hpp"
+#include "macros.hpp"
 
 // ============================================================================
 //  两线程过程演练（wid=0 / wid=1）—— 读代码前先建立心智模型
@@ -184,11 +185,11 @@ public:
     /// - **三态机原子单元**（kNotSignaled / kWaiting / kSignaled）；
     /// - **epoch 快照容器**（prepare 时记录全局状态，commit 时计算目标 epoch）。
     ///
-    /// `alignas(2 * cache_line_size)` —— 多个 worker 同时在自己的 Waiter 上写，
+    /// `alignas(TFL_CACHE_LINE_SIZE)` —— 多个 worker 同时在自己的 Waiter 上写，
     /// 隔离 cache line 防止伪共享。这种 per-worker 数据的对齐是高并发数据结构的
     /// 标配。
     ///
-    struct alignas(2 * cache_line_size) Waiter {
+    struct alignas(TFL_CACHE_LINE_SIZE) Waiter {
         std::atomic<Waiter*> next;  ///< 侵入式链表指针：指向栈中下方节点，栈底为 nullptr
         std::uint64_t epoch;        ///< prepare_wait 时 fetch_add 返回的全局状态快照（票号原料）
 
@@ -610,3 +611,506 @@ private:
 };
 
 } // namespace tfl
+
+
+
+// /// @file notifier.hpp
+// /// @brief 分组空闲状态 + 原子 wait/notify 唤醒原语 —— 两阶段协议消除 Lost Wake-up。
+// /// @author wicyn
+// /// @contact https://github.com/wicyn
+// /// @date 2026-09-20
+// /// @license MIT
+// /// @copyright Copyright (c) 2026 wicyn
+
+// #pragma once
+
+// #include <algorithm>
+// #include <atomic>
+// #include <bit>
+// #include <cstddef>
+// #include <cstdint>
+// #include <memory>
+// #include <new>
+
+// #include "utility.hpp"
+// #include "macros.hpp"
+
+// namespace tfl {
+
+// /// @brief 分组无锁高性能通知原语 —— 两阶段协议消除 Lost Wake-up。
+// ///
+// /// @details
+// /// 每 32 个 Worker 共用一个 64-bit Group 状态：
+// ///
+// /// @code
+// ///   63                              32 31                               0
+// ///  ┌──────────────────────────────────┬──────────────────────────────────┐
+// ///  │         parked bitmap (32)       │        prewait bitmap (32)       │
+// ///  └──────────────────────────────────┴──────────────────────────────────┘
+// /// @endcode
+// ///
+// /// prewait bit 表示 Worker 已执行 prepare_wait()、但尚未 commit_wait()；
+// /// parked bit 表示 Worker 已原子完成 PREWAIT -> PARKED 转换，可以进入 atomic::wait。
+// ///
+// /// commit_wait() 使用同一个 Group 的单次 64-bit CAS 原子完成：
+// ///
+// /// @code
+// /// PREWAIT -> PARKED
+// /// @endcode
+// ///
+// /// 因此不存在“已经从 prewait 消失、但尚未对 notify 可见为 parked”的中间窗口。
+// ///
+// /// Waiter 保留 NotSignaled / Waiting / Signaled 三态机，仅用于关闭 PARKED 已发布
+// /// 与真正进入 atomic::wait 之间的最后一个窗口：notify 抢先发生时只写 Signaled，
+// /// Worker 后续 park CAS 失败并跳过阻塞；Worker 已 Waiting 时才真正 notify_one()。
+// ///
+// /// prepare_wait() 与 notify_*() 中的 seq_cst fence 组成 Store-Buffer Dekker，关闭
+// /// “Worker 已检查到无任务、Producer 已发布任务，但双方同时没有观察到对方状态”
+// /// 的 Lost Wake-up 窗口。
+// ///
+// /// Notifier、Group 数组和 Waiter 数组只执行一次连续内存分配；对象运行期不扩容、
+// /// 不保存额外 Group* / Waiter* 堆指针。
+// ///
+// /// @note 同一 wid 的 prepare_wait / commit_wait / cancel_wait 必须由对应 Worker 串行调用。
+// /// @note notify_one / notify_n / notify_all 可由任意线程并发调用。
+// class alignas(TFL_CACHE_LINE_SIZE) Notifier : Immovable<Notifier> {
+//     friend class Executor;
+
+// public:
+//     /// @brief 单个 Worker 的 park / unpark 三态机。
+//     struct alignas(TFL_CACHE_LINE_SIZE) Waiter {
+//         enum : unsigned {
+//             kNotSignaled = 0,
+//             kWaiting     = 1,
+//             kSignaled    = 2
+//         };
+
+//         std::atomic<unsigned> state{kNotSignaled};
+//     };
+
+//     /// @brief 每 32 个 Worker 共用一个分组状态。
+//     struct alignas(TFL_CACHE_LINE_SIZE) Group {
+//         std::atomic<std::uint64_t> state{0};
+//     };
+
+//     /// @brief Notifier 自定义删除器。
+//     struct Deleter {
+//         void operator()(Notifier* notifier) const noexcept {
+//             Notifier::_destroy(notifier);
+//         }
+//     };
+
+//     using Ptr = std::unique_ptr<Notifier, Deleter>;
+
+//     /// @brief 一次连续分配创建与 n 个 Worker 精确匹配的 Notifier。
+//     /// @param n Worker 数量。
+//     /// @return 唯一所有权 Notifier。
+//     /// @throws std::bad_alloc 内存分配失败。
+//     [[nodiscard]] static Ptr create(std::size_t n);
+
+//     /// @brief 阶段一：登记当前 Worker 即将进入等待。
+//     /// @param wid Worker 索引。
+//     void prepare_wait(std::size_t wid) noexcept;
+
+//     /// @brief 阶段二：double-check 发现已有任务，撤销 prewait。
+//     /// @param wid Worker 索引。
+//     void cancel_wait(std::size_t wid) noexcept;
+
+//     /// @brief 阶段二：double-check 仍无任务，原子转换为 parked 并挂起。
+//     /// @param wid Worker 索引。
+//     void commit_wait(std::size_t wid) noexcept;
+
+//     /// @brief 通知一个已经登记为 prewait 或 parked 的 Worker。
+//     void notify_one() noexcept;
+
+//     /// @brief 最多通知 n 个已经登记为 prewait 或 parked 的 Worker。
+//     /// @param n 最大通知数量。
+//     void notify_n(std::size_t n) noexcept;
+
+//     /// @brief 通知当前全部已经登记为 prewait 或 parked 的 Worker。
+//     void notify_all() noexcept;
+
+//     /// @brief Worker 数量。
+//     [[nodiscard]] std::size_t size() const noexcept {
+//         return m_size;
+//     }
+
+//     /// @brief 当前真正进入 kWaiting 状态的 Worker 数量。
+//     /// @return O(n) 非精确快照，仅用于测试、统计和调试。
+//     [[nodiscard]] std::size_t num_waiters() const noexcept;
+
+//     /// @brief 与旧 Notifier 保持兼容的 Worker 数量策略上限。
+//     /// @note 新实现本身已不受 16-bit stack index 限制。
+//     [[nodiscard]] static constexpr std::size_t capacity() noexcept {
+//         return (std::size_t{1} << 16) - 1;
+//     }
+
+// private:
+//     static constexpr std::size_t k_group_bits = 32;
+//     static constexpr std::uint64_t k_prewait_mask = 0x00000000FFFFFFFFULL;
+//     static constexpr std::uint64_t k_parked_mask  = 0xFFFFFFFF00000000ULL;
+
+//     Notifier(std::size_t size, std::size_t num_groups, std::size_t waiters_offset) noexcept
+//         : m_size{size}
+//         , m_num_groups{num_groups}
+//         , m_waiters_offset{waiters_offset} {}
+
+//     ~Notifier() noexcept = default;
+
+//     [[nodiscard]] static constexpr std::size_t _align_up(std::size_t value, std::size_t alignment) noexcept {
+//         return (value + alignment - 1) & ~(alignment - 1);
+//     }
+
+//     [[nodiscard]] static constexpr std::size_t _groups_offset() noexcept {
+//         return _align_up(sizeof(Notifier), alignof(Group));
+//     }
+
+//     [[nodiscard]] void* _group_address(std::size_t index) noexcept {
+//         return reinterpret_cast<std::byte*>(this) + _groups_offset() + index * sizeof(Group);
+//     }
+
+//     [[nodiscard]] const void* _group_address(std::size_t index) const noexcept {
+//         return reinterpret_cast<const std::byte*>(this) + _groups_offset() + index * sizeof(Group);
+//     }
+
+//     [[nodiscard]] Group& _group(std::size_t index) noexcept {
+//         return *std::launder(reinterpret_cast<Group*>(_group_address(index)));
+//     }
+
+//     [[nodiscard]] const Group& _group(std::size_t index) const noexcept {
+//         return *std::launder(reinterpret_cast<const Group*>(_group_address(index)));
+//     }
+
+//     [[nodiscard]] void* _waiter_address(std::size_t wid) noexcept {
+//         return reinterpret_cast<std::byte*>(this) + m_waiters_offset + wid * sizeof(Waiter);
+//     }
+
+//     [[nodiscard]] const void* _waiter_address(std::size_t wid) const noexcept {
+//         return reinterpret_cast<const std::byte*>(this) + m_waiters_offset + wid * sizeof(Waiter);
+//     }
+
+//     [[nodiscard]] Waiter& _waiter(std::size_t wid) noexcept {
+//         return *std::launder(reinterpret_cast<Waiter*>(_waiter_address(wid)));
+//     }
+
+//     [[nodiscard]] const Waiter& _waiter(std::size_t wid) const noexcept {
+//         return *std::launder(reinterpret_cast<const Waiter*>(_waiter_address(wid)));
+//     }
+
+//     [[nodiscard]] static constexpr std::size_t _group_index(std::size_t wid) noexcept {
+//         return wid >> 5;
+//     }
+
+//     [[nodiscard]] static constexpr std::uint64_t _prewait_bit(std::size_t wid) noexcept {
+//         return std::uint64_t{1} << (wid & 31);
+//     }
+
+//     [[nodiscard]] static constexpr std::uint64_t _parked_bit(std::size_t wid) noexcept {
+//         return _prewait_bit(wid) << 32;
+//     }
+
+//     static void _park(Waiter* waiter) noexcept;
+//     static void _unpark(Waiter* waiter) noexcept;
+//     void _unpark_mask(std::size_t group, std::uint32_t mask) noexcept;
+//     static void _destroy(Notifier* notifier) noexcept;
+
+//     std::size_t m_size;
+//     std::size_t m_num_groups;
+//     std::size_t m_waiters_offset;
+// };
+
+// // ============================================================================
+// // Construction
+// // ============================================================================
+
+// inline Notifier::Ptr Notifier::create(std::size_t n) {
+//     TFL_ASSERT(n != 0);
+//     TFL_ASSERT(n < capacity());
+
+//     const std::size_t num_groups = (n + k_group_bits - 1) >> 5;
+//     const std::size_t waiters_offset = _align_up(_groups_offset() + num_groups * sizeof(Group), alignof(Waiter));
+//     const std::size_t bytes = waiters_offset + n * sizeof(Waiter);
+
+//     void* const memory = ::operator new(bytes, std::align_val_t{alignof(Notifier)});
+//     auto* const notifier = ::new (memory) Notifier{n, num_groups, waiters_offset};
+
+//     for (std::size_t i = 0; i < num_groups; ++i) {
+//         ::new (notifier->_group_address(i)) Group{};
+//     }
+
+//     for (std::size_t i = 0; i < n; ++i) {
+//         ::new (notifier->_waiter_address(i)) Waiter{};
+//     }
+
+//     return Ptr{notifier};
+// }
+
+// inline void Notifier::_destroy(Notifier* notifier) noexcept {
+//     if (!notifier) {
+//         return;
+//     }
+
+//     for (std::size_t i = 0; i < notifier->m_num_groups; ++i) {
+//         TFL_ASSERT(notifier->_group(i).state.load(std::memory_order_relaxed) == 0);
+//     }
+
+//     for (std::size_t i = 0; i < notifier->m_size; ++i) {
+//         TFL_ASSERT(notifier->_waiter(i).state.load(std::memory_order_relaxed) != Waiter::kWaiting);
+//         std::destroy_at(std::addressof(notifier->_waiter(i)));
+//     }
+
+//     for (std::size_t i = 0; i < notifier->m_num_groups; ++i) {
+//         std::destroy_at(std::addressof(notifier->_group(i)));
+//     }
+
+//     notifier->~Notifier();
+//     ::operator delete(notifier, std::align_val_t{alignof(Notifier)});
+// }
+
+// // ============================================================================
+// // Two-phase wait
+// // ============================================================================
+
+// inline void Notifier::prepare_wait(std::size_t wid) noexcept {
+//     TFL_ASSERT(wid < m_size);
+
+//     const std::uint64_t prewait = _prewait_bit(wid);
+//     const std::uint64_t parked = prewait << 32;
+//     const std::uint64_t old = _group(_group_index(wid)).state.fetch_or(prewait, std::memory_order_relaxed);
+
+//     TFL_ASSERT((old & (prewait | parked)) == 0);
+
+//     // Worker 侧 Store-Buffer fence：
+//     //
+//     //   idle |= PREWAIT
+//     //   fence(seq_cst)
+//     //   load(work predicate)
+//     //
+//     // 与 notify_* 中 producer 侧 fence 组成 Dekker，关闭 Lost Wake-up。
+//     std::atomic_thread_fence(std::memory_order_seq_cst);
+// }
+
+// inline void Notifier::cancel_wait(std::size_t wid) noexcept {
+//     TFL_ASSERT(wid < m_size);
+
+//     _group(_group_index(wid)).state.fetch_and(~_prewait_bit(wid), std::memory_order_relaxed);
+// }
+
+// inline void Notifier::commit_wait(std::size_t wid) noexcept {
+//     TFL_ASSERT(wid < m_size);
+
+//     const std::uint64_t prewait = _prewait_bit(wid);
+//     const std::uint64_t parked = prewait << 32;
+//     Waiter& waiter = _waiter(wid);
+//     auto& group = _group(_group_index(wid)).state;
+
+//     // PREWAIT 阶段的 notify 不访问 Waiter，因此只在真正准备转换为 PARKED 时
+//     // 才复位三态机，避免 prepare/cancel 快路径额外触碰 Waiter cache line。
+//     waiter.state.store(Waiter::kNotSignaled, std::memory_order_relaxed);
+
+//     std::uint64_t state = group.load(std::memory_order_relaxed);
+
+//     for (;;) {
+//         // PREWAIT 已被 notify/cancel 清除：本轮通知已经被消费，不再进入等待。
+//         if ((state & prewait) == 0) {
+//             return;
+//         }
+
+//         TFL_ASSERT((state & parked) == 0);
+
+//         // release 发布 prepare_wait() 中对 Waiter::state 的复位。
+//         // notify_* 成功 claim PARKED 时使用 acquire，与这里建立同步，保证
+//         // _unpark() 不会被下一次 prepare 的状态复位覆盖。
+//         if (group.compare_exchange_weak(state, (state & ~prewait) | parked, std::memory_order_release, std::memory_order_relaxed)) {
+//             break;
+//         }
+//     }
+
+//     _park(std::addressof(waiter));
+// }
+
+// // ============================================================================
+// // Park / unpark
+// // ============================================================================
+
+// inline void Notifier::_park(Waiter* waiter) noexcept {
+//     unsigned expected = Waiter::kNotSignaled;
+
+//     if (waiter->state.compare_exchange_strong(expected, Waiter::kWaiting, std::memory_order_relaxed, std::memory_order_relaxed)) {
+//         waiter->state.wait(Waiter::kWaiting, std::memory_order_relaxed);
+//     }
+// }
+
+// inline void Notifier::_unpark(Waiter* waiter) noexcept {
+//     if (waiter->state.exchange(Waiter::kSignaled, std::memory_order_relaxed) == Waiter::kWaiting) {
+//         waiter->state.notify_one();
+//     }
+// }
+
+// inline void Notifier::_unpark_mask(std::size_t group, std::uint32_t mask) noexcept {
+//     const std::size_t base = group << 5;
+
+//     while (mask != 0) {
+//         const unsigned offset = static_cast<unsigned>(std::countr_zero(mask));
+//         const std::size_t wid = base + offset;
+
+//         TFL_ASSERT(wid < m_size);
+
+//         _unpark(std::addressof(_waiter(wid)));
+//         mask &= mask - 1;
+//     }
+// }
+
+// // ============================================================================
+// // Notify
+// // ============================================================================
+
+// inline void Notifier::notify_one() noexcept {
+//     // Producer 侧 Store-Buffer fence。调用方必须先发布 Work，再调用 notify_one()。
+//     std::atomic_thread_fence(std::memory_order_seq_cst);
+
+//     // 第一遍优先消费 PREWAIT：只清 bit，不触发 atomic::notify_one()。
+//     for (std::size_t i = 0; i < m_num_groups; ++i) {
+//         auto& group = _group(i).state;
+//         std::uint64_t state = group.load(std::memory_order_relaxed);
+
+//         for (;;) {
+//             const std::uint32_t prewait = static_cast<std::uint32_t>(state);
+
+//             if (prewait == 0) {
+//                 break;
+//             }
+
+//             const unsigned offset = static_cast<unsigned>(std::countr_zero(prewait));
+//             const std::uint64_t bit = std::uint64_t{1} << offset;
+
+//             if (group.compare_exchange_weak(state, state & ~bit, std::memory_order_relaxed, std::memory_order_relaxed)) {
+//                 return;
+//             }
+//         }
+//     }
+
+//     // 没有 PREWAIT，再真正唤醒一个已经 PARKED 的 Worker。
+//     for (std::size_t i = 0; i < m_num_groups; ++i) {
+//         auto& group = _group(i).state;
+//         std::uint64_t state = group.load(std::memory_order_relaxed);
+
+//         for (;;) {
+//             const std::uint32_t parked = static_cast<std::uint32_t>(state >> 32);
+
+//             if (parked == 0) {
+//                 break;
+//             }
+
+//             const unsigned offset = static_cast<unsigned>(std::countr_zero(parked));
+//             const std::uint64_t bit = (std::uint64_t{1} << offset) << 32;
+
+//             // acquire 与目标 Worker commit_wait() 的 release CAS 配对。
+//             if (group.compare_exchange_weak(state, state & ~bit, std::memory_order_acquire, std::memory_order_relaxed)) {
+//                 _unpark(std::addressof(_waiter((i << 5) + offset)));
+//                 return;
+//             }
+//         }
+//     }
+// }
+
+// inline void Notifier::notify_n(std::size_t n) noexcept {
+//     if (n == 0) [[unlikely]] {
+//         return;
+//     }
+
+//     if (n >= m_size) {
+//         notify_all();
+//         return;
+//     }
+
+//     std::atomic_thread_fence(std::memory_order_seq_cst);
+
+//     // 先批量消费 PREWAIT，不产生 OS wake。
+//     for (std::size_t i = 0; i < m_num_groups && n != 0; ++i) {
+//         auto& group = _group(i).state;
+//         std::uint64_t state = group.load(std::memory_order_relaxed);
+
+//         for (;;) {
+//             const std::uint32_t prewait = static_cast<std::uint32_t>(state);
+
+//             if (prewait == 0) {
+//                 break;
+//             }
+
+//             const std::size_t count = (std::min)(n, static_cast<std::size_t>(std::popcount(prewait)));
+//             std::uint32_t remaining = prewait;
+
+//             for (std::size_t j = 0; j < count; ++j) {
+//                 remaining &= remaining - 1;
+//             }
+
+//             const std::uint64_t new_state = (state & k_parked_mask) | remaining;
+
+//             if (group.compare_exchange_weak(state, new_state, std::memory_order_relaxed, std::memory_order_relaxed)) {
+//                 n -= count;
+//                 break;
+//             }
+//         }
+//     }
+
+//     // 配额仍有剩余时，再批量 claim PARKED 并真正 unpark。
+//     for (std::size_t i = 0; i < m_num_groups && n != 0; ++i) {
+//         auto& group = _group(i).state;
+//         std::uint64_t state = group.load(std::memory_order_relaxed);
+
+//         for (;;) {
+//             const std::uint32_t parked = static_cast<std::uint32_t>(state >> 32);
+
+//             if (parked == 0) {
+//                 break;
+//             }
+
+//             const std::size_t count = (std::min)(n, static_cast<std::size_t>(std::popcount(parked)));
+//             std::uint32_t remaining = parked;
+
+//             for (std::size_t j = 0; j < count; ++j) {
+//                 remaining &= remaining - 1;
+//             }
+
+//             const std::uint32_t claimed = parked ^ remaining;
+//             const std::uint64_t new_state = (state & k_prewait_mask) | (static_cast<std::uint64_t>(remaining) << 32);
+
+//             if (group.compare_exchange_weak(state, new_state, std::memory_order_acquire, std::memory_order_relaxed)) {
+//                 n -= count;
+//                 _unpark_mask(i, claimed);
+//                 break;
+//             }
+//         }
+//     }
+// }
+
+// inline void Notifier::notify_all() noexcept {
+//     std::atomic_thread_fence(std::memory_order_seq_cst);
+
+//     for (std::size_t i = 0; i < m_num_groups; ++i) {
+//         // acquire 与该 Group 中所有已发布 PARKED 的 release RMW release-sequence 配对。
+//         const std::uint64_t state = _group(i).state.exchange(0, std::memory_order_acquire);
+//         const std::uint32_t parked = static_cast<std::uint32_t>(state >> 32);
+
+//         if (parked != 0) {
+//             _unpark_mask(i, parked);
+//         }
+//     }
+// }
+
+// // ============================================================================
+// // State queries
+// // ============================================================================
+
+// inline std::size_t Notifier::num_waiters() const noexcept {
+//     std::size_t count = 0;
+
+//     for (std::size_t i = 0; i < m_size; ++i) {
+//         count += static_cast<std::size_t>(_waiter(i).state.load(std::memory_order_relaxed) == Waiter::kWaiting);
+//     }
+
+//     return count;
+// }
+
+// } // namespace tfl

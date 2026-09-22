@@ -1,4 +1,4 @@
-/// @file test_task.cpp
+﻿/// @file test_task.cpp
 /// @brief Task 模块测试 —— 句柄操作 / 拓扑构建 / 信号量配置 / 遍历访问。
 ///
 /// 覆盖的接口：
@@ -16,6 +16,7 @@
 ///   - Task::valid
 
 #include "test_common.hpp"
+#include <algorithm>
 #include <unordered_set>
 using tfl_test::TestEnv;
 
@@ -72,7 +73,7 @@ TEST_CASE("Task: precede and succeed symmetric construction", "[task][topology]"
     auto c = flow.emplace([] {});
     auto d = flow.emplace([] {});
 
-/// @section precede-multi
+    /// @section precede-multi
     SECTION("precede(B, C, D): A is simultaneously predecessor of B/C/D") {
         a.precede(b, c, d);
         REQUIRE(a.num_successors() == 3);
@@ -81,7 +82,7 @@ TEST_CASE("Task: precede and succeed symmetric construction", "[task][topology]"
         REQUIRE(d.num_predecessors() == 1);
     }
 
-/// @section succeed-multi
+    /// @section succeed-multi
     SECTION("succeed(B, C, D): A has B/C/D as predecessors simultaneously") {
         a.succeed(b, c, d);
         REQUIRE(a.num_predecessors() == 3);
@@ -270,16 +271,24 @@ TEST_CASE("Task: multi-count acquire", "[task][semaphore][multi-count]") {
     auto t = flow.emplace([] {});
     // 3 个单位的 heavy_sem + 2 个单位的 light_sem
     t.acquire(heavy_sem, 3).acquire(light_sem, 2)
-     .release(heavy_sem, 3).release(light_sem, 2);
+        .release(heavy_sem, 3).release(light_sem, 2);
 
     std::vector<std::pair<tfl::Semaphore*, std::size_t>> got;
     t.for_each_acquire([&](tfl::Semaphore& s, std::size_t& c) {
         got.emplace_back(&s, c);
     });
     REQUIRE(got.size() == 2);
-    // 验证配额计数（顺序遵循声明顺序）
-    REQUIRE(got[0].second == 3);
-    REQUIRE(got[1].second == 2);
+    // acquire 按信号量地址排序；按对象核对配额，不依赖遍历顺序。
+    const auto heavy = std::find_if(got.begin(), got.end(), [&](const auto& req) {
+        return req.first == &heavy_sem;
+    });
+    const auto light = std::find_if(got.begin(), got.end(), [&](const auto& req) {
+        return req.first == &light_sem;
+    });
+    REQUIRE(heavy != got.end());
+    REQUIRE(light != got.end());
+    REQUIRE(heavy->second == 3);
+    REQUIRE(light->second == 2);
 }
 
 /// @test [task][semaphore] clear_acquires / clear_releases 一次性全部清除。
@@ -317,15 +326,15 @@ TEST_CASE("Task: work rebinds callable protocols without losing edges", "[task][
     auto finish = flow.emplace([&] { count += 10; });
     task.precede(finish);
     switch (kind) {
-    case 0: task.work([&] { ++count; }); break;
-    case 1: task.work([&](tfl::Runtime&) { ++count; }); break;
-    case 2: task.work([&](tfl::Branch& branch) { ++count; branch.select(0); }); break;
-    case 3: task.work([&](tfl::MultiBranch& branch) { ++count; branch.select(0); }); break;
-    case 4: task.work([&](tfl::Jump& jump) { ++count; jump.select(0); }); break;
-    case 5: task.work([&](tfl::MultiJump& jump) { ++count; jump.select(0); }); break;
-    case 6: task.work([&](tfl::SubFlow& sf) { (void)sf.emplace([&] { ++count; }); sf.run(); }); break;
-    case 7: task.work(inner); break;
-    case 8: task.work(inner, 2ULL); break;
+        case 0: task.work([&] { ++count; }); break;
+        case 1: task.work([&](tfl::Runtime&) { ++count; }); break;
+        case 2: task.work([&](tfl::Branch& branch) { ++count; branch.select(0); }); break;
+        case 3: task.work([&](tfl::MultiBranch& branch) { ++count; branch.select(0); }); break;
+        case 4: task.work([&](tfl::Jump& jump) { ++count; jump.select(0); }); break;
+        case 5: task.work([&](tfl::MultiJump& jump) { ++count; jump.select(0); }); break;
+        case 6: task.work([&](tfl::SubFlow& sf) { (void)sf.emplace([&] { ++count; }); sf.run(); }); break;
+        case 7: task.work(inner); break;
+        case 8: task.work(inner, 2ULL); break;
     }
     REQUIRE(task.num_successors() == 1);
     env.executor.async(flow).get();

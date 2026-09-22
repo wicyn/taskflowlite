@@ -83,13 +83,14 @@ TEST_CASE("TaskGroup: graph overloads", "[task-group][graph]") {
     REQUIRE(callbacks == ((mode < 12 && mode % 2 == 1) ? 1 : 0));
 }
 
-/// @test [task-group][exception] 析构重抛子异常，可在父 callable 内恢复。
-TEST_CASE("TaskGroup: destructor exception is locally recoverable", "[task-group][exception]") {
+/// @test [task-group][exception] 显式 wait 重抛组内异常，析构只负责无异常等待。
+TEST_CASE("TaskGroup: explicit wait exception is locally recoverable", "[task-group][exception]") {
     TestEnv env(1);
     auto parent = env.executor.async([](tfl::Runtime& rt) {
         try {
             tfl::TaskGroup group(rt);
             group.silent_async([] { throw std::runtime_error("child"); });
+            group.wait();
         } catch (const std::runtime_error&) {
             return 42;
         }
@@ -98,13 +99,26 @@ TEST_CASE("TaskGroup: destructor exception is locally recoverable", "[task-group
     REQUIRE(parent.get() == 42);
 }
 
+TEST_CASE("TaskGroup: destructor waits without throwing during unwinding", "[task-group][exception]") {
+    STATIC_REQUIRE(std::is_nothrow_destructible_v<tfl::TaskGroup>);
+    TestEnv env(1);
+    bool child_ran = false;
+    auto parent = env.executor.async([&](tfl::Runtime& rt) {
+        tfl::TaskGroup group(rt);
+        group.silent_async([&] { child_ran = true; throw std::runtime_error("child"); });
+        throw std::logic_error("parent");
+    });
+    REQUIRE_THROWS_AS(parent.get(), std::logic_error);
+    REQUIRE(child_ran);
+}
+
 /// @test [task-group][stop] 停止请求幂等，false 模板实参建立独立停止域。
 TEST_CASE("TaskGroup: stop domain inheritance is explicit", "[task-group][stop]") {
     TestEnv env(1);
     auto parent = env.executor.async([](tfl::Runtime& rt) {
         tfl::TaskGroup group(rt);
         auto           inherited = group.async<true>([] {});
-        auto independent = group.async<false>([] {});
+        auto independent = group.async([] {}); // 当前默认 InheritTopology=false。
         const bool first = group.request_stop();
         const bool second = group.request_stop();
         const bool inherited_stop = inherited.stop_requested();

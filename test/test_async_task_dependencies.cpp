@@ -83,9 +83,11 @@ TEST_CASE("AsyncTask: mixed results and rvalue handles retain predecessors", "[a
         return a.get() + std::stoi(future.get()) + *value;
     });
     STATIC_REQUIRE(std::same_as<decltype(a), tfl::AsyncTask<int&>>);
-    STATIC_REQUIRE(std::same_as<decltype(std::move(c).start(a)), tfl::AsyncTask<int>>);
-    auto result = std::move(c).start(std::move(a), ready, future);
-    REQUIRE_FALSE(c);
+    STATIC_REQUIRE(std::same_as<decltype(std::move(c).start(a)), tfl::AsyncTask<int>&>);
+    auto& started = std::move(c).start(std::move(a), ready, future);
+    REQUIRE(&started == &c);
+    auto result = started; // 按值接收返回引用会复制共享句柄，不会移动 c。
+    REQUIRE(c);
     REQUIRE(a); // 依赖不会因右值传入而被移动。
     REQUIRE(result.get() == 42);
     REQUIRE(&a.get() == &number);

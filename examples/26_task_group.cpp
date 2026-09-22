@@ -14,17 +14,20 @@ int main() {
         auto right = group.async([] { return 22; });
         auto sum = group.async([left, right] { return left.get() + right.get(); }, left, right);
         group.wait();
-        return sum.get();  // 返回值副本，不让借用 group 停止域的句柄逃逸
+        return sum.get();  // 在组内等待完成后返回结果副本。
     });
     std::osyncstream(std::cout) << "Sum: " << result.get() << "\n";
 
-    executor.async([](tfl::Runtime& rt) {
+    bool recovered = false;
+    executor.async([&](tfl::Runtime& rt) {
         try {
             tfl::TaskGroup group(rt);
             group.silent_async([] { throw std::runtime_error("local child failure"); });
+            group.wait(); // 析构 noexcept；显式 wait 才能在这里接收组内异常。
         } catch (const std::exception& error) {
+            recovered = true;
             std::osyncstream(std::cout) << "Recovered: " << error.what() << "\n";
         }
     }).get();
-    return result.get() == 42 ? 0 : 1;
+    return result.get() == 42 && recovered ? 0 : 1;
 }
