@@ -420,6 +420,7 @@ Times are in milliseconds. Speedup = Taskflow time / TaskflowLite time.
 | Topic | Entry point |
 | --- | --- |
 | Complete guide (Chinese) | [PDF manual](documentation/TaskflowLite-Guide.zh-CN.pdf) · [Manual source](documentation/TaskflowLite-Guide.zh-CN.md) |
+| Implementation and scheduling (Chinese) | [Architecture PDF](documentation/TaskflowLite-Architecture.zh-CN.pdf) · [Source](documentation/TaskflowLite-Architecture.zh-CN.md): bounded deque, shared work stacks, wakeups, dependency counters, resource waits, and reclamation, with 48 vector diagrams |
 | Example index and run instructions | [examples/README.md](examples/README.md) |
 | Build options, dependencies, and installation | [cmake/README.md](cmake/README.md) |
 | Test commands | [Building and testing](#building-and-testing) |

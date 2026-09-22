@@ -420,6 +420,7 @@ ctest --preset release -LE perfile --no-tests=error
 | 主题 | 入口 |
 | --- | --- |
 | 完整中文使用手册 | [PDF 手册](documentation/TaskflowLite-Guide.zh-CN.pdf) · [手册源稿](documentation/TaskflowLite-Guide.zh-CN.md) |
+| 实现原理与调度算法 | [架构 PDF](documentation/TaskflowLite-Architecture.zh-CN.pdf) · [源稿](documentation/TaskflowLite-Architecture.zh-CN.md)：有界队列、共享工作栈、唤醒协议、依赖计数、资源等待与回收，含 48 幅矢量图 |
 | 示例索引与运行方式 | [examples/README.md](examples/README.md) |
 | 构建选项、依赖与安装 | [cmake/README.md](cmake/README.md) |
 | 测试命令 | [构建与测试](#构建与测试) |
