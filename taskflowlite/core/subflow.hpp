@@ -31,7 +31,7 @@ class SubFlow final : public FlowBuilder, public Context {
 public:
     /// @brief 提交当前动态子图的源节点并立即返回，不等待子图完成。
     /// @pre 不得在上一次 `run()` 提交的同一子图仍在执行时再次提交或修改它。
-    void run();
+    void run() noexcept;
 
     /// @brief 协作式等待当前 SubFlow 父节点挂接的全部动态子任务完成。
     ///
@@ -66,7 +66,7 @@ private:
     }
 };
 
-inline void SubFlow::run() {
+inline void SubFlow::run() noexcept {
     auto num_sources = m_executor._set_up_graph(graph(), m_work);
     if (num_sources == 0) {
         return;

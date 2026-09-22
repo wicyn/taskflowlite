@@ -217,7 +217,7 @@ class ObjectPool final : public Immovable<ObjectPool<T, BucketCount, BlocksPerSl
     ///
     /// FreeStack 独占一个 cache line，避免高频 head CAS 与 refill 冷状态
     /// 产生伪共享。
-    struct alignas(cache_line_size) FreeStack final {
+    struct alignas(TFL_CACHE_LINE_SIZE) FreeStack final {
         std::atomic<head_type> head{head_type{nullptr, tag_type{0}}};
     };
 
@@ -316,7 +316,7 @@ class ObjectPool final : public Immovable<ObjectPool<T, BucketCount, BlocksPerSl
     ///
     /// free_stack 为高频并发热状态并独占首个 cache line；refill_mutex 与
     /// slab_head 仅在补货和析构冷路径访问。
-    struct alignas(cache_line_size) Bucket final {
+    struct alignas(TFL_CACHE_LINE_SIZE) Bucket final {
         FreeStack free_stack{};
 
         std::mutex refill_mutex{};

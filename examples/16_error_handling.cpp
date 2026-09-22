@@ -9,6 +9,8 @@
 int main() {
     std::osyncstream(std::cout) << "=== Example 16: Error Handling ===\n\n";
     tfl::Executor executor(4);
+    int caught = 0;
+    bool downstream_ran = false;
 
     // ================================================================
     // Part 1: wait 只同步，get 可重复重抛异常
@@ -20,6 +22,7 @@ int main() {
     try {
         (void)failed.get();
     } catch (const std::exception& error) {
+        ++caught;
         std::osyncstream(std::cout) << "Caught via AsyncFuture::get(): " << error.what() << "\n";
     }
 
@@ -28,25 +31,28 @@ int main() {
     // ================================================================
     tfl::Flow flow;
     auto bad = flow.emplace([] { throw std::logic_error("graph task failed"); });
-    auto downstream = flow.emplace([] {
+    auto downstream = flow.emplace([&] {
+        downstream_ran = true;
         std::osyncstream(std::cout) << "This successor must not run\n";
     });
     bad.precede(downstream);
     try {
         executor.async(flow).get();
     } catch (const std::exception& error) {
+        ++caught;
         std::osyncstream(std::cout) << "Graph exception: " << error.what() << "\n";
     }
 
     // ================================================================
-    // Part 3: TaskGroup 析构协作等待，在局部作用域捕获子任务异常
+    // Part 3: TaskGroup 显式 wait，在局部作用域捕获子任务异常
     // ================================================================
-    executor.async([](tfl::Runtime& rt) {
+    executor.async([&](tfl::Runtime& rt) {
         try {
             tfl::TaskGroup group(rt);
             group.silent_async([] { throw std::runtime_error("child failed"); });
-            // 析构等待并重抛；不要让子任务引用超过 group 的生命周期。
+            group.wait(); // 显式等待并重抛；析构 noexcept，只等待，不报告子异常。
         } catch (const std::exception& error) {
+            ++caught;
             std::osyncstream(std::cout) << "Recovered locally: " << error.what() << "\n";
         }
         std::osyncstream(std::cout) << "Parent can continue after local recovery\n";
@@ -55,13 +61,14 @@ int main() {
     // ================================================================
     // Part 4: 顶层 silent_async 没有结果句柄，需在任务内部自行处理异常
     // ================================================================
-    executor.silent_async([] {
+    executor.silent_async([&] {
         try {
             throw std::runtime_error("fire-and-forget error");
         } catch (const std::exception& error) {
+            ++caught;
             std::osyncstream(std::cout) << "Handled inside silent_async: " << error.what() << "\n";
         }
     });
     executor.wait_for_all();
-    return 0;
+    return caught == 4 && !downstream_ran ? 0 : 1;
 }

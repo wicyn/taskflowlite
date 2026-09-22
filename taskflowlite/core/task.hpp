@@ -18,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -53,7 +54,12 @@ public:
     /// @brief 判断两个只读视图是否引用不同的底层任务节点。
     [[nodiscard]] bool operator!=(const TaskView& rhs) const noexcept;
 
-    /// @brief 获取当前视图的哈希值，基于底层 Work 地址。
+    // ============================================================================
+    // 状态查询
+    // ============================================================================
+
+    /// @brief 返回视图的哈希值，基于底层 Work 地址。
+    /// @return std::hash<const Work*> 结果。
     [[nodiscard]] std::size_t hash_value() const noexcept;
 
     /// @brief 获取任务名称（调试/可视化用），直接读取底层 Work::m_name。
@@ -61,19 +67,19 @@ public:
     [[nodiscard]] std::string_view name() const noexcept;
 
     /// @brief 获取当前任务的后继节点数量，直接读取 Work::m_num_successors。
-    /// @return 后继任务数量；空 Task 返回 0。
+    /// @return 后继任务数量。
     [[nodiscard]] std::size_t num_successors() const noexcept;
 
     /// @brief 获取当前任务的前驱节点数量，通过 Work::_num_predecessors() 计算。
-    /// @return 前驱任务数量；空 Task 返回 0。
+    /// @return 前驱任务数量。
     [[nodiscard]] std::size_t num_predecessors() const noexcept;
 
     /// @brief 获取执行前需要获取的信号量约束数量。
-    /// @return 信号量获取项数量；空 Task 返回 0。
+    /// @return 信号量获取项数量。
     [[nodiscard]] std::size_t num_acquires() const noexcept;
 
     /// @brief 获取执行后需要释放的信号量约束数量。
-    /// @return 信号量释放项数量；空 Task 返回 0。
+    /// @return 信号量释放项数量。
     [[nodiscard]] std::size_t num_releases() const noexcept;
 
     /// @brief 获取已注册在任务上的观察者数量。
@@ -81,16 +87,23 @@ public:
     [[nodiscard]] std::size_t num_observers() const noexcept;
 
     /// @brief 获取底层任务节点类型，由 Work 当前 Payload 的 Invoker 类型决定。
-    /// @return 非空 Task 返回当前 Payload 类型；空 Task 返回 `TaskType::None`。
+    /// @return 当前 Payload 对应的 TaskType。
     [[nodiscard]] TaskType type() const noexcept;
 
-    /// @brief 检测任务执行期间是否已记录异常。
-    /// @return 有异常指针时返回 true。
-    [[nodiscard]] bool has_exception() const noexcept;
+    /// @brief 检测任务是否已经保存异常指针。
+    ///
+    /// 通过检查底层 Work 的 `m_exception_ptr` 是否非空判断当前任务是否已经归档异常。
+    ///
+    /// @return 已经保存异常指针时返回 true。
+    [[nodiscard]] bool has_exception_ptr() const noexcept;
 
-    /// @brief 获取任务执行期间捕获的异常指针，直接返回 Work::m_exception_ptr。
-    /// @return std::exception_ptr，可能为空。
-    [[nodiscard]] std::exception_ptr exception() const noexcept;
+    /// @brief 获取任务执行期间归档的异常指针。
+    ///
+    /// 直接返回底层 Work 保存的 `m_exception_ptr`；未归档异常时返回空
+    /// `std::exception_ptr`。
+    ///
+    /// @return 当前任务归档的异常指针，可能为空。
+    [[nodiscard]] std::exception_ptr exception_ptr() const noexcept;
 
     /// @brief 将当前任务节点导出为 D2 描述字符串。
     [[nodiscard]] std::string dump(Direction dir = Direction::Default) const;
@@ -98,16 +111,20 @@ public:
     /// @brief 将当前任务节点的 D2 描述写入输出流。
     void dump(std::ostream& ostream, Direction dir = Direction::Default) const;
 
+    // ============================================================================
+    // 迭代访问
+    // ============================================================================
+
     /// @brief 遍历当前任务的所有前驱只读节点，对每个调用 visitor(TaskView{*predecessor})。
-    /// @tparam F 可调用对象，接收 TaskView 只读句柄。
-    /// @param visitor 访问器，禁止修改前驱节点属性（TaskView 不可写）。
+    /// @tparam F 可调用对象，接收 TaskView 只读视图。
+    /// @param visitor 访问器，只允许查询前驱节点。
     template <typename F>
         requires std::invocable<F&, TaskView>
     void for_each_predecessor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>);
 
     /// @brief 遍历当前任务的所有后继只读节点，对每个调用 visitor(TaskView{*successor})。
-    /// @tparam F 可调用对象，接收 TaskView 只读句柄。
-    /// @param visitor 访问器，禁止修改后继节点属性。
+    /// @tparam F 可调用对象，接收 TaskView 只读视图。
+    /// @param visitor 访问器，只允许查询后继节点。
     template <typename F>
         requires std::invocable<F&, TaskView>
     void for_each_successor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>);
@@ -116,53 +133,60 @@ public:
     /// @tparam F 可调用对象，可接收 (const Semaphore&, std::size_t) 或仅 (const Semaphore&)。
     /// @param visitor 访问器，信号量与配额均为只读。
     template <typename F>
-        requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
+        requires std::invocable<F&, const Semaphore&, std::size_t>
+                 || std::invocable<F&, const Semaphore&>
     void for_each_acquire(F&& visitor) const noexcept(
         std::invocable<F&, const Semaphore&, std::size_t>
             ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
-            : std::is_nothrow_invocable_v<F&, const Semaphore&>
-        );
+            : std::is_nothrow_invocable_v<F&, const Semaphore&>);
 
     /// @brief 遍历任务执行后的信号量释放约束，对每个调用 visitor(const Semaphore&, std::size_t) 或 visitor(const Semaphore&)。
     /// @tparam F 可调用对象，可接收 (const Semaphore&, std::size_t) 或仅 (const Semaphore&)。
     /// @param visitor 访问器，信号量与配额均为只读。
     template <typename F>
-        requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
+        requires std::invocable<F&, const Semaphore&, std::size_t>
+                 || std::invocable<F&, const Semaphore&>
     void for_each_release(F&& visitor) const noexcept(
         std::invocable<F&, const Semaphore&, std::size_t>
             ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
-            : std::is_nothrow_invocable_v<F&, const Semaphore&>
-        );
+            : std::is_nothrow_invocable_v<F&, const Semaphore&>);
 
 private:
     /// @brief 从底层 Work 引用构造只读任务视图。
-    explicit TaskView(const Work& work) noexcept : m_work{work} {}
+    explicit TaskView(const Work& work) noexcept;
 
     const Work& m_work;  ///< 底层 Work 节点只读引用，非拥有。
 };
 
+
+// ============================================================================
+// TaskView 实现
+// ============================================================================
+
+inline TaskView::TaskView(const Work& work) noexcept : m_work{work} {}
+
 inline bool TaskView::operator==(const TaskView& rhs) const noexcept {
-    return &m_work == &rhs.m_work;
+    return std::addressof(m_work) == std::addressof(rhs.m_work);
 }
 
 inline bool TaskView::operator!=(const TaskView& rhs) const noexcept {
-    return &m_work != &rhs.m_work;
+    return std::addressof(m_work) != std::addressof(rhs.m_work);
 }
 
 inline std::size_t TaskView::hash_value() const noexcept {
-    return std::hash<const Work*>{}(&m_work);
+    return std::hash<const Work*>{}(std::addressof(m_work));
 }
 
 inline std::string_view TaskView::name() const noexcept {
     return m_work._name();
 }
 
-inline std::size_t TaskView::num_predecessors() const noexcept {
-    return m_work._num_predecessors();
-}
-
 inline std::size_t TaskView::num_successors() const noexcept {
     return m_work.m_num_successors;
+}
+
+inline std::size_t TaskView::num_predecessors() const noexcept {
+    return m_work._num_predecessors();
 }
 
 inline std::size_t TaskView::num_acquires() const noexcept {
@@ -181,11 +205,11 @@ inline TaskType TaskView::type() const noexcept {
     return m_work.type();
 }
 
-inline bool TaskView::has_exception() const noexcept {
-    return m_work._has_exception();
+inline bool TaskView::has_exception_ptr() const noexcept {
+    return m_work.m_exception_ptr != nullptr;
 }
 
-inline std::exception_ptr TaskView::exception() const noexcept {
+inline std::exception_ptr TaskView::exception_ptr() const noexcept {
     return m_work.m_exception_ptr;
 }
 
@@ -204,26 +228,26 @@ inline void TaskView::dump(std::ostream& os, Direction dir) const {
 template <typename F>
     requires std::invocable<F&, TaskView>
 inline void TaskView::for_each_predecessor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>) {
-    for (const Work* pred : m_work._predecessors()) {
-        std::invoke(visitor, TaskView{*pred});
+    for (const Work* predecessor : m_work._predecessors()) {
+        std::invoke(visitor, TaskView{*predecessor});
     }
 }
 
 template <typename F>
     requires std::invocable<F&, TaskView>
 inline void TaskView::for_each_successor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>) {
-    for (const Work* succ : m_work._successors()) {
-        std::invoke(visitor, TaskView{*succ});
+    for (const Work* successor : m_work._successors()) {
+        std::invoke(visitor, TaskView{*successor});
     }
 }
 
 template <typename F>
-    requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
+    requires std::invocable<F&, const Semaphore&, std::size_t>
+             || std::invocable<F&, const Semaphore&>
 inline void TaskView::for_each_acquire(F&& visitor) const noexcept(
     std::invocable<F&, const Semaphore&, std::size_t>
         ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
-        : std::is_nothrow_invocable_v<F&, const Semaphore&>
-    ) {
+        : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
     for (const auto& req : m_work._acquires()) {
         if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
             std::invoke(visitor, *req.sem, req.count);
@@ -234,12 +258,12 @@ inline void TaskView::for_each_acquire(F&& visitor) const noexcept(
 }
 
 template <typename F>
-    requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
+    requires std::invocable<F&, const Semaphore&, std::size_t>
+             || std::invocable<F&, const Semaphore&>
 inline void TaskView::for_each_release(F&& visitor) const noexcept(
     std::invocable<F&, const Semaphore&, std::size_t>
         ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
-        : std::is_nothrow_invocable_v<F&, const Semaphore&>
-    ) {
+        : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
     for (const auto& req : m_work._releases()) {
         if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
             std::invoke(visitor, *req.sem, req.count);
@@ -370,98 +394,119 @@ public:
     /// @warning 不得与当前 Graph 的执行并发调用。
     template <typename T>
         requires (basic_invocable<T> && capturable<T>)
-    Task& work(T&& task) &;
-
-    /// @brief 在右值 Task 上替换普通 callable，并返回修改后的 Task。
-    template <typename T>
-        requires (basic_invocable<T> && capturable<T>)
-    Task work(T&& task) &&;
+    Task& work(T&& task);
 
     /// @brief 将当前静态图节点的执行体替换为单目标条件分支 callable。
     template <typename T>
         requires (branch_invocable<T> && capturable<T>)
-    Task& work(T&& task) &;
-
-    /// @brief 在右值 Task 上替换单目标条件分支 callable。
-    template <typename T>
-        requires (branch_invocable<T> && capturable<T>)
-    Task work(T&& task) &&;
+    Task& work(T&& task);
 
     /// @brief 将当前静态图节点的执行体替换为多目标条件分支 callable。
     template <typename T>
         requires (multi_branch_invocable<T> && capturable<T>)
-    Task& work(T&& task) &;
-
-    /// @brief 在右值 Task 上替换多目标条件分支 callable。
-    template <typename T>
-        requires (multi_branch_invocable<T> && capturable<T>)
-    Task work(T&& task) &&;
+    Task& work(T&& task);
 
     /// @brief 将当前静态图节点的执行体替换为单目标 Jump callable。
     template <typename T>
         requires (jump_invocable<T> && capturable<T>)
-    Task& work(T&& task) &;
-
-    /// @brief 在右值 Task 上替换单目标 Jump callable。
-    template <typename T>
-        requires (jump_invocable<T> && capturable<T>)
-    Task work(T&& task) &&;
+    Task& work(T&& task);
 
     /// @brief 将当前静态图节点的执行体替换为多目标 MultiJump callable。
     template <typename T>
         requires (multi_jump_invocable<T> && capturable<T>)
-    Task& work(T&& task) &;
-
-    /// @brief 在右值 Task 上替换多目标 MultiJump callable。
-    template <typename T>
-        requires (multi_jump_invocable<T> && capturable<T>)
-    Task work(T&& task) &&;
+    Task& work(T&& task);
 
     /// @brief 将当前静态图节点的执行体替换为 Runtime callable。
     template <typename T>
         requires (runtime_invocable<T> && capturable<T>)
-    Task& work(T&& task) &;
-
-    /// @brief 在右值 Task 上替换 Runtime callable。
-    template <typename T>
-        requires (runtime_invocable<T> && capturable<T>)
-    Task work(T&& task) &&;
+    Task& work(T&& task);
 
     /// @brief 将当前静态图节点的执行体替换为 SubFlow callable。
     template <typename T>
         requires (subflow_invocable<T> && capturable<T>)
-    Task& work(T&& task) &;
-
-    /// @brief 在右值 Task 上替换 SubFlow callable。
-    template <typename T>
-        requires (subflow_invocable<T> && capturable<T>)
-    Task work(T&& task) &&;
+    Task& work(T&& task);
 
     /// @brief 将当前静态图节点替换为单次执行的 Module 节点。
     template <graph_holder Gh>
-    Task& work(Gh&& gh) &;
-
-    /// @brief 在右值 Task 上替换为单次执行的 Module 节点。
-    template <graph_holder Gh>
-    Task work(Gh&& gh) &&;
+    Task& work(Gh&& gh);
 
     /// @brief 将当前静态图节点替换为最多执行 num 次的 Module 节点。
     template <graph_holder Gh>
-    Task& work(Gh&& gh, std::uint64_t num) &;
-
-    /// @brief 在右值 Task 上替换为最多执行 num 次的 Module 节点。
-    template <graph_holder Gh>
-    Task work(Gh&& gh, std::uint64_t num) &&;
+    Task& work(Gh&& gh, std::uint64_t num);
 
     /// @brief 将当前静态图节点替换为由终止谓词控制的 Module 节点。
     template <graph_holder Gh, predicate P>
         requires capturable<P>
-    Task& work(Gh&& gh, P&& pred) &;
+    Task& work(Gh&& gh, P&& pred);
 
-    /// @brief 在右值 Task 上替换为由终止谓词控制的 Module 节点。
+    // ============================================================================
+    // 执行对象原地重绑定
+    // ============================================================================
+
+    /// @brief 原地构造普通 callable，并返回内部对象引用。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && basic_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] T& work_object(Args&&... args);
+
+    /// @brief 原地构造单目标条件分支 callable，并返回内部对象引用。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && branch_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] T& work_object(Args&&... args);
+
+    /// @brief 原地构造多目标条件分支 callable，并返回内部对象引用。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && multi_branch_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] T& work_object(Args&&... args);
+
+    /// @brief 原地构造单目标 Jump callable，并返回内部对象引用。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && jump_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] T& work_object(Args&&... args);
+
+    /// @brief 原地构造 MultiJump callable，并返回内部对象引用。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && multi_jump_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] T& work_object(Args&&... args);
+
+    /// @brief 原地构造 Runtime callable，并返回内部对象引用。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && runtime_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] T& work_object(Args&&... args);
+
+    /// @brief 原地构造 SubFlow callable，并返回内部对象引用。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && subflow_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] T& work_object(Args&&... args);
+
+    /// @brief 原地默认构造子图持有者，并绑定为单次 Module。
+    template <graph_holder Gh>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
+    [[nodiscard]] Gh& work_object();
+
+    /// @brief 原地默认构造子图持有者，并绑定为最多执行 num 次的 Module。
+    template <graph_holder Gh>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
+    [[nodiscard]] Gh& work_object(std::uint64_t num);
+
+    /// @brief 原地默认构造子图持有者，并绑定终止谓词。
     template <graph_holder Gh, predicate P>
-        requires capturable<P>
-    Task work(Gh&& gh, P&& pred) &&;
+        requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
+    [[nodiscard]] Gh& work_object(P&& pred);
+
+    /// @brief 使用 tuple 参数原地构造子图持有者，并绑定为单次 Module。
+    template <graph_holder Gh, typename Tuple>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
+    [[nodiscard]] Gh& work_object(Tuple&& args);
+
+    /// @brief 使用 tuple 参数原地构造子图持有者，并绑定为最多执行 num 次的 Module。
+    template <graph_holder Gh, typename Tuple>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
+    [[nodiscard]] Gh& work_object(Tuple&& args, std::uint64_t num);
+
+    /// @brief 使用 tuple 参数原地构造子图持有者，并绑定终止谓词。
+    template <graph_holder Gh, typename Tuple, predicate P>
+        requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
+    [[nodiscard]] Gh& work_object(Tuple&& args, P&& pred);
 
     // ============================================================================
     // 拓扑构建
@@ -470,15 +515,10 @@ public:
     /// @brief 设置任务名称，直接写入 Work::m_name，用于调试和可视化。
     /// @tparam S 任何可用于构造 std::string 的类型。
     /// @param name 新的任务名称。
-    /// @return *this（lvalue 链式调用）。
+    /// @return *this。
     template <typename S>
         requires std::constructible_from<std::string, S>
-    Task& name(S&& name) &;
-
-    /// @brief 右值限定重载 —— 返回 `Task` 值以支持临时对象链式调用。
-    template <typename S>
-        requires std::constructible_from<std::string, S>
-    Task name(S&& name) &&;
+    Task& name(S&& name);
 
     /// @brief 将当前任务设为 @p ts 中每个任务的前驱，建立 this -> each(t) 依赖。
     /// @tparam Check 默认检查拓扑；precede<false>() 跳过建边校验。
@@ -486,16 +526,10 @@ public:
     /// @pre Check 为 false 时，调用方保证句柄有效、同属一图、边不重复且无非法闭环。
     /// @note 跳过检查仍可能分配内存并抛出异常。参数包逐边插入，失败不撤销此前成功的边。
     /// @param ts 一个或多个后继任务。
-    /// @return *this（lvalue 链式调用）。
+    /// @return *this。
     template <bool Check = true, typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
-    Task& precede(Ts&&... ts) &;
-
-    /// @brief 在右值句柄上建立当前任务到指定任务的依赖。
-    /// @return 修改后的任务句柄。
-    template <bool Check = true, typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
-    Task precede(Ts&&... ts) &&;
+    Task& precede(Ts&&... ts);
 
     /// @brief 将当前任务设为 @p ts 中每个任务的后继，建立 each(t) -> this 依赖。
     /// @tparam Check 默认检查拓扑；succeed<false>() 跳过建边校验。
@@ -503,58 +537,34 @@ public:
     /// @pre Check 为 false 时，调用方保证句柄有效、同属一图、边不重复且无非法闭环。
     /// @note 跳过检查仍可能分配内存并抛出异常。参数包逐边插入，失败不撤销此前成功的边。
     /// @param ts 一个或多个前驱任务。
-    /// @return *this（lvalue 链式调用）。
+    /// @return *this。
     template <bool Check = true, typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
-    Task& succeed(Ts&&... ts) &;
-
-    /// @brief 在右值句柄上建立指定任务到当前任务的依赖。
-    /// @return 修改后的任务句柄。
-    template <bool Check = true, typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
-    Task succeed(Ts&&... ts) &&;
+    Task& succeed(Ts&&... ts);
 
     /// @brief 移除当前任务的一个或多个前驱关系，解除 each(task) -> this 依赖。
     /// @tparam Ts 每个参数必须为 Task 类型。
     /// @param tasks 需要解除的前驱任务。
-    /// @return *this（lvalue 链式调用）。
+    /// @return *this。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-    Task& remove_predecessor(Ts&&... tasks) & noexcept;
-
-    /// @brief 右值限定重载，返回 Task 值以支持临时对象链式调用。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-    Task remove_predecessor(Ts&&... tasks) && noexcept;
+    Task& remove_predecessor(Ts&&... tasks) noexcept;
 
     /// @brief 移除当前任务的一个或多个后继关系，解除 this -> each(task) 依赖。
     /// @tparam Ts 每个参数必须为 Task 类型。
     /// @param tasks 需要解除的后继任务。
-    /// @return *this（lvalue 链式调用）。
+    /// @return *this。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-    Task& remove_successor(Ts&&... tasks) & noexcept;
-
-    /// @brief 右值限定重载，返回 Task 值以支持临时对象链式调用。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-    Task remove_successor(Ts&&... tasks) && noexcept;
+    Task& remove_successor(Ts&&... tasks) noexcept;
 
     /// @brief 清空所有前驱关系，解除所有节点到当前任务的依赖。
-    /// @return *this（lvalue 链式调用）。
-    Task& clear_predecessors() & noexcept;
-
-    /// @brief 在右值句柄上清除全部前驱关系。
-    /// @return 修改后的任务句柄。
-    Task clear_predecessors() && noexcept;
+    /// @return *this。
+    Task& clear_predecessors() noexcept;
 
     /// @brief 清空所有后继关系，解除当前任务到所有节点的依赖。
-    /// @return *this（lvalue 链式调用）。
-    Task& clear_successors() & noexcept;
-
-    /// @brief 在右值句柄上清除全部后继关系。
-    /// @return 修改后的任务句柄。
-    Task clear_successors() && noexcept;
+    /// @return *this。
+    Task& clear_successors() noexcept;
 
     // ============================================================================
     // 信号量管理
@@ -563,83 +573,42 @@ public:
     /// @brief 声明任务执行前需要获取的一个或多个信号量，每个默认获取 1 个配额。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    Task& acquire(Ts&... semaphores) &;
-
-    /// @brief 在右值句柄上添加每个 1 配额的执行前信号量约束。
-    /// @return 修改后的任务句柄。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    Task acquire(Ts&... semaphores) &&;
+    Task& acquire(Ts&... semaphores);
 
     /// @brief 声明任务执行前需要从指定信号量获取的配额。
     /// @param semaphore 非拥有引用；必须存活到任务执行完毕。
     /// @param count 配额数；0 表示不添加约束。
     /// @throws Exception 同一信号量已存在于 acquire 列表时抛出。
-    Task& acquire(Semaphore& semaphore, std::size_t count) &;
-
-    /// @brief 在右值句柄上添加指定配额的执行前信号量约束。
-    /// @return 修改后的任务句柄。
-    Task acquire(Semaphore& semaphore, std::size_t count) &&;
+    Task& acquire(Semaphore& semaphore, std::size_t count);
 
     /// @brief 声明任务执行后需要释放的一个或多个信号量，每个默认释放 1 个配额。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    Task& release(Ts&... semaphores) &;
-
-    /// @brief 在右值句柄上添加每个 1 配额的执行后信号量约束。
-    /// @return 修改后的任务句柄。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    Task release(Ts&... semaphores) &&;
+    Task& release(Ts&... semaphores);
 
     /// @brief 声明任务执行后需要向指定信号量释放的配额。
     /// @param semaphore 非拥有引用；必须存活到任务执行完毕。
     /// @param count 配额数；0 表示不添加约束。
     /// @throws Exception 同一信号量已存在于 release 列表时抛出。
-    Task& release(Semaphore& semaphore, std::size_t count) &;
-
-    /// @brief 在右值句柄上添加指定配额的执行后信号量约束。
-    /// @return 修改后的任务句柄。
-    Task release(Semaphore& semaphore, std::size_t count) &&;
-
+    Task& release(Semaphore& semaphore, std::size_t count);
 
     /// @brief 移除一个或多个执行前信号量获取约束。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    Task& remove_acquire(Ts&... semaphores) & noexcept;
-
-    /// @brief 在右值句柄上移除执行前信号量约束。
-    /// @return 修改后的任务句柄。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    Task remove_acquire(Ts&... semaphores) && noexcept;
+    Task& remove_acquire(Ts&... semaphores) noexcept;
 
     /// @brief 移除一个或多个执行后信号量释放约束。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    Task& remove_release(Ts&... semaphores) & noexcept;
-
-    /// @brief 在右值句柄上移除执行后信号量约束。
-    /// @return 修改后的任务句柄。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    Task remove_release(Ts&... semaphores) && noexcept;
+    Task& remove_release(Ts&... semaphores) noexcept;
 
     /// @brief 清空所有执行前信号量获取约束。
-    /// @return *this（lvalue 链式调用）。
-    Task& clear_acquires() & noexcept;
-
-    /// @brief 在右值句柄上清空全部执行前信号量约束。
-    /// @return 修改后的任务句柄。
-    Task clear_acquires() && noexcept;
+    /// @return *this。
+    Task& clear_acquires() noexcept;
 
     /// @brief 清空所有执行后信号量释放约束。
-    /// @return *this（lvalue 链式调用）。
-    Task& clear_releases() & noexcept;
-
-    /// @brief 在右值句柄上清空全部执行后信号量约束。
-    /// @return 修改后的任务句柄。
-    Task clear_releases() && noexcept;
+    /// @return *this。
+    Task& clear_releases() noexcept;
 
     // ============================================================================
     // 迭代访问
@@ -733,7 +702,7 @@ private:
     explicit Task(Work* work) noexcept;
 
     template <typename Invoker, typename... Args>
-    void _replace_work(Args&&... args);
+    Invoker& _replace_work(Args&&... args);
 };
 
 // ============================================================================
@@ -744,10 +713,10 @@ private:
 // ============================================================================
 
 template <typename Invoker, typename... Args>
-inline void Task::_replace_work(Args&&... args) {
+inline Invoker& Task::_replace_work(Args&&... args) {
     TFL_ASSERT(m_work);
     TFL_ASSERT(m_work->m_graph && "Task::work only supports static Graph nodes");
-    m_work->template emplace<Invoker>(std::forward<Args>(args)...);
+    return m_work->template emplace<Invoker>(std::forward<Args>(args)...);
 }
 
 // ============================================================================
@@ -756,17 +725,10 @@ inline void Task::_replace_work(Args&&... args) {
 
 template <typename T>
     requires (basic_invocable<T> && capturable<T>)
-inline Task& Task::work(T&& task) & {
+inline Task& Task::work(T&& task) {
     using Invoker = BasicInvoker<std::decay_t<T>>;
     _replace_work<Invoker>(std::forward<T>(task));
     return *this;
-}
-
-template <typename T>
-    requires (basic_invocable<T> && capturable<T>)
-inline Task Task::work(T&& task) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task));
-    return std::move(*this);
 }
 
 
@@ -776,17 +738,10 @@ inline Task Task::work(T&& task) && {
 
 template <typename T>
     requires (branch_invocable<T> && capturable<T>)
-inline Task& Task::work(T&& task) & {
+inline Task& Task::work(T&& task) {
     using Invoker = BranchInvoker<std::decay_t<T>>;
     _replace_work<Invoker>(std::forward<T>(task));
     return *this;
-}
-
-template <typename T>
-    requires (branch_invocable<T> && capturable<T>)
-inline Task Task::work(T&& task) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task));
-    return std::move(*this);
 }
 
 
@@ -796,17 +751,10 @@ inline Task Task::work(T&& task) && {
 
 template <typename T>
     requires (multi_branch_invocable<T> && capturable<T>)
-inline Task& Task::work(T&& task) & {
+inline Task& Task::work(T&& task) {
     using Invoker = MultiBranchInvoker<std::decay_t<T>>;
     _replace_work<Invoker>(std::forward<T>(task));
     return *this;
-}
-
-template <typename T>
-    requires (multi_branch_invocable<T> && capturable<T>)
-inline Task Task::work(T&& task) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task));
-    return std::move(*this);
 }
 
 
@@ -816,17 +764,10 @@ inline Task Task::work(T&& task) && {
 
 template <typename T>
     requires (jump_invocable<T> && capturable<T>)
-inline Task& Task::work(T&& task) & {
+inline Task& Task::work(T&& task) {
     using Invoker = JumpInvoker<std::decay_t<T>>;
     _replace_work<Invoker>(std::forward<T>(task));
     return *this;
-}
-
-template <typename T>
-    requires (jump_invocable<T> && capturable<T>)
-inline Task Task::work(T&& task) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task));
-    return std::move(*this);
 }
 
 
@@ -836,17 +777,10 @@ inline Task Task::work(T&& task) && {
 
 template <typename T>
     requires (multi_jump_invocable<T> && capturable<T>)
-inline Task& Task::work(T&& task) & {
+inline Task& Task::work(T&& task) {
     using Invoker = MultiJumpInvoker<std::decay_t<T>>;
     _replace_work<Invoker>(std::forward<T>(task));
     return *this;
-}
-
-template <typename T>
-    requires (multi_jump_invocable<T> && capturable<T>)
-inline Task Task::work(T&& task) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task));
-    return std::move(*this);
 }
 
 
@@ -856,17 +790,10 @@ inline Task Task::work(T&& task) && {
 
 template <typename T>
     requires (runtime_invocable<T> && capturable<T>)
-inline Task& Task::work(T&& task) & {
+inline Task& Task::work(T&& task) {
     using Invoker = RuntimeInvoker<std::decay_t<T>>;
     _replace_work<Invoker>(std::forward<T>(task));
     return *this;
-}
-
-template <typename T>
-    requires (runtime_invocable<T> && capturable<T>)
-inline Task Task::work(T&& task) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task));
-    return std::move(*this);
 }
 
 
@@ -876,17 +803,10 @@ inline Task Task::work(T&& task) && {
 
 template <typename T>
     requires (subflow_invocable<T> && capturable<T>)
-inline Task& Task::work(T&& task) & {
+inline Task& Task::work(T&& task) {
     using Invoker = SubFlowInvoker<std::decay_t<T>>;
     _replace_work<Invoker>(std::forward<T>(task));
     return *this;
-}
-
-template <typename T>
-    requires (subflow_invocable<T> && capturable<T>)
-inline Task Task::work(T&& task) && {
-    static_cast<Task&>(*this).work(std::forward<T>(task));
-    return std::move(*this);
 }
 
 
@@ -895,20 +815,18 @@ inline Task Task::work(T&& task) && {
 // ============================================================================
 
 template <graph_holder Gh>
-inline Task& Task::work(Gh&& gh) & {
+inline Task& Task::work(Gh&& gh) {
     return work(std::forward<Gh>(gh), std::uint64_t{1});
 }
 
 template <graph_holder Gh>
-inline Task Task::work(Gh&& gh) && {
-    static_cast<Task&>(*this).work(std::forward<Gh>(gh));
-    return std::move(*this);
-}
+inline Task& Task::work(Gh&& gh, std::uint64_t num) {
+    auto pred = [num, remaining = num]() mutable noexcept -> bool {
+        if (remaining == 0) {
+            remaining = num;
+            return true;
+        }
 
-template <graph_holder Gh>
-inline Task& Task::work(Gh&& gh, std::uint64_t num) & {
-    auto pred = [remaining = num]() mutable noexcept {
-        if (remaining == 0) return true;
         --remaining;
         return false;
     };
@@ -918,25 +836,153 @@ inline Task& Task::work(Gh&& gh, std::uint64_t num) & {
     return *this;
 }
 
-template <graph_holder Gh>
-inline Task Task::work(Gh&& gh, std::uint64_t num) && {
-    static_cast<Task&>(*this).work(std::forward<Gh>(gh), num);
-    return std::move(*this);
-}
-
 template <graph_holder Gh, predicate P>
     requires capturable<P>
-inline Task& Task::work(Gh&& gh, P&& pred) & {
+inline Task& Task::work(Gh&& gh, P&& pred) {
     using Invoker = ModuleInvoker<detail::captured_t<Gh>, std::decay_t<P>>;
     _replace_work<Invoker>(detail::capture(std::forward<Gh>(gh)), std::forward<P>(pred));
     return *this;
 }
 
+// ============================================================================
+// Basic Object
+// ============================================================================
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && basic_invocable<T> && std::constructible_from<T, Args&&...>)
+inline T& Task::work_object(Args&&... args) {
+    using Invoker = BasicInvoker<T>;
+    return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
+}
+
+
+// ============================================================================
+// Branch Object
+// ============================================================================
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && branch_invocable<T> && std::constructible_from<T, Args&&...>)
+inline T& Task::work_object(Args&&... args) {
+    using Invoker = BranchInvoker<T>;
+    return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
+}
+
+
+// ============================================================================
+// MultiBranch Object
+// ============================================================================
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && multi_branch_invocable<T> && std::constructible_from<T, Args&&...>)
+inline T& Task::work_object(Args&&... args) {
+    using Invoker = MultiBranchInvoker<T>;
+    return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
+}
+
+
+// ============================================================================
+// Jump Object
+// ============================================================================
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && jump_invocable<T> && std::constructible_from<T, Args&&...>)
+inline T& Task::work_object(Args&&... args) {
+    using Invoker = JumpInvoker<T>;
+    return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
+}
+
+
+// ============================================================================
+// MultiJump Object
+// ============================================================================
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && multi_jump_invocable<T> && std::constructible_from<T, Args&&...>)
+inline T& Task::work_object(Args&&... args) {
+    using Invoker = MultiJumpInvoker<T>;
+    return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
+}
+
+
+// ============================================================================
+// Runtime Object
+// ============================================================================
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && runtime_invocable<T> && std::constructible_from<T, Args&&...>)
+inline T& Task::work_object(Args&&... args) {
+    using Invoker = RuntimeInvoker<T>;
+    return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
+}
+
+
+// ============================================================================
+// SubFlow Object
+// ============================================================================
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && subflow_invocable<T> && std::constructible_from<T, Args&&...>)
+inline T& Task::work_object(Args&&... args) {
+    using Invoker = SubFlowInvoker<T>;
+    return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
+}
+
+
+// ============================================================================
+// Module Object
+// ============================================================================
+
+template <graph_holder Gh>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
+inline Gh& Task::work_object() {
+    return work_object<Gh>(std::tuple{});
+}
+
+template <graph_holder Gh>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
+inline Gh& Task::work_object(std::uint64_t num) {
+    return work_object<Gh>(std::tuple{}, num);
+}
+
 template <graph_holder Gh, predicate P>
-    requires capturable<P>
-inline Task Task::work(Gh&& gh, P&& pred) && {
-    static_cast<Task&>(*this).work(std::forward<Gh>(gh), std::forward<P>(pred));
-    return std::move(*this);
+    requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
+inline Gh& Task::work_object(P&& pred) {
+    return work_object<Gh>(std::tuple{}, std::forward<P>(pred));
+}
+
+template <graph_holder Gh, typename Tuple>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
+inline Gh& Task::work_object(Tuple&& args) {
+    return work_object<Gh>(std::forward<Tuple>(args), std::uint64_t{1});
+}
+
+template <graph_holder Gh, typename Tuple>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
+inline Gh& Task::work_object(Tuple&& args, std::uint64_t num) {
+    auto pred = [num, remaining = num]() mutable noexcept -> bool {
+        if (remaining == 0) {
+            remaining = num;
+            return true;
+        }
+
+        --remaining;
+        return false;
+    };
+
+    return work_object<Gh>(std::forward<Tuple>(args), std::move(pred));
+}
+
+template <graph_holder Gh, typename Tuple, predicate P>
+    requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
+inline Gh& Task::work_object(Tuple&& args, P&& pred) {
+    return std::apply([this, &pred](auto&&... values) -> Gh& {
+        using Invoker = ModuleInvoker<Gh, std::decay_t<P>>;
+        return _replace_work<Invoker>(
+                   std::in_place,
+                   std::forward<P>(pred),
+                   std::forward<decltype(values)>(values)...
+                   ).object();
+    }, std::forward<Tuple>(args));
 }
 
 inline Task::Task(Work* work) noexcept : m_work{work} {}
@@ -1037,22 +1083,15 @@ inline void Task::dump(std::ostream& os, Direction dir) const {
 
 template <typename S>
     requires std::constructible_from<std::string, S>
-inline Task& Task::name(S&& value) & {
+inline Task& Task::name(S&& value) {
     TFL_ASSERT(m_work);
     m_work->_set_name(std::forward<S>(value));
     return *this;
 }
 
-template <typename S>
-    requires std::constructible_from<std::string, S>
-inline Task Task::name(S&& value) && {
-    static_cast<Task&>(*this).name(std::forward<S>(value));
-    return std::move(*this);
-}
-
 template <bool Check, typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task& Task::precede(Ts&&... tasks) & {
+inline Task& Task::precede(Ts&&... tasks) {
     TFL_ASSERT(m_work);
     TFL_ASSERT((tasks.m_work && ...));
     (m_work->template _precede<Check>(tasks.m_work), ...);
@@ -1061,30 +1100,16 @@ inline Task& Task::precede(Ts&&... tasks) & {
 
 template <bool Check, typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task Task::precede(Ts&&... tasks) && {
-    static_cast<Task&>(*this).precede<Check>(std::forward<Ts>(tasks)...);
-    return std::move(*this);
-}
-
-template <bool Check, typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task& Task::succeed(Ts&&... tasks) & {
+inline Task& Task::succeed(Ts&&... tasks) {
     TFL_ASSERT(m_work);
     TFL_ASSERT((tasks.m_work && ...));
     (tasks.m_work->template _precede<Check>(m_work), ...);
     return *this;
 }
 
-template <bool Check, typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::derived_from<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task Task::succeed(Ts&&... tasks) && {
-    static_cast<Task&>(*this).succeed<Check>(std::forward<Ts>(tasks)...);
-    return std::move(*this);
-}
-
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task& Task::remove_predecessor(Ts&&... tasks) & noexcept {
+inline Task& Task::remove_predecessor(Ts&&... tasks) noexcept {
     TFL_ASSERT(m_work);
     TFL_ASSERT((tasks.m_work && ...));
     (tasks.m_work->_remove_successor(m_work), ...);
@@ -1093,104 +1118,56 @@ inline Task& Task::remove_predecessor(Ts&&... tasks) & noexcept {
 
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task Task::remove_predecessor(Ts&&... tasks) && noexcept {
-    static_cast<Task&>(*this).remove_predecessor(std::forward<Ts>(tasks)...);
-    return std::move(*this);
-}
-
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task& Task::remove_successor(Ts&&... tasks) & noexcept {
+inline Task& Task::remove_successor(Ts&&... tasks) noexcept {
     TFL_ASSERT(m_work);
     TFL_ASSERT((tasks.m_work && ...));
     (m_work->_remove_successor(tasks.m_work), ...);
     return *this;
 }
 
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<std::remove_cvref_t<Ts>, Task> && ...)
-inline Task Task::remove_successor(Ts&&... tasks) && noexcept {
-    static_cast<Task&>(*this).remove_successor(std::forward<Ts>(tasks)...);
-    return std::move(*this);
-}
-
-inline Task& Task::clear_predecessors() & noexcept {
+inline Task& Task::clear_predecessors() noexcept {
     TFL_ASSERT(m_work);
     m_work->_clear_predecessors();
     return *this;
 }
 
-inline Task Task::clear_predecessors() && noexcept {
-    static_cast<Task&>(*this).clear_predecessors();
-    return std::move(*this);
-}
-
-inline Task& Task::clear_successors() & noexcept {
+inline Task& Task::clear_successors() noexcept {
     TFL_ASSERT(m_work);
     m_work->_clear_successors();
     return *this;
 }
 
-inline Task Task::clear_successors() && noexcept {
-    static_cast<Task&>(*this).clear_successors();
-    return std::move(*this);
-}
-
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-inline Task& Task::acquire(Ts&... semaphores) & {
+inline Task& Task::acquire(Ts&... semaphores) {
     TFL_ASSERT(m_work);
     (m_work->_acquire(std::addressof(semaphores), 1), ...);
     return *this;
 }
 
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-inline Task Task::acquire(Ts&... semaphores) && {
-    static_cast<Task&>(*this).acquire(semaphores...);
-    return std::move(*this);
-}
-
-inline Task& Task::acquire(Semaphore& semaphore, std::size_t count) & {
+inline Task& Task::acquire(Semaphore& semaphore, std::size_t count) {
     TFL_ASSERT(m_work);
     m_work->_acquire(std::addressof(semaphore), count);
     return *this;
 }
 
-inline Task Task::acquire(Semaphore& semaphore, std::size_t count) && {
-    static_cast<Task&>(*this).acquire(semaphore, count);
-    return std::move(*this);
-}
-
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-inline Task& Task::release(Ts&... semaphores) & {
+inline Task& Task::release(Ts&... semaphores) {
     TFL_ASSERT(m_work);
     (m_work->_release(std::addressof(semaphores), 1), ...);
     return *this;
 }
 
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-inline Task Task::release(Ts&... semaphores) && {
-    static_cast<Task&>(*this).release(semaphores...);
-    return std::move(*this);
-}
-
-inline Task& Task::release(Semaphore& semaphore, std::size_t count) & {
+inline Task& Task::release(Semaphore& semaphore, std::size_t count) {
     TFL_ASSERT(m_work);
     m_work->_release(std::addressof(semaphore), count);
     return *this;
 }
 
-inline Task Task::release(Semaphore& semaphore, std::size_t count) && {
-    static_cast<Task&>(*this).release(semaphore, count);
-    return std::move(*this);
-}
-
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-inline Task& Task::remove_acquire(Ts&... semaphores) & noexcept {
+inline Task& Task::remove_acquire(Ts&... semaphores) noexcept {
     TFL_ASSERT(m_work);
     (m_work->_remove_acquire(std::addressof(semaphores)), ...);
     return *this;
@@ -1198,46 +1175,22 @@ inline Task& Task::remove_acquire(Ts&... semaphores) & noexcept {
 
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-inline Task Task::remove_acquire(Ts&... semaphores) && noexcept {
-    static_cast<Task&>(*this).remove_acquire(semaphores...);
-    return std::move(*this);
-}
-
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-inline Task& Task::remove_release(Ts&... semaphores) & noexcept {
+inline Task& Task::remove_release(Ts&... semaphores) noexcept {
     TFL_ASSERT(m_work);
     (m_work->_remove_release(std::addressof(semaphores)), ...);
     return *this;
 }
 
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-inline Task Task::remove_release(Ts&... semaphores) && noexcept {
-    static_cast<Task&>(*this).remove_release(semaphores...);
-    return std::move(*this);
-}
-
-inline Task& Task::clear_acquires() & noexcept {
+inline Task& Task::clear_acquires() noexcept {
     TFL_ASSERT(m_work);
     m_work->_clear_acquires();
     return *this;
 }
 
-inline Task Task::clear_acquires() && noexcept {
-    static_cast<Task&>(*this).clear_acquires();
-    return std::move(*this);
-}
-
-inline Task& Task::clear_releases() & noexcept {
+inline Task& Task::clear_releases() noexcept {
     TFL_ASSERT(m_work);
     m_work->_clear_releases();
     return *this;
-}
-
-inline Task Task::clear_releases() && noexcept {
-    static_cast<Task&>(*this).clear_releases();
-    return std::move(*this);
 }
 
 template <typename F>

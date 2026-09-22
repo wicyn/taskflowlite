@@ -244,6 +244,44 @@ endforeach()
 # ============================================================================
 enable_testing()
 
+# Compile every active core header in its own translation unit. Do not let the
+# umbrella header conceal missing includes. pipeline.hpp is a commented draft.
+option(TFL_TEST_HEADERS "Compile active core headers independently" ON)
+if(TFL_TEST_HEADERS)
+    file(GLOB _core_headers CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../taskflowlite/core/*.hpp")
+    set(_header_sources "")
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/header_checks")
+    foreach(_header IN LISTS _core_headers)
+        get_filename_component(_name "${_header}" NAME)
+        if(_name STREQUAL "pipeline.hpp")
+            continue()
+        endif()
+        set(_source "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${_name}.cpp")
+        file(CONFIGURE OUTPUT "${_source}" CONTENT "#include <taskflowlite/core/${_name}>\n" @ONLY)
+        list(APPEND _header_sources "${_source}")
+    endforeach()
+    add_library(tfl_test_headers OBJECT ${_header_sources})
+    tfl_setup_test_target(tfl_test_headers NO_CATCH)
+    set_target_properties(tfl_test_headers PROPERTIES FOLDER "Tests/Headers")
+endif()
+
+# Known core defects must remain visible without hanging the regular unit suite.
+# Opting in adds genuinely failing tests (no WILL_FAIL or timeout inversion).
+option(TFL_BUILD_CORE_REPROS "Build and register known core defect repros (may fail/time out)" OFF)
+if(TFL_BUILD_CORE_REPROS)
+    if(NOT TFL_SANITIZER STREQUAL "OFF")
+        message(FATAL_ERROR "Core allocation failure repros require TFL_SANITIZER=OFF")
+    endif()
+    add_executable(tfl_core_failure_repro core_failure_repro.cpp)
+    tfl_setup_test_target(tfl_core_failure_repro NO_CATCH)
+    target_compile_definitions(tfl_core_failure_repro PRIVATE TFL_ENABLE_TASK_POOL=0)
+    set_target_properties(tfl_core_failure_repro PROPERTIES FOLDER "Tests/CoreRepros")
+    foreach(_case start_reserve link_alloc payload_replace)
+        add_test(NAME core_repro.${_case} COMMAND tfl_core_failure_repro ${_case})
+        set_tests_properties(core_repro.${_case} PROPERTIES TIMEOUT 5 LABELS "core-repro")
+    endforeach()
+endif()
+
 # 独立 main 的回归程序不匹配 test_*.cpp，必须显式构建和注册。
 add_executable(tfl_test_topology_header topology_header.cpp topology_header_main.cpp)
 tfl_setup_test_target(tfl_test_topology_header NO_CATCH)
@@ -316,6 +354,9 @@ add_custom_target(run_all_tests
     COMMENT "Running all TaskflowLite unit tests..."
 )
 set_target_properties(run_all_tests PROPERTIES FOLDER "Run")
+if(TARGET tfl_test_headers)
+    add_dependencies(run_all_tests tfl_test_headers)
+endif()
 
 if(TFL_TEST_RUN_TARGETS)
     foreach(_src ${TFL_TEST_SOURCES})

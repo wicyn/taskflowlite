@@ -72,7 +72,7 @@ protected:
     /// @param executor 非拥有 Executor 引用；构造时绑定，绑定后不可更换。
     /// @pre executor 必须在任务执行期间及通过拓扑访问它时保持有效。
     /// @pre parent_topology 必须在任务仍可能访问其父拓扑链期间保持有效。
-    explicit ResultStorage(Executor& executor, Topology* parent_topology = nullptr) noexcept
+    explicit ResultStorage(Executor& executor, Topology* parent_topology = nullptr) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>>)
         : TopologyStorage{executor, parent_topology} {}
 
     ~ResultStorage() noexcept = default;
