@@ -26,8 +26,8 @@ TEST_CASE("TaskView: metadata and const traversal", "[task-view][metadata]") {
         REQUIRE(view.num_acquires() == 1);
         REQUIRE(view.num_releases() == 1);
         REQUIRE(view.num_observers() == 0);
-        REQUIRE_FALSE(view.has_exception());
-        REQUIRE_FALSE(view.exception());
+        REQUIRE_FALSE(view.has_exception_ptr());
+        REQUIRE_FALSE(view.exception_ptr());
         view.for_each_predecessor([](tfl::TaskView pred) { REQUIRE(pred.name() == "a"); });
         view.for_each_successor([](tfl::TaskView next) { REQUIRE(next.name() == "c"); });
         view.for_each_acquire([&](const tfl::Semaphore& sem, std::size_t count) {
@@ -43,7 +43,7 @@ TEST_CASE("TaskView: metadata and const traversal", "[task-view][metadata]") {
     REQUIRE(visited == 1);
 }
 
-/// @test [task-view][exception] 节点保留异常标记，异常对象由提交 Future 归档。
+/// @test [task-view][exception] 当前视图查询异常指针；图异常由提交 Future 归档。
 TEST_CASE("TaskView: exception inspection after synchronization", "[task-view][exception]") {
     TestEnv env;
     tfl::Flow flow;
@@ -54,7 +54,7 @@ TEST_CASE("TaskView: exception inspection after synchronization", "[task-view][e
     future.wait();
     REQUIRE_THROWS_AS(future.get(), std::runtime_error);
     std::as_const(next).for_each_predecessor([](tfl::TaskView view) {
-        REQUIRE(view.has_exception());
-        REQUIRE_FALSE(view.exception());  // 异常已向上移动到显式锚点
+        REQUIRE_FALSE(view.has_exception_ptr());
+        REQUIRE_FALSE(view.exception_ptr());  // 异常已向上移动到显式锚点
     });
 }

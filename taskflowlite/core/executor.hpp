@@ -19,7 +19,6 @@
 #include <functional>
 #include <iterator>
 #include <memory>
-#include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -33,7 +32,8 @@
 #include "worker.hpp"
 #include "random.hpp"
 #include "notifier.hpp"
-#include "unbounded_queue.hpp"
+#include "shared_work_stack.hpp"
+#include "small_vector.hpp"
 
 namespace tfl {
 
@@ -483,20 +483,11 @@ public:
     [[nodiscard]] std::size_t num_topologies() const noexcept;
 
 private:
-    /// @brief 保存一条由互斥锁串行访问的共享调度队列分片。
-    ///
-    /// 分片拥有队列存储但不拥有其中的 `Work` 节点；用于接收跨线程提交
-    /// 和 Worker 本地队列溢出的任务。
-    struct alignas(2 * cache_line_size) Buffer {
-        std::mutex mutex;
-        UnboundedQueue<Work*> queue{2LL * TFL_DEFAULT_QUEUE_SIZE};
-    };
-
     // 2 倍缓存行对齐，使高频修改的拓扑计数尽量独占缓存区域，降低与相邻成员的伪共享。
-    alignas(2 * cache_line_size) std::atomic<std::size_t> m_num_topologies{0};
+    alignas(TFL_CACHE_LINE_SIZE) std::atomic<std::size_t> m_num_topologies{0};
 
     std::vector<Worker>                             m_workers;          ///< Worker 线程实体数组。
-    std::vector<Buffer>                             m_shared_buffers;   ///< 分片共享队列，接收跨线程提交和本地溢出任务。
+    std::vector<SharedWorkStack>                    m_shared_stacks;    ///< 分片共享调度栈，接收跨线程提交和本地溢出任务。
     Notifier                                        m_notifier;         ///< Worker 两阶段 park / wake 通知器。
     WorkerHandler*                                  m_handler{nullptr}; ///< 外部拥有的 WorkerHandler；nullptr 表示未绑定处理器。
     std::unordered_map<std::thread::id, Worker*>    m_tid_to_worker;    ///< Worker thread_id 到稳定 Worker 地址的只读运行期映射。
@@ -555,7 +546,7 @@ private:
     ///
     /// @param wr 当前执行 Worker。
     /// @param w 首个待执行 Work；必须非空。
-    void _invoke(Worker& wr, Work* w);
+    void _invoke(Worker& wr, Work* w) noexcept;
 
     /// @brief 在当前 Worker 无本地任务时执行自适应 work-stealing 与阻塞等待。
     ///
@@ -611,7 +602,7 @@ private:
     /// @param w 已完成执行的普通静态 Work。
     /// @param wr 当前 Worker。
     /// @param cache 当前 cache 接力槽，可为空。
-    void _tear_down_task(Work& w, Worker& wr, Work*& cache);
+    void _tear_down_task(Work& w, Worker& wr, Work*& cache) noexcept;
 
     /// @brief 完成 Branch 节点，并仅向本次选中的 target 传播一次 strong dependency 到达。
     ///
@@ -623,7 +614,7 @@ private:
     /// @param wr 当前 Worker。
     /// @param cache cache 接力槽。
     /// @param target 本次分支选择的目标；nullptr 表示没有后续目标。
-    void _tear_down_branch_task(Work& w, Worker& wr, Work*& cache, Work* target);
+    void _tear_down_branch_task(Work& w, Worker& wr, Work*& cache, Work* target) noexcept;
 
     /// @brief 完成 MultiBranch 节点，并向本次选中的多个 target 传播 strong dependency 到达。
     ///
@@ -634,7 +625,7 @@ private:
     /// @param wr 当前 Worker。
     /// @param cache cache 接力槽。
     /// @param targets 本次分支选择出的目标集合，可为空。
-    void _tear_down_multi_branch_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets);
+    void _tear_down_multi_branch_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets) noexcept;
 
     /// @brief 完成 Jump 节点，并通过清零 target join_counter 绕过普通 strong join 屏障。
     ///
@@ -645,7 +636,7 @@ private:
     /// @param wr 当前 Worker。
     /// @param cache cache 接力槽。
     /// @param target 跳转目标；nullptr 表示本次不跳转。
-    void _tear_down_jump_task(Work& w, Worker& wr, Work*& cache, Work* target);
+    void _tear_down_jump_task(Work& w, Worker& wr, Work*& cache, Work* target) noexcept;
 
     /// @brief 完成 MultiJump 节点，并强制激活本次选择的全部 target。
     ///
@@ -656,7 +647,7 @@ private:
     /// @param wr 当前 Worker。
     /// @param cache cache 接力槽。
     /// @param targets 要强制激活的目标集合，可为空。
-    void _tear_down_multi_jump_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets);
+    void _tear_down_multi_jump_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets) noexcept;
 
     /// @brief 完成 SilentAsync Work，销毁节点并结束其父 slot 或顶层 topology 生命周期.
     ///
@@ -666,7 +657,7 @@ private:
     /// @param w 已完成的 SilentAsync Work.
     /// @param wr 当前 Worker.
     /// @param cache cache 接力槽.
-    void _tear_down_silent_async_task(Work& w, Worker& wr, Work*& cache);
+    void _tear_down_silent_async_task(Work& w, Worker& wr, Work*& cache) noexcept;
 
     /// @brief 将一组 AsyncTask 作为 @p w 的动态前驱，并修正尚未满足的依赖数量。
     ///
@@ -695,43 +686,85 @@ private:
     /// @param w 已完成的 AsyncTask Work。
     /// @param wr 当前 Worker。
     /// @param cache cache 接力槽。
-    void _tear_down_async_task(Work& w, Worker& wr, Work*& cache);
+    void _tear_down_async_task(Work& w, Worker& wr, Work*& cache) noexcept;
 
-    /// @brief 将单个 Work 发布到共享分片队列。
+    /// @brief 将单个 Work 发布到共享调度分片。
     ///
-    /// 以 Work 地址哈希得到首选分片，从该位置循环线性探测 `try_lock()`；
-    /// 若全部分片均忙，则阻塞获取首选分片互斥锁后入队。
+    /// 以 Work 地址哈希选择目标 SharedWorkStack，并保证任务最终发布成功。
     ///
-    /// @param val 待发布的 Work，必须非空。
-    void _push_shared(Work* val);
+    /// @param work 待发布的 Work。
+    /// @pre work 非空，且当前不属于其他使用 `m_next` 的调度链。
+    void _push_shared(Work* work) noexcept;
 
-    /// @brief 将 `[first, first + n)` 的 Work 批量发布到同一个共享分片。
+    /// @brief 将 `[first, first + n)` 的 Work 批量发布到同一个共享调度分片。
     ///
-    /// 使用首个 Work 地址选择起始分片，并采用与单任务版本相同的 try_lock
-    /// 线性探测和最终阻塞回退策略。
+    /// 使用首个 Work 地址哈希选择目标 SharedWorkStack，并一次性发布整个任务区间。
     ///
     /// @tparam Iterator 随机访问迭代器类型。
     /// @param first 待发布区间起点。
-    /// @param n 区间元素数量，必须非 0。
+    /// @param n 区间元素数量。
+    /// @pre n > 0，区间中的 Work 均非空且当前不属于其他使用 `m_next` 的调度链。
     template <std::random_access_iterator Iterator>
-        requires std::convertible_to<std::iter_reference_t<Iterator>, Work*>
-    void _push_shared(Iterator first, std::size_t n);
+        requires std::same_as<std::remove_cvref_t<std::iter_reference_t<Iterator>>, Work*>
+    void _push_shared(Iterator first, std::size_t n) noexcept;
+
+    /// @brief 将一条已经连接完成的 Work 链发布到共享调度分片。
+    ///
+    /// 使用首个 Work 地址哈希选择目标 SharedWorkStack，并一次性发布整条任务链。
+    ///
+    /// @param first 链表首节点。
+    /// @param last 链表尾节点。
+    /// @param n 链表中的 Work 数量。
+    /// @pre first 和 last 非空，n > 0，且 first 到 last 构成一条已经连接完成的 Work 链。
+    /// @pre 整条链当前不属于其他使用 `m_next` 的调度链。
+    void _push_shared(Work* first, Work* last, std::size_t n) noexcept;
 
     /// @brief 从已知 Worker 上下文批量调度任务，优先发布到该 Worker 本地队列。
     ///
-    /// 本地队列无法容纳的剩余任务由回调溢出到共享分片；发布完成后按 n 通知等待者。
+    /// 本地队列无法容纳的剩余任务由回调批量发布到共享调度分片；
+    /// 全部任务发布完成后按 n 通知等待中的 Worker。
+    /// @param wr 当前 Worker。
+    /// @param first 待调度区间起点。
+    /// @param n 区间元素数量。
+    /// @pre n > 0。
     template <std::random_access_iterator Iterator>
-    void _schedule(Worker& wr, Iterator first, std::size_t n);
+        requires std::same_as<std::remove_cvref_t<std::iter_reference_t<Iterator>>, Work*>
+    void _schedule(Worker& wr, Iterator first, std::size_t n) noexcept;
 
-    /// @brief 从非 Worker 上下文批量调度任务，直接发布到共享分片并通知等待者。
+    /// @brief 从非 Worker 上下文批量调度任务，直接发布到共享调度分片。
+    ///
+    /// 全部任务发布完成后按 n 通知等待中的 Worker。
+    /// @param first 待调度区间起点。
+    /// @param n 区间元素数量。
+    /// @pre n > 0。
     template <std::random_access_iterator Iterator>
-    void _schedule(Iterator first, std::size_t n);
+        requires std::same_as<std::remove_cvref_t<std::iter_reference_t<Iterator>>, Work*>
+    void _schedule(Iterator first, std::size_t n) noexcept;
 
-    /// @brief 从已知 Worker 上下文调度单个任务，优先进入本地队列，满时溢出到共享分片。
-    void _schedule(Worker& wr, Work* w);
+    /// @brief 从已知 Worker 上下文调度单个任务。
+    ///
+    /// 优先发布到该 Worker 本地队列；本地队列已满时发布到共享调度分片，
+    /// 发布完成后通知一个等待中的 Worker。
+    /// @param wr 当前 Worker。
+    /// @param work 待调度的 Work。
+    /// @pre work 非空。
+    void _schedule(Worker& wr, Work* work) noexcept;
 
-    /// @brief 从非 Worker 上下文调度单个任务，直接发布到共享分片。
-    void _schedule(Work* w);
+    /// @brief 从非 Worker 上下文调度单个任务。
+    ///
+    /// 直接发布到共享调度分片，发布完成后通知一个等待中的 Worker。
+    /// @param work 待调度的 Work。
+    /// @pre work 非空。
+    void _schedule(Work* work) noexcept;
+
+    /// @brief 从非 Worker 上下文批量调度一条已经连接完成的 Work 链。
+    ///
+    /// 整条任务链直接发布到共享调度分片，发布完成后按 n 通知等待中的 Worker。
+    /// @param first 链表首节点。
+    /// @param last 链表尾节点。
+    /// @param n 链表中的 Work 数量。
+    /// @pre first 和 last 非空，n > 0，且 first 到 last 构成一条已经连接完成的 Work 链。
+    void _schedule(Work* first, Work* last, std::size_t n) noexcept;
 
     /// @brief 归还一个 parent join slot，并在 PREEMPTED 父节点归零时恢复其执行。
     ///
@@ -742,16 +775,18 @@ private:
     /// @param parent 要归还 slot 的父 Work，必须非空。
     /// @param wr 当前 Worker。
     /// @param cache cache 接力槽。
-    void _schedule_parent(Work* parent, Worker& wr, Work*& cache);
+    void _schedule_parent(Work* parent, Worker& wr, Work*& cache) noexcept;
 
-    /// @brief 将 Semaphore 唤醒或回滚得到的 waiter 重新发布到各自所属 Executor。
+    /// @brief 将 Semaphore 唤醒或回滚得到的 waiter intrusive 链重新发布到各自所属 Executor。
     ///
-    /// waiter 与当前 Executor 相同时走当前 Worker 的本地调度快路径；跨 Executor
+    /// 按链表顺序依次摘除 Work，并在重新调度前清空其 `m_next`。
+    /// waiter 属于当前 Executor 时走当前 Worker 的本地调度快路径；跨 Executor
     /// waiter 直接进入目标 Executor 的共享调度入口。
     ///
     /// @param w 当前 Worker。
-    /// @param waiters 已具备继续执行条件的 Work 集合。
-    void _schedule_from_semaphore(Worker& w, SmallVector<Work*>& waiters);
+    /// @param work waiter intrusive 链首节点；允许为 nullptr。
+    /// @note 调用完成后输入链中的所有 Work 均已重新发布，原 intrusive 链被拆除。
+    void _schedule_from_semaphore(Worker& w, Work* work) noexcept;
 
     /// @brief 在当前 Worker 上协作执行其他任务，直到 @p pred 返回 true。
     ///
@@ -762,7 +797,7 @@ private:
     /// @param worker 当前 Worker。
     /// @param pred 返回 true 时结束协作等待的谓词。
     template <predicate Pred>
-    void _corun_until(Worker& worker, Pred&& pred);
+    void _corun_until(Worker& worker, Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>);
 
     /// @brief 在当前 Worker 上启动一个 Graph，并协作执行直到该 Graph 占用的 parent slot 全部归还。
     ///
@@ -773,7 +808,7 @@ private:
     /// @param worker 当前 Worker。
     /// @param graph 要执行的 Graph。
     /// @param parent Graph 所属父 Work。
-    void _corun_graph(Graph& g, Work& parent, Worker& wr);
+    void _corun_graph(Graph& g, Work& parent, Worker& wr) noexcept;
 
     /// @brief 为一个新启动的顶层执行链增加 Executor 活跃 topology 计数。
     ///
@@ -809,7 +844,7 @@ inline std::size_t Executor::_check_worker_count(std::size_t n) {
 
 inline Executor::Executor(WorkerHandler* handler, std::size_t num_workers)
     : m_workers{_check_worker_count(num_workers)}
-    , m_shared_buffers{static_cast<std::size_t>(std::bit_width(num_workers))}
+    , m_shared_stacks{static_cast<std::size_t>(std::bit_width(num_workers))}
     , m_notifier{num_workers}
     , m_handler{handler}
 {
@@ -1047,7 +1082,7 @@ inline std::size_t Executor::num_waiters() const noexcept {
 }
 
 inline std::size_t Executor::num_queues() const noexcept {
-    return m_workers.size() + m_shared_buffers.size();
+    return m_workers.size() + m_shared_stacks.size();
 }
 
 inline std::size_t Executor::num_topologies() const noexcept {
@@ -1094,28 +1129,18 @@ inline void Executor::_spawn(std::size_t num_workers) {
             if (m_handler) {
                 m_handler->on_start(wr);
             }
-
-            std::exception_ptr exception;
-
-            try {
-                Work* w = nullptr;
-
-                for (;;) {
-                    while (w) {
-                        _invoke(wr, w);
-                        w = wr.m_wslq.pop();
-                    }
-
-                    if ((w = _wait_for_work(wr)) == nullptr) [[unlikely]] {
-                        break;
-                    }
+            Work* w = nullptr;
+            for (;;) {
+                while (w) {
+                    _invoke(wr, w);
+                    w = wr.m_wslq.pop();
                 }
-            } catch (...) {
-                exception = std::current_exception();
+                if ((w = _wait_for_work(wr)) == nullptr) [[unlikely]] {
+                    break;
+                }
             }
-
             if (m_handler) {
-                m_handler->on_stop(wr, exception);
+                m_handler->on_stop(wr);
             }
         });
 
@@ -1125,7 +1150,7 @@ inline void Executor::_spawn(std::size_t num_workers) {
 
 inline Work* Executor::_wait_for_work(Worker& wr) noexcept {
     const std::size_t nw = m_workers.size();
-    const std::size_t nb = m_shared_buffers.size();
+    const std::size_t nb = m_shared_stacks.size();
     const std::size_t id = wr.m_id;
 
 explore:
@@ -1140,7 +1165,7 @@ explore:
     for (;;) {
         Work* w = (vtm < nw)
         ? m_workers[vtm].m_wslq.steal()
-        : m_shared_buffers[vtm - nw].queue.steal();
+        : m_shared_stacks[vtm - nw].steal();
 
         if (w) {
             wr.m_vtm = vtm;
@@ -1169,7 +1194,7 @@ explore:
     // 此处重新扫描共享队列和其他 Worker 本地队列，发现工作则 cancel_wait，
     // 从而避免在已有可执行任务时错误进入休眠。
     for (std::size_t i = 0; i < nb; ++i) {
-        if (!m_shared_buffers[i].queue.empty()) {
+        if (!m_shared_stacks[i].empty()) {
             m_notifier.cancel_wait(id);
             wr.m_vtm = i + nw;
             goto explore;
@@ -1258,7 +1283,7 @@ TFL_FORCE_INLINE void Executor::_reset_graph_join_counters(Graph& g, std::size_t
 }
 
 
-TFL_FORCE_INLINE void Executor::_tear_down_task(Work& w, Worker& wr, Work*& cache) {
+TFL_FORCE_INLINE void Executor::_tear_down_task(Work& w, Worker& wr, Work*& cache) noexcept {
     auto* const parent = w.m_parent;
     const std::size_t sz = w.m_num_successors;
     const auto join_weight = w._join_weight();
@@ -1339,7 +1364,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_task(Work& w, Worker& wr, Work*& cach
     }
 }
 
-TFL_FORCE_INLINE void Executor::_tear_down_branch_task(Work& w, Worker& wr, Work*& cache, Work* target) {
+TFL_FORCE_INLINE void Executor::_tear_down_branch_task(Work& w, Worker& wr, Work*& cache, Work* target) noexcept {
     auto* const parent = w.m_parent;
     const auto join_weight = w._join_weight();
 
@@ -1386,7 +1411,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_branch_task(Work& w, Worker& wr, Work
     _schedule_parent(parent, wr, cache);
 }
 
-TFL_FORCE_INLINE void Executor::_tear_down_multi_branch_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets) {
+TFL_FORCE_INLINE void Executor::_tear_down_multi_branch_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets) noexcept {
     auto* const parent = w.m_parent;
     const auto join_weight = w._join_weight();
 
@@ -1450,7 +1475,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_multi_branch_task(Work& w, Worker& wr
     }
 }
 
-TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work& w, Worker& wr, Work*& cache, Work* target) {
+TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work& w, Worker& wr, Work*& cache, Work* target) noexcept {
     auto* const parent = w.m_parent;
     const auto join_weight = w._join_weight();
 
@@ -1484,7 +1509,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work& w, Worker& wr, Work*&
     cache = target;
 }
 
-TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets) {
+TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets) noexcept {
     auto* const parent = w.m_parent;
     std::size_t n = targets.size();
     const auto join_weight = w._join_weight();
@@ -1539,7 +1564,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work& w, Worker& wr, 
 /// SilentAsync 不向调用方暴露结果句柄，因此执行完成后不需要为外部观察者保留 Work。
 /// 函数先缓存 parent，再销毁当前节点；之后若存在 parent 则归还一个 join slot，
 /// 否则递减 Executor 的顶层 topology 计数。
-TFL_FORCE_INLINE void Executor::_tear_down_silent_async_task(Work& w, Worker& wr, Work*& cache) {
+TFL_FORCE_INLINE void Executor::_tear_down_silent_async_task(Work& w, Worker& wr, Work*& cache) noexcept {
     Work* const parent = w.m_parent;
 
     // parent 已提前保存；SilentAsync 没有外部强引用，当前执行结束后即可立即回收 Work。
@@ -1589,7 +1614,7 @@ TFL_FORCE_INLINE void Executor::_link_predecessors(Work* w, I first, S last) {
     }
 }
 
-TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*& cache) {
+TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*& cache) noexcept {
     Topology* const topology = w.m_topology;
     Work* const parent = w.m_parent;
     auto& control = topology->m_control;
@@ -1653,66 +1678,29 @@ TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*
     }
 }
 
-inline void Executor::_push_shared(Work* val) {
-    std::size_t const size = m_shared_buffers.size();
-    std::size_t const b = detail::mulhi64(reinterpret_cast<std::uintptr_t>(val) * 11400714819323198485ULL, size);
 
-    // 快路径：从哈希首选分片开始环形线性探测，优先选择当前可立即取得的互斥锁。
-    for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
-        auto& buf = m_shared_buffers[curr_b];
-        if (buf.mutex.try_lock()) {
-            std::lock_guard lock{buf.mutex, std::adopt_lock};
-            buf.queue.push(val);
-            return;
-        }
-    }
+inline void Executor::_push_shared(Work* work) noexcept {
+    std::size_t const size = m_shared_stacks.size();
+    std::size_t const index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(work) * 11400714819323198485ULL, size);
 
-    for (std::size_t curr_b = 0; curr_b < b; ++curr_b) {
-        auto& buf = m_shared_buffers[curr_b];
-        if (buf.mutex.try_lock()) {
-            std::lock_guard lock{buf.mutex, std::adopt_lock};
-            buf.queue.push(val);
-            return;
-        }
-    }
-
-    // 所有分片当前均被占用时，不再继续自旋，阻塞等待最初哈希得到的首选分片。
-    std::lock_guard lock(m_shared_buffers[b].mutex);
-    m_shared_buffers[b].queue.push(val);
+    m_shared_stacks[index].push(work);
 }
 
 template <std::random_access_iterator Iterator>
-    requires std::convertible_to<std::iter_reference_t<Iterator>, Work*>
-inline void Executor::_push_shared(Iterator first, std::size_t n) {
-    TFL_ASSERT(n != 0);
+    requires std::same_as<std::remove_cvref_t<std::iter_reference_t<Iterator>>, Work*>
+inline void Executor::_push_shared(Iterator first, std::size_t n) noexcept {
+    Work* const work = first[0];
+    std::size_t const size = m_shared_stacks.size();
+    std::size_t const index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(work) * 11400714819323198485ULL, size);
 
-    std::size_t const size = m_shared_buffers.size();
-    std::size_t const b = detail::mulhi64(reinterpret_cast<std::uintptr_t>(*first) * 11400714819323198485ULL, size);
+    m_shared_stacks[index].push(first, n);
+}
 
-    // 快路径：从哈希首选分片开始环形线性探测，优先选择当前可立即取得的互斥锁。
-    for (std::size_t curr_b = b; curr_b < size; ++curr_b) {
-        auto& buf = m_shared_buffers[curr_b];
+inline void Executor::_push_shared(Work* first, Work* last, std::size_t n) noexcept {
+    std::size_t const size = m_shared_stacks.size();
+    std::size_t const index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(first) * 11400714819323198485ULL, size);
 
-        if (buf.mutex.try_lock()) {
-            std::lock_guard lock{buf.mutex, std::adopt_lock};
-            buf.queue.push(first, n);
-            return;
-        }
-    }
-
-    for (std::size_t curr_b = 0; curr_b < b; ++curr_b) {
-        auto& buf = m_shared_buffers[curr_b];
-
-        if (buf.mutex.try_lock()) {
-            std::lock_guard lock{buf.mutex, std::adopt_lock};
-            buf.queue.push(first, n);
-            return;
-        }
-    }
-
-    // 所有分片当前均被占用时，阻塞等待首选分片并一次性完成批量推送。
-    std::lock_guard lock(m_shared_buffers[b].mutex);
-    m_shared_buffers[b].queue.push(first, n);
+    m_shared_stacks[index].push(first, last, n);
 }
 
 // ============================================================================
@@ -1720,9 +1708,9 @@ inline void Executor::_push_shared(Iterator first, std::size_t n) {
 // ============================================================================
 
 template <std::random_access_iterator Iterator>
-inline void Executor::_schedule(Worker& wr, Iterator first, std::size_t n) {
-    // Worker 本地队列优先；无法继续容纳的尾部区间整体溢出到共享分片。
-    wr.m_wslq.push(first, n, [&](Iterator remaining, std::size_t count) {
+    requires std::same_as<std::remove_cvref_t<std::iter_reference_t<Iterator>>, Work*>
+inline void Executor::_schedule(Worker& wr, Iterator first, std::size_t n) noexcept {
+    wr.m_wslq.push(first, n, [this](Iterator remaining, std::size_t count) noexcept {
         _push_shared(remaining, count);
     });
 
@@ -1730,25 +1718,31 @@ inline void Executor::_schedule(Worker& wr, Iterator first, std::size_t n) {
 }
 
 template <std::random_access_iterator Iterator>
-inline void Executor::_schedule(Iterator first, std::size_t n) {
+    requires std::same_as<std::remove_cvref_t<std::iter_reference_t<Iterator>>, Work*>
+inline void Executor::_schedule(Iterator first, std::size_t n) noexcept {
     _push_shared(first, n);
     m_notifier.notify_n(n);
 }
 
-inline void Executor::_schedule(Worker& wr, Work* w) {
-    wr.m_wslq.push(w, [&]() {
-        _push_shared(w);
+inline void Executor::_schedule(Worker& wr, Work* work) noexcept {
+    wr.m_wslq.push(work, [this](Work* overflow) noexcept {
+        _push_shared(overflow);
     });
 
     m_notifier.notify_one();
 }
 
-inline void Executor::_schedule(Work* w) {
-    _push_shared(w);
+inline void Executor::_schedule(Work* work) noexcept {
+    _push_shared(work);
     m_notifier.notify_one();
 }
 
-inline void Executor::_schedule_parent(Work* parent, Worker& wr, Work*& cache) {
+inline void Executor::_schedule(Work* first, Work* last, std::size_t n) noexcept {
+    _push_shared(first, last, n);
+    m_notifier.notify_n(n);
+}
+
+inline void Executor::_schedule_parent(Work* parent, Worker& wr, Work*& cache) noexcept {
     const bool preempted = parent->m_properties & Work::Properties::PREEMPTED;
     if (parent->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         if (preempted) {
@@ -1760,13 +1754,19 @@ inline void Executor::_schedule_parent(Work* parent, Worker& wr, Work*& cache) {
     }
 }
 
-inline void Executor::_schedule_from_semaphore(Worker& wr, SmallVector<Work*>& waiters) {
-    for (Work* work : waiters) {
-        Executor& executor = work->m_topology->m_executor;
+inline void Executor::_schedule_from_semaphore(Worker& wr, Work* work) noexcept {
+    while (work) {
+        Work* const current = work;
+        work = current->m_next;
+        current->m_next = nullptr;
+
+        TFL_ASSERT(current->m_topology);
+
+        Executor& executor = current->m_topology->m_executor;
         if (std::addressof(executor) == this) [[likely]] {
-            _schedule(wr, work);
+            _schedule(wr, current);
         } else {
-            executor._schedule(work);
+            executor._schedule(current);
         }
     }
 }
@@ -1775,7 +1775,7 @@ inline void Executor::_schedule_from_semaphore(Worker& wr, SmallVector<Work*>& w
 // 协作式等待
 // ============================================================================
 template <predicate Pred>
-inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
+inline void Executor::_corun_until(Worker& wr, Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>) {
     const std::size_t nw = m_workers.size();
 
     while (!std::invoke(pred)) {
@@ -1789,7 +1789,7 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
         std::uint32_t num_yields = 0;
 
         while (!std::invoke(pred)) {
-            Work* w = (vtm < nw) ? m_workers[vtm].m_wslq.steal() : m_shared_buffers[vtm - nw].queue.steal();
+            Work* w = (vtm < nw) ? m_workers[vtm].m_wslq.steal() : m_shared_stacks[vtm - nw].steal();
 
             if (w) [[likely]] {
                 wr.m_vtm = vtm;
@@ -1810,7 +1810,7 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) {
     }
 }
 
-inline void Executor::_corun_graph(Graph& g, Work& parent, Worker& wr) {
+inline void Executor::_corun_graph(Graph& g, Work& parent, Worker& wr) noexcept {
     const std::size_t num_sources = _set_up_graph(g, parent);
 
     if (num_sources == 0) {
@@ -1844,7 +1844,7 @@ inline Worker* Executor::_this_worker() {
     return itr == m_tid_to_worker.end() ? nullptr : itr->second;
 }
 
-TFL_FORCE_INLINE void Executor::_invoke(Worker& wr, Work* w) {
+TFL_FORCE_INLINE void Executor::_invoke(Worker& wr, Work* w) noexcept {
     do {
         Work* cache{nullptr};
         w->invoke(wr, *this, cache);

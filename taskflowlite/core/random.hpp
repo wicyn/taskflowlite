@@ -52,8 +52,8 @@ namespace detail {
 /// @return (a * b) >> 64，即 128 位乘积的高 64 位。
 [[nodiscard]] constexpr auto mulhi64(std::uint64_t a, std::uint64_t b) noexcept -> std::uint64_t {
 
-    // `if consteval` 可用时直接区分常量求值；C++20 使用 is_constant_evaluated。
-    // false 分支仅在运行时执行，可安全使用非 constexpr 的 intrinsic。
+        // `if consteval` 可用时直接区分常量求值；C++20 使用 is_constant_evaluated。
+        // false 分支仅在运行时执行，可安全使用非 constexpr 的 intrinsic。
 #if defined(__cpp_if_consteval) && __cpp_if_consteval >= 202106L
     if consteval {
 #else
@@ -70,8 +70,8 @@ namespace detail {
 #elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
         // MSVC x64 / ARM64: 单条 intrinsic，Release 下编译为 mul / umulh 指令
         return __umulh(a, b);
-#else \
-    // 兜底：无硬件加速的平台（32 位编译器、WebAssembly 等）
+#else
+        // 兜底：无硬件加速的平台（32 位编译器、WebAssembly 等）
         return mulhi64_soft(a, b);
 #endif
     }

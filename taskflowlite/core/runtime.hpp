@@ -11,7 +11,6 @@
 #include <cassert>
 #include <cstdint>
 #include <memory>
-#include <thread>
 #include <utility>
 
 #include "context.hpp"
@@ -240,7 +239,7 @@ public:
     ///
     /// @note 本函数不等待子图完成；需要隔离等待时使用 `corun()`.
     template <graph_holder Gh>
-    void run(Gh& gh);
+    void run(Gh& gh) noexcept;
 
     // ============================================================================
     // 独立子图协作执行
@@ -289,7 +288,7 @@ public:
     /// @note 本函数不是线程阻塞等待；当前 Worker 会继续执行或窃取其他就绪任务.
     /// @warning pred 在等待期间可能被多次调用，不应依赖单次调用副作用.
     template <predicate Pred>
-    void wait_until(Pred&& pred);
+    void wait_until(Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>);
 
 private:
     /// @brief 由框架构造并绑定当前 Work、Worker 与 Executor 的临时 Runtime.
@@ -307,7 +306,7 @@ private:
     ///
     /// @param work 已完成构造、尚未发布的 SilentAsync Work.
     /// @pre work 非空且尚未被任何调度队列持有.
-    void _launch_silent_async(Work* work);
+    void _launch_silent_async(Work* work) noexcept;
 
     /// @brief 提交 Async 子任务，并建立 Future 引用和执行生命周期引用.
     ///
@@ -329,7 +328,7 @@ private:
 // Runtime：内部提交
 // ============================================================================
 
-inline void Runtime::_launch_silent_async(Work* work) {
+inline void Runtime::_launch_silent_async(Work* work) noexcept {
     TFL_ASSERT(work);
 
     m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
@@ -567,7 +566,7 @@ inline auto Runtime::async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_retu
 // Runtime::run
 // ============================================================================
 template <graph_holder Gh>
-inline void Runtime::run(Gh& gh) {
+inline void Runtime::run(Gh& gh) noexcept {
     auto& graph = detail::to_graph(gh);
     auto num_srcs = m_executor._set_up_graph(graph, m_work);
     if(num_srcs == 0) {
@@ -602,7 +601,7 @@ inline void Runtime::wait() {
 
 
 template <predicate Pred>
-inline void Runtime::wait_until(Pred&& pred) {
+inline void Runtime::wait_until(Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>) {
     m_executor._corun_until(m_worker, std::forward<Pred>(pred));
 }
 

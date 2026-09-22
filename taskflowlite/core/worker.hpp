@@ -67,17 +67,18 @@ private:
     /// @brief Worker 本地任务队列。
     /// @note Owner 按 LIFO 顺序访问，Stealer 按 FIFO 顺序窃取。
     BoundedQueue<Work*, TFL_DEFAULT_QUEUE_SIZE> m_wslq;
+    // Work*           m_pending_head{nullptr};
 
-    SplitMix64      m_rng;                ///< 随机数生成器（每个 Worker 独立序列）。
-    std::uint32_t   m_vtm{0};             ///< 上次成功窃取的队列索引。
-    std::uint32_t   m_max_steals{0}; ///< 进入 yield 阶段前允许连续执行的窃取次数。
-    std::uint32_t   m_max_yields{0}; ///< 进入阻塞等待前允许连续执行的 yield 窃取次数。
-    std::uint32_t   m_id{0};              ///< 全局唯一 ID。
+    SplitMix64      m_rng;              ///< 随机数生成器（每个 Worker 独立序列）。
+    std::uint32_t   m_vtm{0};           ///< 上次成功窃取的队列索引。
+    std::uint32_t   m_max_steals{0};    ///< 进入 yield 阶段前允许连续执行的窃取次数。
+    std::uint32_t   m_max_yields{0};    ///< 进入阻塞等待前允许连续执行的 yield 窃取次数。
+    std::uint32_t   m_id{0};            ///< 全局唯一 ID。
 
     /// @brief 跨线程终止信号。
     ///
     /// 独立缓存行对齐，以降低与 Worker 本地热数据之间的伪共享概率。
-    alignas(2 * cache_line_size) std::atomic_flag m_terminate = ATOMIC_FLAG_INIT;
+    alignas(TFL_CACHE_LINE_SIZE) std::atomic_flag m_terminate = ATOMIC_FLAG_INIT;
 
     std::thread m_thread;
 };
@@ -127,20 +128,19 @@ private:
 /// `Executor` 在对应 Worker 线程上调用启动和停止钩子。通过构造函数传入的
 /// `WorkerHandler` 始终由调用方拥有，Executor 仅在自身生命周期内借用。
 ///
-/// `on_start` 在线程进入调度循环前调用；`on_stop` 在线程离开调度循环后调用。
-/// Worker 正常停止时 `on_stop` 接收到空异常指针；若调度路径存在未处理异常导致
-/// Worker 退出，则接收到对应的 `std::exception_ptr`。
+/// `on_start` 在线程进入调度循环前调用；`on_stop` 在线程结束调度循环后、
+/// 线程函数返回前调用。两个回调都运行在对应 Worker 所属的 OS 线程上。
 ///
-/// 普通任务 callable 抛出的异常由 Work 自身捕获、通知和归档，不会作为
-/// Worker 停止异常进入本接口。
+/// 普通任务 callable 抛出的异常由 Work 执行路径捕获并进入统一异常归档流程，
+/// 不会通过 Worker 生命周期接口传播。
 ///
 /// @warning 传入 Executor 的处理器必须比 Executor 及其全部 Worker 线程存活更久。
 /// @warning 同一处理器实例可能被多个 Worker 并发调用，派生类必须自行同步共享状态。
-/// @warning 所有生命周期钩子均不得抛出异常。
+/// @warning 所有生命周期钩子均为 noexcept，派生实现不得抛出异常。
 class WorkerHandler {
 public:
     /// @brief 虚析构函数，确保通过基类正确销毁派生处理器。
-    virtual ~WorkerHandler() = default;
+    virtual ~WorkerHandler() noexcept = default;
 
     /// @brief Worker 线程启动后、进入调度循环前触发。
     ///
@@ -148,19 +148,15 @@ public:
     /// CPU 亲和性、线程优先级以及初始化线程局部资源。
     ///
     /// @param worker 当前启动的 Worker。
-    /// @warning 派生实现不得抛出异常。
     virtual void on_start(Worker& worker) noexcept = 0;
 
-    /// @brief Worker 离开调度循环后、线程函数返回前触发。
+    /// @brief Worker 结束调度循环后、线程函数返回前触发。
     ///
-    /// 正常停止时 @p exception 为空；若 Worker 因未处理的调度路径异常退出，
-    /// 则保存导致本次退出的异常。该回调只负责处理停止事件，不影响 Worker
-    /// 已经确定的退出行为。
+    /// 回调运行在当前 Worker 所属的 OS 线程上，可用于释放由 `on_start`
+    /// 初始化的线程局部资源或执行其他线程退出清理工作。
     ///
     /// @param worker 当前即将停止的 Worker。
-    /// @param exception 导致 Worker 停止的异常；正常停止时为空。
-    /// @warning 派生实现不得抛出异常。
-    virtual void on_stop(Worker& worker, const std::exception_ptr& exception) noexcept = 0;
+    virtual void on_stop(Worker& worker) noexcept = 0;
 
 protected:
     /// @brief 允许派生类型构造基类部分。

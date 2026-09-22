@@ -11,9 +11,13 @@
 
 [简体中文](README.md) · **English**
 
-[![TaskflowLite task graph overview: branches, jumps, nested graphs, and a task-local TaskGroup](documentation/img/taskflowlite-overview.png)](documentation/img/taskflowlite-overview.png)
-
 TaskflowLite (tfl) is a lightweight, header-only C++20 task-parallel library inspired by [Taskflow](https://github.com/taskflow/taskflow). It provides task dependency graphs, asynchronous scheduling, and runtime control flow.
+
+Describe the dependencies between tasks, and the executor schedules ready tasks on its worker pool. Use it for dependent computations, batch workflows, and tasks whose child work is only known at runtime.
+
+[Quick start](#quick-start) · [Installation](#installation-and-integration) · [Core concepts](#core-concepts) · [Usage](#basic-usage) · [Execution semantics](#execution-semantics-and-lifetimes) · [Build and test](#building-and-testing) · [Documentation](#documentation-and-examples)
+
+[![TaskflowLite task graph overview: branches, jumps, nested graphs, and a task-local TaskGroup](documentation/img/taskflowlite-overview.png)](documentation/img/taskflowlite-overview.png)
 
 ## Features
 
@@ -32,12 +36,13 @@ TaskflowLite (tfl) is a lightweight, header-only C++20 task-parallel library ins
 - GCC 13 or newer with its matching libstdc++; Clang / MSVC require a standard library providing the same facilities.
 - CMake 3.21 or newer when using CMake.
 
----
+The core library has no third-party runtime dependencies. Tests use Catch2, comparisons use Taskflow, and API documentation requires Doxygen; these dependencies are used only when their build options are enabled. D2 is only needed to render exported graph text as an image.
+
+The repository configures CI for Ubuntu, Windows, and macOS. Windows uses Visual Studio 2022; the macOS workflow uses Homebrew LLVM with its matching libc++. See the [CI workflows](.github/workflows) for the configurations and the badges for their run status.
 
 ## Quick Start
 
 ```cpp
-#include <cstring>
 #include <iostream>
 #include <taskflowlite/taskflowlite.hpp>
 
@@ -63,16 +68,9 @@ int main() {
 }
 ```
 
-A and B may run in parallel; C runs after both finish. Pass task data through lambda captures. `get()` waits for completion and propagates exceptions.
+A and B may run in parallel; C runs after both finish, and the program prints `42`. `C.succeed(A, B)` adds dependencies, `executor.async(flow)` submits the graph, and `get()` waits for completion and propagates exceptions.
 
-For stateful callables, use `flow.emplace_object<T>(constructor_args...)` or
-`executor.defer_async_object<T>(constructor_args...)` to construct the object directly inside the task.
-They return `TaskObject<T>` and an idle `AsyncTaskObject<R, T>` respectively; call `start()` on the latter.
-Use `object()` for business state and the asynchronous handle's `get()` for its result.
-See [object tasks and subgraphs](examples/31_task_object.cpp) and
-[asynchronous objects, dependencies, and modules](examples/32_async_task_object.cpp).
-
----
+Save this as `main.cpp` and use the CMake configuration below to build it. See [01_basic_dag.cpp](examples/01_basic_dag.cpp) for a complete standalone example.
 
 ## Installation and Integration
 
@@ -92,13 +90,22 @@ target_link_libraries(my_app PRIVATE TaskflowLite::taskflowlite)
 
 `TaskflowLite::taskflowlite` supplies include paths, the C++20 requirement, and platform link dependencies.
 
+Build from the consuming project's root:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --parallel 4
+```
+
+With a single-configuration generator, run `build/my_app` (with `.exe` on Windows). Multi-configuration generators such as Visual Studio typically place it at `build/Release/my_app.exe`.
+
 ### Installed Package
 
 Run from the TaskflowLite repository root:
 
 ```bash
 cmake -S . -B build/install -DTFL_BUILD_EXAMPLES=OFF -DTFL_BUILD_TESTS=OFF -DTFL_BUILD_BENCHMARKS=OFF
-cmake --install build/install --prefix /path/to/taskflowlite-install
+cmake --install build/install --prefix ./install
 ```
 
 In the consuming project's `CMakeLists.txt`:
@@ -113,27 +120,33 @@ add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE TaskflowLite::taskflowlite)
 ```
 
-Configure the consumer with `-DCMAKE_PREFIX_PATH=/path/to/taskflowlite-install`, replacing the path with your installation directory.
+Configure the consumer with `-DCMAKE_PREFIX_PATH=/absolute/path/to/taskflowlite/install`, replacing the path with the absolute installation directory from the previous step. Installing only the headers and CMake package does not require compiling the library first.
 
-### Building the Repository
+### Using the Headers Directly
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release --parallel 4
-```
+Copy the repository's `taskflowlite/` directory into your project's include directory and include `<taskflowlite/taskflowlite.hpp>`. Enable C++20 and configure threading and platform link dependencies yourself; CMake integration handles these settings automatically.
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `TFL_BUILD_EXAMPLES` | ON at top level, OFF as subproject | Build examples |
-| `TFL_BUILD_TESTS` | OFF | Build unit tests |
-| `TFL_BUILD_BENCHMARKS` | OFF | Build benchmarks |
-| `TFL_SANITIZER` | OFF | OFF, ASAN, or TSAN; MSVC does not support TSAN |
+## Core Concepts
 
----
+| Type | Responsibility | When to use it |
+| --- | --- | --- |
+| `Executor` | Owns worker threads and schedules tasks | Submit graphs and asynchronous tasks; wait for all work |
+| `Flow` / `Task` | Owns a graph / refers to a graph node | Build dependencies before execution; resubmit after completion |
+| `AsyncFuture<R>` | Shares completion state and a result | Receive an `async()` result or supply an asynchronous predecessor |
+| `AsyncTask<R>` | Configurable, deferred shared task handle | Create with `defer_async()`, configure, then call `start()` |
+| `Runtime` | Scheduling context inside a running task | Dispatch children and wait cooperatively |
+| `SubFlow` | Graph constructed inside a running task | Build a dynamic graph and explicitly call `run()` |
+| `TaskGroup` | Owns a scope for child work | Wait for a group and handle errors locally |
+| `TaskObject<T>` / `AsyncTaskObject<R, T>` | Constructs a callable object in place | Associate business state with a task, including non-copyable, non-movable objects |
+| `Branch` / `MultiBranch` | Selects one or more successors | Conditional paths |
+| `Jump` / `MultiJump` | Explicit jump control flow | Retries, state machines, and loops |
+| `Semaphore` | Manages resource quotas around task execution | Limit concurrency and coordinate scarce resources |
+
+Start with `Flow` when you know the dependency graph, `async()` when you need a computation's result, and `defer_async()` when you need to configure work before submitting it. Use `Runtime` or `SubFlow` when child work is only known during execution.
 
 ## Basic Usage
 
-The following snippets are independent. Use the headers from the quick start and create `tfl::Executor executor(4)` before each snippet.
+The following C++ snippets are independent and belong inside a function body. Use the headers from the quick start and create `tfl::Executor executor(4)` before each snippet. The exception example also needs `<stdexcept>`.
 
 ### Asynchronous Tasks and Dependencies
 
@@ -150,6 +163,8 @@ int result = sum.get();  // 42
 ```
 
 `async` submits a task immediately and returns an `AsyncFuture<R>`. Arguments after the callable specify predecessors. Futures can be copied to share a result, and `get()` may be called repeatedly.
+
+An asynchronous dependency means that a predecessor has completed; it does not automatically pass along a result or exception. Calling the predecessors' `get()` in this example reads their results and propagates their exceptions into `sum`.
 
 ### Deferred Execution
 
@@ -203,6 +218,8 @@ int result = future.get();  // 42
 
 `Runtime` dispatches tasks during execution. `TaskGroup` manages a set of child tasks, and `wait()` cooperatively waits for the group to complete.
 
+The `TaskGroup` destructor waits but does not rethrow child exceptions. Call `group.wait()` explicitly to catch and handle group failures. See the [error handling example](examples/16_error_handling.cpp).
+
 ### Dynamic Subgraphs
 
 ```cpp
@@ -221,6 +238,8 @@ future.get();  // result == 42
 ```
 
 `SubFlow` builds a graph during task execution. Call `run()` to submit it and `wait()` to wait cooperatively.
+
+Calling `emplace()` alone does not execute the subgraph. Do not retain the framework-provided `Runtime&` or `SubFlow&` beyond the task callback.
 
 ### Conditional Branches
 
@@ -241,17 +260,125 @@ executor.async(flow).get();  // result == 1
 
 Branch indices are zero-based and follow the successor order in `precede`. `MultiBranch` selects multiple successors; `Jump` / `MultiJump` provide jump-based control flow.
 
-### Usage Guidelines
+### Stateful Object Tasks
 
-- Keep graphs and referenced captures alive until execution completes. Do not modify or resubmit the same graph while it is running.
-- A Future's `wait()` only waits; `get()` also propagates exceptions. Inside a Worker, prefer cooperative waiting through Runtime, SubFlow, or TaskGroup.
-- `request_stop()` requests cooperative cancellation. Long-running tasks check `stop_requested()`; running threads are not forcibly interrupted.
+```cpp
+struct Accumulator {
+    explicit Accumulator(int initial) : value(initial) {}
+    Accumulator(const Accumulator&) = delete;
+    Accumulator& operator=(const Accumulator&) = delete;
 
----
+    int operator()() { return value += 2; }
+    int value;
+};
+
+auto task = executor.defer_async_object<Accumulator>(40);
+task.start();
+
+int result = task.get();              // 42: execution result
+int state = task.object().value;      // 42: task object state
+```
+
+`object()` exposes business state; `get()` accesses the execution result. Configure objects before starting them and synchronize any concurrent access to their state. For graph nodes, use `flow.emplace_object<T>(constructor_args...)`. See [object tasks](examples/31_task_object.cpp) and [asynchronous object tasks](examples/32_async_task_object.cpp).
+
+### Semaphore Limits
+
+```cpp
+tfl::Semaphore slots(2);
+tfl::Flow flow;
+
+for (int i = 0; i < 8; ++i) {
+    auto task = flow.emplace([] { /* Access a limited resource. */ });
+    task.acquire(slots).release(slots);
+}
+
+executor.async(flow).get();
+```
+
+At most two of these tasks can run concurrently, even with four workers. Use `acquire(sem, count)` / `release(sem, count)` for multiple units. Keep semaphores alive until the associated tasks complete; acquire traversal order is not guaranteed to match insertion order. See the [semaphore example](examples/07_semaphore.cpp).
+
+### Error Handling
+
+```cpp
+auto future = executor.async([]() -> int {
+    throw std::runtime_error("computation failed");
+});
+
+try {
+    (void)future.get();
+} catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+}
+```
+
+`wait()` only waits; `get()` also rethrows a stored exception. Static graph failures reach the Future returned by graph submission; dependent successors of a failed node do not continue normal execution. Top-level `silent_async()` has no result handle, so handle reportable errors inside the task. See [exceptions and dependency errors](examples/34_dependency_errors.cpp) for more cases.
+
+## Execution Semantics and Lifetimes
+
+| Topic | Contract |
+| --- | --- |
+| Graph lifetime | A graph submitted as an lvalue and any referenced data must outlive execution. `Task` is a non-owning handle and becomes invalid when its node is erased or its graph is destroyed. |
+| Graph reuse | Resubmit after completion. Do not change graph structure or task configuration during execution, or submit the same graph concurrently. |
+| Data synchronization | Edges express execution order. Independent tasks sharing writable data need their own atomics or locks. |
+| Future results | Futures are copyable; `get()` does not consume the result. Value results are returned as `const R&`; keep the underlying task alive while retaining that reference. Reference results also depend on the original object's lifetime. |
+| Deferred tasks | A task may be successfully started only once; predecessors must be started or completed. Converting an idle task to a Future does not start it. |
+| Waiting on workers | Use cooperative waiting through `Runtime`, `SubFlow`, or `TaskGroup`. Blocking on unfinished work can exhaust the worker pool, especially with one worker. |
+| Cooperative cancellation | `request_stop()` requests cancellation; long tasks check `stop_requested()`. It neither interrupts a thread forcibly nor rolls back completed side effects. |
+| Child cancellation | `Runtime` / `TaskGroup` submissions through `async()` and `silent_async()` do not inherit parent stop requests by default. Use `<true>` explicitly when needed and respect the context lifetime requirements. |
+
+See the [asynchronous dependency notes](documentation/async-task-dependency-design.md) for dependency rules, retained references, and failure boundaries.
+
+## Building and Testing
+
+Run these commands from a complete repository checkout. Examples are built by default; tests and benchmarks are disabled by default.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --parallel 4
+```
+
+Enable tests and run the examples and unit tests:
+
+```sh
+cmake -S . -B build/tests -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON
+cmake --build build/tests --config Release --parallel 4
+ctest --test-dir build/tests -C Release --output-on-failure -LE perfile --no-tests=error
+```
+
+`-LE perfile` excludes duplicate per-file registrations, matching the platform CI workflows. Configuration downloads and verifies a pinned Catch2 version when no local copy is available. For offline builds, add `-DTFL_CATCH2_LOCAL_PATH=/path/to/catch2/extras`.
+
+Alternatively, use the repository presets:
+
+```sh
+cmake --preset release
+cmake --build --preset release --parallel 4
+ctest --preset release -LE perfile --no-tests=error
+```
+
+The `release` preset requires Ninja and enables tests. For Visual Studio on Windows, replace `release` with `windows-release` in all three commands. See the [build guide](cmake/README.md) for sanitizer presets and Windows ASan runtime setup.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `TFL_BUILD_EXAMPLES` | ON at top level, OFF as subproject | Build complete examples |
+| `TFL_BUILD_TESTS` | OFF | Build and register unit tests |
+| `TFL_TEST_HEADERS` | ON | Check standalone header compilation when tests are enabled |
+| `TFL_BUILD_BENCHMARKS` | OFF | Build TaskflowLite and Taskflow comparison programs |
+| `TFL_BUILD_DOCS` | OFF | Enable the Doxygen `GenerateDocs` target |
+| `TFL_SANITIZER` | OFF | `OFF`, `ASAN`, or `TSAN`; MSVC does not support TSAN |
+| `TFL_NATIVE_ARCH` | OFF | Enable native CPU optimization for internal GCC/Clang Release targets |
+
+Using only the exported library target does not require downloading Catch2 or Taskflow. See the [build guide](cmake/README.md) for dependency paths, proxy settings, and the full option list.
 
 ## Performance Comparison
 
-Test environment: Intel Core i7-9750H @ 2.60 GHz (6 cores / 12 threads), Windows 11, MSVC 2022, `/O2`.
+The repository contains TaskflowLite and Taskflow comparison programs using the same scenarios. Run `--smoke` to check correctness, then compare full workloads on the same machine with matching build settings. See the [benchmark guide](benchmarks/README.md) for commands and timing boundaries.
+
+The results below are historical and have not been remeasured against the current working tree. The original table does not record exact revisions or distributions across repeated runs. Treat it as reference data, not a performance guarantee for the current version or every workload.
+
+<details>
+<summary>Historical environment and full results</summary>
+
+Historical benchmark environment: Intel Core i7-9750H @ 2.60 GHz (6 cores / 12 threads), Windows 11, MSVC 2022, `/O2`.
 
 Times are in milliseconds. Speedup = Taskflow time / TaskflowLite time.
 
@@ -286,13 +413,31 @@ Times are in milliseconds. Speedup = Taskflow time / TaskflowLite time.
 
 `k` = 1,000 and `M` = 1,000,000. Counts for 10, 11, and 13 are internal loop iterations; the others are graph executions.
 
-See the [benchmark guide](benchmarks/README.md) for run instructions.
+</details>
 
----
+## Documentation and Examples
 
-## Documentation
+| Topic | Entry point |
+| --- | --- |
+| Complete guide (Chinese) | [PDF manual](documentation/TaskflowLite-Guide.zh-CN.pdf) · [Manual source](documentation/TaskflowLite-Guide.zh-CN.md) |
+| Example index and run instructions | [examples/README.md](examples/README.md) |
+| Build options, dependencies, and installation | [cmake/README.md](cmake/README.md) |
+| Test commands | [Building and testing](#building-and-testing) |
+| Asynchronous dependencies and lifetimes | [Dependency notes](documentation/async-task-dependency-design.md) |
+| Branches, jumps, and modules | [Branches](examples/05_branch.cpp), [jumps](examples/06_jump.cpp), [nested modules](examples/08_subflow.cpp) |
+| Dynamic work | [Runtime](examples/04_runtime.cpp), [TaskGroup](examples/26_task_group.cpp), [dynamic subgraphs](examples/27_dynamic_subflow.cpp) |
+| Execution control | [Exceptions](examples/16_error_handling.cpp), [cancellation](examples/17_cancellation.cpp), [semaphores](examples/07_semaphore.cpp) |
+| Observability | [Observer](examples/15_observer.cpp), [tracing](examples/21_observer_tracing.cpp), [worker callbacks](examples/30_worker_handler.cpp) |
+| Benchmark methodology | [benchmarks/README.md](benchmarks/README.md) |
 
-See [documentation](documentation/) for more information.
+The pipeline examples compose a `Flow`. `core/pipeline.hpp` is a draft and does not provide a usable standalone Pipeline API. The supporting guides linked above are currently written in Chinese.
+
+With Doxygen installed, generate API documentation with:
+
+```sh
+cmake -S . -B build/docs -DTFL_BUILD_EXAMPLES=OFF -DTFL_BUILD_DOCS=ON
+cmake --build build/docs --target GenerateDocs
+```
 
 ### Task Graph Visualization
 
@@ -304,6 +449,12 @@ Export D2 text with `flow.dump()`, then render it to SVG with D2. [View the full
 [![TaskflowLite D2 task graph: dependencies, branches, jumps, nested graphs, and semaphore annotations](documentation/img/d2.svg)](documentation/img/d2.svg)
 
 </details>
+
+## Feedback and Contributing
+
+Report bugs and suggest features through [Issues](https://github.com/wicyn/taskflowlite/issues). Include a minimal reproduction, expected and actual behavior, compiler and standard library versions, operating system, build options, and relevant logs.
+
+Include tests with code changes. Update examples and both READMEs when public interfaces change. Run relevant tests before submitting and use the repository's `.clang-format` for consistent formatting.
 
 ## License
 

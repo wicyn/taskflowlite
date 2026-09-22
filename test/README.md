@@ -1,120 +1,54 @@
-# 接口迁移与测试
+# 测试
 
-测试以当前 `taskflowlite/core` 为准，使用 Catch2 v3，保留按模块拆分的
-`test_*.cpp`、`TEST_CASE` 标签及 SECTION 注释格式。
+测试使用 Catch2 v3，源文件按模块组织为 `test_*.cpp`。
 
 ## 构建和运行
 
 在仓库根目录执行：
 
 ```sh
-cmake -S . -B build/check -DTFL_BUILD_TESTS=ON -DTFL_BUILD_EXAMPLES=ON -DTFL_BUILD_BENCHMARKS=ON
-cmake --build build/check --config Release
-ctest --test-dir build/check -C Release --output-on-failure
+cmake -S . -B build/tests -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON -DTFL_BUILD_EXAMPLES=OFF
+cmake --build build/tests --config Release
+ctest --test-dir build/tests -C Release --output-on-failure
 ```
 
-离线构建可指定 `TFL_CATCH2_LOCAL_PATH`（包含 amalgamated 两个文件的目录）和
-`TASKFLOW_LOCAL_PATH`（包含 `taskflow/taskflow.hpp` 的目录）。
-默认构建并注册单体测试，以及 Topology、延迟任务构造、建边回滚三个独立程序，
-避免 CTest 运行尚未构建的按文件目标。
-需要同时构建/注册按文件测试时开启 `TFL_TEST_PER_FILE_DEFAULT`；
-`TFL_TEST_RUN_TARGETS` 则提供按文件的一键构建运行目标。
-
-## 当前接口约定
-
-- callable 不再接收额外业务参数；使用 lambda 捕获或 `std::bind_front`。
-- `executor.defer_async(...)` 返回绑定执行器的 Idle `AsyncTask<R>`；配置后用
-  `task.start(deps...)` 启动一次。Idle 任务不计入 `wait_for_all()`。
-- `start()` / `async()` 接受混合结果类型的 AsyncTask / AsyncFuture 前驱，
-  前驱必须已启动或完成；空依赖忽略，重复依赖分别持有强引用。
-- 前驱引用保留到后继 Work 销毁；任务完成或 `get()` 不会提前释放它们。
-- `async` 返回 `AsyncFuture<R>`，`silent_async` 不返回结果句柄。
-- `AsyncFuture::get()` 不消耗句柄；值返回 `const R&`，引用结果返回 `R`，void 无返回值。
-- `Runtime::wait/wait_until/corun` 提供协作等待。不能用阻塞 Future 等待占住唯一 worker。
-- `SubFlow` 在 callable 内构建动态子图，必须显式 `run()`；每轮会清空并重建子图。
-- `TaskGroup` 在作用域结束时协作等待。借用的图、捕获对象和父停止域必须保持有效。
-- 同一图只在前一次运行完成后复用，不能同时挂载执行同一可变子图。
-- `TaskObserver` 回调必须 `noexcept`。普通节点的异常标记不代表本节点拥有异常对象；
-  异常可能已归档到上层 Future。
-- Runtime / TaskGroup 子任务使用各自的 `async()`，独立任务的 `start()` 不加入父任务计数。
-  两者的 `run(graph)` 仍用于直接提交图。
-
-新增独立模块覆盖 FlowBuilder、TaskGroup、TaskView、Worker/Context、ResultSlot、
-SplitMix64、枚举/版本和三个提交上下文的重载矩阵；原模块中补充了动态 SubFlow、
-Task::work 重绑定、AsyncTask 返回值/配置、共享 Future 生命周期等用例。
-
-## 回归覆盖与验证
-
-### 对象任务接口
-
-`test_task_object.cpp` 使用不可复制、不可移动的业务对象，覆盖 Basic、Branch、
-MultiBranch、Jump、MultiJump、Runtime、SubFlow 和 Module，包含 Module 默认/tuple
-构造、定次执行复用、predicate、派生句柄的 `linearize()` / `erase()`、句柄值语义、
-弱引用生命周期以及构造异常后的图复用。
-
-`test_async_task_object.cpp` 覆盖 Basic、Runtime、SubFlow、Module 四种异步对象，
-包括 Module 六组重载及可选 callback、零次执行、Idle 延迟启动、重复启动、
-void/值/引用结果、句柄复制/移动/重置、依赖保活、停止请求、异常和对象销毁。
-
-两组测试由 CMake 自动加入单体测试，也可单独构建和运行：
+默认构建单元测试、独立回归程序和头文件编译检查。也可以一次构建并运行全部常规测试：
 
 ```sh
-cmake --build build/check --config Release --target tfl_test_task_object tfl_test_async_task_object
-# Windows 多配置生成器的路径；单配置构建去掉 Release/。
-build/check/bin/Release/tfl_test_task_object
-build/check/bin/Release/tfl_test_async_task_object
+cmake --build build/tests --config Release --target run_all_tests
 ```
 
-运行例子见 [31_task_object.cpp](../examples/31_task_object.cpp) 和
-[32_async_task_object.cpp](../examples/32_async_task_object.cpp)。
+离线构建时，使用 `TFL_CATCH2_LOCAL_PATH` 指定包含
+`catch_amalgamated.cpp` 和 `catch_amalgamated.hpp` 的目录。
+编译器和 Sanitizer 配置见[构建配置](../cmake/README.md)。
+
+## 按模块运行
+
+开启 `TFL_TEST_RUN_TARGETS` 后，可使用 `run_test_<模块名>` 构建并运行指定模块。例如信号量测试：
 
 ```sh
-cmake --build build/check --config Release --target tfl_ex_31_task_object tfl_ex_32_async_task_object
-build/check/bin/examples/Release/31_task_object
-build/check/bin/examples/Release/32_async_task_object
+cmake -S . -B build/tests -DTFL_BUILD_TESTS=ON -DTFL_BUILD_EXAMPLES=OFF -DTFL_TEST_RUN_TARGETS=ON
+cmake --build build/tests --config Release --target run_test_semaphore
 ```
 
-先保存类型句柄，再调用继承的配置/启动接口；链式返回值可能只保留基类类型。
-`object()` 不等待或加锁，应在启动前或等待完成后访问。
-`SubFlow::run()` 只提交子图；callable 若要返回子图计算出的值，必须先调用
-`SubFlow::wait()`，外部再通过异步句柄的 `get()` 取得结果。
-`TaskObject` 不拥有节点，擦除节点或替换 callable 后不可再访问业务对象；
-`AsyncTaskObject` 复制句柄共享任务所有权，最后一个强引用释放后对象才销毁。
+## 测试选项
 
-2026-09-15 本地验证（Windows x64 / MSVC 19.44）：
+| 选项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `TFL_TEST_HEADERS` | ON | 检查各有效 core 头文件能否独立编译 |
+| `TFL_TEST_PER_FILE_DEFAULT` | OFF | 将各模块测试加入默认构建并注册到 CTest |
+| `TFL_TEST_RUN_TARGETS` | OFF | 生成 `run_test_<模块名>` 目标 |
+| `TFL_BUILD_CORE_REPROS` | OFF | 构建并注册独立故障复现程序 |
 
-- Release 单体测试：364 个用例、1,009,876 条断言通过；两个独立回归程序通过。
-- 新增对象测试：17 个用例、222 条断言，Release 和 ASan / RelWithDebInfo 均通过。
-- 示例 31、32：Release 编译和执行通过，返回码均为 0。
+## 故障复现
 
-### 已有回归
+故障复现程序通过内存分配失败注入检查异常处理，需单独启用：
 
-`test_async_task_dependencies.cpp` 覆盖依赖校验失败后的再次启动、混合结果、空依赖、
-重复引用、右值句柄、跨执行器、子任务作用域、256 个后继扩容、并发启动和登记竞争，
-以及 20,000 个节点的依赖长链回收。
+```sh
+cmake -S . -B build/core-repros -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON -DTFL_BUILD_EXAMPLES=OFF -DTFL_BUILD_CORE_REPROS=ON -DTFL_SANITIZER=OFF
+cmake --build build/core-repros --config Release --target tfl_core_failure_repro
+ctest --test-dir build/core-repros -C Release -L core-repro --output-on-failure
+```
 
-下面两项历史回归继续默认启用：
-
-- `TaskGroup: result types and dependency fan-in`
-- `SubFlow: child exception reaches the future`
-
-两项保留 `[core-regression]` 标签，没有 skip、预期失败或默认过滤。
-2026-09-11 在 Windows x64 / MSVC 19.44 Release 下，不带过滤的 347 个单元测试通过，
-包括这两项；旧文档中的“当前必然崩溃”结论不再适用于该次实测。
-
-独立程序均通过 CMake 构建并由 CTest 注册：
-
-| CTest 名称 | 检查内容 |
-| --- | --- |
-| `tfl_test.topology_header` | 仅包含 topology.hpp 的翻译单元能使用另一个翻译单元提供的 Executor 构造、销毁 Topology |
-| `tfl_test.async_task_allocation_failure` | 关闭任务池，注入 defer_async 构造失败，检查捕获清理、活动计数与重新创建 |
-| `tfl_test.task_link_allocation_failure` | 注入双向邻接表扩容失败，检查建边回滚；同时覆盖检查/跳过检查入口 |
-
-`run_all_tests` 同时运行单体与上述三个独立程序。
-
-## 尚未提供的保证
-
-当前 core 暂不恢复 `start()` / 依赖插边期间的内存分配失败，不能保证捕获
-`std::bad_alloc` 后重试提交或继续等待。这项限制没有通过预期失败或过滤掩盖：
-构造分配测试明确只验证创建阶段，不再使用旧批量提交接口来断言提交回滚安全。
-源码位置、生命周期规则及迁移说明见[异步任务依赖说明](../documentation/async-task-dependency-design.md)。
+这组测试可能因待修复问题而失败或超时，每个进程限时 5 秒，不属于 `run_all_tests`。
+分配失败注入不支持与 ASan 或 TSan 同时启用。

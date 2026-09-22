@@ -32,7 +32,7 @@ namespace tfl {
 /// 启动、等待、任务配置、结果访问和停止请求均由基类提供。
 ///
 /// @tparam R 异步任务结果类型，可为值类型、左值引用类型或 void。
-/// @tparam F 节点实际保存的 callable 类型。
+/// @tparam F 节点实际保存的业务对象类型。
 /// @note 继承的链式接口返回 AsyncTask<R>，不会保留本类的业务对象类型信息。
 /// @note 应先保存 defer_async_object() 返回的句柄，再调用配置和启动接口。
 /// @warning object() 不执行等待或加锁，业务对象访问必须与任务执行正确同步。
@@ -51,59 +51,41 @@ public:
     using object_type = F;
 
     /// @brief 构造不关联任务和业务对象的空句柄。
-    AsyncTaskObject() noexcept = default;
+    AsyncTaskObject() noexcept;
 
     /// @brief 显式构造不关联任务和业务对象的空句柄。
-    explicit AsyncTaskObject(std::nullptr_t) noexcept
-        : Base{nullptr} {}
+    explicit AsyncTaskObject(std::nullptr_t) noexcept;
 
     /// @brief 复制句柄，共享同一个任务和业务对象；源句柄允许为空。
-    AsyncTaskObject(const AsyncTaskObject&) noexcept = default;
+    AsyncTaskObject(const AsyncTaskObject&) noexcept;
 
     /// @brief 释放当前任务强引用后，共享另一句柄的任务和业务对象。
     /// @return `*this`；源句柄允许为空或与当前对象相同。
-    AsyncTaskObject& operator=(const AsyncTaskObject&) noexcept = default;
+    AsyncTaskObject& operator=(const AsyncTaskObject&) noexcept;
 
     /// @brief 接管源句柄的任务强引用和对象指针，源句柄随后变为空。
-    AsyncTaskObject(AsyncTaskObject&& other) noexcept
-        : Base{std::move(other)}
-        , m_object{std::exchange(other.m_object, nullptr)} {}
+    AsyncTaskObject(AsyncTaskObject&& other) noexcept;
 
     /// @brief 释放当前任务强引用后，接管源句柄的任务和业务对象关联。
     /// @return `*this`；自移动不改变当前句柄，否则源句柄变为空。
-    AsyncTaskObject& operator=(AsyncTaskObject&& other) noexcept {
-        if (this != std::addressof(other)) {
-            Base::operator=(std::move(other));
-            m_object = std::exchange(other.m_object, nullptr);
-        }
-        return *this;
-    }
+    AsyncTaskObject& operator=(AsyncTaskObject&& other) noexcept;
 
     /// @brief 释放当前句柄持有的任务强引用，是否销毁 Work 由引用计数决定。
-    ~AsyncTaskObject() = default;
+    ~AsyncTaskObject();
 
     /// @brief 释放任务关联并置空业务对象指针。
     /// @return `*this`。
-    AsyncTaskObject& operator=(std::nullptr_t) noexcept {
-        reset();
-        return *this;
-    }
+    AsyncTaskObject& operator=(std::nullptr_t) noexcept;
 
     /// @brief 释放当前任务强引用，并把句柄置空。
     /// @note 不请求停止，不等待任务完成，不影响其他共享句柄的关联。
-    void reset() noexcept {
-        m_object = nullptr;
-        Base::reset();
-    }
+    void reset() noexcept;
 
     /// @brief 获取节点内部保存的业务对象。
     /// @return 业务对象引用，不复制对象，不增加任务强引用。
     /// @pre 当前句柄有效，且业务对象访问已与任务执行正确同步。
     /// @note const 句柄不限制业务对象的可变性。
-    [[nodiscard]] F& object() const noexcept {
-        TFL_ASSERT(Base::valid() && m_object);
-        return *m_object;
-    }
+    [[nodiscard]] F& object() const noexcept;
 
 private:
 
@@ -111,13 +93,72 @@ private:
     /// @param task 已经建立强引用的异步任务句柄。
     /// @param object 该任务内部保存的业务对象。
     /// @pre task 有效，object 属于 task 关联的 Work，且地址在 Work 生命周期内保持稳定。
-    AsyncTaskObject(Base task, F& object) noexcept
-        : Base{std::move(task)}
-        , m_object{std::addressof(object)} {}
+    AsyncTaskObject(Base task, F& object) noexcept;
 
     F* m_object{nullptr};
-
 };
+
+
+// ============================================================================
+// AsyncTaskObject 实现
+// ============================================================================
+
+template <typename R, typename F>
+AsyncTaskObject<R, F>::AsyncTaskObject() noexcept = default;
+
+template <typename R, typename F>
+AsyncTaskObject<R, F>::AsyncTaskObject(std::nullptr_t) noexcept
+    : Base{nullptr} {
+}
+
+template <typename R, typename F>
+AsyncTaskObject<R, F>::AsyncTaskObject(const AsyncTaskObject&) noexcept = default;
+
+template <typename R, typename F>
+AsyncTaskObject<R, F>& AsyncTaskObject<R, F>::operator=(const AsyncTaskObject&) noexcept = default;
+
+template <typename R, typename F>
+AsyncTaskObject<R, F>::AsyncTaskObject(AsyncTaskObject&& other) noexcept
+    : Base{std::move(other)}
+    , m_object{std::exchange(other.m_object, nullptr)} {
+}
+
+template <typename R, typename F>
+AsyncTaskObject<R, F>& AsyncTaskObject<R, F>::operator=(AsyncTaskObject&& other) noexcept {
+    if (this != std::addressof(other)) {
+        Base::operator=(std::move(other));
+        m_object = std::exchange(other.m_object, nullptr);
+    }
+
+    return *this;
+}
+
+template <typename R, typename F>
+AsyncTaskObject<R, F>::~AsyncTaskObject() = default;
+
+template <typename R, typename F>
+AsyncTaskObject<R, F>& AsyncTaskObject<R, F>::operator=(std::nullptr_t) noexcept {
+    reset();
+    return *this;
+}
+
+template <typename R, typename F>
+void AsyncTaskObject<R, F>::reset() noexcept {
+    m_object = nullptr;
+    Base::reset();
+}
+
+template <typename R, typename F>
+F& AsyncTaskObject<R, F>::object() const noexcept {
+    TFL_ASSERT(Base::valid() && m_object);
+    return *m_object;
+}
+
+template <typename R, typename F>
+AsyncTaskObject<R, F>::AsyncTaskObject(Base task, F& object) noexcept
+    : Base{std::move(task)}
+    , m_object{std::addressof(object)} {
+}
 
 // ============================================================================
 // Executor::defer_async_object

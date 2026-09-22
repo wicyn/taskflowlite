@@ -23,6 +23,8 @@ ctest --preset windows-asan
 |---|---|---|
 | `TFL_BUILD_EXAMPLES` | 顶层 ON，子项目 OFF | 构建示例 |
 | `TFL_BUILD_TESTS` | OFF | 构建并注册单元测试 |
+| `TFL_TEST_HEADERS` | ON | 启用测试时检查各头文件能否独立编译 |
+| `TFL_BUILD_CORE_REPROS` | OFF | 构建独立故障复现程序，要求 `TFL_SANITIZER=OFF` |
 | `TFL_BUILD_BENCHMARKS` | OFF | 构建两套基准 |
 | `TFL_BUILD_DOCS` | OFF | 提供 Doxygen 的 `GenerateDocs` 目标 |
 | `TFL_SANITIZER` | OFF | OFF / ASAN / TSAN，互斥 |

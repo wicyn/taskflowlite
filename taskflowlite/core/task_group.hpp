@@ -53,14 +53,12 @@ public:
     /// @warning context 及其绑定的 Work、Worker 和 Executor 必须覆盖本 TaskGroup 生命周期。
     explicit TaskGroup(Context& context) noexcept;
 
-    /// @brief 协作式等待组内尚未完成的任务，并在正常析构路径中传播已归档异常。
+    /// @brief 协作式等待组内尚未完成的任务。
     ///
-    /// 正常离开作用域时，析构函数先协作等待全部组内任务完成，再重新抛出锚点归档的异常；
-    /// 若析构发生在其他异常引起的栈展开过程中，则仍等待全部组内任务完成，但不会再次
-    /// 调用异常重抛逻辑，以避免析构期间出现第二个异常而触发 `std::terminate()`。
+    /// 正常离开作用域时，析构函数先协作等待全部组内任务完成。
     ///
     /// @warning 必须在创建本对象的 Worker 线程和任务回调内析构。
-    ~TaskGroup() noexcept(false);
+    ~TaskGroup() noexcept;
 
     /// @brief Fire-and-forget 提交子图执行一次，并把其生命周期挂接到本组。
     /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
@@ -246,7 +244,7 @@ public:
     /// @note 本函数只提交任务，不等待；需要同步并观察异常时调用 `wait()`。
     /// @note source 发布依赖 Executor 批量调度路径的发布语义；Graph 不得在执行完成前销毁或修改。
     template <graph_holder Gh>
-    void run(Gh& gh);
+    void run(Gh& gh) noexcept;
 
     /// @brief 协作式等待本组所有未完成任务，并重新抛出归档异常。
     ///
@@ -281,7 +279,7 @@ private:
     ///
     /// @param work 已完成构造、尚未发布的 SilentAsync Work。
     /// @pre work 非空，且 `_schedule()` 抛异常时保证 work 尚未被调度器发布。
-    void _launch_silent_async(Work* work);
+    void _launch_silent_async(Work* work) noexcept;
 
     /// @brief 启动一个组内 Async Work，并根据动态前置依赖决定是否立即调度。
     ///
@@ -309,21 +307,17 @@ inline TaskGroup::TaskGroup(Context& context) noexcept
     , m_executor{context.m_executor}
     , m_anchor{context.m_work, context.m_executor} {}
 
-inline TaskGroup::~TaskGroup() noexcept(false) {
-    if (std::uncaught_exceptions() == 0) {
-        wait();
-    } else {
-        m_executor._corun_until(m_worker, [this]() noexcept {
-            return m_anchor.m_join_counter.load(std::memory_order_acquire) == 0;
-        });
-    }
+inline TaskGroup::~TaskGroup() noexcept {
+    m_executor._corun_until(m_worker, [this]() noexcept {
+        return m_anchor.m_join_counter.load(std::memory_order_acquire) == 0;
+    });
 }
 
 // ============================================================================
 // TaskGroup：内部提交
 // ============================================================================
 
-inline void TaskGroup::_launch_silent_async(Work* work) {
+inline void TaskGroup::_launch_silent_async(Work* work) noexcept {
     TFL_ASSERT(work);
 
     // 每个组内任务占用 AnchorWork 的一个完成 slot；必须先计数再发布，
@@ -564,7 +558,7 @@ inline auto TaskGroup::async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_re
 // ============================================================================
 
 template <graph_holder Gh>
-inline void TaskGroup::run(Gh& gh) {
+inline void TaskGroup::run(Gh& gh) noexcept {
     Graph& graph = detail::to_graph(gh);
     const std::size_t num_sources = m_executor._set_up_graph(graph, m_anchor);
 

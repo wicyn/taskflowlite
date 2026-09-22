@@ -78,8 +78,9 @@ public:
     /// @param pred 用于测试后继的谓词。
     /// @return `*this`，用于链式调用。
     /// @post 没有后继匹配时清除当前选择。
-    template <predicate<TaskView> Pred>
-    Branch& select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
+    template <typename Pred>
+        requires std::invocable<Pred&, TaskView> && std::same_as<std::invoke_result_t<Pred&, TaskView>, bool>
+    Branch& select_if(Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&, TaskView>);
 
     /// @brief 仅当当前选择等于指定索引时清除选择。
     /// @tparam I 除 bool 外的整数类型。
@@ -138,8 +139,9 @@ inline Branch& Branch::select(I index) noexcept {
     return *this;
 }
 
-template <predicate<TaskView> Pred>
-inline Branch& Branch::select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
+template <typename Pred>
+    requires std::invocable<Pred&, TaskView> && std::same_as<std::invoke_result_t<Pred&, TaskView>, bool>
+inline Branch& Branch::select_if(Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&, TaskView>) {
     m_target = nullptr;
     const std::size_t sz = m_work.m_num_successors;
     for (std::size_t i = 0; i < sz; ++i) {
@@ -214,7 +216,7 @@ public:
     public:
         /// @brief 根据布尔值添加或移除当前索引。
         /// @note 越界索引不会改变选择集合。
-        MultiBranch& operator=(bool on) noexcept {
+        MultiBranch& operator=(bool on) {
             if (m_idx >= m_mb.m_work.m_num_successors) return m_mb;
             Work* w = m_mb.m_work.m_edges[m_idx];
             if (on) {
@@ -287,8 +289,9 @@ public:
     /// @tparam Pred 接受 `TaskView` 并返回 bool 的谓词类型。
     /// @param pred 用于测试后继的谓词。
     /// @return `*this`，用于链式调用。
-    template <predicate<TaskView> Pred>
-    MultiBranch& select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>);
+    template <typename Pred>
+        requires std::invocable<Pred&, TaskView> && std::same_as<std::invoke_result_t<Pred&, TaskView>, bool>
+    MultiBranch& select_if(Pred&& pred);
 
     // ==================== 查询接口 ====================
 
@@ -387,8 +390,9 @@ inline MultiBranch& MultiBranch::reset() noexcept {
     return *this;
 }
 
-template <predicate<TaskView> Pred>
-inline MultiBranch& MultiBranch::select_if(Pred&& pred) noexcept(noexcept_predicate<Pred>) {
+template <typename Pred>
+    requires std::invocable<Pred&, TaskView> && std::same_as<std::invoke_result_t<Pred&, TaskView>, bool>
+inline MultiBranch& MultiBranch::select_if(Pred&& pred) {
     const std::size_t sz = m_work.m_num_successors;
     for (std::size_t i = 0; i < sz; ++i) {
         if (std::invoke(pred, TaskView{*m_work.m_edges[i]})) {

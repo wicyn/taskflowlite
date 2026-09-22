@@ -102,7 +102,7 @@ public:
     /// @brief 保存前驱依赖，并通过创建时绑定的 Executor 启动当前任务。
     /// @tparam Deps 满足 async_future concept 的前驱句柄类型包。
     /// @param deps 前驱 AsyncTask / AsyncFuture 句柄，支持不同结果类型。
-    /// @return 当前句柄的左值引用。
+    /// @return `*this`。
     /// @throws Exception 当前句柄为空、任务已经启动、依赖自身或前驱处于 Idle。
     /// @pre Executor 必须在本次调用和任务执行期间保持有效。
     /// @pre 当前句柄和传入依赖句柄不得被并发重置或移动。
@@ -111,26 +111,14 @@ public:
     /// @note 每个依赖条目持有一份前驱强引用，直到当前 Work 真正销毁。
     /// @note 本函数不等待任务完成，暂不处理内存分配失败后的提交恢复。
     template <async_future... Deps>
-    AsyncTask& start(Deps&&... deps) &;
-
-    /// @brief 在右值句柄上启动当前任务，并返回移动后的句柄。
-    /// @tparam Deps 满足 async_future concept 的前驱句柄类型包。
-    /// @param deps 前驱 AsyncTask / AsyncFuture 句柄，支持不同结果类型。
-    /// @return 按值返回移动后的句柄，源句柄随后变为空。
-    /// @throws Exception 当前句柄为空、任务已经启动、依赖自身或前驱处于 Idle。
-    /// @pre Executor 必须在本次调用和任务执行期间保持有效。
-    /// @pre 当前句柄和传入依赖句柄不得被并发重置或移动。
-    /// @pre 任务配置不得与启动或执行并发修改。
-    /// @note 依赖处理规则与左值版本一致，成功启动后才移动当前句柄。
-    template <async_future... Deps>
-    AsyncTask start(Deps&&... deps) &&;
+    AsyncTask& start(Deps&&... deps);
 
     /// @brief 获取底层 Work 保存的任务名称视图。
     /// @return 指向 Work 内部名称字符串的 std::string_view；空句柄返回空视图。
     /// @warning 修改任务名称或 Work 被销毁后，已取得的视图可能失效。
     [[nodiscard]] std::string_view name() const noexcept;
 
-    /// @brief 设置底层 Work 的任务名称并返回左值句柄。
+    /// @brief 设置底层 Work 的任务名称。
     /// @tparam S 可构造 std::string 的名称类型。
     /// @param name 新名称。
     /// @return `*this`。
@@ -138,16 +126,7 @@ public:
     /// @note 修改名称可能使此前取得的 name() 视图失效。
     template <typename S>
         requires std::constructible_from<std::string, S>
-    AsyncTask& name(S&& name) &;
-
-    /// @brief 在右值句柄上设置底层 Work 的任务名称。
-    /// @tparam S 可构造 std::string 的名称类型。
-    /// @param name 新名称。
-    /// @return 移动后的句柄，便于临时对象链式调用。
-    /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
-    template <typename S>
-        requires std::constructible_from<std::string, S>
-    AsyncTask name(S&& name) &&;
+    AsyncTask& name(S&& name);
 
     /// @brief 获取当前注册的执行前信号量获取请求数量。
     /// @return acquire 配置项数量；空句柄返回 0。
@@ -177,18 +156,7 @@ public:
     /// @warning 只要对应 acquire 请求仍然注册且任务尚可能访问它，Semaphore 对象就必须保持存活。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    AsyncTask& acquire(Ts&... semaphores) &;
-
-    /// @brief 在右值句柄上添加一个或多个执行前信号量获取请求，每个请求 1 个配额。
-    /// @tparam Ts 非空的 Semaphore 类型包。
-    /// @param semaphores 要借用的信号量；仅保存对象地址，不转移所有权。
-    /// @return 移动后的句柄，便于临时对象链式调用。
-    /// @throws Exception 任一信号量已经存在于 acquire 列表。
-    /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
-    /// @warning 只要对应 acquire 请求仍然注册且任务尚可能访问它，Semaphore 对象就必须保持存活。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    AsyncTask acquire(Ts&... semaphores) &&;
+    AsyncTask& acquire(Ts&... semaphores);
 
     /// @brief 为任务添加一个执行前信号量获取请求。
     /// @param semaphore 要借用的信号量；仅保存对象地址，不转移所有权。
@@ -197,16 +165,7 @@ public:
     /// @throws Exception semaphore 已存在于 acquire 列表。
     /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
     /// @warning 只要该 acquire 请求仍然注册且任务尚可能访问它，semaphore 就必须保持存活。
-    AsyncTask& acquire(Semaphore& semaphore, std::size_t count) &;
-
-    /// @brief 在右值句柄上添加一个指定配额的执行前信号量获取请求。
-    /// @param semaphore 要借用的信号量；仅保存对象地址，不转移所有权。
-    /// @param count 执行前需要获取的配额；0 表示忽略本次请求。
-    /// @return 移动后的句柄。
-    /// @throws Exception semaphore 已存在于 acquire 列表。
-    /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
-    /// @warning 只要该 acquire 请求仍然注册且任务尚可能访问它，semaphore 就必须保持存活。
-    AsyncTask acquire(Semaphore& semaphore, std::size_t count) &&;
+    AsyncTask& acquire(Semaphore& semaphore, std::size_t count);
 
     /// @brief 为任务添加一个或多个执行后信号量释放请求，每个请求 1 个配额。
     /// @tparam Ts 非空的 Semaphore 类型包。
@@ -217,18 +176,7 @@ public:
     /// @warning 只要对应 release 请求仍然注册且任务尚可能访问它，Semaphore 对象就必须保持存活。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    AsyncTask& release(Ts&... semaphores) &;
-
-    /// @brief 在右值句柄上添加一个或多个执行后信号量释放请求，每个请求 1 个配额。
-    /// @tparam Ts 非空的 Semaphore 类型包。
-    /// @param semaphores 要借用的信号量；仅保存对象地址，不转移所有权。
-    /// @return 移动后的句柄。
-    /// @throws Exception 任一信号量已经存在于 release 列表。
-    /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
-    /// @warning 只要对应 release 请求仍然注册且任务尚可能访问它，Semaphore 对象就必须保持存活。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    AsyncTask release(Ts&... semaphores) &&;
+    AsyncTask& release(Ts&... semaphores);
 
     /// @brief 为任务添加一个执行后信号量释放请求。
     /// @param semaphore 要借用的信号量；仅保存对象地址，不转移所有权。
@@ -237,16 +185,7 @@ public:
     /// @throws Exception semaphore 已存在于 release 列表。
     /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
     /// @warning 只要该 release 请求仍然注册且任务尚可能访问它，semaphore 就必须保持存活。
-    AsyncTask& release(Semaphore& semaphore, std::size_t count) &;
-
-    /// @brief 在右值句柄上添加一个指定配额的执行后信号量释放请求。
-    /// @param semaphore 要借用的信号量；仅保存对象地址，不转移所有权。
-    /// @param count 执行后需要释放的配额；0 表示忽略本次请求。
-    /// @return 移动后的句柄。
-    /// @throws Exception semaphore 已存在于 release 列表。
-    /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
-    /// @warning 只要该 release 请求仍然注册且任务尚可能访问它，semaphore 就必须保持存活。
-    AsyncTask release(Semaphore& semaphore, std::size_t count) &&;
+    AsyncTask& release(Semaphore& semaphore, std::size_t count);
 
 
     /// @brief 移除一个或多个执行前信号量获取请求。
@@ -256,16 +195,7 @@ public:
     /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    AsyncTask& remove_acquire(Ts&... semaphores) & noexcept;
-
-    /// @brief 在右值句柄上移除一个或多个执行前信号量获取请求。
-    /// @tparam Ts 非空的 Semaphore 类型包。
-    /// @param semaphores 要移除的信号量；不存在的项被忽略。
-    /// @return 移动后的句柄。
-    /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    AsyncTask remove_acquire(Ts&... semaphores) && noexcept;
+    AsyncTask& remove_acquire(Ts&... semaphores) noexcept;
 
     /// @brief 移除一个或多个执行后信号量释放请求。
     /// @tparam Ts 非空的 Semaphore 类型包。
@@ -274,36 +204,17 @@ public:
     /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
     template <typename... Ts>
         requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    AsyncTask& remove_release(Ts&... semaphores) & noexcept;
-
-    /// @brief 在右值句柄上移除一个或多个执行后信号量释放请求。
-    /// @tparam Ts 非空的 Semaphore 类型包。
-    /// @param semaphores 要移除的信号量；不存在的项被忽略。
-    /// @return 移动后的句柄。
-    /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
-    template <typename... Ts>
-        requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-    AsyncTask remove_release(Ts&... semaphores) && noexcept;
+    AsyncTask& remove_release(Ts&... semaphores) noexcept;
 
     /// @brief 清空全部执行前信号量获取请求。
     /// @return `*this`。
     /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
-    AsyncTask& clear_acquires() & noexcept;
-
-    /// @brief 在右值句柄上清空全部执行前信号量获取请求。
-    /// @return 移动后的句柄。
-    /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
-    AsyncTask clear_acquires() && noexcept;
+    AsyncTask& clear_acquires() noexcept;
 
     /// @brief 清空全部执行后信号量释放请求。
     /// @return `*this`。
     /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
-    AsyncTask& clear_releases() & noexcept;
-
-    /// @brief 在右值句柄上清空全部执行后信号量释放请求。
-    /// @return 移动后的句柄。
-    /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
-    AsyncTask clear_releases() && noexcept;
+    AsyncTask& clear_releases() noexcept;
 
 
     /// @brief 按存储顺序遍历全部 acquire 请求，并允许修改其配额。
@@ -358,7 +269,7 @@ public:
     /// @pre 句柄有效，且不得与任务启动、执行或观察者列表修改并发调用。
     /// @throws std::bad_alloc 创建 Observer、ObserverData 或扩展观察者容器失败。
     template <std::derived_from<TaskObserver> Observer, typename... Args>
-        requires std::constructible_from<Observer, Args...>
+        requires std::constructible_from<Observer, Args&&...>
     [[nodiscard]] std::shared_ptr<Observer> register_observer(Args&&... args);
 
     /// @brief 从当前任务的观察者列表中移除首次匹配的观察者。
@@ -424,7 +335,7 @@ AsyncTask<R>::AsyncTask(Work* work, ResultSlot<R>* result) noexcept
 // ============================================================================
 template <typename R>
 template <async_future... Deps>
-AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) & {
+AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) {
     constexpr std::size_t num_dependencies = sizeof...(Deps);
     static_assert(num_dependencies < std::numeric_limits<std::uint32_t>::max());
 
@@ -535,13 +446,6 @@ AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) & {
     return *this;
 }
 
-template <typename R>
-template <async_future... Deps>
-AsyncTask<R> AsyncTask<R>::start(Deps&&... deps) && {
-    static_cast<AsyncTask&>(*this).start(std::forward<Deps>(deps)...);
-    return std::move(*this);
-}
-
 // ============================================================================
 // 名称
 // ============================================================================
@@ -554,18 +458,10 @@ std::string_view AsyncTask<R>::name() const noexcept {
 template <typename R>
 template <typename S>
     requires std::constructible_from<std::string, S>
-AsyncTask<R>& AsyncTask<R>::name(S&& value) & {
+AsyncTask<R>& AsyncTask<R>::name(S&& value) {
     TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
     m_work->_set_name(std::forward<S>(value));
     return *this;
-}
-
-template <typename R>
-template <typename S>
-    requires std::constructible_from<std::string, S>
-AsyncTask<R> AsyncTask<R>::name(S&& value) && {
-    static_cast<AsyncTask&>(*this).name(std::forward<S>(value));
-    return std::move(*this);
 }
 
 // ============================================================================
@@ -594,61 +490,33 @@ std::size_t AsyncTask<R>::num_observers() const noexcept {
 template <typename R>
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-AsyncTask<R>& AsyncTask<R>::acquire(Ts&... semaphores) & {
+AsyncTask<R>& AsyncTask<R>::acquire(Ts&... semaphores) {
     TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
     (m_work->_acquire(std::addressof(semaphores), std::size_t{1}), ...);
     return *this;
 }
 
 template <typename R>
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-AsyncTask<R> AsyncTask<R>::acquire(Ts&... semaphores) && {
-    static_cast<AsyncTask&>(*this).acquire(semaphores...);
-    return std::move(*this);
-}
-
-template <typename R>
-AsyncTask<R>& AsyncTask<R>::acquire(Semaphore& semaphore, std::size_t count) & {
+AsyncTask<R>& AsyncTask<R>::acquire(Semaphore& semaphore, std::size_t count) {
     TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
     m_work->_acquire(std::addressof(semaphore), count);
     return *this;
 }
 
 template <typename R>
-AsyncTask<R> AsyncTask<R>::acquire(Semaphore& semaphore, std::size_t count) && {
-    static_cast<AsyncTask&>(*this).acquire(semaphore, count);
-    return std::move(*this);
-}
-
-template <typename R>
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-AsyncTask<R>& AsyncTask<R>::release(Ts&... semaphores) & {
+AsyncTask<R>& AsyncTask<R>::release(Ts&... semaphores) {
     TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
     (m_work->_release(std::addressof(semaphores), std::size_t{1}), ...);
     return *this;
 }
 
 template <typename R>
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-AsyncTask<R> AsyncTask<R>::release(Ts&... semaphores) && {
-    static_cast<AsyncTask&>(*this).release(semaphores...);
-    return std::move(*this);
-}
-
-template <typename R>
-AsyncTask<R>& AsyncTask<R>::release(Semaphore& semaphore, std::size_t count) & {
+AsyncTask<R>& AsyncTask<R>::release(Semaphore& semaphore, std::size_t count) {
     TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
     m_work->_release(std::addressof(semaphore), count);
     return *this;
-}
-
-template <typename R>
-AsyncTask<R> AsyncTask<R>::release(Semaphore& semaphore, std::size_t count) && {
-    static_cast<AsyncTask&>(*this).release(semaphore, count);
-    return std::move(*this);
 }
 
 
@@ -659,7 +527,7 @@ AsyncTask<R> AsyncTask<R>::release(Semaphore& semaphore, std::size_t count) && {
 template <typename R>
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-AsyncTask<R>& AsyncTask<R>::remove_acquire(Ts&... semaphores) & noexcept {
+AsyncTask<R>& AsyncTask<R>::remove_acquire(Ts&... semaphores) noexcept {
     TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
     (m_work->_remove_acquire(std::addressof(semaphores)), ...);
     return *this;
@@ -668,52 +536,24 @@ AsyncTask<R>& AsyncTask<R>::remove_acquire(Ts&... semaphores) & noexcept {
 template <typename R>
 template <typename... Ts>
     requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-AsyncTask<R> AsyncTask<R>::remove_acquire(Ts&... semaphores) && noexcept {
-    static_cast<AsyncTask&>(*this).remove_acquire(semaphores...);
-    return std::move(*this);
-}
-
-template <typename R>
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-AsyncTask<R>& AsyncTask<R>::remove_release(Ts&... semaphores) & noexcept {
+AsyncTask<R>& AsyncTask<R>::remove_release(Ts&... semaphores) noexcept {
     TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
     (m_work->_remove_release(std::addressof(semaphores)), ...);
     return *this;
 }
 
 template <typename R>
-template <typename... Ts>
-    requires (sizeof...(Ts) > 0) && (std::same_as<Ts, Semaphore> && ...)
-AsyncTask<R> AsyncTask<R>::remove_release(Ts&... semaphores) && noexcept {
-    static_cast<AsyncTask&>(*this).remove_release(semaphores...);
-    return std::move(*this);
-}
-
-template <typename R>
-AsyncTask<R>& AsyncTask<R>::clear_acquires() & noexcept {
+AsyncTask<R>& AsyncTask<R>::clear_acquires() noexcept {
     TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
     m_work->_clear_acquires();
     return *this;
 }
 
 template <typename R>
-AsyncTask<R> AsyncTask<R>::clear_acquires() && noexcept {
-    static_cast<AsyncTask&>(*this).clear_acquires();
-    return std::move(*this);
-}
-
-template <typename R>
-AsyncTask<R>& AsyncTask<R>::clear_releases() & noexcept {
+AsyncTask<R>& AsyncTask<R>::clear_releases() noexcept {
     TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
     m_work->_clear_releases();
     return *this;
-}
-
-template <typename R>
-AsyncTask<R> AsyncTask<R>::clear_releases() && noexcept {
-    static_cast<AsyncTask&>(*this).clear_releases();
-    return std::move(*this);
 }
 
 // ============================================================================
@@ -791,7 +631,7 @@ void AsyncTask<R>::for_each_release(F&& visitor) const noexcept(std::invocable<F
 
 template <typename R>
 template <std::derived_from<TaskObserver> Observer, typename... Args>
-    requires std::constructible_from<Observer, Args...>
+    requires std::constructible_from<Observer, Args&&...>
 std::shared_ptr<Observer> AsyncTask<R>::register_observer(Args&&... args) {
     TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
     auto observer = std::make_shared<Observer>(std::forward<Args>(args)...);

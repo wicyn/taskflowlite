@@ -12,8 +12,8 @@ struct CountingHandler : tfl::WorkerHandler {
         if (worker.id() >= 4 || worker.queue_size() != 0 || worker.queue_capacity() == 0) valid.store(false);
         started.fetch_add(1);
     }
-    void on_stop(tfl::Worker& worker, const std::exception_ptr& exception) noexcept override {
-        if (worker.id() >= 4 || exception) valid.store(false);
+    void on_stop(tfl::Worker& worker) noexcept override {
+        if (worker.id() >= 4) valid.store(false);
         stopped.fetch_add(1);
     }
 };
@@ -26,6 +26,9 @@ TEST_CASE("WorkerHandler: one start and stop per worker", "[worker][handler]") {
     {
         tfl::Executor executor(handler, 4);
         executor.async([] {}).get();
+        REQUIRE_THROWS_AS(executor.async([] { throw std::runtime_error("task failure"); }).get(),
+                          std::runtime_error);
+        REQUIRE(executor.async([] { return 42; }).get() == 42);
     }
     REQUIRE(handler.started.load() == 4);
     REQUIRE(handler.stopped.load() == 4);

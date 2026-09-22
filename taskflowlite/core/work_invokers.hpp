@@ -58,6 +58,27 @@ do {                                                                            
 
 #endif
 
+
+#define TFL_TRY_ACQUIRE_SEMAPHORES(work)                                                    \
+    do {                                                                                    \
+            if ((work).m_semaphores && !(work).m_semaphores->acquires.empty()) {            \
+                if (!(work)._try_acquire_semaphores()) {                                    \
+                    return;                                                                 \
+            }                                                                               \
+        }                                                                                   \
+    } while (false)
+
+#define TFL_RELEASE_SEMAPHORES(work, worker, executor)                                      \
+    do {                                                                                    \
+            if ((work).m_semaphores && !(work).m_semaphores->releases.empty()) {            \
+                Work* first = nullptr;                                                      \
+                Work* last = nullptr;                                                       \
+                (work)._release_semaphores(first, last);                                    \
+                (executor)._schedule_from_semaphore((worker), first);                       \
+        }                                                                                   \
+    } while (false)
+
+
     // ============================================================================
     // TaskType::Placeholder
     // ============================================================================
@@ -474,20 +495,13 @@ public:
     explicit BasicInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         if (w._stop_requested()) [[unlikely]] {
             exe._schedule_parent(w.m_parent, wr, cache);
             return;
         }
 
-        // 执行前获取 Semaphore；失败时当前 Work 进入 waiter，本次 invoke 立即让出 Worker。
-        if (w.m_semaphores && !w.m_semaphores->acquires.empty()) {
-            SmallVector<Work*> waiters;
-            if (!w._try_acquire_semaphores(waiters)) {
-                exe._schedule_from_semaphore(wr, waiters);
-                return;
-            }
-        }
+        TFL_TRY_ACQUIRE_SEMAPHORES(w);
 
         TFL_WORK_EXECUTION_BEGIN(w);
 
@@ -501,12 +515,7 @@ public:
 
         w._notify_after(wr);
 
-        // 执行完成后释放配置的 Semaphore，并重新调度本次被解冻的 waiter。
-        if (w.m_semaphores && !w.m_semaphores->releases.empty()) {
-            SmallVector<Work*> waiters;
-            w._release_semaphores(waiters);
-            exe._schedule_from_semaphore(wr, waiters);
-        }
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
 
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_task(w, wr, cache);
@@ -543,20 +552,13 @@ public:
     explicit BranchInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         if (w._stop_requested()) [[unlikely]] {
             exe._schedule_parent(w.m_parent, wr, cache);
             return;
         }
 
-        // 执行前获取 Semaphore；失败时当前 Work 进入 waiter，本次 invoke 立即让出 Worker。
-        if (w.m_semaphores && !w.m_semaphores->acquires.empty()) {
-            SmallVector<Work*> waiters;
-            if (!w._try_acquire_semaphores(waiters)) {
-                exe._schedule_from_semaphore(wr, waiters);
-                return;
-            }
-        }
+        TFL_TRY_ACQUIRE_SEMAPHORES(w);
 
         TFL_WORK_EXECUTION_BEGIN(w);
 
@@ -572,12 +574,7 @@ public:
 
         w._notify_after(wr);
 
-        // 执行完成后释放配置的 Semaphore，并重新调度本次被解冻的 waiter。
-        if (w.m_semaphores && !w.m_semaphores->releases.empty()) {
-            SmallVector<Work*> waiters;
-            w._release_semaphores(waiters);
-            exe._schedule_from_semaphore(wr, waiters);
-        }
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
 
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_branch_task(w, wr, cache, branch.m_target);
@@ -613,20 +610,13 @@ public:
     explicit MultiBranchInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         if (w._stop_requested()) [[unlikely]] {
             exe._schedule_parent(w.m_parent, wr, cache);
             return;
         }
 
-        // 执行前获取 Semaphore；失败时当前 Work 进入 waiter，本次 invoke 立即让出 Worker。
-        if (w.m_semaphores && !w.m_semaphores->acquires.empty()) {
-            SmallVector<Work*> waiters;
-            if (!w._try_acquire_semaphores(waiters)) {
-                exe._schedule_from_semaphore(wr, waiters);
-                return;
-            }
-        }
+        TFL_TRY_ACQUIRE_SEMAPHORES(w);
 
         TFL_WORK_EXECUTION_BEGIN(w);
 
@@ -642,12 +632,7 @@ public:
 
         w._notify_after(wr);
 
-        // 执行完成后释放配置的 Semaphore，并重新调度本次被解冻的 waiter。
-        if (w.m_semaphores && !w.m_semaphores->releases.empty()) {
-            SmallVector<Work*> waiters;
-            w._release_semaphores(waiters);
-            exe._schedule_from_semaphore(wr, waiters);
-        }
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
 
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_multi_branch_task(w, wr, cache, branch.m_targets);
@@ -684,20 +669,13 @@ public:
     explicit JumpInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         if (w._stop_requested()) [[unlikely]] {
             exe._schedule_parent(w.m_parent, wr, cache);
             return;
         }
 
-        // 执行前获取 Semaphore；失败时当前 Work 进入 waiter，本次 invoke 立即让出 Worker。
-        if (w.m_semaphores && !w.m_semaphores->acquires.empty()) {
-            SmallVector<Work*> waiters;
-            if (!w._try_acquire_semaphores(waiters)) {
-                exe._schedule_from_semaphore(wr, waiters);
-                return;
-            }
-        }
+        TFL_TRY_ACQUIRE_SEMAPHORES(w);
 
         TFL_WORK_EXECUTION_BEGIN(w);
 
@@ -713,12 +691,7 @@ public:
 
         w._notify_after(wr);
 
-        // 执行完成后释放配置的 Semaphore，并重新调度本次被解冻的 waiter。
-        if (w.m_semaphores && !w.m_semaphores->releases.empty()) {
-            SmallVector<Work*> waiters;
-            w._release_semaphores(waiters);
-            exe._schedule_from_semaphore(wr, waiters);
-        }
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
 
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_jump_task(w, wr, cache, jump.m_target);
@@ -755,20 +728,13 @@ public:
     explicit MultiJumpInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         if (w._stop_requested()) [[unlikely]] {
             exe._schedule_parent(w.m_parent, wr, cache);
             return;
         }
 
-        // 执行前获取 Semaphore；失败时当前 Work 进入 waiter，本次 invoke 立即让出 Worker。
-        if (w.m_semaphores && !w.m_semaphores->acquires.empty()) {
-            SmallVector<Work*> waiters;
-            if (!w._try_acquire_semaphores(waiters)) {
-                exe._schedule_from_semaphore(wr, waiters);
-                return;
-            }
-        }
+        TFL_TRY_ACQUIRE_SEMAPHORES(w);
 
         TFL_WORK_EXECUTION_BEGIN(w);
 
@@ -784,12 +750,7 @@ public:
 
         w._notify_after(wr);
 
-        // 执行完成后释放配置的 Semaphore，并重新调度本次被解冻的 waiter。
-        if (w.m_semaphores && !w.m_semaphores->releases.empty()) {
-            SmallVector<Work*> waiters;
-            w._release_semaphores(waiters);
-            exe._schedule_from_semaphore(wr, waiters);
-        }
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
 
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_multi_jump_task(w, wr, cache, jump.m_targets);
@@ -830,7 +791,7 @@ public:
     explicit RuntimeInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入：尚未因动态 child / 子图进入 PREEMPTED 挂起状态。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             if (w._stop_requested()) [[unlikely]] {
@@ -838,14 +799,7 @@ public:
                 return;
             }
 
-            // 执行前获取 Semaphore；失败时当前 Work 进入 waiter，本次 invoke 立即让出 Worker。
-            if (w.m_semaphores && !w.m_semaphores->acquires.empty()) {
-                SmallVector<Work*> waiters;
-                if (!w._try_acquire_semaphores(waiters)) {
-                    exe._schedule_from_semaphore(wr, waiters);
-                    return;
-                }
-            }
+            TFL_TRY_ACQUIRE_SEMAPHORES(w);
 
             TFL_WORK_EXECUTION_BEGIN(w);
 
@@ -872,12 +826,7 @@ public:
         // 最终完成：当前 Work 的所有动态 child / 子图已经归还等待 slot。
         w.m_properties &= ~(Work::Properties::PREEMPTED | Work::Properties::IMPLICIT_ANCHOR);
 
-        // 执行完成后释放配置的 Semaphore，并重新调度本次被解冻的 waiter。
-        if (w.m_semaphores && !w.m_semaphores->releases.empty()) {
-            SmallVector<Work*> waiters;
-            w._release_semaphores(waiters);
-            exe._schedule_from_semaphore(wr, waiters);
-        }
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
 
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_task(w, wr, cache);
@@ -916,7 +865,7 @@ public:
     explicit SubFlowInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入：尚未因动态 child / 子图进入 PREEMPTED 挂起状态。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             if (w._stop_requested()) [[unlikely]] {
@@ -924,14 +873,7 @@ public:
                 return;
             }
 
-            // 执行前获取 Semaphore；失败时当前 Work 进入 waiter，本次 invoke 立即让出 Worker。
-            if (w.m_semaphores && !w.m_semaphores->acquires.empty()) {
-                SmallVector<Work*> waiters;
-                if (!w._try_acquire_semaphores(waiters)) {
-                    exe._schedule_from_semaphore(wr, waiters);
-                    return;
-                }
-            }
+            TFL_TRY_ACQUIRE_SEMAPHORES(w);
 
             TFL_WORK_EXECUTION_BEGIN(w);
 
@@ -958,12 +900,8 @@ public:
         // 最终完成：当前 Work 的所有动态 child / 子图已经归还等待 slot。
         w.m_properties &= ~Work::Properties::PREEMPTED;
 
-        // 执行完成后释放配置的 Semaphore，并重新调度本次被解冻的 waiter。
-        if (w.m_semaphores && !w.m_semaphores->releases.empty()) {
-            SmallVector<Work*> waiters;
-            w._release_semaphores(waiters);
-            exe._schedule_from_semaphore(wr, waiters);
-        }
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
+
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_task(w, wr, cache);
     }
@@ -1033,7 +971,7 @@ public:
         return m_gh_store;
     }
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         Graph& graph = this->graph();
 
         // 首次进入。
@@ -1043,14 +981,7 @@ public:
                 return;
             }
 
-            // acquire 阶段。
-            if (w.m_semaphores && !w.m_semaphores->acquires.empty()) [[unlikely]] {
-                SmallVector<Work*> waiters;
-                if (!w._try_acquire_semaphores(waiters)) {
-                    exe._schedule_from_semaphore(wr, waiters);
-                    return;
-                }
-            }
+            TFL_TRY_ACQUIRE_SEMAPHORES(w);
 
             TFL_WORK_EXECUTION_BEGIN(w);
 
@@ -1065,12 +996,7 @@ public:
 
             w.m_properties &= ~Work::Properties::PREEMPTED;
 
-            // release 阶段。
-            if (w.m_semaphores && !w.m_semaphores->releases.empty()) [[unlikely]] {
-                SmallVector<Work*> waiters;
-                w._release_semaphores(waiters);
-                exe._schedule_from_semaphore(wr, waiters);
-            }
+            TFL_RELEASE_SEMAPHORES(w, wr, exe);
 
             TFL_WORK_EXECUTION_END(w);
             exe._tear_down_task(w, wr, cache);
@@ -1129,7 +1055,7 @@ public:
         : TopologyStorage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         TFL_WORK_EXECUTION_BEGIN(w);
 
         try {
@@ -1167,7 +1093,7 @@ public:
         : TopologyStorage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
@@ -1221,7 +1147,7 @@ public:
         : TopologyStorage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
@@ -1293,7 +1219,7 @@ public:
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(callback)} {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         Graph& graph = this->graph();
 
         // 首次进入：初始化整个子图。
@@ -1350,7 +1276,8 @@ public:
 /// invoke 通过 `set_result_from()` 保存返回值或 void 完成状态，用户异常进入 Work 归档链，
 /// 最后 `_tear_down_async_task()` 发布 Finished、唤醒等待者并释放执行生命周期引用。
 ///
-/// Async 不参与运行期动态后继插入协议，其 Work 可在 Future 强引用释放前继续存活。
+/// AsyncFuture 可作为动态前驱；依赖登记与完成路径通过 Topology 锁协调，
+/// Work 在最后一份外部和执行强引用释放后销毁。
 ///
 /// @tparam F 按值拥有的 callable 类型。
 template <typename F>
@@ -1367,11 +1294,11 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncBasicInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
+    explicit AsyncBasicInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && noexcept(Base{std::forward<U>(f)}))
         : Storage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         TFL_WORK_EXECUTION_BEGIN(w);
 
         try {
@@ -1408,11 +1335,11 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncRuntimeInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
+    explicit AsyncRuntimeInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && noexcept(Base{std::forward<U>(f)}))
         : Storage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
@@ -1463,11 +1390,11 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit AsyncSubFlowInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
+    explicit AsyncSubFlowInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && noexcept(Base{std::forward<U>(f)}))
         : Storage{executor, parent_topology}
         , Base{std::forward<U>(f)} {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
@@ -1534,13 +1461,13 @@ public:
 
     template <typename Ghs, typename V, typename W>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&> && std::constructible_from<C, W&&>
-    explicit AsyncModuleInvoker(Executor& executor, Topology* parent_topology, Ghs&& ghs, V&& pred, W&& callback) noexcept(noexcept(GhStore{std::forward<Ghs>(ghs)}) && noexcept(P{std::forward<V>(pred)}) && noexcept(C{std::forward<W>(callback)}))
+    explicit AsyncModuleInvoker(Executor& executor, Topology* parent_topology, Ghs&& ghs, V&& pred, W&& callback) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<void>> && noexcept(GhStore{std::forward<Ghs>(ghs)}) && noexcept(P{std::forward<V>(pred)}) && noexcept(C{std::forward<W>(callback)}))
         : Storage{executor, parent_topology}
         , m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)}
         , m_callback{std::forward<W>(callback)} {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         Graph& graph = this->graph();
 
         // 首次进入：初始化整个子图。
@@ -1613,7 +1540,7 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncTaskBasicInvoker(Executor& executor, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
+    explicit AsyncTaskBasicInvoker(Executor& executor, U&& f) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && noexcept(Base{std::forward<U>(f)}))
         : Storage{executor}
         , Base{std::forward<U>(f)} {}
 
@@ -1621,19 +1548,12 @@ public:
     /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
     template <typename... Args>
         requires std::constructible_from<F, Args&&...>
-    explicit AsyncTaskBasicInvoker(Executor& executor, std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+    explicit AsyncTaskBasicInvoker(Executor& executor, std::in_place_t, Args&&... args) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
         : Storage{executor}
         , Base(std::in_place, std::forward<Args>(args)...) {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
-        // 执行前获取 Semaphore；失败时当前 Work 进入 waiter，本次 invoke 立即让出 Worker。
-        if (w.m_semaphores && !w.m_semaphores->acquires.empty()) {
-            SmallVector<Work*> waiters;
-            if (!w._try_acquire_semaphores(waiters)) {
-                exe._schedule_from_semaphore(wr, waiters);
-                return;
-            }
-        }
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
+        TFL_TRY_ACQUIRE_SEMAPHORES(w);
 
         TFL_WORK_EXECUTION_BEGIN(w);
 
@@ -1647,12 +1567,7 @@ public:
 
         w._notify_after(wr);
 
-        // 执行完成后释放配置的 Semaphore，并重新调度本次被解冻的 waiter。
-        if (w.m_semaphores && !w.m_semaphores->releases.empty()) {
-            SmallVector<Work*> waiters;
-            w._release_semaphores(waiters);
-            exe._schedule_from_semaphore(wr, waiters);
-        }
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
 
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_async_task(w, wr, cache);
@@ -1681,7 +1596,7 @@ public:
 
     template <typename U>
         requires std::constructible_from<Base, U&&>
-    explicit AsyncTaskRuntimeInvoker(Executor& executor, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
+    explicit AsyncTaskRuntimeInvoker(Executor& executor, U&& f) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && noexcept(Base{std::forward<U>(f)}))
         : Storage{executor}
         , Base{std::forward<U>(f)} {}
 
@@ -1689,21 +1604,14 @@ public:
     /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
     template <typename... Args>
         requires std::constructible_from<F, Args&&...>
-    explicit AsyncTaskRuntimeInvoker(Executor& executor, std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+    explicit AsyncTaskRuntimeInvoker(Executor& executor, std::in_place_t, Args&&... args) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
         : Storage{executor}
         , Base(std::in_place, std::forward<Args>(args)...) {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
-            // acquire 阶段。
-            if (w.m_semaphores && !w.m_semaphores->acquires.empty()) {
-                SmallVector<Work*> waiters;
-                if (!w._try_acquire_semaphores(waiters)) {
-                    exe._schedule_from_semaphore(wr, waiters);
-                    return;
-                }
-            }
+            TFL_TRY_ACQUIRE_SEMAPHORES(w);
 
             TFL_WORK_EXECUTION_BEGIN(w);
 
@@ -1730,12 +1638,7 @@ public:
 
         w.m_properties &= ~Work::Properties::PREEMPTED;
 
-        // release 阶段。
-        if (w.m_semaphores && !w.m_semaphores->releases.empty()) {
-            SmallVector<Work*> waiters;
-            w._release_semaphores(waiters);
-            exe._schedule_from_semaphore(wr, waiters);
-        }
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
 
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_async_task(w, wr, cache);
@@ -1766,7 +1669,7 @@ public:
 
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit AsyncTaskSubFlowInvoker(Executor& executor, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
+    explicit AsyncTaskSubFlowInvoker(Executor& executor, U&& f) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && noexcept(Base{std::forward<U>(f)}))
         : Storage{executor}
         , Base{std::forward<U>(f)} {}
 
@@ -1774,21 +1677,14 @@ public:
     /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
     template <typename... Args>
         requires std::constructible_from<F, Args&&...>
-    explicit AsyncTaskSubFlowInvoker(Executor& executor, std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+    explicit AsyncTaskSubFlowInvoker(Executor& executor, std::in_place_t, Args&&... args) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
         : Storage{executor}
         , Base(std::in_place, std::forward<Args>(args)...) {}
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
-            // acquire 阶段。
-            if (w.m_semaphores && !w.m_semaphores->acquires.empty()) {
-                SmallVector<Work*> waiters;
-                if (!w._try_acquire_semaphores(waiters)) {
-                    exe._schedule_from_semaphore(wr, waiters);
-                    return;
-                }
-            }
+            TFL_TRY_ACQUIRE_SEMAPHORES(w);
 
             TFL_WORK_EXECUTION_BEGIN(w);
 
@@ -1815,12 +1711,7 @@ public:
 
         w.m_properties &= ~Work::Properties::PREEMPTED;
 
-        // release 阶段。
-        if (w.m_semaphores && !w.m_semaphores->releases.empty()) {
-            SmallVector<Work*> waiters;
-            w._release_semaphores(waiters);
-            exe._schedule_from_semaphore(wr, waiters);
-        }
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
 
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_async_task(w, wr, cache);
@@ -1867,7 +1758,7 @@ public:
     /// @brief 从传入的子图持有者存储、终止谓词和完成回调构造模块。
     template <typename Ghs, typename V, typename W>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&> && std::constructible_from<C, W&&>
-    explicit AsyncTaskModuleInvoker(Executor& executor, Ghs&& ghs, V&& pred, W&& callback) noexcept(noexcept(GhStore{std::forward<Ghs>(ghs)}) && noexcept(P{std::forward<V>(pred)}) && noexcept(C{std::forward<W>(callback)}))
+    explicit AsyncTaskModuleInvoker(Executor& executor, Ghs&& ghs, V&& pred, W&& callback) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<void>> && noexcept(GhStore{std::forward<Ghs>(ghs)}) && noexcept(P{std::forward<V>(pred)}) && noexcept(C{std::forward<W>(callback)}))
         : Storage{executor}
         , m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)}
@@ -1881,7 +1772,7 @@ public:
     /// @note 不创建 GhStore 临时对象，不要求 GhStore 可复制或可移动。
     template <typename V, typename W, typename... Args>
         requires std::constructible_from<P, V&&> && std::constructible_from<C, W&&> && std::constructible_from<GhStore, Args&&...>
-    explicit AsyncTaskModuleInvoker(Executor& executor, std::in_place_t, V&& pred, W&& callback, Args&&... args) noexcept(std::is_nothrow_constructible_v<GhStore, Args&&...> && noexcept(P{std::forward<V>(pred)}) && noexcept(C{std::forward<W>(callback)}))
+    explicit AsyncTaskModuleInvoker(Executor& executor, std::in_place_t, V&& pred, W&& callback, Args&&... args) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<void>> && std::is_nothrow_constructible_v<GhStore, Args&&...> && noexcept(P{std::forward<V>(pred)}) && noexcept(C{std::forward<W>(callback)}))
         : Storage{executor}
         , m_gh_store(std::forward<Args>(args)...)
         , m_pred{std::forward<V>(pred)}
@@ -1898,18 +1789,12 @@ public:
         return m_gh_store;
     }
 
-    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) {
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         Graph& graph = this->graph();
 
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
-            // 首次进入：获取信号量并初始化整个子图。
-            if (w.m_semaphores && !w.m_semaphores->acquires.empty()) [[unlikely]] {
-                SmallVector<Work*> waiters;
-                if (!w._try_acquire_semaphores(waiters)) {
-                    exe._schedule_from_semaphore(wr, waiters);
-                    return;
-                }
-            }
+            TFL_TRY_ACQUIRE_SEMAPHORES(w);
+
             TFL_WORK_EXECUTION_BEGIN(w);
 
             w.m_properties |= Work::Properties::PREEMPTED;
@@ -1923,11 +1808,7 @@ public:
 
             w._invoke_callback(m_callback);
             w.m_properties &= ~Work::Properties::PREEMPTED;
-            if (w.m_semaphores && !w.m_semaphores->releases.empty()) [[unlikely]] {
-                SmallVector<Work*> waiters;
-                w._release_semaphores(waiters);
-                exe._schedule_from_semaphore(wr, waiters);
-            }
+            TFL_RELEASE_SEMAPHORES(w, wr, exe);
 
             TFL_WORK_EXECUTION_END(w);
             exe._tear_down_async_task(w, wr, cache);

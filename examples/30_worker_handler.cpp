@@ -7,11 +7,10 @@
 #include <syncstream>
 class LifecycleHandler : public tfl::WorkerHandler {
 public:
-    std::atomic<int> starts{0}, stops{0}, failures{0};
+    std::atomic<int> starts{0}, stops{0};
     void on_start(tfl::Worker&) noexcept override { ++starts; }
-    void on_stop(tfl::Worker&, const std::exception_ptr& error) noexcept override {
+    void on_stop(tfl::Worker&) noexcept override {
         ++stops;
-        if (error) ++failures;
     }
 };
 
@@ -24,5 +23,5 @@ int main() {
         std::osyncstream(std::cout) << "Task ran on worker " << worker_id.get() << "\n";
     }
     std::osyncstream(std::cout) << "Started: " << handler.starts << ", stopped: " << handler.stops << "\n";
-    return handler.starts == 2 && handler.stops == 2 && handler.failures == 0 ? 0 : 1;
+    return handler.starts == 2 && handler.stops == 2 ? 0 : 1;
 }

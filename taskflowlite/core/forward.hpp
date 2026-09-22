@@ -35,7 +35,7 @@ class WorkerView;
 class WorkerHandler;
 class FlowBuilder;
 class ScopedExceptionAnchor;
-
+class SharedWorkStack;
 template <typename>
 class TaskObject;
 

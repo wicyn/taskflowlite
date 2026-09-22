@@ -12,6 +12,61 @@
 
 #include <climits>
 
+
+/// @brief 编译目标使用的缓存行隔离大小估计值。
+///
+/// 该值主要用于 `alignas` 分离高频并发写入的数据，避免 false sharing，
+/// 不保证等于运行机器实际的物理缓存行大小。
+///
+/// 用户可在包含 taskflowlite 头文件前定义 `TFL_CACHE_LINE_SIZE` 显式覆盖。
+///
+/// @warning 该值可能参与类型布局和 ABI；同一程序的所有翻译单元必须保持一致。
+#ifndef TFL_CACHE_LINE_SIZE
+
+#if defined(__APPLE__) && defined(__aarch64__)
+// Apple Silicon 缓存行为按 128 字节隔离。
+#define TFL_CACHE_LINE_SIZE 128
+
+#elif defined(__s390x__)
+// IBM z/Architecture L1 cache line 为 256 字节。
+#define TFL_CACHE_LINE_SIZE 256
+
+#elif defined(__powerpc64__) || defined(__ppc64__) || defined(_ARCH_PPC64)
+// 主流 PowerPC64 使用 128 字节缓存行。
+#define TFL_CACHE_LINE_SIZE 128
+
+#elif defined(__aarch64__) || defined(_M_ARM64)
+// AArch64 实现的实际缓存行大小并非 ISA 固定；
+// 使用 128 字节作为 false-sharing 隔离的保守值。
+#define TFL_CACHE_LINE_SIZE 128
+
+#elif defined(__arm__) || defined(_M_ARM)
+// 32 位 ARM 实现差异较大，使用 64 字节作为保守隔离值。
+#define TFL_CACHE_LINE_SIZE 64
+
+#elif defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
+// 现代 x86 / x64 数据缓存行通常为 64 字节。
+#define TFL_CACHE_LINE_SIZE 64
+
+#elif defined(__riscv)
+// RISC-V ISA 不固定缓存行大小，使用 64 字节作为通用保守值。
+#define TFL_CACHE_LINE_SIZE 64
+
+#elif defined(__loongarch__)
+// LoongArch 使用 64 字节作为通用缓存行隔离值。
+#define TFL_CACHE_LINE_SIZE 64
+
+#else
+// 未识别架构使用通用 64 字节保守值。
+#define TFL_CACHE_LINE_SIZE 64
+#endif
+
+#endif
+
+static_assert(TFL_CACHE_LINE_SIZE > 0, "TFL_CACHE_LINE_SIZE must be greater than 0");
+static_assert((TFL_CACHE_LINE_SIZE & (TFL_CACHE_LINE_SIZE - 1)) == 0, "TFL_CACHE_LINE_SIZE must be power of 2");
+
+
 // ============================================================================
 // Assert
 // ============================================================================
@@ -329,25 +384,44 @@ static_assert(TF_POINTER_BITS > 0 && TF_POINTER_BITS <= 64, "TF_POINTER_BITS mus
 
 
 // ============================================================================
-// 自旋等待 PAUSE 指令
+// CPU 自旋等待提示
 // ============================================================================
 
-/// @brief 在自旋等待循环中发出 CPU PAUSE 提示，降低超线程竞争与功耗。
-/// @note x86 使用 `pause`，ARM64 使用 `yield`，其他平台使用 signal fence。
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#   ifdef _MSC_VER
-#       include <immintrin.h>
-#       define TFL_PAUSE() _mm_pause()
-#   else
-#       define TFL_PAUSE() __asm__ volatile("pause" ::: "memory")
-#   endif
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#   define TFL_PAUSE() __asm__ volatile("yield" ::: "memory")
-#else
-#   include <atomic>
-#   define TFL_PAUSE() std::atomic_signal_fence(std::memory_order_seq_cst)
-#endif
+/// @brief 在短暂自旋等待中向处理器发出降低竞争与功耗的架构提示。
+///
+/// x86 / x64 使用 `pause`，ARM / ARM64 使用 `yield`，支持 Zihintpause 的
+/// RISC-V 使用 `pause`；其他平台退化为编译器信号屏障。
+///
+/// @note 本宏只提供 CPU 自旋提示，不会主动让出当前线程的调度时间片。
+///       长时间竞争应由调用方显式使用 `std::this_thread::yield()` 或其他等待机制。
+#if defined(_M_IX86) || defined(_M_X64)
 
+#   include <immintrin.h>
+#   define TFL_CPU_RELAX() _mm_pause()
+
+#elif defined(__i386__) || defined(__x86_64__)
+
+#   define TFL_CPU_RELAX() __asm__ __volatile__("pause")
+
+#elif defined(_MSC_VER) && (defined(_M_ARM) || defined(_M_ARM64))
+
+#   include <intrin.h>
+#   define TFL_CPU_RELAX() __yield()
+
+#elif defined(__arm__) || defined(__aarch64__)
+
+#   define TFL_CPU_RELAX() __asm__ __volatile__("yield")
+
+#elif defined(__riscv) && defined(__riscv_zihintpause)
+
+#   define TFL_CPU_RELAX() __asm__ __volatile__("pause")
+
+#else
+
+#   include <atomic>
+#   define TFL_CPU_RELAX() std::atomic_signal_fence(std::memory_order_seq_cst)
+
+#endif
 
 
 // ============================================================================
