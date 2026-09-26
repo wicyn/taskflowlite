@@ -55,6 +55,7 @@ class Work : public Immovable<Work> {
     friend class TaskView;
     friend class Worker;
     friend class Executor;
+    friend class Context;
     friend class Runtime;
     friend class SubFlow;
     friend class Semaphore;
@@ -139,8 +140,8 @@ public:
 
         /// @brief 当前配置下所有原子控制标志位。
         static constexpr type FLAG_MASK = EXPLICIT_ANCHOR | EXCEPTION | EXCEPTION_CAUGHT | EXECUTION;
-#else
-        /// @brief 当前配置下所有原子控制标志位。
+#else \
+    /// @brief 当前配置下所有原子控制标志位。
         static constexpr type FLAG_MASK = EXPLICIT_ANCHOR | EXCEPTION | EXCEPTION_CAUGHT;
 #endif
     };
@@ -486,6 +487,7 @@ public:
         , m_parent{parent}
         , m_properties{Invoker::PROPERTIES}
         , m_control{Invoker::CONTROL} {
+
         m_topology = target<Invoker>().get_topology();
         TFL_ASSERT(m_topology && "async Invoker must provide a valid Topology");
     }
@@ -607,52 +609,6 @@ private:
         return m_name ? std::string_view{*m_name} : std::string_view{};
     }
 
-    /// @brief 阻塞当前线程，直到本 Work 所属 Topology 进入 Finished。
-    ///
-    /// 通过 `atomic::wait` 等待 Topology 控制字发生变化，并仅以 Status::Finished
-    /// 作为完成条件；STOP_REQUESTED、LOCKED、引用计数等其他位变化只会触发重新检查。
-    ///
-    /// @note 发布 Finished 的完成路径必须对同一控制字执行 `notify_all()`。
-    void _wait() const noexcept {
-        auto value = m_topology->m_control.load(std::memory_order_acquire);
-
-        while (Topology::Control::status(value) != Topology::Control::Status::Finished) {
-            m_topology->m_control.wait(value, std::memory_order_acquire);
-            value = m_topology->m_control.load(std::memory_order_acquire);
-        }
-    }
-
-    /// @brief 为当前 Work 所属 Topology 增加一份强引用。
-    void _increment_ref() noexcept {
-        auto prev = m_topology->m_control.fetch_add(Topology::Control::USE_COUNT_INC, std::memory_order_relaxed);
-        TFL_ASSERT(Topology::Control::use_count(prev) < Topology::Control::USE_COUNT_MAX);
-    }
-
-    /// @brief 释放当前 Work 所属 Topology 的一份强引用。
-    ///
-    /// @return 释放前引用计数为 1、即本次释放最后一份强引用时返回 true。
-    bool _decrement_ref() noexcept {
-        auto prev = m_topology->m_control.fetch_sub(Topology::Control::USE_COUNT_INC, std::memory_order_acq_rel);
-        TFL_ASSERT(Topology::Control::use_count(prev) != 0);
-        return Topology::Control::use_count(prev) == 1;
-    }
-
-    /// @brief 查询当前 Work 所属 Topology 的状态是否为 Running。
-    [[nodiscard]] bool _is_running() const noexcept {
-        return Topology::Control::status(m_topology->m_control.load(std::memory_order_relaxed)) == Topology::Control::Status::Running;
-    }
-
-    /// @brief 查询当前 Work 所属 Topology 的状态是否为 Finished。
-    [[nodiscard]] bool _is_finished() const noexcept {
-        return Topology::Control::status(m_topology->m_control.load(std::memory_order_relaxed)) == Topology::Control::Status::Finished;
-    }
-
-    /// @brief 返回当前 Work 所属 Topology 强引用计数的瞬时快照。
-    [[nodiscard]] std::size_t _use_count() const noexcept {
-        return static_cast<std::size_t>(Topology::Control::use_count(m_topology->m_control.load(std::memory_order_relaxed)));
-    }
-
-
     /// @brief 查询当前 Work 作为前驱时是否参与普通后继的 strong join。
     ///
     /// @return `Properties::STRONG` 置位时返回 true；Jump / MultiJump 等弱前驱返回 false。
@@ -682,42 +638,6 @@ private:
         return m_properties & Properties::JOIN_WEIGHT_MASK;
     }
 
-
-    /// @brief 向当前 Work 所属 Topology 原子设置停止请求。
-    ///
-    /// 这里只设置当前 Topology 的 STOP_REQUESTED，不遍历或主动修改子 Topology；
-    /// 后代任务通过 `_stop_requested()` 沿自身 `Topology::m_parent` 向上观察停止链。
-    ///
-    /// @return 本次调用把 STOP_REQUESTED 从未设置变为已设置时返回 true；
-    ///         该位此前已经存在时返回 false。
-    [[nodiscard]] TFL_FORCE_INLINE bool _request_stop() noexcept {
-        auto prev = m_topology->m_control.fetch_or(Topology::Control::STOP_REQUESTED, std::memory_order_relaxed);
-        return !(prev & Topology::Control::STOP_REQUESTED);
-    }
-
-    /// @brief 查询当前 Topology 及其祖先 Topology 链是否存在停止请求。
-    ///
-    /// 从当前 `m_topology` 开始逐级检查 STOP_REQUESTED。若祖先 Topology 已请求停止，
-    /// 则将 STOP_REQUESTED 惰性缓存到当前 Topology，使后续查询无需再次遍历父链.
-    ///
-    /// @return 当前或任一祖先 Topology 已请求停止时返回 true。
-    /// @warning 当前 Topology 及其全部祖先 Topology 必须在调用期间保持有效。
-    [[nodiscard]] TFL_FORCE_INLINE bool _stop_requested() const noexcept {
-        Topology* const current = m_topology;
-        Topology* topology = current;
-
-        do {
-            if (topology->m_control.load(std::memory_order_relaxed) & Topology::Control::STOP_REQUESTED) {
-                if (topology != current) {
-                    current->m_control.fetch_or(Topology::Control::STOP_REQUESTED, std::memory_order_relaxed);
-                }
-                return true;
-            }
-        } while ((topology = topology->m_parent) != nullptr);
-
-        return false;
-    }
-
     /// @brief 查询当前 Work 是否已被标记为异常传播路径。
     ///
     /// 仅读取本 Work 的 `Control::EXCEPTION`，不沿 parent 链查询。
@@ -732,7 +652,11 @@ private:
     ///
     /// @return 当前 Work 处于异常路径或停止链存在请求时返回 true。
     [[nodiscard]] TFL_FORCE_INLINE bool _should_abort() const noexcept {
-        return _has_exception() || _stop_requested();
+#if TFL_ENABLE_EXCEPTIONS
+        return _has_exception() || m_topology->_stop_requested();
+#else
+        return _stop_requested();
+#endif
     }
 
     /// @brief 若当前 Work 已归档异常，则取出并重新抛出，同时清除本地归档状态。
@@ -755,7 +679,7 @@ private:
         }
     }
 
-    /// @brief 捕获当前 `catch (...)` 正在处理的异常并进入统一传播/归档流程。
+    /// @brief 捕获当前 `TFL_CATCH_ALL` 正在处理的异常并进入统一传播/归档流程。
     ///
     /// @note 必须在活动异常处理上下文内调用，否则 `std::current_exception()` 可能为空。
     TFL_FORCE_INLINE void _process_exception() noexcept {
@@ -874,9 +798,9 @@ private:
         if constexpr (noexcept(std::invoke(predicate))) {
             return std::invoke(predicate);
         } else {
-            try {
+            TFL_TRY {
                 return std::invoke(predicate);
-            } catch (...) {
+            } TFL_CATCH_ALL {
                 _process_exception();
                 return true;
             }
@@ -895,9 +819,9 @@ private:
         if constexpr (noexcept(std::invoke(callback))) {
             std::invoke(callback);
         } else {
-            try {
+            TFL_TRY {
                 std::invoke(callback);
-            } catch (...) {
+            } TFL_CATCH_ALL {
                 _process_exception();
             }
         }
@@ -939,7 +863,7 @@ private:
 
     /// @brief 获取 `m_edges` 中前驱后缀的只读 span 视图。
     ///
-    /// @return 指向当前前驱区间的非拥有只读视图。
+    /// @return 指向当前前驱区间的非拥有只读 span；未创建 SemaphoreData 时返回空视图。
     /// @note 返回视图仅在 `m_edges` 未发生重新分配、插入、删除或销毁期间有效。
     [[nodiscard]] std::span<Work* const> _predecessors() const noexcept {
         return {m_edges.data() + m_num_successors, m_edges.size() - m_num_successors};
@@ -1108,10 +1032,16 @@ private:
 
     // ---- 观察者执行前/后通知 ----
     /// @brief 在 callable 正式执行前依次通知当前 Work 注册的全部观察者。
-    TFL_FORCE_INLINE void _notify_before(Worker& wr) const noexcept;
+    ///
+    /// 单个观察者抛出的异常会被捕获并进入当前 Work 的统一异常归档流程，
+    /// 不影响后续观察者继续接收 before 通知。
+    TFL_FORCE_INLINE void _notify_before(Worker& wr) noexcept;
 
     /// @brief 在 callable 执行结束后依次通知当前 Work 注册的全部观察者。
-    TFL_FORCE_INLINE void _notify_after(Worker& wr) const noexcept;
+    ///
+    /// 单个观察者抛出的异常会被捕获并进入当前 Work 的统一异常归档流程，
+    /// 不影响后续观察者继续接收 after 通知。
+    TFL_FORCE_INLINE void _notify_after(Worker& wr) noexcept;
 
     // ---- 静态图双向边表维护 ----
 
@@ -1273,7 +1203,7 @@ template <bool Check>
 inline void Work::_precede(Work* const target) {
     if constexpr (Check) {
         if (auto error = _can_precede(target)) {
-            throw Exception("cannot precede: {}.", *error);
+            TFL_THROW(Exception("cannot precede: {}.", *error));
         }
     }
 
@@ -1283,12 +1213,12 @@ inline void Work::_precede(Work* const target) {
         std::swap(m_edges[m_num_successors], m_edges.back());
     }
     ++m_num_successors;
-    try {
+    TFL_TRY {
         target->m_edges.push_back(this);
-    } catch (...) {
+    } TFL_CATCH_ALL {
         // 第二端扩容失败时撤销第一端，保留已有前驱/后继和分区布局。
         _erase_successor_at(m_num_successors - 1);
-        throw;
+        TFL_RETHROW();
     }
 }
 
@@ -1398,7 +1328,7 @@ inline bool Work::_has_path_without_jump(const Work* from, const Work* to) const
 }
 
 inline void Work::_acquire(Semaphore* sem, std::size_t count) {
-    if (!sem) throw Exception("cannot acquire null semaphore.");
+    if (!sem) TFL_THROW(Exception("cannot acquire null semaphore."));
     if (count == 0) return;
 
     auto& acquires = _ensure_semaphore_data().acquires;
@@ -1411,14 +1341,14 @@ inline void Work::_acquire(Semaphore* sem, std::size_t count) {
         );
 
     if (it != acquires.end() && it->sem == sem) {
-        throw Exception("semaphore already in acquire list.");
+        TFL_THROW(Exception("semaphore already in acquire list."));
     }
 
     acquires.insert(it, SemaphoreReq{sem, count});
 }
 
 inline void Work::_release(Semaphore* sem, std::size_t count) {
-    if (!sem) throw Exception("cannot release null semaphore.");
+    if (!sem) TFL_THROW(Exception("cannot release null semaphore."));
     if (count == 0) return;
 
     auto& sd = _ensure_semaphore_data();
@@ -1426,7 +1356,7 @@ inline void Work::_release(Semaphore* sem, std::size_t count) {
     // release 列表通常较小，直接线性检查同一 Semaphore 是否已存在。
     for (std::size_t i = 0; i < sd.releases.size(); ++i) {
         if (sd.releases[i].sem == sem) {
-            throw Exception("semaphore already in release list.");
+            TFL_THROW(Exception("semaphore already in release list."));
         }
     }
 
@@ -1547,18 +1477,30 @@ TFL_FORCE_INLINE void Work::_release_semaphores(Work*& first, Work*& last) noexc
     }
 }
 
-TFL_FORCE_INLINE void Work::_notify_before(Worker& wr) const noexcept {
+TFL_FORCE_INLINE void Work::_notify_before(Worker& wr) noexcept {
     if (m_observers) [[unlikely]] {
         for (auto& observer : m_observers->observers) {
-            observer->on_before(WorkerView{wr});
+            TFL_ASSERT(observer);
+
+            TFL_TRY {
+                observer->on_before(WorkerView{wr});
+            } TFL_CATCH_ALL {
+                _process_exception();
+            }
         }
     }
 }
 
-TFL_FORCE_INLINE void Work::_notify_after(Worker& wr) const noexcept {
+TFL_FORCE_INLINE void Work::_notify_after(Worker& wr) noexcept {
     if (m_observers) [[unlikely]] {
         for (auto& observer : m_observers->observers) {
-            observer->on_after(WorkerView{wr});
+            TFL_ASSERT(observer);
+
+            TFL_TRY {
+                observer->on_after(WorkerView{wr});
+            } TFL_CATCH_ALL {
+                _process_exception();
+            }
         }
     }
 }
@@ -1610,24 +1552,33 @@ inline void Semaphore::_release(Work*& out_first, Work*& out_last, std::size_t c
     m_waiter_tail = nullptr;
 }
 
-/// @brief 内部协作执行作用域使用的栈绑定异常/完成锚点 Work。
+/// @brief 内部执行作用域使用的栈绑定异常/完成锚点 Work。
 ///
-/// AnchorWork 不承载用户 callable，Invoker 的 invoke/dump 均为空操作；
-/// 它通过独立 Topology 和 `Control::EXPLICIT_ANCHOR` 聚合子链完成计数与异常。
+/// AnchorWork 不承载用户 callable，通过独立 Topology 和
+/// `Control::EXPLICIT_ANCHOR` 聚合子链完成计数与异常。
 ///
-/// @note 该类型用于 Runtime::corun、TaskGroup 等栈式协作作用域；
-///       对象由调用栈直接管理，绝不能通过 `destroy_work()` 或 Work 对象池回收。
+/// Preempted 为 false 时仅作为协作执行锚点；
+/// Preempted 为 true 时参与 PREEMPTED 恢复，并在恢复执行后
+/// 发布所属 Topology 完成状态并唤醒等待线程。
+///
+/// @tparam Preempted 是否在完成后恢复当前锚点。
+/// @note 对象由调用栈直接管理，绝不能通过 `destroy_work()` 或 Work 对象池回收。
+template <bool Preempted>
 class AnchorWork final : public Work {
     class Invoker final : public TopologyStorage {
     public:
         static constexpr TaskType TYPE = TaskType::None;
-        static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
+        static constexpr Work::Properties::type PROPERTIES = Preempted ? Work::Properties::PREEMPTED : Work::Properties::NONE;
         static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
 
         explicit Invoker(Executor& executor, Topology* parent_topology) noexcept
             : TopologyStorage{executor, parent_topology} {}
 
-        void invoke(Work&, Worker&, Executor&, Work*&) noexcept {}
+        void invoke(Work& work, Worker&, Executor&, Work*&) noexcept {
+            if constexpr (Preempted) {
+                work.m_topology->_set_finished();
+            }
+        }
 
         void dump(const Work&, std::ostream&) const noexcept {}
     };
@@ -1639,6 +1590,20 @@ public:
                executor,
                parent.m_topology} {
         TFL_ASSERT(parent.m_topology);
+
+        if constexpr (Preempted) {
+            m_topology->_set_running();
+        }
+    }
+
+    explicit AnchorWork(Executor& executor) noexcept
+        : Work{std::in_place_type<Invoker>,
+               static_cast<Work*>(nullptr),
+               executor,
+               nullptr} {
+        if constexpr (Preempted) {
+            m_topology->_set_running();
+        }
     }
 };
 
@@ -1711,7 +1676,7 @@ inline void Work::_destroy_async() noexcept {
             TFL_ASSERT(predecessor);
             edges.pop_back();
 
-            if (predecessor->_decrement_ref()) {
+            if (predecessor->m_topology->_decrement_ref()) {
                 predecessor->m_parent = pending;
                 pending = predecessor;
             }

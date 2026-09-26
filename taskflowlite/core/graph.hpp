@@ -261,11 +261,11 @@ inline Graph::~Graph() noexcept {
 inline Work* Graph::emplace(Work* work) {
     TFL_ASSERT(work);
     TFL_ASSERT(work->m_graph == this);
-    try {
+    TFL_TRY {
         m_works.push_back(work);
-    } catch (...) {
+    } TFL_CATCH_ALL {
         destroy_work(work);
-        throw;
+        TFL_RETHROW();
     }
     return work;
 }

@@ -26,15 +26,14 @@ namespace tfl {
 /// @brief 在当前任务执行作用域内提交、停止并协作式等待一组动态任务。
 ///
 /// TaskGroup 由执行期 `Context` 构造，并借用该 Context 所绑定的 Worker 和 Executor。
-/// 内部 `AnchorWork` 以 Context 当前 Work 为父节点，统一跟踪组内任务的完成计数、
-/// 停止域和异常状态。
+/// 内部 `AnchorWork` 以 Context 当前 Work 为父节点，并继承其 Topology，统一跟踪
+/// 组内任务的完成计数、停止域和异常状态。
 ///
-/// `silent_async/async` 默认将 AnchorWork 所属 Topology 作为新任务的父 Topology；
-/// 显式指定 `InheritTopology = false` 时只切断停止请求与异常传播使用的 Topology
-/// 父链，任务仍以 AnchorWork 为父 Work、计入本组完成计数，并由 `wait()` 或析构统一等待。
+/// `silent_async/async` 创建的任务始终以 AnchorWork 为父 Work，并将 AnchorWork
+/// 所属 Topology 作为父 Topology，使组级停止请求沿 Topology 父链传播到组内任务。
 ///
 /// TaskGroup 构造时从 Context 提取 Worker 和 Executor 的直接引用，不保存 Context
-/// 本身，从而避免 silent_async/async/run 等调度热路径增加额外一级间接访问。
+/// 本身，从而避免 silent_async/async/run 等调度热路径增加额外一级间接访问.
 ///
 /// @warning 对象必须在传入 Context 所属任务回调和 Worker 线程内使用及销毁，
 ///          不得逃逸当前作用域或被多个线程并发访问。
@@ -61,77 +60,75 @@ public:
     ~TaskGroup() noexcept;
 
     /// @brief Fire-and-forget 提交子图执行一次，并把其生命周期挂接到本组。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
     /// @tparam C 完成回调类型，默认不执行回调。
     /// @param gh 要执行的子图。
     /// @param cb 全部节点完成后调用的无参回调。
     /// @note 本函数立即返回；非拥有捕获必须存活到异步执行完成。
-    template <bool InheritTopology = false, graph_holder Gh, callback C = noop_callback>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
     void silent_async(Gh&& gh, C&& cb = C{});
 
     /// @brief Fire-and-forget 提交子图循环执行指定次数。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
     /// @tparam C 完成回调类型，默认不执行回调。
     /// @param gh 要执行的子图。
     /// @param num 循环次数。
     /// @param cb 全部循环完成后调用的无参回调。
-    template <bool InheritTopology = false, graph_holder Gh, callback C = noop_callback>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
     void silent_async(Gh&& gh, std::uint64_t num, C&& cb = C{});
 
     /// @brief Fire-and-forget 提交由谓词控制循环终止的子图。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
     /// @tparam P 无参且返回 bool 的终止谓词类型。
     /// @tparam C 完成回调类型，默认不执行回调。
     /// @param gh 要执行的子图。
     /// @param pred 每轮前调用；返回 true 时停止继续循环。
     /// @param cb 循环结束后调用的无参回调。
-    template <bool InheritTopology = false, graph_holder Gh, predicate P, callback C = noop_callback>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <graph_holder Gh, predicate P, callback C = noop_callback>
         requires capturable<P, C>
     void silent_async(Gh&& gh, P&& pred, C&& cb = C{});
 
     /// @brief Fire-and-forget 执行普通 callable，不保存返回值。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam T 满足 basic_invocable concept 的 callable 类型。
     /// @param task 要执行的 callable。
-    template <bool InheritTopology = false, typename T>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <typename T>
         requires (basic_invocable<T> && capturable<T>)
     void silent_async(T&& task);
 
     /// @brief Fire-and-forget 执行可接收 `Runtime&` 的 callable。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam T 满足 runtime_invocable concept 的 callable 类型。
     /// @param task 要执行的 callable；框架在调用时注入栈绑定 `Runtime&`。
-    template <bool InheritTopology = false, typename T>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <typename T>
         requires (runtime_invocable<T> && capturable<T>)
     void silent_async(T&& task);
 
     /// @brief Fire-and-forget 执行可接收 `SubFlow&` 的 callable。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam T 满足 subflow_invocable concept 的 callable 类型。
     /// @param task 要执行的 callable；框架在调用时注入栈绑定 `SubFlow&`。
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
     /// @warning callable 不得保存框架注入的 `SubFlow&`。
-    template <bool InheritTopology = false, typename T>
+    template <typename T>
         requires (subflow_invocable<T> && capturable<T>)
     void silent_async(T&& task);
 
     /// @brief 异步执行子图一次并返回可等待、可请求停止的结果通道。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
     /// @tparam Deps 前驱异步任务类型包。
     /// @param gh 要执行的子图。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
-    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
-    template <bool InheritTopology = false, graph_holder Gh, async_future... Deps>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <graph_holder Gh, async_future... Deps>
     [[nodiscard]] auto async(Gh&& gh, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行子图一次，在完成后调用回调并返回结果通道。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
     /// @tparam C 完成回调类型。
     /// @tparam Deps 前驱异步任务类型包。
@@ -139,25 +136,23 @@ public:
     /// @param cb 全部节点完成后调用的无参回调。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
-    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
-    template <bool InheritTopology = false, graph_holder Gh, callback C, async_future... Deps>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] auto async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步循环执行子图指定次数并返回结果通道。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
     /// @tparam Deps 前驱异步任务类型包。
     /// @param gh 要执行的子图。
     /// @param num 循环次数。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
-    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
-    template <bool InheritTopology = false, graph_holder Gh, async_future... Deps>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <graph_holder Gh, async_future... Deps>
     [[nodiscard]] auto async(Gh&& gh, std::uint64_t num, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步循环执行子图指定次数，在完成后调用回调并返回结果通道。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
     /// @tparam C 完成回调类型。
     /// @tparam Deps 前驱异步任务类型包。
@@ -166,13 +161,12 @@ public:
     /// @param cb 全部循环完成后调用的无参回调。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
-    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
-    template <bool InheritTopology = false, graph_holder Gh, callback C, async_future... Deps>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] auto async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行由谓词控制循环终止的子图并返回结果通道。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
     /// @tparam P 无参且返回 bool 的终止谓词类型。
     /// @tparam Deps 前驱异步任务类型包。
@@ -180,13 +174,12 @@ public:
     /// @param pred 每轮前调用；返回 true 时停止继续循环。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
-    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
-    template <bool InheritTopology = false, graph_holder Gh, predicate P, async_future... Deps>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <graph_holder Gh, predicate P, async_future... Deps>
         requires capturable<P>
     [[nodiscard]] auto async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行由谓词控制循环终止的子图，在结束后调用回调并返回结果通道。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
     /// @tparam P 无参且返回 bool 的终止谓词类型。
     /// @tparam C 完成回调类型。
@@ -196,45 +189,42 @@ public:
     /// @param cb 循环结束后调用的无参回调。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
-    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
-    template <bool InheritTopology = false, graph_holder Gh, predicate P, callback C, async_future... Deps>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <graph_holder Gh, predicate P, callback C, async_future... Deps>
         requires capturable<P, C>
     [[nodiscard]] auto async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行普通 callable 并保存其返回值。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam T 满足 basic_invocable concept 的 callable 类型。
     /// @tparam Deps 前驱异步任务类型包。
     /// @param task 要执行的 callable。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return `AsyncFuture<R>`，其中 `R = basic_return_t<T>`。
-    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
-    template <bool InheritTopology = false, typename T, async_future... Deps>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <typename T, async_future... Deps>
         requires (basic_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<basic_return_t<T>>;
 
     /// @brief 异步执行可接收 `Runtime&` 的 callable 并保存其返回值。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam T 满足 runtime_invocable concept 的 callable 类型。
     /// @tparam Deps 前驱异步任务类型包。
     /// @param task 要执行的 callable。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return `AsyncFuture<R>`，其中 `R = runtime_return_t<T>`。
-    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
-    template <bool InheritTopology = false, typename T, async_future... Deps>
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <typename T, async_future... Deps>
         requires (runtime_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<runtime_return_t<T>>;
 
     /// @brief 异步执行可接收 `SubFlow&` 的 callable 并保存其返回值。
-    /// @tparam InheritTopology 是否将 TaskGroup 锚点的 Topology 作为新任务的父 Topology。
     /// @tparam T 满足 subflow_invocable concept 的 callable 类型。
     /// @tparam Deps 前驱异步任务类型包。
     /// @param task 要执行的 callable。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return `AsyncFuture<R>`，其中 `R = subflow_return_t<T>`。
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
     /// @warning callable 不得保存框架注入的 `SubFlow&`。
-    /// @warning `InheritTopology` 为 true 时，TaskGroup 必须在返回句柄仍可能查询继承停止状态期间保持有效。
-    template <bool InheritTopology = false, typename T, async_future... Deps>
+    template <typename T, async_future... Deps>
         requires (subflow_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_return_t<T>>;
 
@@ -244,7 +234,17 @@ public:
     /// @note 本函数只提交任务，不等待；需要同步并观察异常时调用 `wait()`。
     /// @note source 发布依赖 Executor 批量调度路径的发布语义；Graph 不得在执行完成前销毁或修改。
     template <graph_holder Gh>
-    void run(Gh& gh) noexcept;
+    void run(Gh&& gh) noexcept;
+
+    /// @brief 在当前 Worker 上同步执行指定 Graph，并协作等待本次 Graph 完成。
+    ///
+    /// 本次执行使用独立 AnchorWork，并继承当前 TaskGroup 的 Topology；
+    /// 等待期间当前 Worker 会继续执行和窃取其他可运行任务。
+    ///
+    /// @tparam Gh 满足 graph_holder concept 的图持有者类型。
+    /// @param gh 要执行的任务图。
+    template <graph_holder Gh>
+    void corun(Gh&& gh);
 
     /// @brief 协作式等待本组所有未完成任务，并重新抛出归档异常。
     ///
@@ -270,7 +270,7 @@ public:
 private:
     Worker& m_worker;
     Executor& m_executor;
-    AnchorWork m_anchor;
+    AnchorWork<false> m_anchor;
 
     /// @brief 发布一个组内 SilentAsync Work，并维护 AnchorWork 的完成 slot。
     ///
@@ -346,7 +346,7 @@ inline AsyncFuture<R> TaskGroup::_launch_async(Work* work, ResultSlot<R>* result
                 const auto current = predecessor->m_topology->m_control.load(std::memory_order_acquire);
 
                 if (Topology::Control::status(current) == Topology::Control::Status::Idle) [[unlikely]] {
-                    throw Exception{"TaskGroup::async: dependency has not been started."};
+                    TFL_THROW(Exception{"TaskGroup::async: dependency has not been started."});
                 }
             }
         }
@@ -358,7 +358,7 @@ inline AsyncFuture<R> TaskGroup::_launch_async(Work* work, ResultSlot<R>* result
         for (Work* predecessor : predecessors) {
             if (predecessor) {
                 edges.push_back(predecessor);
-                predecessor->_increment_ref();
+                predecessor->m_topology->_increment_ref();
             }
         }
     }
@@ -372,7 +372,7 @@ inline AsyncFuture<R> TaskGroup::_launch_async(Work* work, ResultSlot<R>* result
     control.store(Topology::Control::set_status(current, Topology::Control::Status::Running), std::memory_order_relaxed);
 
     // 执行生命周期额外持有一份强引用，由 Async tear-down 释放。
-    work->_increment_ref();
+    work->m_topology->_increment_ref();
 
     // 任务执行期间占用 AnchorWork 的一个完成 slot。
     m_anchor.m_join_counter.fetch_add(1, std::memory_order_relaxed);
@@ -397,71 +397,43 @@ inline AsyncFuture<R> TaskGroup::_launch_async(Work* work, ResultSlot<R>* result
 // TaskGroup：fire-and-forget
 // ============================================================================
 
-template <bool InheritTopology, graph_holder Gh, callback C>
+template <graph_holder Gh, callback C>
     requires capturable<C>
 inline void TaskGroup::silent_async(Gh&& gh, C&& cb) {
-    silent_async<InheritTopology>(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
+    silent_async(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
 }
 
-template <bool InheritTopology, graph_holder Gh, callback C>
+template <graph_holder Gh, callback C>
     requires capturable<C>
 inline void TaskGroup::silent_async(Gh&& gh, std::uint64_t num, C&& cb) {
-    silent_async<InheritTopology>(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, std::forward<C>(cb));
+    silent_async(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, std::forward<C>(cb));
 }
 
-template <bool InheritTopology, graph_holder Gh, predicate P, callback C>
+template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
 inline void TaskGroup::silent_async(Gh&& gh, P&& pred, C&& cb) {
-    Topology* parent_topology = nullptr;
-
-    if constexpr (InheritTopology) {
-        parent_topology = m_anchor.m_topology;
-        TFL_ASSERT(parent_topology);
-    }
-
-    Work* work = make_silent_async_module(std::addressof(m_anchor), m_executor, parent_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
+    Work* work = make_silent_async_module(std::addressof(m_anchor), m_executor, m_anchor.m_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
     _launch_silent_async(work);
 }
 
-template <bool InheritTopology, typename T>
+template <typename T>
     requires (basic_invocable<T> && capturable<T>)
 inline void TaskGroup::silent_async(T&& task) {
-    Topology* parent_topology = nullptr;
-
-    if constexpr (InheritTopology) {
-        parent_topology = m_anchor.m_topology;
-        TFL_ASSERT(parent_topology);
-    }
-
-    Work* work = make_silent_async_basic(std::addressof(m_anchor), m_executor, parent_topology, std::forward<T>(task));
+    Work* work = make_silent_async_basic(std::addressof(m_anchor), m_executor, m_anchor.m_topology, std::forward<T>(task));
     _launch_silent_async(work);
 }
 
-template <bool InheritTopology, typename T>
+template <typename T>
     requires (runtime_invocable<T> && capturable<T>)
 inline void TaskGroup::silent_async(T&& task) {
-    Topology* parent_topology = nullptr;
-
-    if constexpr (InheritTopology) {
-        parent_topology = m_anchor.m_topology;
-        TFL_ASSERT(parent_topology);
-    }
-
-    Work* work = make_silent_async_runtime(std::addressof(m_anchor), m_executor, parent_topology, std::forward<T>(task));
+    Work* work = make_silent_async_runtime(std::addressof(m_anchor), m_executor, m_anchor.m_topology, std::forward<T>(task));
     _launch_silent_async(work);
 }
 
-template <bool InheritTopology, typename T>
+template <typename T>
     requires (subflow_invocable<T> && capturable<T>)
 inline void TaskGroup::silent_async(T&& task) {
-    Topology* parent_topology = nullptr;
-
-    if constexpr (InheritTopology) {
-        parent_topology = m_anchor.m_topology;
-        TFL_ASSERT(parent_topology);
-    }
-
-    Work* work = make_silent_async_subflow(std::addressof(m_anchor), m_executor, parent_topology, std::forward<T>(task));
+    Work* work = make_silent_async_subflow(std::addressof(m_anchor), m_executor, m_anchor.m_topology, std::forward<T>(task));
     _launch_silent_async(work);
 }
 
@@ -469,87 +441,59 @@ inline void TaskGroup::silent_async(T&& task) {
 // TaskGroup：带结果通道的组内任务
 // ============================================================================
 
-template <bool InheritTopology, graph_holder Gh, async_future... Deps>
+template <graph_holder Gh, async_future... Deps>
 inline auto TaskGroup::async(Gh&& gh, Deps&&... deps) -> AsyncFuture<void> {
-    return async<InheritTopology>(std::forward<Gh>(gh), 1ULL, noop_callback{}, std::forward<Deps>(deps)...);
+    return async(std::forward<Gh>(gh), 1ULL, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritTopology, graph_holder Gh, callback C, async_future... Deps>
+template <graph_holder Gh, callback C, async_future... Deps>
     requires capturable<C>
 inline auto TaskGroup::async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
-    return async<InheritTopology>(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb), std::forward<Deps>(deps)...);
+    return async(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <bool InheritTopology, graph_holder Gh, async_future... Deps>
+template <graph_holder Gh, async_future... Deps>
 inline auto TaskGroup::async(Gh&& gh, std::uint64_t num, Deps&&... deps) -> AsyncFuture<void> {
-    return async<InheritTopology>(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, noop_callback{}, std::forward<Deps>(deps)...);
+    return async(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritTopology, graph_holder Gh, callback C, async_future... Deps>
+template <graph_holder Gh, callback C, async_future... Deps>
     requires capturable<C>
 inline auto TaskGroup::async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
-    return async<InheritTopology>(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, std::forward<C>(cb), std::forward<Deps>(deps)...);
+    return async(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <bool InheritTopology, graph_holder Gh, predicate P, async_future... Deps>
+template <graph_holder Gh, predicate P, async_future... Deps>
     requires capturable<P>
 inline auto TaskGroup::async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void> {
-    return async<InheritTopology>(std::forward<Gh>(gh), std::forward<P>(pred), noop_callback{}, std::forward<Deps>(deps)...);
+    return async(std::forward<Gh>(gh), std::forward<P>(pred), noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritTopology, graph_holder Gh, predicate P, callback C, async_future... Deps>
+template <graph_holder Gh, predicate P, callback C, async_future... Deps>
     requires capturable<P, C>
 inline auto TaskGroup::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
-    Topology* parent_topology = nullptr;
-
-    if constexpr (InheritTopology) {
-        parent_topology = m_anchor.m_topology;
-        TFL_ASSERT(parent_topology);
-    }
-
-    auto [work, result] = make_async_module(std::addressof(m_anchor), m_executor, parent_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
+    auto [work, result] = make_async_module(std::addressof(m_anchor), m_executor, m_anchor.m_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritTopology, typename T, async_future... Deps>
+template <typename T, async_future... Deps>
     requires (basic_invocable<T> && capturable<T>)
 inline auto TaskGroup::async(T&& task, Deps&&... deps) -> AsyncFuture<basic_return_t<T>> {
-    Topology* parent_topology = nullptr;
-
-    if constexpr (InheritTopology) {
-        parent_topology = m_anchor.m_topology;
-        TFL_ASSERT(parent_topology);
-    }
-
-    auto [work, result] = make_async_basic(std::addressof(m_anchor), m_executor, parent_topology, std::forward<T>(task));
+    auto [work, result] = make_async_basic(std::addressof(m_anchor), m_executor, m_anchor.m_topology, std::forward<T>(task));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritTopology, typename T, async_future... Deps>
+template <typename T, async_future... Deps>
     requires (runtime_invocable<T> && capturable<T>)
 inline auto TaskGroup::async(T&& task, Deps&&... deps) -> AsyncFuture<runtime_return_t<T>> {
-    Topology* parent_topology = nullptr;
-
-    if constexpr (InheritTopology) {
-        parent_topology = m_anchor.m_topology;
-        TFL_ASSERT(parent_topology);
-    }
-
-    auto [work, result] = make_async_runtime(std::addressof(m_anchor), m_executor, parent_topology, std::forward<T>(task));
+    auto [work, result] = make_async_runtime(std::addressof(m_anchor), m_executor, m_anchor.m_topology, std::forward<T>(task));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritTopology, typename T, async_future... Deps>
+template <typename T, async_future... Deps>
     requires (subflow_invocable<T> && capturable<T>)
 inline auto TaskGroup::async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_return_t<T>> {
-    Topology* parent_topology = nullptr;
-
-    if constexpr (InheritTopology) {
-        parent_topology = m_anchor.m_topology;
-        TFL_ASSERT(parent_topology);
-    }
-
-    auto [work, result] = make_async_subflow(std::addressof(m_anchor), m_executor, parent_topology, std::forward<T>(task));
+    auto [work, result] = make_async_subflow(std::addressof(m_anchor), m_executor, m_anchor.m_topology, std::forward<T>(task));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
@@ -558,18 +502,37 @@ inline auto TaskGroup::async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_re
 // ============================================================================
 
 template <graph_holder Gh>
-inline void TaskGroup::run(Gh& gh) noexcept {
+inline void TaskGroup::run(Gh&& gh) noexcept {
     Graph& graph = detail::to_graph(gh);
-    const std::size_t num_sources = m_executor._set_up_graph(graph, m_anchor);
-
-    if (num_sources == 0) {
+    if (graph.empty()) {
         return;
     }
-
+    const std::size_t num_sources = m_executor._set_up_graph(graph, m_anchor);
+    if (num_sources == 0) [[unlikely]] {
+        return;
+    }
     // 每个 source 占用 AnchorWork 的一个完成 slot。
     // 必须先建立完整计数再发布任务，避免 source 快速完成导致锚点提前归零。
     m_anchor.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
     m_executor._schedule(m_worker, graph.begin(), num_sources);
+}
+
+// ============================================================================
+// TaskGroup::corun
+// ============================================================================
+
+template <graph_holder Gh>
+inline void TaskGroup::corun(Gh&& gh) {
+    Graph& graph = detail::to_graph(gh);
+
+    if (graph.empty()) {
+        return;
+    }
+
+    AnchorWork<false> anchor{m_anchor, m_executor};
+
+    m_executor._corun_graph(graph, anchor, m_worker);
+    anchor._rethrow_exception();
 }
 
 // ============================================================================
@@ -589,11 +552,11 @@ inline void TaskGroup::wait() {
 // ============================================================================
 
 inline bool TaskGroup::stop_requested() const noexcept {
-    return m_anchor._stop_requested();
+    return m_anchor.m_topology->_stop_requested();
 }
 
 inline bool TaskGroup::request_stop() noexcept {
-    return m_anchor._request_stop();
+    return m_anchor.m_topology->_request_stop();
 }
 
 inline std::size_t TaskGroup::size() const noexcept {

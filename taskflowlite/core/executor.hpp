@@ -455,6 +455,16 @@ public:
     // 同步与状态查询
     // ============================================================================
 
+    /// @brief 同步执行指定 Graph，直到 Graph 全部完成。
+    ///
+    /// 当前线程属于本 Executor 的 Worker 时采用协作执行；
+    /// 外部线程调用时阻塞当前线程等待 Graph 完成。
+    ///
+    /// @tparam Gh 满足 graph_holder concept 的图持有者类型。
+    /// @param gh 要执行的任务图。
+    template <graph_holder Gh>
+    void corun(Gh&& gh);
+
     /// @brief 阻塞等待当前观察到的所有活跃顶层拓扑完成。
     ///
     /// 通过 `m_num_topologies` 的 acquire 加载和 `std::atomic::wait` 等待计数归零。
@@ -696,9 +706,11 @@ private:
     /// @pre work 非空，且当前不属于其他使用 `m_next` 的调度链。
     void _push_shared(Work* work) noexcept;
 
-    /// @brief 将 `[first, first + n)` 的 Work 批量发布到同一个共享调度分片。
+    /// @brief 将 `[first, first + n)` 的 Work 均匀发布到多个共享调度分片。
     ///
-    /// 使用首个 Work 地址哈希选择目标 SharedWorkStack，并一次性发布整个任务区间。
+    /// 当任务数量不超过共享调度分片数量时，从随机起始分片开始依次发布；
+    /// 当任务数量超过共享调度分片数量时，将任务均匀切分为多个连续任务段，
+    /// 并通过批量 push 发布到各个共享调度分片。
     ///
     /// @tparam Iterator 随机访问迭代器类型。
     /// @param first 待发布区间起点。
@@ -708,9 +720,11 @@ private:
         requires std::same_as<std::remove_cvref_t<std::iter_reference_t<Iterator>>, Work*>
     void _push_shared(Iterator first, std::size_t n) noexcept;
 
-    /// @brief 将一条已经连接完成的 Work 链发布到共享调度分片。
+    /// @brief 将一条已经连接完成的 Work 链均匀发布到多个共享调度分片。
     ///
-    /// 使用首个 Work 地址哈希选择目标 SharedWorkStack，并一次性发布整条任务链。
+    /// 当任务数量不超过共享调度分片数量时，从随机起始分片开始逐个发布；
+    /// 当任务数量超过共享调度分片数量时，将原链切分为多个连续任务段，
+    /// 并通过链式 push 发布到各个共享调度分片。
     ///
     /// @param first 链表首节点。
     /// @param last 链表尾节点。
@@ -799,15 +813,15 @@ private:
     template <predicate Pred>
     void _corun_until(Worker& worker, Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>);
 
-    /// @brief 在当前 Worker 上启动一个 Graph，并协作执行直到该 Graph 占用的 parent slot 全部归还。
-    ///
-    /// 首先通过 `_set_up_graph()` 建立节点运行期状态并取得 source；若没有 source
-    /// 则直接返回。否则为每个 source 增加一个 parent join slot，批量发布 source，
-    /// 再通过 `_corun_until()` 持续执行可用任务直到 parent join_counter 归零。
-    ///
-    /// @param worker 当前 Worker。
-    /// @param graph 要执行的 Graph。
+    /// @brief 启动一个 Graph，并阻塞当前线程直到 Graph 全部完成。
+    /// @param g 要执行的 Graph。
     /// @param parent Graph 所属父 Work。
+    void _corun_graph(Graph& g, Work& parent) noexcept;
+
+    /// @brief 在当前 Worker 上启动一个 Graph，并协作执行直到 Graph 全部完成。
+    /// @param g 要执行的 Graph。
+    /// @param parent Graph 所属父 Work。
+    /// @param wr 当前 Worker。
     void _corun_graph(Graph& g, Work& parent, Worker& wr) noexcept;
 
     /// @brief 为一个新启动的顶层执行链增加 Executor 活跃 topology 计数。
@@ -832,11 +846,11 @@ private:
 // ============================================================================
 inline std::size_t Executor::_check_worker_count(std::size_t n) {
     if (n == 0) {
-        throw Exception("Executor must define at least one worker.");
+        TFL_THROW(Exception("Executor must define at least one worker."));
     }
 
     if (n >= Notifier::capacity()) {
-        throw Exception("Executor worker count exceeds Notifier 16-bit capacity (max 65534).");
+        TFL_THROW(Exception("Executor worker count exceeds Notifier 16-bit capacity (max 65534)."));
     }
 
     return n;
@@ -844,15 +858,15 @@ inline std::size_t Executor::_check_worker_count(std::size_t n) {
 
 inline Executor::Executor(WorkerHandler* handler, std::size_t num_workers)
     : m_workers{_check_worker_count(num_workers)}
-    , m_shared_stacks{static_cast<std::size_t>(std::bit_width(num_workers))}
+    , m_shared_stacks{num_workers}
     , m_notifier{num_workers}
     , m_handler{handler}
 {
-    try {
+    TFL_TRY {
         _spawn(num_workers);
-    } catch (...) {
+    } TFL_CATCH_ALL {
         _shutdown();
-        throw;
+        TFL_RETHROW();
     }
 }
 
@@ -896,7 +910,7 @@ inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result,
                 const auto current = predecessor->m_topology->m_control.load(std::memory_order_acquire);
 
                 if (Topology::Control::status(current) == Topology::Control::Status::Idle) [[unlikely]] {
-                    throw Exception{"Executor::async: dependency has not been started."};
+                    TFL_THROW(Exception{"Executor::async: dependency has not been started."});
                 }
             }
         }
@@ -908,7 +922,7 @@ inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result,
         for (Work* predecessor : predecessors) {
             if (predecessor) {
                 edges.push_back(predecessor);
-                predecessor->_increment_ref();
+                predecessor->m_topology->_increment_ref();
             }
         }
     }
@@ -922,7 +936,7 @@ inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result,
     control.store(Topology::Control::set_status(current, Topology::Control::Status::Running), std::memory_order_relaxed);
 
     // 执行生命周期额外持有一份强引用，由 Async tear-down 释放。
-    work->_increment_ref();
+    work->m_topology->_increment_ref();
     _increment_topology();
 
     if constexpr (num_predecessors != 0) {
@@ -1063,6 +1077,28 @@ inline auto Executor::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncF
                                             std::forward<C>(cb));
 
     return _launch_async(work, result, std::forward<Deps>(deps)...);
+}
+
+template <graph_holder Gh>
+inline void Executor::corun(Gh&& gh) {
+    Graph& graph = detail::to_graph(gh);
+
+    if (graph.empty()) {
+        return;
+    }
+
+    if (Worker* wr = _this_worker()) {
+        AnchorWork<false> anchor{*this};
+
+        _corun_graph(graph, anchor, *wr);
+        anchor._rethrow_exception();
+        return;
+    }
+
+    AnchorWork<true> anchor{*this};
+
+    _corun_graph(graph, anchor);
+    anchor._rethrow_exception();
 }
 
 inline void Executor::wait_for_all() const noexcept {
@@ -1666,7 +1702,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*
 
     // 释放本次执行持有的一份强引用；若没有外部 AsyncTask 句柄继续持有，
     // 当前线程可能成为最后一个引用释放者并立即销毁 Work。
-    if (w._decrement_ref()) {
+    if (w.m_topology->_decrement_ref()) {
         w._destroy_async();
     }
 
@@ -1678,7 +1714,6 @@ TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*
     }
 }
 
-
 inline void Executor::_push_shared(Work* work) noexcept {
     std::size_t const size = m_shared_stacks.size();
     std::size_t const index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(work) * 11400714819323198485ULL, size);
@@ -1689,18 +1724,120 @@ inline void Executor::_push_shared(Work* work) noexcept {
 template <std::random_access_iterator Iterator>
     requires std::same_as<std::remove_cvref_t<std::iter_reference_t<Iterator>>, Work*>
 inline void Executor::_push_shared(Iterator first, std::size_t n) noexcept {
-    Work* const work = first[0];
-    std::size_t const size = m_shared_stacks.size();
-    std::size_t const index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(work) * 11400714819323198485ULL, size);
+    TFL_ASSERT(n != 0);
 
-    m_shared_stacks[index].push(first, n);
+    std::size_t const size = m_shared_stacks.size();
+
+    if (n <= size) {
+        std::size_t index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(first[0]) * 11400714819323198485ULL, size);
+
+        for (std::size_t i = 0; i < n; ++i) {
+            m_shared_stacks[index].push(first[i]);
+
+            if (++index == size) {
+                index = 0;
+            }
+        }
+
+        return;
+    }
+
+    std::size_t const base = n / size;
+    std::size_t const extra = n - base * size;
+    Iterator current = first;
+
+    for (std::size_t i = extra; i < size; ++i) {
+        m_shared_stacks[i].push(current, base);
+        current += static_cast<std::iter_difference_t<Iterator>>(base);
+    }
+
+    for (std::size_t i = 0; i < extra; ++i) {
+        m_shared_stacks[i].push(current, base + 1);
+        current += static_cast<std::iter_difference_t<Iterator>>(base + 1);
+    }
 }
 
 inline void Executor::_push_shared(Work* first, Work* last, std::size_t n) noexcept {
-    std::size_t const size = m_shared_stacks.size();
-    std::size_t const index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(first) * 11400714819323198485ULL, size);
+    TFL_ASSERT(first);
+    TFL_ASSERT(last);
+    TFL_ASSERT(n != 0);
+    TFL_ASSERT(last->m_next == nullptr);
 
-    m_shared_stacks[index].push(first, last, n);
+    std::size_t const size = m_shared_stacks.size();
+
+    if (n <= size) {
+        std::size_t index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(first) * 11400714819323198485ULL, size);
+        Work* current = first;
+
+        for (std::size_t i = 0; i < n; ++i) {
+            Work* const next = current->m_next;
+            current->m_next = nullptr;
+
+            m_shared_stacks[index].push(current);
+
+            current = next;
+
+            if (++index == size) {
+                index = 0;
+            }
+        }
+
+        TFL_ASSERT(current == nullptr);
+        return;
+    }
+
+    std::size_t const base = n / size;
+    std::size_t const extra = n - base * size;
+    Work* current = first;
+
+    if (extra == 0) {
+        for (std::size_t i = 0; i + 1 < size; ++i) {
+            Work* const head = current;
+            Work* tail = head;
+
+            for (std::size_t j = 1; j < base; ++j) {
+                tail = tail->m_next;
+            }
+
+            current = tail->m_next;
+            tail->m_next = nullptr;
+
+            m_shared_stacks[i].push(head, tail, base);
+        }
+
+        m_shared_stacks[size - 1].push(current, last, base);
+        return;
+    }
+
+    for (std::size_t i = extra; i < size; ++i) {
+        Work* const head = current;
+        Work* tail = head;
+
+        for (std::size_t j = 1; j < base; ++j) {
+            tail = tail->m_next;
+        }
+
+        current = tail->m_next;
+        tail->m_next = nullptr;
+
+        m_shared_stacks[i].push(head, tail, base);
+    }
+
+    for (std::size_t i = 0; i + 1 < extra; ++i) {
+        Work* const head = current;
+        Work* tail = head;
+
+        for (std::size_t j = 1; j < base + 1; ++j) {
+            tail = tail->m_next;
+        }
+
+        current = tail->m_next;
+        tail->m_next = nullptr;
+
+        m_shared_stacks[i].push(head, tail, base + 1);
+    }
+
+    m_shared_stacks[extra - 1].push(current, last, base + 1);
 }
 
 // ============================================================================
@@ -1810,16 +1947,27 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) noexcept(std::is_not
     }
 }
 
+inline void Executor::_corun_graph(Graph& g, Work& parent) noexcept {
+    const std::size_t num_sources = _set_up_graph(g, parent);
+
+    if (num_sources == 0) [[unlikely]] {
+        return;
+    }
+
+    parent.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
+    _schedule(g.begin(), num_sources);
+    parent.m_topology->_wait();
+}
+
 inline void Executor::_corun_graph(Graph& g, Work& parent, Worker& wr) noexcept {
     const std::size_t num_sources = _set_up_graph(g, parent);
 
-    if (num_sources == 0) {
+    if (num_sources == 0) [[unlikely]] {
         return;
     }
 
     parent.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
     _schedule(wr, g.begin(), num_sources);
-
     _corun_until(wr, [&parent]() noexcept {
         return parent.m_join_counter.load(std::memory_order_acquire) == 0;
     });
