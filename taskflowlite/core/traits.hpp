@@ -263,38 +263,31 @@ using subflow_return_t = std::invoke_result_t<std::decay_t<T>&, SubFlow&>;
 
 /// @brief `f()` 可调用 —— 普通同步任务签名。
 template <typename T>
-concept basic_invocable = std::invocable<std::decay_t<T>&>
-                          && !detail::coroutine_returnable<basic_return_t<T>>;
+concept basic_invocable = std::invocable<std::decay_t<T>&> && !detail::coroutine_returnable<basic_return_t<T>>;
 
 /// @brief `f(Branch&)` 可调用 —— 单目标条件分支任务签名。
 template <typename T>
-concept branch_invocable = std::invocable<std::decay_t<T>&, Branch&>
-                           && !detail::coroutine_returnable<branch_return_t<T>>;
+concept branch_invocable = std::invocable<std::decay_t<T>&, Branch&> && !detail::coroutine_returnable<branch_return_t<T>>;
 
 /// @brief `f(MultiBranch&)` 可调用 —— 多目标广播分支任务签名。
 template <typename T>
-concept multi_branch_invocable = std::invocable<std::decay_t<T>&, MultiBranch&>
-                                 && !detail::coroutine_returnable<multi_branch_return_t<T>>;
+concept multi_branch_invocable = std::invocable<std::decay_t<T>&, MultiBranch&> && !detail::coroutine_returnable<multi_branch_return_t<T>>;
 
 /// @brief `f(Jump&)` 可调用 —— 单目标强制跳转任务签名。
 template <typename T>
-concept jump_invocable = std::invocable<std::decay_t<T>&, Jump&>
-                         && !detail::coroutine_returnable<jump_return_t<T>>;
+concept jump_invocable = std::invocable<std::decay_t<T>&, Jump&> && !detail::coroutine_returnable<jump_return_t<T>>;
 
 /// @brief `f(MultiJump&)` 可调用 —— 多目标广播跳转任务签名。
 template <typename T>
-concept multi_jump_invocable = std::invocable<std::decay_t<T>&, MultiJump&>
-                               && !detail::coroutine_returnable<multi_jump_return_t<T>>;
+concept multi_jump_invocable = std::invocable<std::decay_t<T>&, MultiJump&> && !detail::coroutine_returnable<multi_jump_return_t<T>>;
 
 /// @brief `f(Runtime&)` 可调用 —— 运行时动态调度任务签名。
 template <typename T>
-concept runtime_invocable = std::invocable<std::decay_t<T>&, Runtime&>
-                            && !detail::coroutine_returnable<runtime_return_t<T>>;
+concept runtime_invocable = std::invocable<std::decay_t<T>&, Runtime&> && !detail::coroutine_returnable<runtime_return_t<T>>;
 
 /// @brief `f(SubFlow&)` 可调用。
 template <typename T>
-concept subflow_invocable = std::invocable<std::decay_t<T>&, SubFlow&>
-                            && !detail::coroutine_returnable<subflow_return_t<T>>;
+concept subflow_invocable = std::invocable<std::decay_t<T>&, SubFlow&> && !detail::coroutine_returnable<subflow_return_t<T>>;
 
 /// @brief 约束 `Ts...` 为 `{Semaphore, count, Semaphore, count, ...}` 交替序列。
 template <typename... Ts>

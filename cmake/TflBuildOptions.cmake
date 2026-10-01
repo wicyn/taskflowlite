@@ -42,6 +42,19 @@ elseif(_tfl_legacy_count EQUAL 1)
 endif()
 
 option(TFL_NATIVE_ARCH "Optimize internal Release targets for the build machine" OFF)
+
+# Apply only to dedicated examples/tests; never change a consumer's exception mode.
+function(tfl_disable_compiler_exceptions target)
+    if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        target_compile_options(${target} PRIVATE /EHs-c-)
+        target_compile_definitions(${target} PRIVATE _HAS_EXCEPTIONS=0)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target} PRIVATE -fno-exceptions)
+    else()
+        message(FATAL_ERROR "No exception-disable flags configured for ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+endfunction()
+
 add_library(tfl_internal_flags INTERFACE)
 if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
     target_compile_options(tfl_internal_flags INTERFACE

@@ -33,6 +33,8 @@
 #include <utility>
 #include <version>
 
+#include "macros.hpp"
+
 namespace tfl {
 namespace detail {
 
@@ -165,24 +167,22 @@ public:
     explicit SmallVector(size_type count)
         requires std::default_initializable<T>
         : SmallVector() {
-        try {
+        TFL_TRY {
             resize(count);
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _cleanup_failed_construction();
-            throw;
+            TFL_RETHROW();
         }
     }
 
     SmallVector(size_type count, const T& value)
         requires std::is_copy_constructible_v<T>
         : SmallVector() {
-        try {
+        TFL_TRY {
             _construct_fill(count, value);
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _cleanup_failed_construction();
-            throw;
+            TFL_RETHROW();
         }
     }
 
@@ -190,12 +190,11 @@ public:
         requires std::constructible_from<T, std::iter_reference_t<It>>
     SmallVector(It first, S last)
         : SmallVector() {
-        try {
+        TFL_TRY {
             _construct_range(std::move(first), std::move(last));
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _cleanup_failed_construction();
-            throw;
+            TFL_RETHROW();
         }
     }
 
@@ -215,12 +214,11 @@ public:
     SmallVector(const SmallVector& rhs)
         requires std::is_copy_constructible_v<T>
         : SmallVector() {
-        try {
+        TFL_TRY {
             _construct_range(rhs.begin(), rhs.end());
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _cleanup_failed_construction();
-            throw;
+            TFL_RETHROW();
         }
     }
 
@@ -231,12 +229,11 @@ public:
         requires (M != N && std::is_copy_constructible_v<T>)
     SmallVector(const SmallVector<T, M>& rhs)
         : SmallVector() {
-        try {
+        TFL_TRY {
             _construct_range(rhs.begin(), rhs.end());
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _cleanup_failed_construction();
-            throw;
+            TFL_RETHROW();
         }
     }
 
@@ -247,12 +244,11 @@ public:
             _move_construct_from(rhs);
         }
         else {
-            try {
+            TFL_TRY {
                 _move_construct_from(rhs);
-            }
-            catch (...) {
+            } TFL_CATCH_ALL {
                 _cleanup_failed_construction();
-                throw;
+                TFL_RETHROW();
             }
         }
     }
@@ -265,12 +261,11 @@ public:
             _move_construct_from(rhs);
         }
         else {
-            try {
+            TFL_TRY {
                 _move_construct_from(rhs);
-            }
-            catch (...) {
+            } TFL_CATCH_ALL {
                 _cleanup_failed_construction();
-                throw;
+                TFL_RETHROW();
             }
         }
     }
@@ -457,14 +452,14 @@ public:
 
     [[nodiscard]] reference at(size_type pos) {
         if (pos >= size()) [[unlikely]] {
-            throw std::out_of_range("tfl::SmallVector::at");
+            TFL_THROW(std::out_of_range("tfl::SmallVector::at"));
         }
         return m_data[pos];
     }
 
     [[nodiscard]] const_reference at(size_type pos) const {
         if (pos >= size()) [[unlikely]] {
-            throw std::out_of_range("tfl::SmallVector::at");
+            TFL_THROW(std::out_of_range("tfl::SmallVector::at"));
         }
         return m_data[pos];
     }
@@ -889,15 +884,14 @@ public:
         else {
             // 单遍范围可能逐次扩容；失败时撤销已追加元素，保留当前容量。
             const storage_size_type old_size = m_size;
-            try {
+            TFL_TRY {
                 for (; first != last; ++first) {
                     emplace_back(*first);
                 }
-            }
-            catch (...) {
+            } TFL_CATCH_ALL {
                 _destroy_n(_ptr_at(old_size), m_size - old_size);
                 m_size = old_size;
-                throw;
+                TFL_RETHROW();
             }
         }
     }
@@ -993,7 +987,7 @@ private:
     }
 
     [[noreturn]] static void _throw_length_error() {
-        throw std::length_error("tfl::SmallVector capacity exceeds max_size()");
+        TFL_THROW(std::length_error("tfl::SmallVector capacity exceeds max_size()"));
     }
 
     [[nodiscard]] static storage_size_type _checked_storage_size(size_type value) {
@@ -1143,7 +1137,7 @@ private:
         if constexpr (alignof(T) <= alignof(std::max_align_t)) {
             ptr = std::malloc(bytes);
             if (ptr == nullptr) [[unlikely]] {
-                throw std::bad_alloc{};
+                TFL_THROW(std::bad_alloc{});
             }
         }
         else {
@@ -1191,14 +1185,13 @@ private:
         }
         else {
             storage_size_type constructed = 0;
-            try {
+            TFL_TRY {
                 for (; constructed < count; ++constructed) {
                     std::construct_at(destination + constructed, std::move_if_noexcept(source[constructed]));
                 }
-            }
-            catch (...) {
+            } TFL_CATCH_ALL {
                 _destroy_n(destination, constructed);
-                throw;
+                TFL_RETHROW();
             }
         }
     }
@@ -1206,34 +1199,32 @@ private:
     template <typename It>
     static void _copy_construct_n(T* destination, It first, storage_size_type count) {
         storage_size_type constructed = 0;
-        try {
+        TFL_TRY {
             for (; constructed < count; ++constructed, ++first) {
                 std::construct_at(destination + constructed, *first);
             }
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _destroy_n(destination, constructed);
-            throw;
+            TFL_RETHROW();
         }
     }
 
     static void _fill_construct_n(T* destination, storage_size_type count, const T& value) {
         storage_size_type constructed = 0;
-        try {
+        TFL_TRY {
             for (; constructed < count; ++constructed) {
                 std::construct_at(destination + constructed, value);
             }
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _destroy_n(destination, constructed);
-            throw;
+            TFL_RETHROW();
         }
     }
 
     template <bool ValueInitialize>
     static void _default_construct_n(T* destination, storage_size_type count) {
         storage_size_type constructed = 0;
-        try {
+        TFL_TRY {
             for (; constructed < count; ++constructed) {
                 if constexpr (ValueInitialize) {
                     std::construct_at(destination + constructed);
@@ -1242,10 +1233,9 @@ private:
                     ::new (static_cast<void*>(destination + constructed)) T;
                 }
             }
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _destroy_n(destination, constructed);
-            throw;
+            TFL_RETHROW();
         }
     }
 
@@ -1257,7 +1247,7 @@ private:
             if (_is_heap()) {
                 void* ptr = std::realloc(m_data, _bytes(new_capacity));
                 if (ptr == nullptr) [[unlikely]] {
-                    throw std::bad_alloc{};
+                    TFL_THROW(std::bad_alloc{});
                 }
                 m_data = static_cast<T*>(ptr);
                 m_capacity = new_capacity;
@@ -1266,12 +1256,11 @@ private:
         }
 
         T* new_data = _allocate_raw(new_capacity);
-        try {
+        TFL_TRY {
             _relocate_construct_n(new_data, m_data, m_size);
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _deallocate_raw(new_data);
-            throw;
+            TFL_RETHROW();
         }
 
         _destroy_n(m_data, m_size);
@@ -1324,18 +1313,17 @@ private:
         T* new_data = _allocate_raw(new_capacity);
 
         bool inserted = false;
-        try {
+        TFL_TRY {
             // 先构造新增元素，确保 args 引用当前 storage 时不会被 grow 失效。
             std::construct_at(new_data + old_size, std::forward<Args>(args)...);
             inserted = true;
             _relocate_construct_n(new_data, m_data, old_size);
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             if (inserted) {
                 _destroy_n(new_data + old_size, 1);
             }
             _deallocate_raw(new_data);
-            throw;
+            TFL_RETHROW();
         }
 
         _destroy_n(m_data, old_size);
@@ -1355,15 +1343,14 @@ private:
 
         bool inserted = false;
         bool prefix_done = false;
-        try {
+        TFL_TRY {
             // 同样先构造插入元素，避免 args 指向旧 storage 时失效。
             std::construct_at(new_data + index, std::forward<Args>(args)...);
             inserted = true;
             _relocate_construct_n(new_data, m_data, index);
             prefix_done = true;
             _relocate_construct_n(new_data + index + 1, m_data + index, old_size - index);
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             if (prefix_done) {
                 _destroy_n(new_data, index);
             }
@@ -1371,7 +1358,7 @@ private:
                 _destroy_n(new_data + index, 1);
             }
             _deallocate_raw(new_data);
-            throw;
+            TFL_RETHROW();
         }
 
         _destroy_n(m_data, old_size);
@@ -1394,14 +1381,13 @@ private:
 
         bool fill_done = false;
         bool prefix_done = false;
-        try {
+        TFL_TRY {
             _fill_construct_n(new_data + index, count, value);
             fill_done = true;
             _relocate_construct_n(new_data, m_data, index);
             prefix_done = true;
             _relocate_construct_n(new_data + index + count, m_data + index, old_size - index);
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             if (prefix_done) {
                 _destroy_n(new_data, index);
             }
@@ -1409,7 +1395,7 @@ private:
                 _destroy_n(new_data + index, count);
             }
             _deallocate_raw(new_data);
-            throw;
+            TFL_RETHROW();
         }
 
         _destroy_n(m_data, old_size);
@@ -1433,14 +1419,13 @@ private:
 
         bool range_done = false;
         bool prefix_done = false;
-        try {
+        TFL_TRY {
             _copy_construct_n(new_data + index, std::move(first), count);
             range_done = true;
             _relocate_construct_n(new_data, m_data, index);
             prefix_done = true;
             _relocate_construct_n(new_data + index + count, m_data + index, old_size - index);
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             if (prefix_done) {
                 _destroy_n(new_data, index);
             }
@@ -1448,7 +1433,7 @@ private:
                 _destroy_n(new_data + index, count);
             }
             _deallocate_raw(new_data);
-            throw;
+            TFL_RETHROW();
         }
 
         _destroy_n(m_data, old_size);
@@ -1496,15 +1481,14 @@ private:
 
         const storage_size_type extra = count - tail;
         storage_size_type extra_constructed = 0;
-        try {
+        TFL_TRY {
             for (; extra_constructed < extra; ++extra_constructed) {
                 std::construct_at(m_data + old_size + extra_constructed, value);
             }
             _relocate_construct_n(m_data + old_size + extra, m_data + index, tail);
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _destroy_n(m_data + old_size, extra_constructed);
-            throw;
+            TFL_RETHROW();
         }
 
         m_size = new_size;
@@ -1543,16 +1527,15 @@ private:
         std::ranges::advance(middle, static_cast<difference_type>(tail));
 
         storage_size_type extra_constructed = 0;
-        try {
+        TFL_TRY {
             It it = middle;
             for (; extra_constructed < extra; ++extra_constructed, ++it) {
                 std::construct_at(m_data + old_size + extra_constructed, *it);
             }
             _relocate_construct_n(m_data + old_size + extra, m_data + index, tail);
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _destroy_n(m_data + old_size, extra_constructed);
-            throw;
+            TFL_RETHROW();
         }
 
         m_size = new_size;
@@ -1593,17 +1576,16 @@ private:
         const storage_size_type new_capacity = _next_capacity(m_capacity, new_size);
         T* new_data = _allocate_raw(new_capacity);
         bool tail_done = false;
-        try {
+        TFL_TRY {
             construct_tail(new_data + old_size);
             tail_done = true;
             _relocate_construct_n(new_data, m_data, old_size);
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             if (tail_done) {
                 _destroy_n(new_data + old_size, count);
             }
             _deallocate_raw(new_data);
-            throw;
+            TFL_RETHROW();
         }
 
         _destroy_n(m_data, old_size);
@@ -1616,12 +1598,11 @@ private:
     void _assign_fill(storage_size_type count, const T& value) {
         if (count > m_capacity) {
             T* new_data = _allocate_raw(count);
-            try {
+            TFL_TRY {
                 _fill_construct_n(new_data, count, value);
-            }
-            catch (...) {
+            } TFL_CATCH_ALL {
                 _deallocate_raw(new_data);
-                throw;
+                TFL_RETHROW();
             }
 
             _destroy_n(m_data, m_size);
@@ -1643,15 +1624,14 @@ private:
 
         if (count > m_size) {
             const storage_size_type old_size = m_size;
-            try {
+            TFL_TRY {
                 for (; m_size < count; ++m_size) {
                     std::construct_at(m_data + m_size, value);
                 }
-            }
-            catch (...) {
+            } TFL_CATCH_ALL {
                 _destroy_n(m_data + old_size, m_size - old_size);
                 m_size = old_size;
-                throw;
+                TFL_RETHROW();
             }
         }
     }
@@ -1660,12 +1640,11 @@ private:
     void _assign_forward(It first, storage_size_type count) {
         if (count > m_capacity) {
             T* new_data = _allocate_raw(count);
-            try {
+            TFL_TRY {
                 _copy_construct_n(new_data, std::move(first), count);
-            }
-            catch (...) {
+            } TFL_CATCH_ALL {
                 _deallocate_raw(new_data);
-                throw;
+                TFL_RETHROW();
             }
 
             _destroy_n(m_data, m_size);
@@ -1689,16 +1668,15 @@ private:
         }
 
         const storage_size_type old_size = m_size;
-        try {
+        TFL_TRY {
             for (; i < count; ++i, ++first) {
                 std::construct_at(m_data + i, *first);
                 ++m_size;
             }
-        }
-        catch (...) {
+        } TFL_CATCH_ALL {
             _destroy_n(m_data + old_size, m_size - old_size);
             m_size = old_size;
-            throw;
+            TFL_RETHROW();
         }
     }
 

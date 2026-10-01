@@ -392,11 +392,11 @@ public:
         if constexpr (std::is_nothrow_constructible_v<T, Args...>) {
             return std::construct_at(block->storage_ptr(), std::forward<Args>(args)...);
         } else {
-            try {
+            TFL_TRY {
                 return std::construct_at(block->storage_ptr(), std::forward<Args>(args)...);
-            } catch (...) {
+            } TFL_CATCH_ALL {
                 _push_block(*block->free_stack, block);
-                throw;
+                TFL_RETHROW();
             }
         }
     }

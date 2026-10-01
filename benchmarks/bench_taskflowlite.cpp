@@ -20,7 +20,7 @@ static void test_01() {
     tfl::Flow flow;
     for (int i = 0; i < kSize; ++i) flow.emplace([] { add_one(); });
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_01 [32 parallel | 8 threads | 500k runs]"); task.start().wait(); }
+    { Timer t("test_01 [32 parallel | 8 threads | 500k runs]"); task.start().get(); }
     verify(kRuns * kSize);
 }
 
@@ -39,7 +39,7 @@ static void test_02() {
         prev = cur;
     }
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_02 [32 serial  | 1 thread  | 1M runs  ]"); task.start().wait(); }
+    { Timer t("test_02 [32 serial  | 1 thread  | 1M runs  ]"); task.start().get(); }
     verify(kRuns * kSize);
 }
 
@@ -55,7 +55,7 @@ static void test_03() {
     auto a = mk(), b1 = mk(), c1 = mk(), b2 = mk(), c2 = mk(), d = mk();
     a.precede(b1, c1); b1.precede(b2); c1.precede(c2); b2.precede(d); c2.precede(d);
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_03 [diamond DAG | 2 threads | 1M runs  ]"); task.start().wait(); }
+    { Timer t("test_03 [diamond DAG | 2 threads | 1M runs  ]"); task.start().get(); }
     verify(kRuns * kNodes);
 }
 
@@ -80,7 +80,7 @@ static void run_full_connected(const char* tag) {
         prev = cur;
     }
     auto task = executor.defer_async(flow, runs);
-    { Timer tm(tag); task.start().wait(); }
+    { Timer tm(tag); task.start().get(); }
     verify(kNodes * runs);
 }
 static void test_04a() { run_full_connected<4, 2, 1'000'000, 2>("test_04a [4x2  full   | 2 threads |  1M runs ]"); }
@@ -110,7 +110,7 @@ static void test_05() {
         level = std::move(next);
     }
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_05 [binary tree | 8 threads | 500k runs]"); task.start().wait(); }
+    { Timer t("test_05 [binary tree | 8 threads | 500k runs]"); task.start().get(); }
     verify(kNodes * kRuns);
 }
 
@@ -126,7 +126,7 @@ static void test_06() {
     auto sink   = flow.emplace([] { add_one(); });
     for (int i = 0; i < kWidth; ++i) { auto w = flow.emplace([] { add_one(); }); source.precede(w); w.precede(sink); }
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_06 [1->256->1   | 8 threads | 100k runs]"); task.start().wait();}
+    { Timer t("test_06 [1->256->1   | 8 threads | 100k runs]"); task.start().get();}
     verify(kNodes * kRuns);
 }
 
@@ -147,7 +147,7 @@ static void test_07() {
         }
     }
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_07 [16 pipes   | 8 threads | 200k runs]"); task.start().wait(); }
+    { Timer t("test_07 [16 pipes   | 8 threads | 200k runs]"); task.start().get(); }
     verify(kNodes * kRuns);
 }
 
@@ -166,7 +166,7 @@ static void test_08() {
         if (j > 0) grid[i][j-1].precede(grid[i][j]);
     }
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_08 [16x16 grid | 8 threads | 100k runs]"); task.start().wait(); }
+    { Timer t("test_08 [16x16 grid | 8 threads | 100k runs]"); task.start().get(); }
     verify(kNodes * kRuns);
 }
 
@@ -186,7 +186,7 @@ static void test_09() {
         if ((rng >> 24) < 20u) nodes[i].precede(nodes[j]);
     }
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_09 [sparse DAG | 8 threads | 500k runs]"); task.start().wait(); }
+    { Timer t("test_09 [sparse DAG | 8 threads | 500k runs]"); task.start().get(); }
     verify(kN * kRuns);
 }
 
@@ -206,7 +206,7 @@ static void test_10() {
     });
     init.precede(process); process.precede(retry); retry.precede(process);
     auto task = executor.defer_async(flow, 1ULL);
-    { Timer t("test_10 [jump retry  | 1 thread  |  1M iter ]"); task.start().wait(); }
+    { Timer t("test_10 [jump retry  | 1 thread  |  1M iter ]"); task.start().get(); }
     verify(kLoopIter);
 }
 
@@ -230,7 +230,7 @@ static void test_11() {
     branch_a.precede(mj); branch_b.precede(mj); branch_c.precede(mj);
     mj.precede(branch_a, branch_b, branch_c);
     auto task = executor.defer_async(flow, 1ULL);
-    { Timer t("test_11 [multi-jump  | 4 threads | 200k iter]"); task.start().wait(); }
+    { Timer t("test_11 [multi-jump  | 4 threads | 200k iter]"); task.start().get(); }
     verify(kIter * 3);
 }
 
@@ -248,7 +248,7 @@ static void test_12() {
     auto post = flow.emplace([] { add_one(); });
     pre.precede(sf); sf.precede(post);
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_12 [subflow x1  | 4 threads | 200k runs]"); task.start().wait(); }
+    { Timer t("test_12 [subflow x1  | 4 threads | 200k runs]"); task.start().get(); }
     verify((kInner + 2) * kRuns);
 }
 
@@ -266,7 +266,7 @@ static void test_13() {
     int loops = 0;
     flow.emplace(std::move(inner), [&loops, kInnerRuns]() mutable noexcept { return ++loops > kInnerRuns; });
     auto task = executor.defer_async(flow, 1ULL);
-    { Timer t("test_13 [subflow loop| 2 threads | 500k iter]"); task.start().wait(); }
+    { Timer t("test_13 [subflow loop| 2 threads | 500k iter]"); task.start().get(); }
     verify(4 * kInnerRuns);
 }
 
@@ -280,7 +280,7 @@ static void test_14() {
     tfl::Flow flow;
     flow.emplace([] { add_one(); });
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_14 [empty task  | 1 thread  | 10M runs ]"); task.start().wait(); }
+    { Timer t("test_14 [empty task  | 1 thread  | 10M runs ]"); task.start().get(); }
     verify(kRuns);
 }
 
@@ -294,7 +294,7 @@ static void test_15() {
     tfl::Flow flow;
     for (int i = 0; i < kSize; ++i) flow.emplace([] { add_one(); });
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_15 [parallel for| 8 threads | 1024 tasks x 10k runs]"); task.start().wait(); }
+    { Timer t("test_15 [parallel for| 8 threads | 1024 tasks x 10k runs]"); task.start().get(); }
     verify(kRuns * kSize);
 }
 
@@ -318,7 +318,7 @@ static void test_16() {
         level = std::move(next);
     }
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_16 [reduce tree | 8 threads | 127 nodes x 50k runs]"); task.start().wait(); }
+    { Timer t("test_16 [reduce tree | 8 threads | 127 nodes x 50k runs]"); task.start().get(); }
     verify(kNodes * kRuns);
 }
 
@@ -337,7 +337,7 @@ static void test_17() {
         prev = cur;
     }
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_17 [scan chain  | 1 thread  | 128 x 100k runs]"); task.start().wait(); }
+    { Timer t("test_17 [scan chain  | 1 thread  | 128 x 100k runs]"); task.start().get(); }
     verify(kRuns * kSize);
 }
 
@@ -360,7 +360,7 @@ static void test_18() {
         }
     }
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_18 [wavefront   | 8 threads | 210 nodes x 10k runs]"); task.start().wait(); }
+    { Timer t("test_18 [wavefront   | 8 threads | 210 nodes x 10k runs]"); task.start().get(); }
     verify(kNodes * kRuns);
 }
 
@@ -379,7 +379,7 @@ static void test_19() {
     for (int i = 0; i < kLight; ++i) { auto t = flow.emplace(light); src.precede(t); t.precede(sink); }
     for (int i = 0; i < kHeavy; ++i) { auto t = flow.emplace(heavy); src.precede(t); t.precede(sink); }
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_19 [hetero      | 8 threads | 18 nodes x 100k runs]"); task.start().wait(); }
+    { Timer t("test_19 [hetero      | 8 threads | 18 nodes x 100k runs]"); task.start().get(); }
     verify(kNodes * kRuns);
 }
 
@@ -403,7 +403,7 @@ static void test_20() {
         prev = cur;
     }
     auto task = executor.defer_async(flow, kRuns);
-    { Timer t("test_20 [mem stress  | 8 threads | 2000 nodes x 500 runs]"); task.start().wait(); }
+    { Timer t("test_20 [mem stress  | 8 threads | 2000 nodes x 500 runs]"); task.start().get(); }
     verify(kNodes * kRuns);
 }
 

@@ -92,7 +92,10 @@ target_compile_features(bench_taskflow PRIVATE cxx_std_20)
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES bench_taskflow.cpp)
 
 # 已建出的 benchmark 目标(给 run_all_benchmarks 用)
-set(BENCHMARKS bench_taskflowlite bench_taskflow)
+add_executable(bench_core bench_core.cpp bench_common.hpp)
+target_link_libraries(bench_core PRIVATE TaskflowLite::taskflowlite tfl_internal_flags)
+
+set(BENCHMARKS bench_taskflowlite bench_taskflow bench_core)
 if(TFL_BUILD_TESTS)
     enable_testing()
     foreach(b ${BENCHMARKS})
@@ -131,7 +134,7 @@ set_target_properties(run_all_benchmarks PROPERTIES FOLDER "Run")
 # 状态摘要
 # ──────────────────────────────────────────────────────────────────────────────
 message(STATUS "-- TaskflowLite Benchmarks --------------------")
-message(STATUS "  Targets       : bench_taskflowlite / bench_taskflow")
+message(STATUS "  Targets       : bench_taskflowlite / bench_taskflow / bench_core")
 message(STATUS "  Taskflow src  : ${TFL_TASKFLOW_SOURCE}")
 message(STATUS "  Taskflow path : ${taskflow_SOURCE_DIR}")
 message(STATUS "  Run all       : run_all_benchmarks")

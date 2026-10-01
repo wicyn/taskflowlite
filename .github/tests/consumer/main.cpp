@@ -10,5 +10,16 @@ int main() {
     first.precede(second);
     tfl::Executor executor(2);
     executor.async(flow).get();
-    return count.load() == 2 ? 0 : 1;
+    executor.corun(flow);
+    auto result = executor.async([&](tfl::Runtime& rt) {
+        tfl::TaskGroup group(rt);
+        group.corun(flow);
+        auto first = group.async([] { return 20; });
+        auto last = group.async([first] { return first.get() + 22; }, first);
+        group.wait();
+        return last.get();
+    });
+    if (result.get() != 42) return 1;
+    tfl::Semaphore gate(1);
+    return count.load() == 6 && gate.reset(2) && gate.value() == 2 ? 0 : 1;
 }

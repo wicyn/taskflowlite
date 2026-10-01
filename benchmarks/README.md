@@ -1,23 +1,25 @@
-# 基准运行
+# Benchmark
 
-`bench_taskflowlite` 与 `bench_taskflow` 使用相同场景、重复次数和共享校验逻辑。
-默认运行完整工作量，并启用原子计数校验；校验不匹配会返回非零退出码。
-默认计时包含这些计数操作，不代表纯调度开销。
+`bench_taskflowlite` 与 `bench_taskflow` 使用相同场景、重复次数和共享计数校验，适合在同一机器和构建配置下比较。`bench_core` 单独覆盖同步 corun、三种执行上下文，以及 Runtime / TaskGroup 的重复和已完成依赖。
 
-README 中的性能表为历史记录；当前 core 已更换共享调度容器，重新运行同配置完整基准前，
-不能将历史速度或本次 smoke 的通过结果当作新实现的性能结论。
+```sh
+cmake --preset benchmarks
+cmake --build --preset benchmarks --parallel 4
+ctest --preset benchmarks
+```
 
-TaskflowLite 使用 `executor.defer_async(flow, runs)` 在计时前创建任务，
-在计时区间内执行 `task.start().wait()`；任务创建成本不计入测量。
+也可在常规构建中启用 `TFL_BUILD_BENCHMARKS=ON`；Windows 可使用 Visual Studio 生成器并指定 Release。离线时用 `TASKFLOW_LOCAL_PATH` 指定包含 `taskflow/taskflow.hpp` 的目录。
+
+每个程序支持相同参数：
 
 ```sh
 bench_taskflowlite --smoke
 bench_taskflow --smoke
+bench_core --smoke
 ```
 
-`--smoke` 保留全部场景的图结构，将重复次数上限设为 3。输出中的场景标签描述完整
-工作量，实际使用缩减次数，并明确标注 smoke。CTest 在测试开关启用时注册两项 smoke。
+`--smoke` 保留场景结构，将重复次数限制为最多 3 次；启用测试后，CTest 注册三个 smoke。校验失败或任务异常会导致非零退出码。smoke 仅验证正确性，不用来得出性能结论。
 
-需要测量不含正确性计数的性能时，两套程序都添加 `--no-verify`；此时输出明确显示
-校验已关闭，不打印虚假的 PASS。先运行带校验的 smoke，再比较同构建配置的完整基准。
-`--help` 显示参数帮助，非法参数返回非零退出码。
+默认完整运行包括原子计数校验。两套对比基准均在计时前构图，TaskflowLite 的延迟任务也在计时前创建，计时覆盖启动和等待。`bench_core` 的动态场景包含子任务创建成本。
+
+使用 `--no-verify` 可去掉计数校验开销，输出会注明校验已关闭；进行对比时双方须使用相同参数。`--help` 显示帮助，非法参数返回非零退出码。`run_all_benchmarks` 构建并运行三个程序的完整工作量。

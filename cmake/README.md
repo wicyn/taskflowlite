@@ -23,9 +23,8 @@ ctest --preset windows-asan
 |---|---|---|
 | `TFL_BUILD_EXAMPLES` | 顶层 ON，子项目 OFF | 构建示例 |
 | `TFL_BUILD_TESTS` | OFF | 构建并注册单元测试 |
-| `TFL_TEST_HEADERS` | ON | 启用测试时检查各头文件能否独立编译 |
-| `TFL_BUILD_CORE_REPROS` | OFF | 构建独立故障复现程序，要求 `TFL_SANITIZER=OFF` |
-| `TFL_BUILD_BENCHMARKS` | OFF | 构建两套基准 |
+| `TFL_TEST_HEADERS` | ON | 启用测试时普通与禁用异常模式下逐头文件编译 |
+| `TFL_BUILD_BENCHMARKS` | OFF | 构建对比基准和 core API 基准 |
 | `TFL_BUILD_DOCS` | OFF | 提供 Doxygen 的 `GenerateDocs` 目标 |
 | `TFL_SANITIZER` | OFF | OFF / ASAN / TSAN，互斥 |
 | `TFL_NATIVE_ARCH` | OFF | GCC/Clang 内部 Release 目标启用 `-march=native` |
@@ -65,3 +64,15 @@ cmake --build build/docs --target GenerateDocs
 自定义头文件安装目录使用 `CMAKE_INSTALL_INCLUDEDIR`。
 下游通过 `find_package(TaskflowLite CONFIG REQUIRED)` 和
 `TaskflowLite::taskflowlite` 使用安装包。
+
+## 异常配置
+
+核心库默认检测编译器异常支持。需要显式关闭时，对应用目标设置：
+
+```cmake
+target_compile_definitions(app PRIVATE TFL_ENABLE_EXCEPTIONS=0)
+```
+
+所有使用本库的翻译单元须采用一致设置。若编译器已禁用异常（GCC/Clang 的 `-fno-exceptions`，MSVC 的 `/EHs-c-` 配合 `_HAS_EXCEPTIONS=0`），库会自动关闭异常支持。不可在编译器禁用异常时强制设为 1。
+
+普通 Catch2 测试包含抛异常场景，不应给整个测试构建统一添加禁用异常选项。默认构建会单独生成 `tfl_test_opt_out`、`tfl_test_no_exceptions`、无异常头文件检查和示例 37；CTest 同时检查正常执行与终止路径。安装导出目标不会强制改变应用的异常配置。

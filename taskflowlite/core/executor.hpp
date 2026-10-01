@@ -455,6 +455,16 @@ public:
     // 同步与状态查询
     // ============================================================================
 
+    /// @brief 同步执行指定 Graph，直到 Graph 全部完成。
+    ///
+    /// 当前线程属于本 Executor 的 Worker 时采用协作执行；
+    /// 外部线程调用时阻塞当前线程等待 Graph 完成。
+    ///
+    /// @tparam Gh 满足 graph_holder concept 的图持有者类型。
+    /// @param gh 要执行的任务图。
+    template <graph_holder Gh>
+    void corun(Gh&& gh);
+
     /// @brief 阻塞等待当前观察到的所有活跃顶层拓扑完成。
     ///
     /// 通过 `m_num_topologies` 的 acquire 加载和 `std::atomic::wait` 等待计数归零。
@@ -696,9 +706,11 @@ private:
     /// @pre work 非空，且当前不属于其他使用 `m_next` 的调度链。
     void _push_shared(Work* work) noexcept;
 
-    /// @brief 将 `[first, first + n)` 的 Work 批量发布到同一个共享调度分片。
+    /// @brief 将 `[first, first + n)` 的 Work 均匀发布到多个共享调度分片。
     ///
-    /// 使用首个 Work 地址哈希选择目标 SharedWorkStack，并一次性发布整个任务区间。
+    /// 当任务数量不超过共享调度分片数量时，从随机起始分片开始依次发布；
+    /// 当任务数量超过共享调度分片数量时，将任务均匀切分为多个连续任务段，
+    /// 并通过批量 push 发布到各个共享调度分片。
     ///
     /// @tparam Iterator 随机访问迭代器类型。
     /// @param first 待发布区间起点。
@@ -708,9 +720,11 @@ private:
         requires std::same_as<std::remove_cvref_t<std::iter_reference_t<Iterator>>, Work*>
     void _push_shared(Iterator first, std::size_t n) noexcept;
 
-    /// @brief 将一条已经连接完成的 Work 链发布到共享调度分片。
+    /// @brief 将一条已经连接完成的 Work 链均匀发布到多个共享调度分片。
     ///
-    /// 使用首个 Work 地址哈希选择目标 SharedWorkStack，并一次性发布整条任务链。
+    /// 当任务数量不超过共享调度分片数量时，从随机起始分片开始逐个发布；
+    /// 当任务数量超过共享调度分片数量时，将原链切分为多个连续任务段，
+    /// 并通过链式 push 发布到各个共享调度分片。
     ///
     /// @param first 链表首节点。
     /// @param last 链表尾节点。
@@ -799,15 +813,15 @@ private:
     template <predicate Pred>
     void _corun_until(Worker& worker, Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>);
 
-    /// @brief 在当前 Worker 上启动一个 Graph，并协作执行直到该 Graph 占用的 parent slot 全部归还。
-    ///
-    /// 首先通过 `_set_up_graph()` 建立节点运行期状态并取得 source；若没有 source
-    /// 则直接返回。否则为每个 source 增加一个 parent join slot，批量发布 source，
-    /// 再通过 `_corun_until()` 持续执行可用任务直到 parent join_counter 归零。
-    ///
-    /// @param worker 当前 Worker。
-    /// @param graph 要执行的 Graph。
+    /// @brief 启动一个 Graph，并阻塞当前线程直到 Graph 全部完成。
+    /// @param g 要执行的 Graph。
     /// @param parent Graph 所属父 Work。
+    void _corun_graph(Graph& g, Work& parent) noexcept;
+
+    /// @brief 在当前 Worker 上启动一个 Graph，并协作执行直到 Graph 全部完成。
+    /// @param g 要执行的 Graph。
+    /// @param parent Graph 所属父 Work。
+    /// @param wr 当前 Worker。
     void _corun_graph(Graph& g, Work& parent, Worker& wr) noexcept;
 
     /// @brief 为一个新启动的顶层执行链增加 Executor 活跃 topology 计数。
@@ -832,11 +846,11 @@ private:
 // ============================================================================
 inline std::size_t Executor::_check_worker_count(std::size_t n) {
     if (n == 0) {
-        throw Exception("Executor must define at least one worker.");
+        TFL_THROW(Exception("Executor must define at least one worker."));
     }
 
     if (n >= Notifier::capacity()) {
-        throw Exception("Executor worker count exceeds Notifier 16-bit capacity (max 65534).");
+        TFL_THROW(Exception("Executor worker count exceeds Notifier 16-bit capacity (max 65534)."));
     }
 
     return n;
@@ -844,15 +858,15 @@ inline std::size_t Executor::_check_worker_count(std::size_t n) {
 
 inline Executor::Executor(WorkerHandler* handler, std::size_t num_workers)
     : m_workers{_check_worker_count(num_workers)}
-    , m_shared_stacks{static_cast<std::size_t>(std::bit_width(num_workers))}
+    , m_shared_stacks{num_workers}
     , m_notifier{num_workers}
     , m_handler{handler}
 {
-    try {
+    TFL_TRY {
         _spawn(num_workers);
-    } catch (...) {
+    } TFL_CATCH_ALL {
         _shutdown();
-        throw;
+        TFL_RETHROW();
     }
 }
 
@@ -896,7 +910,7 @@ inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result,
                 const auto current = predecessor->m_topology->m_control.load(std::memory_order_acquire);
 
                 if (Topology::Control::status(current) == Topology::Control::Status::Idle) [[unlikely]] {
-                    throw Exception{"Executor::async: dependency has not been started."};
+                    TFL_THROW(Exception{"Executor::async: dependency has not been started."});
                 }
             }
         }
@@ -908,7 +922,7 @@ inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result,
         for (Work* predecessor : predecessors) {
             if (predecessor) {
                 edges.push_back(predecessor);
-                predecessor->_increment_ref();
+                predecessor->m_topology->_increment_ref();
             }
         }
     }
@@ -922,7 +936,7 @@ inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result,
     control.store(Topology::Control::set_status(current, Topology::Control::Status::Running), std::memory_order_relaxed);
 
     // 执行生命周期额外持有一份强引用，由 Async tear-down 释放。
-    work->_increment_ref();
+    work->m_topology->_increment_ref();
     _increment_topology();
 
     if constexpr (num_predecessors != 0) {
@@ -1063,6 +1077,28 @@ inline auto Executor::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncF
                                             std::forward<C>(cb));
 
     return _launch_async(work, result, std::forward<Deps>(deps)...);
+}
+
+template <graph_holder Gh>
+inline void Executor::corun(Gh&& gh) {
+    Graph& graph = detail::to_graph(gh);
+
+    if (graph.empty()) {
+        return;
+    }
+
+    if (Worker* wr = _this_worker()) {
+        AnchorWork<false> anchor{*this};
+
+        _corun_graph(graph, anchor, *wr);
+        anchor._rethrow_exception();
+        return;
+    }
+
+    AnchorWork<true> anchor{*this};
+
+    _corun_graph(graph, anchor);
+    anchor._rethrow_exception();
 }
 
 inline void Executor::wait_for_all() const noexcept {
@@ -1282,77 +1318,78 @@ TFL_FORCE_INLINE void Executor::_reset_graph_join_counters(Graph& g, std::size_t
     }
 }
 
-
 TFL_FORCE_INLINE void Executor::_tear_down_task(Work& w, Worker& wr, Work*& cache) noexcept {
     auto* const parent = w.m_parent;
     const std::size_t sz = w.m_num_successors;
     const auto join_weight = w._join_weight();
 
+    TFL_ASSERT(cache == nullptr);
+
     // 恢复当前节点下一次激活所需的 strong dependency join 计数。
     //
-    // join_weight == 0：
-    //   当前节点没有 strong predecessor，不参与 join_counter 协议。
+    // 当前节点本轮被调度执行前，最后一个 strong predecessor 已将
+    // join_counter 递减到 0，因此执行阶段可以临时复用该计数器处理
+    // Runtime / SubFlow 等动态完成计数。
     //
-    // join_weight > 0：
-    //   当前节点统一通过 fetch_sub 参与 strong dependency join；
-    //   最后一个 strong predecessor 将计数从 1 递减到 0 并获得执行权。
-    //   当前节点执行完成后重新加回静态 join weight，为下一次激活恢复计数。
+    // 当前节点完成后必须重新加回静态 join weight，使其重新进入
+    // 下一轮依赖等待状态。
     //
-    // 必须使用 fetch_add 而不能 store：循环图中当前节点执行期间，
-    // 下一次激活的 strong predecessor 可能已经提前递减 join_counter。
-    // fetch_add 能保留这些已经发生的到达，而 store 会覆盖并丢失。
+    // 必须使用 fetch_add 而不能 store：循环控制流中下一轮 predecessor
+    // 可能已经提前到达并递减当前计数，fetch_add 可以保留这些进度。
     //
-    // 恢复必须发生在传播后继之前，否则后继可能沿循环路径重新激活
-    // 当前节点，并发访问尚未恢复的 join_counter。
+    // 恢复必须发生在传播后继之前，避免后继沿循环路径重新激活当前节点时，
+    // 当前节点的静态 join 状态尚未建立完成。
     if (join_weight != 0) [[likely]] {
         w.m_join_counter.fetch_add(join_weight, std::memory_order_relaxed);
     }
 
-    // 异常路径停止向后传播，归还当前 w 占用的 parent slot。
+    // 异常路径停止向后传播，当前 w 占用的 parent slot 无后继继承，
+    // 因此直接归还给 parent。
     if (w._has_exception()) [[unlikely]] {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // 第一个 ready 后继直接继承当前 w 的 parent slot 并进入 cache；
-    // 后续 ready 后继原地聚集到 m_edges 前段 [0, num_ready)，
-    // 最后统一增加额外 parent slot 并批量调度。
+    // 扫描全部 strong successor：
     //
-    // 所有具有 strong predecessor 的后继统一通过 join_counter 同步：
+    // 每个 predecessor 完成时递减 successor 的静态 join_counter；
+    // 最后一个 predecessor 观察到旧值为 1，将其递减到 0，
+    // 并取得该 successor 本轮的执行权。
     //
-    // join_weight == 1：
-    //   唯一 strong predecessor 将计数从 1 递减到 0，并直接获得执行权。
-    //
-    // join_weight > 1：
-    //   每个 strong predecessor 递减一次计数，最后一个将计数从 1
-    //   递减到 0 的前驱负责激活该后继。
+    // 第一个 ready successor 直接继承当前 w 已占用的 parent slot，
+    // 并通过 cache 接力执行；其余 ready successor 原地聚集到
+    // m_edges 前段 [0, num_ready)，随后统一增加 parent slot 并调度。
     std::size_t num_ready = 0;
 
     for (std::size_t i = 0; i < sz; ++i) {
         Work* const suc = w.m_edges[i];
 
+        TFL_ASSERT(suc->_join_weight() != 0);
+
         if (suc->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             if (cache) {
-                // 第一个 ready 已由 cache 接管，因此后续 ready 的聚集位置
-                // num_ready 始终位于当前扫描位置 i 之前，不会发生 self-swap。
+                // 第一个 ready successor 已由 cache 接管，因此当前 ready
+                // successor 保存到前段待调度区域。
                 std::swap(w.m_edges[i], w.m_edges[num_ready++]);
             } else {
-                // 第一个 ready 后继继承当前 w 的 parent slot。
+                // 第一个 ready successor 直接继承当前 w 的 parent slot。
                 cache = suc;
             }
         }
     }
 
-    // 没有任何后继 ready，当前 w 占用的 parent slot 无人继承。
+    // 没有任何 successor ready，当前 w 占用的 parent slot 无人继承，
+    // 因此直接归还给 parent。
     if (!cache) {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // cache 已继承当前 w 的 parent slot，其余 ready 后继各占一个新的 parent slot。
+    // cache 已继承当前 w 的 parent slot，因此只需为其余 num_ready 个
+    // ready successor 增加额外 parent slot。
     //
-    // 必须先增加 parent 计数，再发布任务，避免后继快速完成导致
-    // parent 尚未建立完整计数就提前归零。
+    // 必须先增加 parent 计数再发布任务，避免 successor 快速完成，
+    // 导致 parent 在完整计数建立之前提前归零。
     if (num_ready != 0) {
         parent->m_join_counter.fetch_add(num_ready, std::memory_order_relaxed);
 
@@ -1368,46 +1405,37 @@ TFL_FORCE_INLINE void Executor::_tear_down_branch_task(Work& w, Worker& wr, Work
     auto* const parent = w.m_parent;
     const auto join_weight = w._join_weight();
 
-    // 恢复当前节点下一次激活所需的 strong dependency join 计数。
+    TFL_ASSERT(cache == nullptr);
+
+    // 恢复当前 Branch 下一次激活所需的静态 join 计数。
     //
-    // join_weight == 0 的节点没有 strong predecessor，不参与 join_counter；
-    // join_weight > 0 的节点执行完成后重新加回静态 join weight。
-    //
-    // 使用 fetch_add 而不能 store，以保留当前节点执行期间可能已经提前
-    // 发生的下一次 strong predecessor 到达。
-    //
-    // 必须在传播 target 之前恢复，否则 target 可能沿循环路径重新激活
-    // 当前节点，并发访问尚未恢复的 join_counter。
+    // 使用 fetch_add 保留循环控制流中下一轮 predecessor 已经提前
+    // 发生的递减，避免 store 覆盖下一轮到达进度。
     if (join_weight != 0) [[likely]] {
         w.m_join_counter.fetch_add(join_weight, std::memory_order_relaxed);
     }
 
-    // 本次 Branch 未选择目标，当前 w 占用的 parent slot 无人继承。
-    if (!target) {
+    // Branch 未选择目标或当前节点发生异常时，不继续向后传播，
+    // 当前 w 占用的 parent slot 直接归还。
+    if (target == nullptr || w._has_exception()) [[unlikely]] {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // 异常路径停止向后传播。
-    if (w._has_exception()) [[unlikely]] {
-        _schedule_parent(parent, wr, cache);
-        return;
-    }
+    TFL_ASSERT(target->_join_weight() != 0);
 
-    // target 统一通过 join_counter 参与 strong dependency join：
+    // 当前 Branch 作为一个 strong predecessor 完成一次到达。
     //
-    // join_weight == 1：
-    //   唯一 strong predecessor 将计数从 1 递减到 0 并获得执行权。
-    //
-    // join_weight > 1：
-    //   最后一个将计数从 1 递减到 0 的 strong predecessor
-    //   负责激活 target。
+    // 最后一个 strong predecessor 将 target 的 join_counter 从 1
+    // 递减到 0，并取得 target 本轮执行权；target 随后直接继承
+    // 当前 w 已占用的 parent slot。
     if (target->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         cache = target;
         return;
     }
 
-    // target 尚未 ready，当前 w 的 parent slot 无人继承。
+    // target 尚有其他 strong predecessor 未完成，当前 w 无后继可继承
+    // parent slot，因此直接归还给 parent。
     _schedule_parent(parent, wr, cache);
 }
 
@@ -1415,35 +1443,35 @@ TFL_FORCE_INLINE void Executor::_tear_down_multi_branch_task(Work& w, Worker& wr
     auto* const parent = w.m_parent;
     const auto join_weight = w._join_weight();
 
-    // 恢复当前节点下一次激活所需的 strong dependency join 计数。
+    TFL_ASSERT(cache == nullptr);
+
+    // 恢复当前 MultiBranch 下一次激活所需的静态 join 计数。
     //
-    // join_weight == 0 的节点没有 strong predecessor，不参与 join_counter；
-    // join_weight > 0 的节点执行完成后重新加回静态 join weight。
-    //
-    // 使用 fetch_add 而不能 store，以保留当前节点执行期间可能已经提前
-    // 发生的下一次 strong predecessor 到达。
-    //
-    // 必须在传播 targets 之前恢复，否则某个 target 可能沿循环路径
-    // 重新激活当前节点，并发访问尚未恢复的 join_counter。
+    // 使用 fetch_add 保留循环控制流中下一轮 predecessor 已经提前
+    // 发生的递减。
     if (join_weight != 0) [[likely]] {
         w.m_join_counter.fetch_add(join_weight, std::memory_order_relaxed);
     }
 
-    // 异常路径停止向后传播。
-    if (w._has_exception()) [[unlikely]] {
+    // 本次没有选择任何目标或当前节点发生异常时，不继续向后传播。
+    if (targets.empty() || w._has_exception()) [[unlikely]] {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // 第一个 ready target 继承当前 w 的 parent slot，并直接进入 cache；
-    // 后续 ready target 原地压缩到 targets 前段 [0, num_ready)，
-    // 最后统一增加额外 parent slot 并调度。
+    // 每个 target 都按照普通 strong dependency 协议完成一次到达：
     //
-    // 所有具有 strong predecessor 的 target 统一通过 join_counter 同步，
-    // 最后一个将计数从 1 递减到 0 的 strong predecessor 获得执行权。
+    // 最后一个 predecessor 将 target 的 join_counter 从 1 递减到 0，
+    // 并取得该 target 本轮执行权。
+    //
+    // 第一个 ready target 继承当前 w 的 parent slot 并进入 cache；
+    // 其余 ready target 原地压缩到 targets 前段 [0, num_ready)，
+    // 随后统一增加额外 parent slot 并发布。
     std::size_t num_ready = 0;
 
     for (Work* const target : targets) {
+        TFL_ASSERT(target->_join_weight() != 0);
+
         if (target->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             if (cache) {
                 targets[num_ready++] = target;
@@ -1462,8 +1490,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_multi_branch_task(Work& w, Worker& wr
     // cache 已继承当前 w 的 parent slot，因此只需为其余 num_ready 个
     // ready target 增加新的 parent slot。
     //
-    // 必须先增加 parent 计数，再发布任务，避免 target 快速完成导致
-    // parent 尚未建立完整计数就提前归零。
+    // 必须先建立完整 parent 计数，再将任务发布给 Worker。
     if (num_ready != 0) {
         parent->m_join_counter.fetch_add(num_ready, std::memory_order_relaxed);
 
@@ -1479,74 +1506,71 @@ TFL_FORCE_INLINE void Executor::_tear_down_jump_task(Work& w, Worker& wr, Work*&
     auto* const parent = w.m_parent;
     const auto join_weight = w._join_weight();
 
-    // 恢复当前节点下一次激活所需的 strong dependency join 计数。
+    TFL_ASSERT(cache == nullptr);
+
+    // 恢复当前 Jump 下一次激活所需的静态 join 计数。
     //
-    // join_weight == 0 的节点没有 strong predecessor，不参与 join_counter；
-    // join_weight > 0 的节点执行完成后重新加回静态 join weight。
-    //
-    // 使用 fetch_add 而不能 store，以保留当前节点执行期间可能已经提前
-    // 发生的下一次 strong predecessor 到达。
+    // Jump 自身仍按照普通 strong dependency 生命周期恢复，
+    // 因此这里同样使用 fetch_add 保留下一轮已经提前发生的到达。
     if (join_weight != 0) [[likely]] {
         w.m_join_counter.fetch_add(join_weight, std::memory_order_relaxed);
     }
 
-    // 无目标或异常：不发生跳转，归还当前 parent slot。
+    // 无目标或当前节点发生异常时不执行跳转，
+    // 当前 w 占用的 parent slot 直接归还。
     if (target == nullptr || w._has_exception()) [[unlikely]] {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // Jump 绕过 target 的普通 strong dependency join 屏障并强制激活。
+    // Jump 不等待 target 的普通 strong dependency join，而是强制激活 target。
     //
-    // 普通依赖激活时，最后一个 strong predecessor 会将 join_counter
-    // 从 1 递减到 0；Jump 没有执行这次 fetch_sub，因此这里直接置零，
-    // 使 target 进入与普通 join 完成后相同的运行期状态。
-    //
-    // 对 join_weight == 0 的 target，该 relaxed store 只是重复写入零，
-    // 不改变节点语义。
+    // 因此需要直接将 target 切换到执行状态，使其 join_counter 为 0；
+    // target 本轮执行完成后会由自身 tear-down 恢复下一轮静态 join weight。
     target->m_join_counter.store(0, std::memory_order_relaxed);
 
+    // target 直接继承当前 w 已占用的 parent slot。
     cache = target;
 }
 
 TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work& w, Worker& wr, Work*& cache, SmallVector<Work*>& targets) noexcept {
     auto* const parent = w.m_parent;
-    std::size_t n = targets.size();
     const auto join_weight = w._join_weight();
+    std::size_t n = targets.size();
 
-    // 恢复当前节点下一次激活所需的 strong dependency join 计数。
+    TFL_ASSERT(cache == nullptr);
+
+    // 恢复当前 MultiJump 下一次激活所需的静态 join 计数。
     //
-    // join_weight == 0 的节点没有 strong predecessor，不参与 join_counter；
-    // join_weight > 0 的节点执行完成后重新加回静态 join weight。
-    //
-    // 使用 fetch_add 而不能 store，以保留当前节点执行期间可能已经提前
-    // 发生的下一次 strong predecessor 到达。
+    // 使用 fetch_add 保留下一轮已经提前发生的 strong predecessor 到达。
     if (join_weight != 0) [[likely]] {
         w.m_join_counter.fetch_add(join_weight, std::memory_order_relaxed);
     }
 
-    // 无目标或异常：不发生跳转，归还当前 parent slot。
+    // 无目标或当前节点发生异常时不执行跳转，
+    // 当前 w 占用的 parent slot 直接归还。
     if (n == 0 || w._has_exception()) [[unlikely]] {
         _schedule_parent(parent, wr, cache);
         return;
     }
 
-    // 所有 target 均由 MultiJump 强制激活，不经过普通 strong dependency join。
+    // MultiJump 绕过所有 target 的普通 strong dependency join，
+    // 强制将每个 target 切换到执行状态。
     //
-    // 普通激活时最后一个 strong predecessor 会将 join_counter 递减至零；
-    // MultiJump 没有执行这些 fetch_sub，因此统一置零，使每个 target
-    // 进入与普通 join 完成后相同的运行期状态。
+    // target 本轮完成后分别由自身 tear-down 恢复下一轮静态 join weight。
     for (Work* const target : targets) {
         target->m_join_counter.store(0, std::memory_order_relaxed);
     }
 
-    // 最后一个 target 继承当前 w 已占用的 parent slot，并通过 cache 接力执行。
+    // 最后一个 target 继承当前 w 已占用的 parent slot，
+    // 并通过 cache 接力执行。
     cache = targets[--n];
 
-    // 剩余 n 个 target 无法共享原 slot，因此每个 target 各占一个新的 parent slot。
+    // 其余 n 个 target 无法共享当前 slot，因此每个 target
+    // 分别占用一个新的 parent slot。
     //
-    // 必须先增加 parent 计数，再发布任务，避免 target 快速完成导致
-    // parent 尚未建立完整计数就提前归零。
+    // 必须先增加 parent 计数，再发布任务，避免 target 快速完成后
+    // parent 在计数尚未建立完整时提前归零。
     if (n != 0) {
         parent->m_join_counter.fetch_add(n, std::memory_order_relaxed);
 
@@ -1557,7 +1581,6 @@ TFL_FORCE_INLINE void Executor::_tear_down_multi_jump_task(Work& w, Worker& wr, 
         }
     }
 }
-
 
 /// @brief 完成 SilentAsync 异步任务，立即销毁 Work，并结束所属父 slot 或顶层 topology。
 ///
@@ -1666,7 +1689,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*
 
     // 释放本次执行持有的一份强引用；若没有外部 AsyncTask 句柄继续持有，
     // 当前线程可能成为最后一个引用释放者并立即销毁 Work。
-    if (w._decrement_ref()) {
+    if (w.m_topology->_decrement_ref()) {
         w._destroy_async();
     }
 
@@ -1678,7 +1701,6 @@ TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*
     }
 }
 
-
 inline void Executor::_push_shared(Work* work) noexcept {
     std::size_t const size = m_shared_stacks.size();
     std::size_t const index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(work) * 11400714819323198485ULL, size);
@@ -1689,18 +1711,120 @@ inline void Executor::_push_shared(Work* work) noexcept {
 template <std::random_access_iterator Iterator>
     requires std::same_as<std::remove_cvref_t<std::iter_reference_t<Iterator>>, Work*>
 inline void Executor::_push_shared(Iterator first, std::size_t n) noexcept {
-    Work* const work = first[0];
-    std::size_t const size = m_shared_stacks.size();
-    std::size_t const index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(work) * 11400714819323198485ULL, size);
+    TFL_ASSERT(n != 0);
 
-    m_shared_stacks[index].push(first, n);
+    std::size_t const size = m_shared_stacks.size();
+
+    if (n <= size) {
+        std::size_t index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(first[0]) * 11400714819323198485ULL, size);
+
+        for (std::size_t i = 0; i < n; ++i) {
+            m_shared_stacks[index].push(first[i]);
+
+            if (++index == size) {
+                index = 0;
+            }
+        }
+
+        return;
+    }
+
+    std::size_t const base = n / size;
+    std::size_t const extra = n - base * size;
+    Iterator current = first;
+
+    for (std::size_t i = extra; i < size; ++i) {
+        m_shared_stacks[i].push(current, base);
+        current += static_cast<std::iter_difference_t<Iterator>>(base);
+    }
+
+    for (std::size_t i = 0; i < extra; ++i) {
+        m_shared_stacks[i].push(current, base + 1);
+        current += static_cast<std::iter_difference_t<Iterator>>(base + 1);
+    }
 }
 
 inline void Executor::_push_shared(Work* first, Work* last, std::size_t n) noexcept {
-    std::size_t const size = m_shared_stacks.size();
-    std::size_t const index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(first) * 11400714819323198485ULL, size);
+    TFL_ASSERT(first);
+    TFL_ASSERT(last);
+    TFL_ASSERT(n != 0);
+    TFL_ASSERT(last->m_next == nullptr);
 
-    m_shared_stacks[index].push(first, last, n);
+    std::size_t const size = m_shared_stacks.size();
+
+    if (n <= size) {
+        std::size_t index = detail::mulhi64(reinterpret_cast<std::uintptr_t>(first) * 11400714819323198485ULL, size);
+        Work* current = first;
+
+        for (std::size_t i = 0; i < n; ++i) {
+            Work* const next = current->m_next;
+            current->m_next = nullptr;
+
+            m_shared_stacks[index].push(current);
+
+            current = next;
+
+            if (++index == size) {
+                index = 0;
+            }
+        }
+
+        TFL_ASSERT(current == nullptr);
+        return;
+    }
+
+    std::size_t const base = n / size;
+    std::size_t const extra = n - base * size;
+    Work* current = first;
+
+    if (extra == 0) {
+        for (std::size_t i = 0; i + 1 < size; ++i) {
+            Work* const head = current;
+            Work* tail = head;
+
+            for (std::size_t j = 1; j < base; ++j) {
+                tail = tail->m_next;
+            }
+
+            current = tail->m_next;
+            tail->m_next = nullptr;
+
+            m_shared_stacks[i].push(head, tail, base);
+        }
+
+        m_shared_stacks[size - 1].push(current, last, base);
+        return;
+    }
+
+    for (std::size_t i = extra; i < size; ++i) {
+        Work* const head = current;
+        Work* tail = head;
+
+        for (std::size_t j = 1; j < base; ++j) {
+            tail = tail->m_next;
+        }
+
+        current = tail->m_next;
+        tail->m_next = nullptr;
+
+        m_shared_stacks[i].push(head, tail, base);
+    }
+
+    for (std::size_t i = 0; i + 1 < extra; ++i) {
+        Work* const head = current;
+        Work* tail = head;
+
+        for (std::size_t j = 1; j < base + 1; ++j) {
+            tail = tail->m_next;
+        }
+
+        current = tail->m_next;
+        tail->m_next = nullptr;
+
+        m_shared_stacks[i].push(head, tail, base + 1);
+    }
+
+    m_shared_stacks[extra - 1].push(current, last, base + 1);
 }
 
 // ============================================================================
@@ -1810,16 +1934,27 @@ inline void Executor::_corun_until(Worker& wr, Pred&& pred) noexcept(std::is_not
     }
 }
 
+inline void Executor::_corun_graph(Graph& g, Work& parent) noexcept {
+    const std::size_t num_sources = _set_up_graph(g, parent);
+
+    if (num_sources == 0) [[unlikely]] {
+        return;
+    }
+
+    parent.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
+    _schedule(g.begin(), num_sources);
+    parent.m_topology->_wait();
+}
+
 inline void Executor::_corun_graph(Graph& g, Work& parent, Worker& wr) noexcept {
     const std::size_t num_sources = _set_up_graph(g, parent);
 
-    if (num_sources == 0) {
+    if (num_sources == 0) [[unlikely]] {
         return;
     }
 
     parent.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
     _schedule(wr, g.begin(), num_sources);
-
     _corun_until(wr, [&parent]() noexcept {
         return parent.m_join_counter.load(std::memory_order_acquire) == 0;
     });

@@ -74,7 +74,7 @@ int main() {
 #else
     int failures = 0, successes = 0;
 
-    // 只在创建阶段注入失败；start 的分配失败回滚尚不属于当前 core 的保证。
+    // 此处扫描构造失败；启动与依赖登记失败由 core_allocation_failure 覆盖。
     // 关闭任务池，使每次构造都实际经过分配；大捕获覆盖堆上 callable 存储。
     for (int fail_after = 0; fail_after < 8; ++fail_after) {
         auto token = std::make_shared<int>(42);

@@ -102,7 +102,8 @@
       "configurePreset": "benchmarks",
       "targets": [
         "bench_taskflowlite",
-        "bench_taskflow"
+        "bench_taskflow",
+        "bench_core"
       ]
     },
     {

@@ -31,6 +31,51 @@ struct CountingObserver : tfl::TaskObserver {
 
 }  // namespace
 
+namespace {
+struct ThrowingObserver : tfl::TaskObserver {
+    bool before_failure, after_failure;
+    ThrowingObserver(bool before, bool after) : before_failure(before), after_failure(after) {}
+    void on_before(tfl::WorkerView) override {
+        if (before_failure) throw std::runtime_error("observer before");
+    }
+    void on_after(tfl::WorkerView) override {
+        if (after_failure) throw std::runtime_error("observer after");
+    }
+};
+}
+
+TEST_CASE("Observer: callback exceptions preserve notifications and reach the result", "[observer][exception]") {
+    TestEnv env(2);
+    const bool before_failure = GENERATE(false, true);
+    const bool deferred = GENERATE(false, true);
+    int calls = 0;
+    auto verify = [&](auto& task, auto&& run) {
+        auto throwing = task.template register_observer<ThrowingObserver>(before_failure, !before_failure);
+        auto counting = task.template register_observer<CountingObserver>();
+        bool caught = false;
+        try { run(); }
+        catch (const std::runtime_error& error) {
+            caught = std::string(error.what()) == (before_failure ? "observer before" : "observer after");
+        }
+        REQUIRE(caught);
+        REQUIRE(calls == 1);
+        REQUIRE(counting->before == 1);
+        REQUIRE(counting->after == 1);
+    };
+    if (deferred) {
+        auto task = env.executor.defer_async([&] { ++calls; });
+        verify(task, [&] { task.start().get(); });
+    } else {
+        tfl::Flow flow;
+        auto task = flow.emplace([&] { ++calls; });
+        int successors = 0;
+        task.precede(flow.emplace([&] { ++successors; }));
+        verify(task, [&] { env.executor.corun(flow); });
+        REQUIRE(successors == 0);
+    }
+    REQUIRE(env.executor.async([] { return 42; }).get() == 42);
+}
+
 // ============================================================================
 // SECTION 1: 基础回调 — 每次任务执行对应一对 before/after
 // ============================================================================

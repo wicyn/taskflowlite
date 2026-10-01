@@ -9,8 +9,55 @@
 #pragma once
 
 #include <cassert>
-
+#include <exception>
 #include <climits>
+
+// ============================================================================
+// Exception
+// ============================================================================
+
+/// @brief TaskflowLite 异常支持配置。
+///
+/// 默认跟随编译器异常配置；用户可以通过 `TFL_ENABLE_EXCEPTIONS` 显式关闭。
+/// 禁用异常后，TaskflowLite 不使用 C++ 异常捕获和传播机制。
+///
+/// @warning `TFL_ENABLE_EXCEPTIONS=1` 要求编译器自身启用 C++ 异常支持。
+/// @warning 同一程序中所有使用 TaskflowLite 的翻译单元必须保持一致配置。
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#define TFL_HAS_EXCEPTIONS 1
+#else
+#define TFL_HAS_EXCEPTIONS 0
+#endif
+
+#ifndef TFL_ENABLE_EXCEPTIONS
+#define TFL_ENABLE_EXCEPTIONS TFL_HAS_EXCEPTIONS
+#endif
+
+#if TFL_ENABLE_EXCEPTIONS != 0 && TFL_ENABLE_EXCEPTIONS != 1
+#error "TFL_ENABLE_EXCEPTIONS must be defined as 0 or 1"
+#endif
+
+#if TFL_ENABLE_EXCEPTIONS && !TFL_HAS_EXCEPTIONS
+#error "TFL_ENABLE_EXCEPTIONS requires compiler exception support"
+#endif
+
+#if TFL_ENABLE_EXCEPTIONS
+
+#define TFL_TRY                 try
+#define TFL_CATCH(...)          catch (__VA_ARGS__)
+#define TFL_CATCH_ALL           catch (...)
+#define TFL_THROW(...)          throw __VA_ARGS__
+#define TFL_RETHROW()           throw
+
+#else
+
+#define TFL_TRY                 if constexpr (true)
+#define TFL_CATCH(...)          else if constexpr (false)
+#define TFL_CATCH_ALL           else if constexpr (false)
+#define TFL_THROW(...)          std::terminate()
+#define TFL_RETHROW()           std::terminate()
+
+#endif
 
 
 /// @brief 编译目标使用的缓存行隔离大小估计值。

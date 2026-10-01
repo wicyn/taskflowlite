@@ -695,7 +695,7 @@ public:
     /// @param observer `register_observer` 返回的观察者指针。
     template <std::derived_from<TaskObserver> Observer>
     void unregister_observer(const std::shared_ptr<Observer>& observer) noexcept;
-private:
+protected:
     Work* m_work{nullptr};  ///< 底层 Work 节点指针，非拥有引用。
 
     /// @brief 从底层 Work 指针构造任务句柄。

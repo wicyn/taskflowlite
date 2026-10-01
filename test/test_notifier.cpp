@@ -257,33 +257,41 @@ TEST_CASE("Notifier: stress — no lost wakeups under contention",
 
     tfl::Notifier n{ kWaiters };
 
-    std::atomic<int> total_woken{ 0 };
-    std::atomic<int> total_notifies{ 0 };
+    std::atomic<int> pending{ 0 };
+    std::atomic<int> processed{ 0 };
     std::atomic<bool> stop{ false };
-    std::atomic<int> ready_count{ 0 };
+
+    // Notifications are hints to recheck the predicate, not queued work. Claim
+    // each published item exactly once, independently of how threads wake up.
+    auto claim_work = [&] {
+        auto count = pending.load(std::memory_order_acquire);
+        while (count > 0) {
+            if (pending.compare_exchange_weak(count, count - 1,
+                                              std::memory_order_acq_rel,
+                                              std::memory_order_acquire)) {
+                return true;
+            }
+        }
+        return false;
+    };
 
     std::vector<std::thread> waiters;
     for (std::size_t i = 0; i < kWaiters; ++i) {
         waiters.emplace_back([&, wid = i] {
-            while (!stop.load(std::memory_order_relaxed)) {
+            for (;;) {
                 n.prepare_wait(wid);
-                ready_count.fetch_add(1, std::memory_order_relaxed);
 
-                // 双重检查：有通知到来吗？
-                bool has_work = (total_notifies.load(std::memory_order_relaxed) >
-                    total_woken.load(std::memory_order_relaxed));
-
-                if (has_work || stop.load(std::memory_order_relaxed)) {
+                // Recheck work after prepare_wait to close the sleep window.
+                if (claim_work()) {
                     n.cancel_wait(wid);
-                    ready_count.fetch_sub(1, std::memory_order_relaxed);
-                    if (has_work) {
-                        total_woken.fetch_add(1, std::memory_order_relaxed);
-                    }
+                    processed.fetch_add(1, std::memory_order_release);
+                }
+                else if (stop.load(std::memory_order_acquire)) {
+                    n.cancel_wait(wid);
+                    break;
                 }
                 else {
                     n.commit_wait(wid);
-                    ready_count.fetch_sub(1, std::memory_order_relaxed);
-                    total_woken.fetch_add(1, std::memory_order_relaxed);
                 }
             }
             });
@@ -293,10 +301,7 @@ TEST_CASE("Notifier: stress — no lost wakeups under contention",
     std::thread notifier_thread([&, seed] {
         std::mt19937 rng(seed);
         for (int round = 0; round < kRounds; ++round) {
-            while (ready_count.load(std::memory_order_relaxed) == 0) {
-                std::this_thread::yield();
-            }
-            total_notifies.fetch_add(1, std::memory_order_relaxed);
+            pending.fetch_add(1, std::memory_order_release);
 
             if (std::uniform_int_distribution<int>(0, 1)(rng)) {
                 n.notify_one();
@@ -309,35 +314,26 @@ TEST_CASE("Notifier: stress — no lost wakeups under contention",
         });
 
     notifier_thread.join();
-    stop.store(true, std::memory_order_relaxed);
 
-    // 唤醒所有可能还在睡眠的等待者
-    for (int i = 0; i < 10; ++i) {
-        n.notify_all();
+    // No extra notifications while checking progress: shutdown must not repair
+    // a lost wakeup and make the assertion pass. Drain work before stopping.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (processed.load(std::memory_order_acquire) < kRounds &&
+           std::chrono::steady_clock::now() < deadline) {
         std::this_thread::yield();
     }
+    const bool drained = processed.load(std::memory_order_acquire) == kRounds;
 
-    // 带超时的 join 循环
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    bool all_joined = false;
-    while (!all_joined && std::chrono::steady_clock::now() < deadline) {
-        all_joined = true;
-        for (auto& t : waiters) {
-            if (t.joinable()) {
-                n.notify_all();
-                all_joined = false;
-            }
-        }
-        std::this_thread::yield();
-    }
+    stop.store(true, std::memory_order_release);
+    n.notify_all();
 
     for (auto& t : waiters) {
         if (t.joinable()) t.join();
     }
 
-    // 每条通知至少唤醒一个等待者
-    REQUIRE(total_woken.load() >= total_notifies.load());
-    REQUIRE(total_notifies.load() == kRounds);
+    REQUIRE(drained);
+    REQUIRE(processed.load() == kRounds);
+    REQUIRE(pending.load() == 0);
 }
 
 // ============================================================================

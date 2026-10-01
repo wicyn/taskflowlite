@@ -1,4 +1,4 @@
-﻿# TaskflowLite
+# TaskflowLite
 
 [![Ubuntu](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml)
 [![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
@@ -218,7 +218,7 @@ int result = future.get();  // 42
 
 `Runtime` dispatches tasks during execution. `TaskGroup` manages a set of child tasks, and `wait()` cooperatively waits for the group to complete.
 
-The `TaskGroup` destructor waits but does not rethrow child exceptions. Call `group.wait()` explicitly to catch and handle group failures. See the [error handling example](examples/16_error_handling.cpp).
+The `TaskGroup` destructor waits but does not throw. `group.wait()` reports exceptions archived to the group, such as errors from `silent_async()` children. Call `get()` on child Futures returned by `async()` to receive their exceptions, as shown above. See the [error handling example](examples/16_error_handling.cpp).
 
 ### Dynamic Subgraphs
 
@@ -317,14 +317,14 @@ try {
 
 | Topic | Contract |
 | --- | --- |
-| Graph lifetime | A graph submitted as an lvalue and any referenced data must outlive execution. `Task` is a non-owning handle and becomes invalid when its node is erased or its graph is destroyed. |
+| Graph lifetime | Borrowed graphs and referenced data must outlive their asynchronous execution. `Task` is a non-owning handle and becomes invalid when its node is erased or its graph is destroyed. |
 | Graph reuse | Resubmit after completion. Do not change graph structure or task configuration during execution, or submit the same graph concurrently. |
 | Data synchronization | Edges express execution order. Independent tasks sharing writable data need their own atomics or locks. |
 | Future results | Futures are copyable; `get()` does not consume the result. Value results are returned as `const R&`; keep the underlying task alive while retaining that reference. Reference results also depend on the original object's lifetime. |
 | Deferred tasks | A task may be successfully started only once; predecessors must be started or completed. Converting an idle task to a Future does not start it. |
 | Waiting on workers | Use cooperative waiting through `Runtime`, `SubFlow`, or `TaskGroup`. Blocking on unfinished work can exhaust the worker pool, especially with one worker. |
 | Cooperative cancellation | `request_stop()` requests cancellation; long tasks check `stop_requested()`. It neither interrupts a thread forcibly nor rolls back completed side effects. |
-| Child cancellation | `Runtime` / `TaskGroup` submissions through `async()` and `silent_async()` do not inherit parent stop requests by default. Use `<true>` explicitly when needed and respect the context lifetime requirements. |
+| Child cancellation | `Runtime` / `TaskGroup` submissions through `async()` and `silent_async()` inherit parent stop requests without a template boolean. Keep the parent context alive when querying a child's inherited stop state. Use `Executor` for an independent stop scope. |
 
 See the [asynchronous dependency notes](documentation/async-task-dependency-design.md) for dependency rules, retained references, and failure boundaries.
 
@@ -362,6 +362,7 @@ The `release` preset requires Ninja and enables tests. For Visual Studio on Wind
 | `TFL_BUILD_EXAMPLES` | ON at top level, OFF as subproject | Build complete examples |
 | `TFL_BUILD_TESTS` | OFF | Build and register unit tests |
 | `TFL_TEST_HEADERS` | ON | Check standalone header compilation when tests are enabled |
+| `TFL_TEST_CORE_ALLOCATION_FAILURE` | OFF | Opt in to allocation-failure rollback diagnostics, which may fail or time out; see the [test guide](test/README.md) |
 | `TFL_BUILD_BENCHMARKS` | OFF | Build TaskflowLite and Taskflow comparison programs |
 | `TFL_BUILD_DOCS` | OFF | Enable the Doxygen `GenerateDocs` target |
 | `TFL_SANITIZER` | OFF | `OFF`, `ASAN`, or `TSAN`; MSVC does not support TSAN |
@@ -371,7 +372,7 @@ Using only the exported library target does not require downloading Catch2 or Ta
 
 ## Performance Comparison
 
-The repository contains TaskflowLite and Taskflow comparison programs using the same scenarios. Run `--smoke` to check correctness, then compare full workloads on the same machine with matching build settings. See the [benchmark guide](benchmarks/README.md) for commands and timing boundaries.
+The repository contains `bench_taskflowlite` and `bench_taskflow` comparison programs using the same scenarios, plus `bench_core` for execution contexts. Run `--smoke` to check correctness, then compare full workloads on the same machine with matching build settings. See the [benchmark guide](benchmarks/README.md) for commands and timing boundaries.
 
 The results below are historical and have not been remeasured against the current working tree. The original table does not record exact revisions or distributions across repeated runs. Treat it as reference data, not a performance guarantee for the current version or every workload.
 
@@ -420,9 +421,10 @@ Times are in milliseconds. Speedup = Taskflow time / TaskflowLite time.
 | Topic | Entry point |
 | --- | --- |
 | Complete guide (Chinese) | [PDF manual](documentation/TaskflowLite-Guide.zh-CN.pdf) · [Manual source](documentation/TaskflowLite-Guide.zh-CN.md) |
+| Implementation and scheduling (Chinese) | [Architecture PDF](documentation/TaskflowLite-Architecture.zh-CN.pdf) · [Source](documentation/TaskflowLite-Architecture.zh-CN.md): bounded deque, shared work stacks, wakeups, dependency counters, resource waits, and reclamation, with 48 vector diagrams |
 | Example index and run instructions | [examples/README.md](examples/README.md) |
 | Build options, dependencies, and installation | [cmake/README.md](cmake/README.md) |
-| Test commands | [Building and testing](#building-and-testing) |
+| Test commands and optional diagnostics | [Building and testing](#building-and-testing) · [Test guide](test/README.md) |
 | Asynchronous dependencies and lifetimes | [Dependency notes](documentation/async-task-dependency-design.md) |
 | Branches, jumps, and modules | [Branches](examples/05_branch.cpp), [jumps](examples/06_jump.cpp), [nested modules](examples/08_subflow.cpp) |
 | Dynamic work | [Runtime](examples/04_runtime.cpp), [TaskGroup](examples/26_task_group.cpp), [dynamic subgraphs](examples/27_dynamic_subflow.cpp) |
@@ -430,7 +432,7 @@ Times are in milliseconds. Speedup = Taskflow time / TaskflowLite time.
 | Observability | [Observer](examples/15_observer.cpp), [tracing](examples/21_observer_tracing.cpp), [worker callbacks](examples/30_worker_handler.cpp) |
 | Benchmark methodology | [benchmarks/README.md](benchmarks/README.md) |
 
-The pipeline examples compose a `Flow`. `core/pipeline.hpp` is a draft and does not provide a usable standalone Pipeline API. The supporting guides linked above are currently written in Chinese.
+The pipeline examples compose a `Flow`; see the [pipeline example](examples/09_pipeline.cpp) for a complete program. The supporting guides linked above are currently written in Chinese.
 
 With Doxygen installed, generate API documentation with:
 
