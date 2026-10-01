@@ -25,16 +25,15 @@ namespace tfl {
 /// 外层已经建立的异常锚点。
 ///
 /// 显式异常锚点用于截断子任务异常的默认向上传播，并将异常归档到当前 `Work`；
-/// 对应等待接口随后负责重新抛出已经归档的异常，由调用方通过普通 try/catch 处理。
+/// 对应等待接口随后负责重新抛出已经归档的异常，由调用方通过普通 TFL_TRY/catch 处理。
 ///
 /// @code
-/// try {
+/// TFL_TRY {
 ///     ScopedExceptionAnchor anchor{subflow};
 ///
 ///     subflow.run();
 ///     subflow.wait();
-/// }
-/// catch (...) {
+/// } TFL_CATCH_ALL {
 ///     // 处理当前异常锚点归档并重新抛出的异常。
 /// }
 /// @endcode

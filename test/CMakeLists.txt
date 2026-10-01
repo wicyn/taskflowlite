@@ -245,7 +245,7 @@ endforeach()
 enable_testing()
 
 # Compile every active core header in its own translation unit. Do not let the
-# umbrella header conceal missing includes. pipeline.hpp is a commented draft.
+# umbrella header conceal missing includes.
 option(TFL_TEST_HEADERS "Compile active core headers independently" ON)
 if(TFL_TEST_HEADERS)
     file(GLOB _core_headers CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../taskflowlite/core/*.hpp")
@@ -253,9 +253,6 @@ if(TFL_TEST_HEADERS)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/header_checks")
     foreach(_header IN LISTS _core_headers)
         get_filename_component(_name "${_header}" NAME)
-        if(_name STREQUAL "pipeline.hpp")
-            continue()
-        endif()
         set(_source "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${_name}.cpp")
         file(CONFIGURE OUTPUT "${_source}" CONTENT "#include <taskflowlite/core/${_name}>\n" @ONLY)
         list(APPEND _header_sources "${_source}")
@@ -263,22 +260,51 @@ if(TFL_TEST_HEADERS)
     add_library(tfl_test_headers OBJECT ${_header_sources})
     tfl_setup_test_target(tfl_test_headers NO_CATCH)
     set_target_properties(tfl_test_headers PROPERTIES FOLDER "Tests/Headers")
+    add_library(tfl_test_headers_no_exceptions OBJECT ${_header_sources})
+    tfl_setup_test_target(tfl_test_headers_no_exceptions NO_CATCH)
+    tfl_disable_compiler_exceptions(tfl_test_headers_no_exceptions)
+    set_target_properties(tfl_test_headers_no_exceptions PROPERTIES FOLDER "Tests/Headers")
 endif()
 
-# Known core defects must remain visible without hanging the regular unit suite.
-# Opting in adds genuinely failing tests (no WILL_FAIL or timeout inversion).
-option(TFL_BUILD_CORE_REPROS "Build and register known core defect repros (may fail/time out)" OFF)
-if(TFL_BUILD_CORE_REPROS)
-    if(NOT TFL_SANITIZER STREQUAL "OFF")
-        message(FATAL_ERROR "Core allocation failure repros require TFL_SANITIZER=OFF")
+# Exercise both explicit library opt-out and compiler-driven auto-detection.
+foreach(_mode opt_out no_exceptions)
+    set(_target tfl_test_${_mode})
+    add_executable(${_target} no_exceptions.cpp)
+    tfl_setup_test_target(${_target} NO_CATCH)
+    if(_mode STREQUAL "no_exceptions")
+        tfl_disable_compiler_exceptions(${_target})
+        target_compile_definitions(${_target} PRIVATE TFL_TEST_COMPILER_NO_EXCEPTIONS=1)
+    else()
+        target_compile_definitions(${_target} PRIVATE TFL_ENABLE_EXCEPTIONS=0)
     endif()
-    add_executable(tfl_core_failure_repro core_failure_repro.cpp)
-    tfl_setup_test_target(tfl_core_failure_repro NO_CATCH)
-    target_compile_definitions(tfl_core_failure_repro PRIVATE TFL_ENABLE_TASK_POOL=0)
-    set_target_properties(tfl_core_failure_repro PROPERTIES FOLDER "Tests/CoreRepros")
-    foreach(_case start_reserve link_alloc payload_replace)
-        add_test(NAME core_repro.${_case} COMMAND tfl_core_failure_repro ${_case})
-        set_tests_properties(core_repro.${_case} PROPERTIES TIMEOUT 5 LABELS "core-repro")
+    set_target_properties(${_target} PROPERTIES FOLDER "Tests/Standalone")
+    add_test(NAME tfl_test.${_mode} COMMAND ${_target})
+    set_tests_properties(tfl_test.${_mode} PROPERTIES TIMEOUT 30 LABELS "unit;exceptions")
+    set(_terminate_cases future executor start link vector)
+    if(_mode STREQUAL "opt_out")
+        list(APPEND _terminate_cases callable)
+    endif()
+    foreach(_case IN LISTS _terminate_cases)
+        add_test(NAME tfl_test.${_mode}.${_case}
+            COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:${_target}> -DCASE=${_case}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/check_terminate.cmake)
+        set_tests_properties(tfl_test.${_mode}.${_case} PROPERTIES TIMEOUT 15 LABELS "unit;exceptions")
+    endforeach()
+endforeach()
+
+# These diagnostics require rollback guarantees that the current core does not
+# provide for failed submission. Keep them opt-in, outside the default suite.
+# Global allocator replacement is only supported in ordinary builds.
+option(TFL_TEST_CORE_ALLOCATION_FAILURE
+    "Enable core allocation-failure rollback diagnostics (may fail or time out)" OFF)
+if(TFL_TEST_CORE_ALLOCATION_FAILURE AND TFL_SANITIZER STREQUAL "OFF")
+    add_executable(tfl_test_core_allocation_failure core_allocation_failure.cpp)
+    tfl_setup_test_target(tfl_test_core_allocation_failure NO_CATCH)
+    target_compile_definitions(tfl_test_core_allocation_failure PRIVATE TFL_ENABLE_TASK_POOL=0)
+    set_target_properties(tfl_test_core_allocation_failure PROPERTIES FOLDER "Tests/Standalone")
+    foreach(_case start_reserve link_alloc payload_replace deferred executor runtime group)
+        add_test(NAME tfl_test.core_allocation.${_case} COMMAND tfl_test_core_allocation_failure ${_case})
+        set_tests_properties(tfl_test.core_allocation.${_case} PROPERTIES TIMEOUT 15 LABELS "unit;allocation")
     endforeach()
 endif()
 
@@ -291,22 +317,13 @@ set_tests_properties(tfl_test.topology_header PROPERTIES TIMEOUT 30 LABELS "unit
 add_executable(tfl_test_async_task_allocation_failure async_task_allocation_failure.cpp)
 tfl_setup_test_target(tfl_test_async_task_allocation_failure NO_CATCH)
 target_compile_definitions(tfl_test_async_task_allocation_failure PRIVATE TFL_ENABLE_TASK_POOL=0)
-if(TFL_SANITIZER STREQUAL "ASAN")
+if(NOT TFL_SANITIZER STREQUAL "OFF")
     target_compile_definitions(tfl_test_async_task_allocation_failure PRIVATE TFL_SKIP_ALLOCATION_FAILURE=1)
 endif()
 add_test(NAME tfl_test.async_task_allocation_failure COMMAND tfl_test_async_task_allocation_failure)
 set_tests_properties(tfl_test.async_task_allocation_failure PROPERTIES TIMEOUT 30 LABELS "unit;allocation")
 set_target_properties(tfl_test_topology_header tfl_test_async_task_allocation_failure
     PROPERTIES FOLDER "Tests/Standalone")
-
-add_executable(tfl_test_task_link_allocation_failure task_link_allocation_failure.cpp)
-tfl_setup_test_target(tfl_test_task_link_allocation_failure NO_CATCH)
-if(TFL_SANITIZER STREQUAL "ASAN")
-    target_compile_definitions(tfl_test_task_link_allocation_failure PRIVATE TFL_SKIP_ALLOCATION_FAILURE=1)
-endif()
-add_test(NAME tfl_test.task_link_allocation_failure COMMAND tfl_test_task_link_allocation_failure)
-set_tests_properties(tfl_test.task_link_allocation_failure PROPERTIES TIMEOUT 30 LABELS "unit;allocation")
-set_target_properties(tfl_test_task_link_allocation_failure PROPERTIES FOLDER "Tests/Standalone")
 
 add_test(
     NAME TaskflowLiteTest
@@ -346,16 +363,19 @@ add_custom_target(run_all_tests
     COMMAND ${CMAKE_CTEST_COMMAND}
             --output-on-failure
             -C $<CONFIG>
-            -R "^TaskflowLiteTest$|^tfl_test[.](topology_header|async_task_allocation_failure|task_link_allocation_failure)$"
+            -L unit -LE perfile
     WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
-    DEPENDS TaskflowLiteTest tfl_test_topology_header tfl_test_async_task_allocation_failure tfl_test_task_link_allocation_failure
+    DEPENDS TaskflowLiteTest tfl_test_topology_header tfl_test_async_task_allocation_failure tfl_test_opt_out tfl_test_no_exceptions
     USES_TERMINAL
     VERBATIM
     COMMENT "Running all TaskflowLite unit tests..."
 )
 set_target_properties(run_all_tests PROPERTIES FOLDER "Run")
+if(TARGET tfl_test_core_allocation_failure)
+    add_dependencies(run_all_tests tfl_test_core_allocation_failure)
+endif()
 if(TARGET tfl_test_headers)
-    add_dependencies(run_all_tests tfl_test_headers)
+    add_dependencies(run_all_tests tfl_test_headers tfl_test_headers_no_exceptions)
 endif()
 
 if(TFL_TEST_RUN_TARGETS)
@@ -387,5 +407,6 @@ message(STATUS "  Monolithic    : TaskflowLiteTest")
 message(STATUS "  Per-file      : ${_nfiles} (tfl_test_*, in ALL=${TFL_TEST_PER_FILE_DEFAULT})")
 message(STATUS "  C++ Standard  : C++${CMAKE_CXX_STANDARD}")
 message(STATUS "  Sanitizer     : ${TFL_SANITIZER}")
+message(STATUS "  Core allocation diagnostics : ${TFL_TEST_CORE_ALLOCATION_FAILURE} (ordinary builds only)")
 message(STATUS "  Output dir    : ${PROJECT_BINARY_DIR}/bin/")
 message(STATUS "-----------------------------------------------")

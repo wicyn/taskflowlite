@@ -30,3 +30,7 @@ cmake --build build/examples --config Release --target tfl_ex_01_basic_dag
 | 27–33 | 动态子图、任务重绑定、Future 结果、Worker 回调、对象任务、unchecked 建边 |
 | [34_dependency_errors.cpp](34_dependency_errors.cpp) | 依赖校验、异常传播与错误处理 |
 | [35_bounded_queue_overflow.cpp](35_bounded_queue_overflow.cpp) | 有界队列与溢出回调 |
+| [36_corun.cpp](36_corun.cpp) | 外部同步执行、单 Worker 嵌套与局部异常恢复 |
+| [37_no_exceptions.cpp](37_no_exceptions.cpp) | 禁用编译器异常的完整程序 |
+| [38_context_and_stop.cpp](38_context_and_stop.cpp) | Context 信息与子任务停止继承 |
+| [39_observer_errors.cpp](39_observer_errors.cpp) | 观察者异常与任务结果 |

@@ -112,18 +112,20 @@ TEST_CASE("TaskGroup: destructor waits without throwing during unwinding", "[tas
     REQUIRE(child_ran);
 }
 
-/// @test [task-group][stop] 停止请求幂等，false 模板实参建立独立停止域。
-TEST_CASE("TaskGroup: stop domain inheritance is explicit", "[task-group][stop]") {
+/// @test [task-group][stop] 组内任务继承停止请求，Executor 提交使用独立停止域。
+TEST_CASE("TaskGroup: children inherit the group stop domain", "[task-group][stop]") {
     TestEnv env(1);
     auto parent = env.executor.async([](tfl::Runtime& rt) {
         tfl::TaskGroup group(rt);
-        auto           inherited = group.async<true>([] {});
-        auto independent = group.async([] {}); // 当前默认 InheritTopology=false。
+        auto inherited = group.async([] {});
+        auto independent = rt.executor().async([] {});
         const bool first = group.request_stop();
         const bool second = group.request_stop();
         const bool inherited_stop = inherited.stop_requested();
         const bool independent_stop = independent.stop_requested();
         group.wait();
+        rt.wait_until([&] { return independent.done(); });
+        independent.get();
         return first && !second && group.stop_requested() && inherited_stop && !independent_stop;
     });
     REQUIRE(parent.get());

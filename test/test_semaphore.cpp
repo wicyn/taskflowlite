@@ -15,7 +15,7 @@
 /// 核心不变式：
 ///   1. 任务并发数永远不超过 sem.max_value()；
 ///   2. 未能获取信号量的任务被"挂起"（不占用工作线程），释放后被唤醒；
-///   3. 等待队列非空时，reset() 抛出异常。
+///   3. 等待队列非空时，reset() 返回 false 且不改变状态。
 
 #include "test_common.hpp"
 
@@ -193,14 +193,14 @@ TEST_CASE("Semaphore: reset adjusts capacity", "[semaphore][reset]") {
 
     /// @section reset-max-full
     SECTION("reset(max) restores to full") {
-        sem.reset(5);
+        REQUIRE(sem.reset(5));
         REQUIRE(sem.max_value() == 5);
         REQUIRE(sem.value() == 5);
     }
 
     /// @section reset-max-current
     SECTION("reset(max, current) explicit available") {
-        sem.reset(5, 2);
+        REQUIRE(sem.reset(5, 2));
         REQUIRE(sem.max_value() == 5);
         REQUIRE(sem.value() == 2);
     }
@@ -355,12 +355,9 @@ TEST_CASE("Semaphore: mixed heavy/light tasks under pool cap", "[semaphore][stre
 // SECTION 8: 错误路径 —— reset with waiters / acquire > max
 // ============================================================================
 
-/// @test [semaphore][error] reset 在 waiters 非空时抛异常
-/// @details Semaphore::reset 要求等待队列为空，否则抛 tfl::Exception。
-///          用"初始值=0 的信号量 + 被 acquire 阻塞的任务"构造等待者，
-///          验证 reset 抛异常后，通过 release 任务唤醒被阻塞的任务完成清理。
-TEST_CASE("Semaphore: reset with pending waiters throws", "[semaphore][error]") {
-    TestEnv env(2);
+/// @test [semaphore][error] reset 拒绝等待队列非空的重置，并保留原配额。
+TEST_CASE("Semaphore: reset with pending waiters preserves state", "[semaphore][error]") {
+    TestEnv env(1);
     tfl::Semaphore gate{1, 0};  // max=1, current=0 —— 初始无配额
 
     std::atomic<bool> waiter_ran{false};
@@ -369,17 +366,17 @@ TEST_CASE("Semaphore: reset with pending waiters throws", "[semaphore][error]") 
     auto waiter = flow.emplace([&] {
         waiter_ran.store(true);  // acquire 成功后才会执行
     });
-    waiter.acquire(gate);  // 阻塞：current=0，无法获取
+    waiter.acquire(gate).release(gate);
 
-    auto task = env.executor.defer_async(flow);
-    task.start();
-
-    // 给调度器时间把任务放入信号量等待队列
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-
-    // 核心断言：等待队列非空时 reset 必须抛异常
-    REQUIRE_THROWS_AS(gate.reset(2), tfl::Exception);
-    REQUIRE_THROWS_AS(gate.reset(2, 1), tfl::Exception);
+    std::promise<bool> checked;
+    auto task = env.executor.async([&](tfl::Runtime& rt) {
+        rt.run(flow);
+        // 单 Worker 队列被协作等待排空后，唯一子任务已进入 waiter 链。
+        rt.wait_until([&] { return rt.worker().queue_size() == 0; });
+        const bool rejected = !gate.reset(2) && !gate.reset(2, 1);
+        checked.set_value(rejected && gate.max_value() == 1 && gate.value() == 0);
+    });
+    const bool preserved = checked.get_future().get();
 
     // 清理：提交新 Flow 释放 1 配额以唤醒被阻塞的任务
     tfl::Flow release_flow;
@@ -389,7 +386,11 @@ TEST_CASE("Semaphore: reset with pending waiters throws", "[semaphore][error]") 
 
     // waiter 现在应已完成
     task.wait();
+    REQUIRE(preserved);
     REQUIRE(waiter_ran.load());
+    REQUIRE(gate.reset(3, 9));
+    REQUIRE(gate.max_value() == 3);
+    REQUIRE(gate.value() == 3);
 }
 
 /// @test [semaphore][boundary] 初始值为 0 时 value() 与 max_value() 独立

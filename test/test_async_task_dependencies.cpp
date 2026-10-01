@@ -194,7 +194,6 @@ TEST_CASE("AsyncTask: runtime and subflow dependencies include nested children",
 TEST_CASE("Submission: all contexts validate and retain mixed dependencies", "[async][deps][runtime][task-group]") {
     TestEnv env(1);
     const int context = GENERATE(0, 1, 2);
-    const bool inherit = GENERATE(false, true);
     auto a = env.executor.defer_async([] { return 20; }).start();
     a.get();
     env.executor.wait_for_all();
@@ -204,10 +203,7 @@ TEST_CASE("Submission: all contexts validate and retain mixed dependencies", "[a
     auto exercise = [&](auto& submitter) {
         REQUIRE_THROWS_AS(submitter.async([] {}, a, idle), tfl::Exception);
         REQUIRE(a.use_count() == 1);
-        if (inherit)
-            child = submitter.template async<true>([] { return 42; }, a, empty, a);
-        else
-            child = submitter.async([] { return 42; }, a, empty, a);
+        child = submitter.async([] { return 42; }, a, empty, a);
     };
     if (context == 0) {
         REQUIRE_THROWS_AS(env.executor.async([] {}, a, idle), tfl::Exception);

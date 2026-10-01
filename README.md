@@ -1,4 +1,4 @@
-﻿# TaskflowLite
+# TaskflowLite
 
 [![Ubuntu](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml)
 [![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
@@ -218,7 +218,7 @@ int result = future.get();  // 42
 
 `Runtime` 用于运行时派发任务；`TaskGroup` 管理一组子任务，`wait()` 协作等待组内任务完成。
 
-`TaskGroup` 析构时会等待，但不会重抛子任务异常。需要捕获并处理组内异常时，显式调用 `group.wait()`。见 [异常处理示例](examples/16_error_handling.cpp)。
+`TaskGroup` 析构时会等待，但不会抛异常。`group.wait()` 接收归档到组的异常，例如 `silent_async()` 子任务的异常；通过 `async()` 返回的子 Future 应调用 `get()` 接收其异常，如上例所示。见 [异常处理示例](examples/16_error_handling.cpp)。
 
 ### 动态子图
 
@@ -317,14 +317,14 @@ try {
 
 | 主题 | 约定 |
 | --- | --- |
-| 图的生命周期 | 以左值提交的图及其引用数据须存活到执行完成；`Task` 是非拥有句柄，不能在节点被删除或图销毁后使用。 |
+| 图的生命周期 | 异步执行借用的图及其引用数据须存活到执行完成；`Task` 是非拥有句柄，不能在节点被删除或图销毁后使用。 |
 | 图的复用 | 上次执行完成后可以再次提交；运行中不要修改图结构、任务配置或并发提交同一图。 |
 | 数据同步 | 依赖边表达执行顺序。没有依赖关系的任务共享可写数据时，需要自行使用原子或锁。 |
 | Future 结果 | Future 可复制，`get()` 不消费结果。值类型结果通过 `const R&` 返回，保留该引用时须确保底层任务仍存活；引用类型结果还受原始对象生命周期约束。 |
 | 延迟任务 | `start()` 只允许成功启动一次；前驱必须已启动或完成。将 Idle 任务转成 Future 不会自动启动它。 |
 | 工作线程内等待 | 使用 `Runtime`、`SubFlow` 或 `TaskGroup` 的协作等待。直接阻塞等待未完成的工作可能耗尽线程池，单工作线程尤其如此。 |
 | 协作取消 | `request_stop()` 发出停止请求，长任务需要检查 `stop_requested()`；不会强制中断线程，也不会撤销已经发生的副作用。 |
-| 子任务停止请求 | `Runtime` / `TaskGroup` 的 `async()`、`silent_async()` 默认不继承父停止请求；需要继承时显式使用 `<true>`，并遵守上下文生命周期约定。 |
+| 子任务停止请求 | `Runtime` / `TaskGroup` 的 `async()`、`silent_async()` 继承父停止请求，无需模板布尔参数。子 Future 查询继承的停止状态时，父上下文须仍有效；需要独立停止域时通过 `Executor` 提交。 |
 
 更详细的依赖规则、引用保留和失败边界见 [异步任务依赖说明](documentation/async-task-dependency-design.md)。
 
@@ -362,6 +362,7 @@ ctest --preset release -LE perfile --no-tests=error
 | `TFL_BUILD_EXAMPLES` | 顶层 ON，子项目 OFF | 构建完整示例 |
 | `TFL_BUILD_TESTS` | OFF | 构建并注册单元测试 |
 | `TFL_TEST_HEADERS` | ON | 启用测试时检查头文件能否独立编译 |
+| `TFL_TEST_CORE_ALLOCATION_FAILURE` | OFF | 显式启用分配失败回滚诊断；当前实现可能失败或超时，见[测试说明](test/README.md) |
 | `TFL_BUILD_BENCHMARKS` | OFF | 构建 TaskflowLite 与 Taskflow 对比程序 |
 | `TFL_BUILD_DOCS` | OFF | 启用 Doxygen `GenerateDocs` 目标 |
 | `TFL_SANITIZER` | OFF | `OFF`、`ASAN` 或 `TSAN`；MSVC 不支持 TSAN |
@@ -371,7 +372,7 @@ ctest --preset release -LE perfile --no-tests=error
 
 ## 性能对比
 
-仓库包含使用相同场景的 TaskflowLite / Taskflow 对比程序。先使用 `--smoke` 验证正确性，再在相同编译选项和机器上比较完整工作量；命令及计时范围见 [基准说明](benchmarks/README.md)。
+仓库包含使用相同场景的 `bench_taskflowlite` / `bench_taskflow` 对比程序，以及覆盖执行上下文的 `bench_core`。先使用 `--smoke` 验证正确性，再在相同编译选项和机器上比较完整工作量；命令及计时范围见 [基准说明](benchmarks/README.md)。
 
 以下数据来自历史测试，未随当前工作区重新测量。原始表未记录双方的精确提交和重复测量分布，应作为参考，不能视为当前版本或所有工作负载的性能保证。
 
@@ -420,9 +421,10 @@ ctest --preset release -LE perfile --no-tests=error
 | 主题 | 入口 |
 | --- | --- |
 | 完整中文使用手册 | [PDF 手册](documentation/TaskflowLite-Guide.zh-CN.pdf) · [手册源稿](documentation/TaskflowLite-Guide.zh-CN.md) |
+| 实现原理与调度算法 | [架构 PDF](documentation/TaskflowLite-Architecture.zh-CN.pdf) · [源稿](documentation/TaskflowLite-Architecture.zh-CN.md)：有界队列、共享工作栈、唤醒协议、依赖计数、资源等待与回收，含 48 幅矢量图 |
 | 示例索引与运行方式 | [examples/README.md](examples/README.md) |
 | 构建选项、依赖与安装 | [cmake/README.md](cmake/README.md) |
-| 测试命令 | [构建与测试](#构建与测试) |
+| 测试命令与可选诊断 | [构建与测试](#构建与测试) · [测试说明](test/README.md) |
 | 异步依赖与生命周期 | [依赖说明](documentation/async-task-dependency-design.md) |
 | 分支、跳转与模块 | [条件分支](examples/05_branch.cpp)、[跳转](examples/06_jump.cpp)、[嵌套模块](examples/08_subflow.cpp) |
 | 动态任务 | [Runtime](examples/04_runtime.cpp)、[TaskGroup](examples/26_task_group.cpp)、[动态子图](examples/27_dynamic_subflow.cpp) |
@@ -430,7 +432,7 @@ ctest --preset release -LE perfile --no-tests=error
 | 观察与追踪 | [Observer](examples/15_observer.cpp)、[追踪](examples/21_observer_tracing.cpp)、[Worker 回调](examples/30_worker_handler.cpp) |
 | 性能测试方法 | [benchmarks/README.md](benchmarks/README.md) |
 
-示例中的流水线通过 `Flow` 组合实现。`core/pipeline.hpp` 是草稿，不提供可用的独立 Pipeline API。
+示例中的流水线通过 `Flow` 组合实现，完整用法见 [流水线示例](examples/09_pipeline.cpp)。
 
 安装 Doxygen 后，可生成 API 文档：
 

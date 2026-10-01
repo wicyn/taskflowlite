@@ -342,7 +342,7 @@ AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) {
     Work* const work = m_work;
 
     if (!work) [[unlikely]] {
-        throw Exception{"AsyncTask: empty task."};
+        TFL_THROW(Exception{"AsyncTask: empty task."});
     }
 
     Topology* const topology = work->m_topology;
@@ -351,7 +351,7 @@ AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) {
     auto current = control.load(std::memory_order_acquire);
 
     if (Topology::Control::status(current) != Topology::Control::Status::Idle) [[unlikely]] {
-        throw Exception{"AsyncTask: task can only be started once."};
+        TFL_THROW(Exception{"AsyncTask: task can only be started once."});
     }
 
     std::array<Work*, num_dependencies> predecessors{deps.m_work...};
@@ -365,13 +365,13 @@ AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) {
             }
 
             if (predecessor == work) [[unlikely]] {
-                throw Exception{"AsyncTask: task cannot depend on itself."};
+                TFL_THROW(Exception{"AsyncTask: task cannot depend on itself."});
             }
 
             const auto state = predecessor->m_topology->m_control.load(std::memory_order_acquire);
 
             if (Topology::Control::status(state) == Topology::Control::Status::Idle) [[unlikely]] {
-                throw Exception{"AsyncTask: dependency has not been started."};
+                TFL_THROW(Exception{"AsyncTask: dependency has not been started."});
             }
 
             predecessors[num_predecessors++] = predecessor;
@@ -381,7 +381,7 @@ AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) {
     // 保持 Idle 并取得自身锁，保证同一 Work 只由一个线程完成启动准备。
     for (;;) {
         if (Topology::Control::status(current) != Topology::Control::Status::Idle) [[unlikely]] {
-            throw Exception{"AsyncTask: task can only be started once."};
+            TFL_THROW(Exception{"AsyncTask: task can only be started once."});
         }
 
         current &= ~Topology::Control::LOCKED;
@@ -407,7 +407,7 @@ AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) {
             for (std::size_t i = 0; i < num_predecessors; ++i) {
                 Work* const predecessor = predecessors[i];
                 edges.push_back(predecessor);
-                predecessor->_increment_ref();
+                predecessor->m_topology->_increment_ref();
             }
         }
 
@@ -418,7 +418,7 @@ AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) {
     }
 
     // 执行引用和活动拓扑计数均在启动时取得，由异步收尾路径归还。
-    work->_increment_ref();
+    work->m_topology->_increment_ref();
     executor._increment_topology();
 
     // 持锁从 Idle 发布 Running，再解锁；保留引用计数和停止标志。

@@ -260,7 +260,7 @@ AsyncFuture<R>& AsyncFuture<R>::operator=(const AsyncFuture& other) noexcept {
         ResultSlot<R>* result = other.m_result;
 
         if (work) {
-            work->_increment_ref();
+            work->m_topology->_increment_ref();
         }
 
         _decrement_ref();
@@ -313,17 +313,17 @@ AsyncFuture<R>::operator bool() const noexcept {
 
 template <typename R>
 bool AsyncFuture<R>::done() const noexcept {
-    return m_work && m_work->_is_finished();
+    return m_work && m_work->m_topology->_is_finished();
 }
 
 template <typename R>
 bool AsyncFuture<R>::running() const noexcept {
-    return m_work && m_work->_is_running();
+    return m_work && m_work->m_topology->_is_running();
 }
 
 template <typename R>
 std::size_t AsyncFuture<R>::use_count() const noexcept {
-    return m_work ? m_work->_use_count() : 0;
+    return m_work ? m_work->m_topology->_use_count() : 0;
 }
 
 template <typename R>
@@ -339,17 +339,17 @@ bool AsyncFuture<R>::operator==(const AsyncFuture& other) const noexcept {
 template <typename R>
 void AsyncFuture<R>::wait() const noexcept {
     if (m_work) {
-        m_work->_wait();
+        m_work->m_topology->_wait();
     }
 }
 
 template <typename R>
 decltype(auto) AsyncFuture<R>::get() const {
     if (!m_work) [[unlikely]] {
-        throw Exception{"AsyncFuture::get: no associated task."};
+        TFL_THROW(Exception{"AsyncFuture::get: no associated task."});
     }
 
-    m_work->_wait();
+    m_work->m_topology->_wait();
     m_work->_rethrow_shared_exception();
 
     return std::as_const(*m_result).ref();
@@ -357,12 +357,12 @@ decltype(auto) AsyncFuture<R>::get() const {
 
 template <typename R>
 bool AsyncFuture<R>::stop_requested() const noexcept {
-    return m_work && m_work->_stop_requested();
+    return m_work && m_work->m_topology->_stop_requested();
 }
 
 template <typename R>
 bool AsyncFuture<R>::request_stop() noexcept {
-    return m_work && m_work->_request_stop();
+    return m_work && m_work->m_topology->_request_stop();
 }
 
 template <typename R>
@@ -380,7 +380,7 @@ std::string AsyncFuture<R>::dump(Direction direction) const {
 template <typename R>
 void AsyncFuture<R>::dump(std::ostream& stream, Direction direction) const {
     if (!m_work) [[unlikely]] {
-        throw Exception{"AsyncFuture::dump: no associated task."};
+        TFL_THROW(Exception{"AsyncFuture::dump: no associated task."});
     }
 
     stream << "direction: " << to_string(direction) << "\n\n";
@@ -400,7 +400,7 @@ AsyncFuture<R>::AsyncFuture(Work* work, ResultSlot<R>* result) noexcept
 template <typename R>
 void AsyncFuture<R>::_increment_ref() noexcept {
     if (m_work) {
-        m_work->_increment_ref();
+        m_work->m_topology->_increment_ref();
     }
 }
 
@@ -409,7 +409,7 @@ void AsyncFuture<R>::_decrement_ref() noexcept {
     Work* work = std::exchange(m_work, nullptr);
     m_result = nullptr;
 
-    if (work && work->_decrement_ref()) {
+    if (work && work->m_topology->_decrement_ref()) {
         work->_destroy_async();
     }
 }

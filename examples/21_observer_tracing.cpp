@@ -95,11 +95,11 @@ class TraceLogger : public tfl::TaskObserver {
     std::vector<std::string> m_log;
 
 public:
-    void on_before(tfl::WorkerView wv) noexcept override {
+    void on_before(tfl::WorkerView wv) override {
         std::lock_guard<std::mutex> lk(m_mtx);
         m_log.emplace_back("worker#" + std::to_string(wv.id()) + " ENTER");
     }
-    void on_after(tfl::WorkerView wv) noexcept override {
+    void on_after(tfl::WorkerView wv) override {
         std::lock_guard<std::mutex> lk(m_mtx);
         m_log.emplace_back("worker#" + std::to_string(wv.id()) + " EXIT");
     }

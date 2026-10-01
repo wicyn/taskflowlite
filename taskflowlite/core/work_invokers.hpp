@@ -496,7 +496,7 @@ public:
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
-        if (w._stop_requested()) [[unlikely]] {
+        if (w.m_topology->_stop_requested()) [[unlikely]] {
             exe._schedule_parent(w.m_parent, wr, cache);
             return;
         }
@@ -507,9 +507,9 @@ public:
 
         w._notify_before(wr);
 
-        try {
+        TFL_TRY {
             std::invoke(m_func);
-        } catch (...) {
+        } TFL_CATCH_ALL {
             w._process_exception();
         }
 
@@ -553,7 +553,7 @@ public:
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
-        if (w._stop_requested()) [[unlikely]] {
+        if (w.m_topology->_stop_requested()) [[unlikely]] {
             exe._schedule_parent(w.m_parent, wr, cache);
             return;
         }
@@ -566,9 +566,9 @@ public:
 
         Branch branch{w, wr, exe};
 
-        try {
+        TFL_TRY {
             std::invoke(m_func, branch);
-        } catch (...) {
+        } TFL_CATCH_ALL {
             w._process_exception();
         }
 
@@ -611,7 +611,7 @@ public:
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
-        if (w._stop_requested()) [[unlikely]] {
+        if (w.m_topology->_stop_requested()) [[unlikely]] {
             exe._schedule_parent(w.m_parent, wr, cache);
             return;
         }
@@ -624,9 +624,9 @@ public:
 
         MultiBranch branch{w, wr, exe};
 
-        try {
+        TFL_TRY {
             std::invoke(m_func, branch);
-        } catch (...) {
+        } TFL_CATCH_ALL {
             w._process_exception();
         }
 
@@ -670,7 +670,7 @@ public:
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
-        if (w._stop_requested()) [[unlikely]] {
+        if (w.m_topology->_stop_requested()) [[unlikely]] {
             exe._schedule_parent(w.m_parent, wr, cache);
             return;
         }
@@ -683,9 +683,9 @@ public:
 
         Jump jump{w, wr, exe};
 
-        try {
+        TFL_TRY {
             std::invoke(m_func, jump);
-        } catch (...) {
+        } TFL_CATCH_ALL {
             w._process_exception();
         }
 
@@ -729,7 +729,7 @@ public:
         : Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
-        if (w._stop_requested()) [[unlikely]] {
+        if (w.m_topology->_stop_requested()) [[unlikely]] {
             exe._schedule_parent(w.m_parent, wr, cache);
             return;
         }
@@ -742,9 +742,9 @@ public:
 
         MultiJump jump{w, wr, exe};
 
-        try {
+        TFL_TRY {
             std::invoke(m_func, jump);
-        } catch (...) {
+        } TFL_CATCH_ALL {
             w._process_exception();
         }
 
@@ -794,7 +794,7 @@ public:
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入：尚未因动态 child / 子图进入 PREEMPTED 挂起状态。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
-            if (w._stop_requested()) [[unlikely]] {
+            if (w.m_topology->_stop_requested()) [[unlikely]] {
                 exe._schedule_parent(w.m_parent, wr, cache);
                 return;
             }
@@ -810,9 +810,9 @@ public:
 
             Runtime runtime{w, wr, exe};
 
-            try {
+            TFL_TRY {
                 std::invoke(m_func, runtime);
-            } catch (...) {
+            } TFL_CATCH_ALL {
                 w._process_exception();
             }
 
@@ -868,7 +868,7 @@ public:
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入：尚未因动态 child / 子图进入 PREEMPTED 挂起状态。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
-            if (w._stop_requested()) [[unlikely]] {
+            if (w.m_topology->_stop_requested()) [[unlikely]] {
                 exe._schedule_parent(w.m_parent, wr, cache);
                 return;
             }
@@ -884,9 +884,9 @@ public:
 
             SubFlow flow{m_graph, w, wr, exe};
 
-            try {
+            TFL_TRY {
                 std::invoke(m_func, flow);
-            } catch (...) {
+            } TFL_CATCH_ALL {
                 w._process_exception();
             }
 
@@ -976,7 +976,7 @@ public:
 
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
-            if (w._stop_requested()) [[unlikely]] {
+            if (w.m_topology->_stop_requested()) [[unlikely]] {
                 exe._schedule_parent(w.m_parent, wr, cache);
                 return;
             }
@@ -1058,9 +1058,9 @@ public:
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         TFL_WORK_EXECUTION_BEGIN(w);
 
-        try {
+        TFL_TRY {
             std::invoke(m_func);
-        } catch (...) {
+        } TFL_CATCH_ALL {
             w._process_exception();
         }
 
@@ -1103,9 +1103,9 @@ public:
 
             Runtime rt{w, wr, exe};
 
-            try {
+            TFL_TRY {
                 std::invoke(m_func, rt);
-            } catch (...) {
+            } TFL_CATCH_ALL {
                 w._process_exception();
             }
 
@@ -1157,9 +1157,9 @@ public:
 
             SubFlow flow{m_graph, w, wr, exe};
 
-            try {
+            TFL_TRY {
                 std::invoke(m_func, flow);
-            } catch (...) {
+            } TFL_CATCH_ALL {
                 w._process_exception();
             }
 
@@ -1301,9 +1301,9 @@ public:
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         TFL_WORK_EXECUTION_BEGIN(w);
 
-        try {
+        TFL_TRY {
             Storage::set_result_from(m_func);
-        } catch (...) {
+        } TFL_CATCH_ALL {
             w._process_exception();
         }
 
@@ -1349,9 +1349,9 @@ public:
 
             Runtime rt{w, wr, exe};
 
-            try {
+            TFL_TRY {
                 Storage::set_result_from(m_func, rt);
-            } catch (...) {
+            } TFL_CATCH_ALL {
                 w._process_exception();
             }
 
@@ -1404,9 +1404,9 @@ public:
 
             SubFlow flow{m_graph, w, wr, exe};
 
-            try {
+            TFL_TRY {
                 Storage::set_result_from(m_func, flow);
-            } catch (...) {
+            } TFL_CATCH_ALL {
                 w._process_exception();
             }
 
@@ -1559,9 +1559,9 @@ public:
 
         w._notify_before(wr);
 
-        try {
+        TFL_TRY {
             Storage::set_result_from(m_func);
-        } catch (...) {
+        } TFL_CATCH_ALL {
             w._process_exception();
         }
 
@@ -1622,9 +1622,9 @@ public:
 
             Runtime rt{w, wr, exe};
 
-            try {
+            TFL_TRY {
                 Storage::set_result_from(m_func, rt);
-            } catch (...) {
+            } TFL_CATCH_ALL {
                 w._process_exception();
             }
 
@@ -1695,9 +1695,9 @@ public:
 
             SubFlow flow{m_graph, w, wr, exe};
 
-            try {
+            TFL_TRY {
                 Storage::set_result_from(m_func, flow);
-            } catch (...) {
+            } TFL_CATCH_ALL {
                 w._process_exception();
             }
 
