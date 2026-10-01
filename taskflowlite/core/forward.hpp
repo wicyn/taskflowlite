@@ -51,8 +51,9 @@ class AsyncTaskObject;
 // Work Invoker
 // ============================================================================
 
-class AnchorWork;
 class PlaceholderInvoker;
+template <bool>
+class AnchorWork;
 
 template <typename>
 class BasicInvoker;
@@ -125,8 +126,8 @@ class SubFlowWork;
 /// 统一维护 Work 与各 Invoker 之间的 friend 关系，避免在多个核心类型中重复声明。
 /// 模板参数数量必须与对应 Invoker 的前向声明及实际定义保持一致。
 #define TFL_WORK_SUBCLASS_FRIENDS                                                                                   \
-friend class ::tfl::AnchorWork;                                                                                     \
-    friend class ::tfl::PlaceholderInvoker;                                                                         \
+friend class ::tfl::PlaceholderInvoker;                                                                             \
+    template <bool>                                      friend class ::tfl::AnchorWork;                            \
     template <typename>                                  friend class ::tfl::BasicInvoker;                          \
     template <typename>                                  friend class ::tfl::BranchInvoker;                         \
     template <typename>                                  friend class ::tfl::MultiBranchInvoker;                    \

@@ -64,7 +64,7 @@ public:
         m_worker_id = wr.id();
     }
 
-    void on_after(tfl::WorkerView) noexcept override {
+    void on_after(tfl::WorkerView) override {
         auto end = std::chrono::steady_clock::now();
         double ms = std::chrono::duration<double, std::milli>(end - m_start).count();
 

@@ -73,16 +73,16 @@ public:
 
     /// @brief 重置信号量最大配额，并使全部新配额恢复为可用状态。
     /// @param max_value 新的最大配额，同时成为新的当前可用配额。
+    /// @return 重置成功返回 true；当前存在等待任务时返回 false。
     /// @pre 不得存在尚未归还的已占用配额，也不得与其他配置操作并发调用。
-    /// @throws Exception 当前存在等待任务时抛出异常。
-    void reset(std::size_t max_value);
+    [[nodiscard]] bool reset(std::size_t max_value);
 
     /// @brief 重置信号量最大配额和当前可用配额。
     /// @param max_value 新的最大配额。
     /// @param current_value 新的当前可用配额；超过 @p max_value 时自动裁剪为最大值。
+    /// @return 重置成功返回 true；当前存在等待任务时返回 false。
     /// @pre 不得存在尚未归还的已占用配额，也不得与其他配置操作并发调用。
-    /// @throws Exception 当前存在等待任务时抛出异常。
-    void reset(std::size_t max_value, std::size_t current_value);
+    [[nodiscard]] bool reset(std::size_t max_value, std::size_t current_value);
 
     /// @brief 获取信号量名称。
     /// @return 指向内部名称存储的字符串视图。
@@ -154,30 +154,32 @@ inline std::size_t Semaphore::max_value() const noexcept {
     return m_max_value;
 }
 
-inline void Semaphore::reset(std::size_t max_value) {
+inline bool Semaphore::reset(std::size_t max_value) {
     std::lock_guard lock{m_lock};
 
     if (m_waiter_head) {
-        throw Exception("cannot reset semaphore while waiters exist.");
+        return false;
     }
 
     TFL_ASSERT(m_waiter_tail == nullptr);
 
     m_max_value = max_value;
     m_value = max_value;
+    return true;
 }
 
-inline void Semaphore::reset(std::size_t max_value, std::size_t current_value) {
+inline bool Semaphore::reset(std::size_t max_value, std::size_t current_value) {
     std::lock_guard lock{m_lock};
 
     if (m_waiter_head) {
-        throw Exception("cannot reset semaphore while waiters exist.");
+        return false;
     }
 
     TFL_ASSERT(m_waiter_tail == nullptr);
 
     m_max_value = max_value;
     m_value = (std::min)(current_value, max_value);
+    return true;
 }
 
 inline std::string_view Semaphore::name() const noexcept {

@@ -107,7 +107,7 @@ jobs:
            -DTFL_CONSUMER_SUBPROJECT=ON -DTFL_BUILD_EXAMPLES=OFF
            -DTFL_BUILD_TESTS=ON -DTFL_BUILD_BENCHMARKS=ON -DTFL_NATIVE_ARCH=ON
     - name: Build benchmarks and consumer
-      run: cmake --build build --target bench_taskflowlite bench_taskflow test_consumer --parallel 4
+      run: cmake --build build --target bench_taskflowlite bench_taskflow bench_core test_consumer --parallel 4
     - name: Run correctness smoke and consumer
       run: ctest --test-dir build -R '^(benchmark[.]|consumer$)' --output-on-failure --no-tests=error
     - name: Upload failure logs

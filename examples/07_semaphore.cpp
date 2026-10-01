@@ -103,12 +103,12 @@ int main() {
         LOG("db_pool_sem max capacity before reset: " << db_pool_sem.max_value());
 
         // 动态扩容：假设业务需要在运行时把 DB 连接池升级到 10
-        db_pool_sem.reset(10);
+        if (!db_pool_sem.reset(10)) return 1;
         LOG("db_pool_sem max capacity after reset: " << db_pool_sem.max_value()
             << " (Available: " << db_pool_sem.value() << ")");
 
         // 同时显式指定当前可用值
-        db_pool_sem.reset(10, 5);
+        if (!db_pool_sem.reset(10, 5)) return 1;
         LOG("db_pool_sem max capacity after reset with current value: " << db_pool_sem.max_value()
             << " (Available: " << db_pool_sem.value() << ")");
 

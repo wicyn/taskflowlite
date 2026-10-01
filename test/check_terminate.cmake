@@ -1,0 +1,7 @@
+if(NOT DEFINED PROGRAM OR NOT DEFINED CASE)
+    message(FATAL_ERROR "PROGRAM and CASE are required")
+endif()
+execute_process(COMMAND "${PROGRAM}" "${CASE}" RESULT_VARIABLE result TIMEOUT 10)
+if(NOT "${result}" STREQUAL "86")
+    message(FATAL_ERROR "${CASE}: expected terminate handler exit 86, got ${result}")
+endif()
