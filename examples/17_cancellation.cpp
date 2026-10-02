@@ -64,9 +64,8 @@ int main() {
                 a_done.fetch_add(1, std::memory_order_relaxed);
             }
         });
-        tfl::AsyncTask<void> task_b;
-        task_b = executor.defer_async([&b_done, &task_b] {
-            for (int i = 0; i < 100 && !task_b.stop_requested(); ++i) {
+        auto task_b = executor.defer_async([&b_done](tfl::Runtime& rt) {
+            for (int i = 0; i < 100 && !rt.stop_requested(); ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 b_done.fetch_add(1, std::memory_order_relaxed);
             }
@@ -82,7 +81,7 @@ int main() {
         task_b.start();
         task_c.start();
 
-        // 只请求 task_b 停止；其 callable 主动查询句柄状态后退出。
+        // 只请求 task_b 停止；其 callable 主动查询执行上下文的停止状态后退出。
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         task_b.request_stop();
 
