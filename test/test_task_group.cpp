@@ -117,16 +117,13 @@ TEST_CASE("TaskGroup: children inherit the group stop domain", "[task-group][sto
     TestEnv env(1);
     auto parent = env.executor.async([](tfl::Runtime& rt) {
         tfl::TaskGroup group(rt);
-        auto inherited = group.async([] {});
-        auto independent = rt.executor().async([] {});
+        auto inherited = group.async([](tfl::Runtime& ctx) { return ctx.stop_requested(); });
+        auto independent = rt.executor().async([](tfl::Runtime& ctx) { return ctx.stop_requested(); });
         const bool first = group.request_stop();
         const bool second = group.request_stop();
-        const bool inherited_stop = inherited.stop_requested();
-        const bool independent_stop = independent.stop_requested();
         group.wait();
         rt.wait_until([&] { return independent.done(); });
-        independent.get();
-        return first && !second && group.stop_requested() && inherited_stop && !independent_stop;
+        return first && !second && inherited.get() && !independent.get() && !rt.stop_requested();
     });
     REQUIRE(parent.get());
 }

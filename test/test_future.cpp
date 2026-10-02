@@ -4,7 +4,7 @@
 /// 覆盖的接口：
 ///   - get / wait / valid / operator bool / done / running / has_exception
 ///   - copy / move / reset / nullptr / use_count / hash_value / operator==
-///   - request_stop / stop_requested / type / dump
+///   - request_stop / type / dump
 ///
 /// 关键约束：get() 不消耗句柄，值结果返回 const R&；工作线程内先协作等待。
 
@@ -109,7 +109,6 @@ TEST_CASE("AsyncFuture: empty handle contract", "[future][empty]") {
     REQUIRE_FALSE(future.valid());
     REQUIRE_FALSE(future.done());
     REQUIRE_FALSE(future.running());
-    REQUIRE_FALSE(future.stop_requested());
     REQUIRE_FALSE(future.request_stop());
     REQUIRE(future.use_count() == 0);
     REQUIRE(future.type() == tfl::TaskType::None);
@@ -127,10 +126,13 @@ TEST_CASE("AsyncFuture: empty handle contract", "[future][empty]") {
 TEST_CASE("AsyncFuture: running and cooperative stop", "[future][state][stop]") {
     TestEnv env(1);
     std::atomic<bool> entered{false}, finish{false};
-    auto future = env.executor.async([&] {
+    bool initially_running = false, stopped = false;
+    auto future = env.executor.async([&](tfl::Runtime& rt) {
+        initially_running = !rt.stop_requested();
         entered.store(true);
         entered.notify_one();
         finish.wait(false);
+        stopped = rt.stop_requested();
         return 11;
     });
     entered.wait(false);
@@ -138,7 +140,6 @@ TEST_CASE("AsyncFuture: running and cooperative stop", "[future][state][stop]") 
     const bool done = future.done();
     const bool first = future.request_stop();
     const bool second = future.request_stop();
-    const bool stopped = future.stop_requested();
     finish.store(true);
     finish.notify_one();  // 在可能失败的断言之前释放任务，避免析构等待死锁
     REQUIRE(future.get() == 11);  // 停止请求不抢占已运行 callable
@@ -146,6 +147,7 @@ TEST_CASE("AsyncFuture: running and cooperative stop", "[future][state][stop]") 
     REQUIRE_FALSE(done);
     REQUIRE(first);
     REQUIRE_FALSE(second);
+    REQUIRE(initially_running);
     REQUIRE(stopped);
 }
 
