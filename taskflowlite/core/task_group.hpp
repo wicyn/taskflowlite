@@ -253,10 +253,6 @@ public:
     /// 重新抛出锚点已经归档的异常。
     void wait();
 
-    /// @brief 查询本组锚点或其父 Topology 链是否存在停止请求。
-    /// @return 当前锚点或任一父停止域已请求停止时返回 true。
-    [[nodiscard]] bool stop_requested() const noexcept;
-
     /// @brief 向本组锚点所属 Topology 发起协作式停止请求。
     /// @return 本次调用首次设置停止请求时返回 true，否则返回 false。
     /// @note 不等待，也不能强制中断正在运行的 callable。
@@ -550,10 +546,6 @@ inline void TaskGroup::wait() {
 // ============================================================================
 // TaskGroup 状态
 // ============================================================================
-
-inline bool TaskGroup::stop_requested() const noexcept {
-    return m_anchor.m_topology->_stop_requested();
-}
 
 inline bool TaskGroup::request_stop() noexcept {
     return m_anchor.m_topology->_request_stop();

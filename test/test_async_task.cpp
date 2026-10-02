@@ -12,7 +12,7 @@
 ///   - AsyncTask::get()                                 等待 + 重抛异常
 ///   - AsyncTask::done() / running()                    状态查询
 ///   - AsyncTask::name() / type()                       元数据
-///   - AsyncTask::stop_requested() / request_stop()     协作式取消
+///   - AsyncTask::request_stop()                       发起协作式停止请求
 ///
 /// 关键约束：
 ///   1. AsyncTask 创建后处于 Idle 状态，通过 AsyncTask::start() 提交执行；
@@ -175,27 +175,19 @@ TEST_CASE("AsyncTask: copied handles share the same node", "[async][refcount]") 
 // SECTION 6: 协作式取消
 // ============================================================================
 
-/// @test [async][stop] 设置 request_stop 后，stop_requested() 返回 true。
+/// @test [async][stop] 完成后仍可请求停止；首次返回 true，重复请求返回 false。
 TEST_CASE("AsyncTask: request_stop after completion", "[async][stop]") {
     TestEnv env;
 
-    auto t = env.executor.defer_async([&] {
-        // 任务在提交后立即检查停止标志 —— 此时尚未请求停止
-        });
-
+    auto t = env.executor.defer_async([] {});
     t.start();
     t.wait();
 
-    // 任务已完成，停止尚未被请求
-    REQUIRE_FALSE(t.stop_requested());
-
-    /// @section request-stop-after-submission —— 提交后请求停止
-    SECTION("request_stop after submission (no-op if already done)") {
-        // request_stop 在已完成时也可调用，只是无人响应
-        REQUIRE(t.request_stop());
-        REQUIRE(t.stop_requested());
-        REQUIRE_FALSE(t.request_stop());
-    }
+    REQUIRE(t.done());
+    // 完成后设置停止请求不会重新执行任务。
+    REQUIRE(t.request_stop());
+    REQUIRE_FALSE(t.request_stop());
+    REQUIRE(t.done());
 }
 
 // ============================================================================

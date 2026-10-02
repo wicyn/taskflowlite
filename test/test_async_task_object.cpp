@@ -206,7 +206,6 @@ TEST_CASE("AsyncTaskObject: stop request and semaphore configuration are inherit
     REQUIRE(task.done());
     REQUIRE(task.object().calls == 1);
     REQUIRE(task.request_stop());
-    REQUIRE(task.stop_requested());
     REQUIRE_FALSE(task.request_stop());
 }
 
