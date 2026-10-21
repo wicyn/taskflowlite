@@ -118,6 +118,17 @@ public:
         requires (subflow_invocable<T> && capturable<T>)
     Task emplace(T&& task);
 
+    /// @brief 向当前图插入 Coroutine 节点。
+    /// @tparam T 返回 CoroTask<R>、接受 Coro& 的 callable 类型。
+    /// @param task 执行时接收框架注入的 Coro&，支持挂起恢复与对称转移。
+    /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
+    /// @throws std::bad_alloc 节点或图存储分配失败。
+    /// @throws ... callable 的衰减存储构造失败时原样传播。
+    /// @note callable 按衰减类型保存：左值构造副本，右值转发到节点存储。
+    template <typename T>
+        requires (coro_invocable<T> && capturable<T>)
+    Task emplace(T&& task);
+
     /// @brief 向当前图插入执行指定子图一次的模块节点。
     /// @tparam Gh 满足 `graph_holder` 的子图持有者类型。
     /// @param gh 要执行的子图；左值按非拥有引用保存，右值按值保存到节点内。
@@ -155,8 +166,8 @@ public:
     Task emplace(Gh&& gh, P&& pred);
 
     /// @brief 按参数顺序批量插入任务，支持 callable、子图与 `tfl::pack` 混合传入。
-    /// @tparam Ts 至少两个参数，每个类型满足 `callback`、`graph_holder` 或 `task_pack`。
-    /// @param tasks 无参 void callable、子图持有者或任务参数包。
+    /// @tparam Ts 至少两个任务参数，具体由内部 emplace 重载校验合法性。
+    /// @param tasks 可匹配单任务 emplace 的参数，或需要展开的任务参数包。
     /// @return 与参数顺序一致的结果元组；单节点插入返回的 `Task` 为非拥有句柄。
     /// @throws std::bad_alloc 任一节点或图存储分配失败。
     /// @throws ... 任一节点参数的存储构造失败时原样传播。
@@ -165,7 +176,7 @@ public:
     /// @note 每个元素的保存方式和生命周期要求与对应的 emplace 重载相同。
     /// @warning 批量插入不提供事务回滚；后续元素创建失败时，先前节点仍保留在图中。
     template <typename... Ts>
-        requires (sizeof...(Ts) > 1) && ((callback<Ts> || graph_holder<Ts> || task_pack<Ts>) && ...)
+        requires (sizeof...(Ts) > 1)
     auto emplace(Ts&&... tasks);
 
     /// @brief 原地构造普通 callable，并返回带对象类型信息的任务句柄。
@@ -250,6 +261,18 @@ public:
     /// @warning 节点销毁或 callable 被替换后，对象引用失效。
     template <typename T, typename... Args>
         requires (std::same_as<T, std::decay_t<T>> && subflow_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] TaskObject<T> emplace_object(Args&&... args);
+
+    /// @brief 原地构造 Coroutine callable，并返回带对象类型信息的任务句柄。
+    /// @tparam T 返回 CoroTask<R>、接受 Coro& 的 callable 类型。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return 非拥有的 TaskObject<T>；通过 object() 访问内部对象。
+    /// @throws std::bad_alloc 节点或图存储分配失败。
+    /// @throws ... T 构造失败时原样传播。
+    /// @note 不创建 T 临时对象，不要求 T 可复制或可移动。
+    /// @warning 节点销毁或 callable 被替换后，对象引用失效。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && coro_invocable<T> && std::constructible_from<T, Args&&...>)
     [[nodiscard]] TaskObject<T> emplace_object(Args&&... args);
 
     // ============================================================================
@@ -513,6 +536,12 @@ inline Task FlowBuilder::emplace(T&& task) {
     return Task{m_graph.emplace(make_subflow(std::addressof(m_graph), std::forward<T>(task)))};
 }
 
+template <typename T>
+    requires (coro_invocable<T> && capturable<T>)
+inline Task FlowBuilder::emplace(T&& task) {
+    return Task{m_graph.emplace(make_coro(std::addressof(m_graph), std::forward<T>(task)))};
+}
+
 template <graph_holder Gh>
 inline Task FlowBuilder::emplace(Gh&& gh) {
     return emplace(std::forward<Gh>(gh), std::uint64_t{1});
@@ -539,28 +568,21 @@ inline Task FlowBuilder::emplace(Gh&& gh, P&& pred) {
 }
 
 template <typename... Ts>
-    requires (sizeof...(Ts) > 1) && ((callback<Ts> || graph_holder<Ts> || task_pack<Ts>) && ...)
+    requires (sizeof...(Ts) > 1)
 inline auto FlowBuilder::emplace(Ts&&... tasks) {
     // 按参数类型选择直接插入或展开参数包。
     auto emplace_one = [this]<typename T>(T&& task) {
         if constexpr (task_pack<T>) {
-            return std::apply(
-                [this](auto&&... args) {
-                    return this->emplace(
-                        std::forward<decltype(args)>(args)...
-                        );
-                },
-                std::forward<T>(task).data
-                );
+            return std::apply([this](auto&&... args) {
+                    return this->emplace(std::forward<decltype(args)>(args)...);
+                }, std::forward<T>(task).data);
         } else {
             return this->emplace(std::forward<T>(task));
         }
     };
 
     // 花括号初始化保证各次插入按参数顺序执行。
-    return std::tuple{
-        emplace_one(std::forward<Ts>(tasks))...
-    };
+    return std::tuple{emplace_one(std::forward<Ts>(tasks))...};
 }
 
 template <typename T, typename... Args>
@@ -609,6 +631,13 @@ template <typename T, typename... Args>
     requires (std::same_as<T, std::decay_t<T>> && subflow_invocable<T> && std::constructible_from<T, Args&&...>)
 inline TaskObject<T> FlowBuilder::emplace_object(Args&&... args) {
     auto [work, object] = make_subflow_object<T>(std::addressof(m_graph), std::forward<Args>(args)...);
+    return TaskObject<T>{Task{m_graph.emplace(work)}, object};
+}
+
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && coro_invocable<T> && std::constructible_from<T, Args&&...>)
+inline TaskObject<T> FlowBuilder::emplace_object(Args&&... args) {
+    auto [work, object] = make_coro_object<T>(std::addressof(m_graph), std::forward<Args>(args)...);
     return TaskObject<T>{Task{m_graph.emplace(work)}, object};
 }
 

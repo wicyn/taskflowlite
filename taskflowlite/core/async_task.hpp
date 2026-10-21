@@ -436,13 +436,7 @@ AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) {
             return *this;
         }
     }
-
-    if (Worker* worker = executor._this_worker()) {
-        executor._schedule(*worker, work);
-    } else {
-        executor._schedule(work);
-    }
-
+    executor._dispatch(work);
     return *this;
 }
 
@@ -687,6 +681,17 @@ template <typename T>
     requires (subflow_invocable<T> && capturable<T>)
 inline auto Executor::defer_async(T&& task) -> AsyncTask<subflow_return_t<T>> {
     return AsyncTask<subflow_return_t<T>>{make_async_task_subflow(*this, std::forward<T>(task))};
+}
+
+/// @brief 创建已绑定 Executor、尚未启动的 Coroutine 异步任务。
+/// @tparam T 返回 CoroTask<R>、接收 Coro& 的 callable 类型。
+/// @param task 用户 Coroutine callable。
+/// @return 关联任务及结果槽的 AsyncTask<R>。
+/// @note 本函数只创建任务，由 start() 提交执行。
+template <typename T>
+    requires (coro_invocable<T> && capturable<T>)
+inline auto Executor::defer_async(T&& task) -> AsyncTask<coro_result_t<T>> {
+    return AsyncTask<coro_result_t<T>>{make_async_task_coro(*this, std::forward<T>(task))};
 }
 
 template <graph_holder Gh, callback C>

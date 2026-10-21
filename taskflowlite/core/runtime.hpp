@@ -8,13 +8,17 @@
 
 #pragma once
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <type_traits>
 #include <utility>
 
 #include "context.hpp"
 #include "async_future.hpp"
+#include "traits.hpp"
 #include "work_factory_fwd.hpp"
 
 namespace tfl {
@@ -99,6 +103,15 @@ public:
     /// @warning callable 不得保存或使框架注入的 `SubFlow&` 逸出本次调用.
     template <typename T>
         requires (subflow_invocable<T> && capturable<T>)
+    void silent_async(T&& task);
+
+    /// @brief 派生一个即发即弃、执行时接收 `Coro&` 的 Coroutine 子任务.
+    /// @tparam T 满足 coro_invocable concept 的 callable 类型.
+    /// @param task 要捕获并执行的 Coroutine callable.
+    /// @note Coroutine 挂起时不会阻塞当前 Worker，完成后归还当前 Work 的 join slot.
+    /// @note 新任务建立独立 Topology，并继承当前 Work 的 Topology.
+    template <typename T>
+        requires (coro_invocable<T> && capturable<T>)
     void silent_async(T&& task);
 
     /// @brief 派生一个带结果通道的子图任务，并执行子图一次.
@@ -213,6 +226,17 @@ public:
         requires (subflow_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_return_t<T>>;
 
+    /// @brief 派生 Coroutine 子任务，并返回可共享访问结果的 AsyncFuture.
+    /// @tparam T 满足 coro_invocable concept 的 callable 类型.
+    /// @tparam Deps 前驱异步任务类型包.
+    /// @param task 要捕获并执行的 Coroutine callable.
+    /// @param deps 可选前驱任务；只有全部前置依赖完成后才调度执行.
+    /// @return `AsyncFuture<R>`，其中 `R = coro_result_t<T>`.
+    /// @note 新任务计入当前 Work 的 join_counter，并建立继承父 Topology 的独立 Topology.
+    template <typename T, async_future... Deps>
+        requires (coro_invocable<T> && capturable<T>)
+    [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<coro_result_t<T>>;
+
     // ============================================================================
     // 执行 / 协作式等待
     // ============================================================================
@@ -226,7 +250,7 @@ public:
     ///
     /// @note 本函数不等待子图完成；需要隔离等待时使用 `corun()`.
     template <graph_holder Gh>
-    void run(Gh&& gh) noexcept;
+    void run(Gh& gh) noexcept;
 
     // ============================================================================
     // 独立子图协作执行
@@ -318,8 +342,8 @@ private:
 inline void Runtime::_launch_silent_async(Work* work) noexcept {
     TFL_ASSERT(work);
 
-    m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
-    m_executor._schedule(m_worker, work);
+    Context::work().m_join_counter.fetch_add(1, std::memory_order_relaxed);
+    executor()._schedule(worker(), work);
 }
 
 template <typename R, async_future... Deps>
@@ -371,21 +395,21 @@ inline AsyncFuture<R> Runtime::_launch_async(Work* work, ResultSlot<R>* result, 
     work->m_topology->_increment_ref();
 
     // 将当前异步任务计入 Runtime 的派生任务数量。
-    m_work.m_join_counter.fetch_add(1, std::memory_order_relaxed);
+    Context::work().m_join_counter.fetch_add(1, std::memory_order_relaxed);
 
     if constexpr (num_predecessors != 0) {
         auto& edges = work->m_edges;
 
         // 使用实际保存的前驱数量，额外保留一个提交保护计数。
         work->m_join_counter.store(edges.size() + 1, std::memory_order_relaxed);
-        m_executor._link_predecessors(work, edges.begin(), edges.end());
+        executor()._link_predecessors(work, edges.begin(), edges.end());
 
         if (work->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
             return future;
         }
     }
 
-    m_executor._schedule(m_worker, work);
+    executor()._schedule(worker(), work);
     return future;
 }
 
@@ -408,28 +432,35 @@ inline void Runtime::silent_async(Gh&& gh, std::uint64_t num, C&& cb) {
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
 inline void Runtime::silent_async(Gh&& gh, P&& pred, C&& cb) {
-    Work* work = make_silent_async_module(std::addressof(m_work), m_executor, m_work.m_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
+    Work* work = make_silent_async_module(std::addressof(Context::work()), executor(), Context::work().m_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
     _launch_silent_async(work);
 }
 
 template <typename T>
     requires (basic_invocable<T> && capturable<T>)
 inline void Runtime::silent_async(T&& task) {
-    Work* work = make_silent_async_basic(std::addressof(m_work), m_executor, m_work.m_topology, std::forward<T>(task));
+    Work* work = make_silent_async_basic(std::addressof(Context::work()), executor(), Context::work().m_topology, std::forward<T>(task));
     _launch_silent_async(work);
 }
 
 template <typename T>
     requires (runtime_invocable<T> && capturable<T>)
 inline void Runtime::silent_async(T&& task) {
-    Work* work = make_silent_async_runtime(std::addressof(m_work), m_executor, m_work.m_topology, std::forward<T>(task));
+    Work* work = make_silent_async_runtime(std::addressof(Context::work()), executor(), Context::work().m_topology, std::forward<T>(task));
     _launch_silent_async(work);
 }
 
 template <typename T>
     requires (subflow_invocable<T> && capturable<T>)
 inline void Runtime::silent_async(T&& task) {
-    Work* work = make_silent_async_subflow(std::addressof(m_work), m_executor, m_work.m_topology, std::forward<T>(task));
+    Work* work = make_silent_async_subflow(std::addressof(Context::work()), executor(), Context::work().m_topology, std::forward<T>(task));
+    _launch_silent_async(work);
+}
+
+template <typename T>
+    requires (coro_invocable<T> && capturable<T>)
+inline void Runtime::silent_async(T&& task) {
+    Work* work = make_silent_async_coro(std::addressof(Context::work()), executor(), Context::work().m_topology, std::forward<T>(task));
     _launch_silent_async(work);
 }
 
@@ -468,28 +499,35 @@ inline auto Runtime::async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<voi
 template <graph_holder Gh, predicate P, callback C, async_future... Deps>
     requires capturable<P, C>
 inline auto Runtime::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
-    auto [work, result] = make_async_module(std::addressof(m_work), m_executor, m_work.m_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
+    auto [work, result] = make_async_module(std::addressof(Context::work()), executor(), Context::work().m_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
 template <typename T, async_future... Deps>
     requires (basic_invocable<T> && capturable<T>)
 inline auto Runtime::async(T&& task, Deps&&... deps) -> AsyncFuture<basic_return_t<T>> {
-    auto [work, result] = make_async_basic(std::addressof(m_work), m_executor, m_work.m_topology, std::forward<T>(task));
+    auto [work, result] = make_async_basic(std::addressof(Context::work()), executor(), Context::work().m_topology, std::forward<T>(task));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
 template <typename T, async_future... Deps>
     requires (runtime_invocable<T> && capturable<T>)
 inline auto Runtime::async(T&& task, Deps&&... deps) -> AsyncFuture<runtime_return_t<T>> {
-    auto [work, result] = make_async_runtime(std::addressof(m_work), m_executor, m_work.m_topology, std::forward<T>(task));
+    auto [work, result] = make_async_runtime(std::addressof(Context::work()), executor(), Context::work().m_topology, std::forward<T>(task));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
 template <typename T, async_future... Deps>
     requires (subflow_invocable<T> && capturable<T>)
 inline auto Runtime::async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_return_t<T>> {
-    auto [work, result] = make_async_subflow(std::addressof(m_work), m_executor, m_work.m_topology, std::forward<T>(task));
+    auto [work, result] = make_async_subflow(std::addressof(Context::work()), executor(), Context::work().m_topology, std::forward<T>(task));
+    return _launch_async(work, result, std::forward<Deps>(deps)...);
+}
+
+template <typename T, async_future... Deps>
+    requires (coro_invocable<T> && capturable<T>)
+inline auto Runtime::async(T&& task, Deps&&... deps) -> AsyncFuture<coro_result_t<T>> {
+    auto [work, result] = make_async_coro(std::addressof(Context::work()), executor(), Context::work().m_topology, std::forward<T>(task));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
@@ -497,19 +535,19 @@ inline auto Runtime::async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_retu
 // Runtime::run
 // ============================================================================
 template <graph_holder Gh>
-inline void Runtime::run(Gh&& gh) noexcept {
+inline void Runtime::run(Gh& gh) noexcept {
     Graph& graph = detail::to_graph(gh);
     if (graph.empty()) {
         return;
     }
-    auto num_sources = m_executor._set_up_graph(graph, m_work);
+    auto num_sources = executor()._set_up_graph(graph, Context::work());
 
     if (num_sources == 0) [[unlikely]] {
         return;
     }
 
-    m_work.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
-    m_executor._schedule(m_worker, graph.begin(), num_sources);
+    Context::work().m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
+    executor()._schedule(worker(), graph.begin(), num_sources);
 }
 
 template <graph_holder Gh>
@@ -520,24 +558,24 @@ inline void Runtime::corun(Gh&& gh) {
         return;
     }
 
-    AnchorWork<false> anchor{m_work, m_executor};
+    AnchorWork<false> anchor{Context::work(), executor()};
 
-    m_executor._corun_graph(graph, anchor, m_worker);
+    executor()._corun_graph(graph, anchor, worker());
     anchor._rethrow_exception();
 }
 
 inline void Runtime::wait() {
     wait_until([this]() noexcept {
-        return m_work.m_join_counter.load(std::memory_order_acquire) == 1;
+        return Context::work().m_join_counter.load(std::memory_order_acquire) == 1;
     });
 
-    m_work._rethrow_exception();
+    Context::work()._rethrow_exception();
 }
 
 
 template <predicate Pred>
 inline void Runtime::wait_until(Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>) {
-    m_executor._corun_until(m_worker, std::forward<Pred>(pred));
+    executor()._corun_until(worker(), std::forward<Pred>(pred));
 }
 
 } // namespace tfl

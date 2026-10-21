@@ -66,7 +66,7 @@ private:
 // ============================================================================
 
 inline ScopedExceptionAnchor::ScopedExceptionAnchor(Context& context) noexcept
-    : ScopedExceptionAnchor{context.m_work} {
+    : ScopedExceptionAnchor{context.work()} {
 }
 
 inline ScopedExceptionAnchor::ScopedExceptionAnchor(Work& work) noexcept {
