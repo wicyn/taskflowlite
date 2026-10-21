@@ -8,8 +8,11 @@
 
 #pragma once
 
+#include <concepts>
 #include <cstddef>
 #include <memory>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 
 #include "async_task.hpp"
@@ -98,7 +101,6 @@ private:
     F* m_object{nullptr};
 };
 
-
 // ============================================================================
 // AsyncTaskObject 实现
 // ============================================================================
@@ -186,6 +188,19 @@ inline auto Executor::defer_async_object(Args&&... args) -> AsyncTaskObject<subf
     auto [work, result, object] = make_async_task_subflow_object<T>(*this, std::forward<Args>(args)...);
 
     return AsyncTaskObject<subflow_return_t<T>, T>{AsyncTask<subflow_return_t<T>>{work, result}, object};
+}
+
+/// @brief 原地构造 Coroutine callable，并创建尚未启动的 AsyncTaskObject。
+/// @tparam T 节点实际保存的 Coroutine callable 类型。
+/// @param args 完美转发给 T 构造函数的参数。
+/// @return 关联 Coroutine Work、ResultSlot 和内部 callable 的 AsyncTaskObject。
+/// @note 不创建 T 临时对象，不要求 T 可复制或可移动。
+template <typename T, typename... Args>
+    requires (std::same_as<T, std::decay_t<T>> && coro_invocable<T> && std::constructible_from<T, Args&&...>)
+inline auto Executor::defer_async_object(Args&&... args) -> AsyncTaskObject<coro_result_t<T>, T> {
+    auto [work, result, object] = make_async_task_coro_object<T>(*this, std::forward<Args>(args)...);
+
+    return AsyncTaskObject<coro_result_t<T>, T>{AsyncTask<coro_result_t<T>>{work, result}, object};
 }
 
 // ============================================================================

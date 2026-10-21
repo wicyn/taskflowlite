@@ -135,7 +135,7 @@ template <std::integral I>
     requires (!std::same_as<std::remove_cvref_t<I>, bool>)
 inline Jump& Jump::select(I index) noexcept {
     const auto idx = static_cast<std::size_t>(index);
-    m_target = (idx < m_work.m_num_successors) ? m_work.m_edges[idx] : nullptr;
+    m_target = (idx < Context::work().m_num_successors) ? Context::work().m_edges[idx] : nullptr;
     return *this;
 }
 
@@ -143,10 +143,10 @@ template <typename Pred>
     requires std::invocable<Pred&, TaskView> && std::same_as<std::invoke_result_t<Pred&, TaskView>, bool>
 inline Jump& Jump::select_if(Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&, TaskView>) {
     m_target = nullptr;
-    const std::size_t sz = m_work.m_num_successors;
+    const std::size_t sz = Context::work().m_num_successors;
     for (std::size_t i = 0; i < sz; ++i) {
-        if (std::invoke(pred, TaskView{*m_work.m_edges[i]})) {
-            m_target = m_work.m_edges[i];
+        if (std::invoke(pred, TaskView{*Context::work().m_edges[i]})) {
+            m_target = Context::work().m_edges[i];
             return *this;
         }
     }
@@ -157,7 +157,7 @@ template <std::integral I>
     requires (!std::same_as<std::remove_cvref_t<I>, bool>)
 inline Jump& Jump::unselect(I index) noexcept {
     const auto idx = static_cast<std::size_t>(index);
-    if (idx < m_work.m_num_successors && m_target == m_work.m_edges[idx]) {
+    if (idx < Context::work().m_num_successors && m_target == Context::work().m_edges[idx]) {
         m_target = nullptr;
     }
     return *this;
@@ -179,7 +179,7 @@ inline Jump::Proxy Jump::operator[](std::size_t index) noexcept {
 }
 
 inline std::size_t Jump::size() const noexcept {
-    return m_work.m_num_successors;
+    return Context::work().m_num_successors;
 }
 
 // ============================================================================
@@ -217,8 +217,8 @@ public:
         /// @brief 根据布尔值添加或移除当前索引。
         /// @note 越界索引不会改变激活集合。
         MultiJump& operator=(bool on) {
-            if (m_idx >= m_mj.m_work.m_num_successors) return m_mj;
-            Work* w = m_mj.m_work.m_edges[m_idx];
+            if (m_idx >= m_mj.Context::work().m_num_successors) return m_mj;
+            Work* w = m_mj.Context::work().m_edges[m_idx];
             if (on) {
                 m_mj._insert(w);
             } else {
@@ -310,7 +310,7 @@ private:
     /// @brief 以线性扫描去重后插入目标；适用于预期较小的后继集合。
     /// @param w 待插入的后继 Work 指针。
     void _insert(Work* w) {
-        if (m_targets.size() >= m_work.m_num_successors) return;
+        if (m_targets.size() >= Context::work().m_num_successors) return;
         for (auto* t : m_targets) {
             if (t == w) return;
         }
@@ -353,10 +353,10 @@ template <typename... Is>
             && (std::integral<Is> && ...)
             && (!std::same_as<std::remove_cvref_t<Is>, bool> && ...)
 inline MultiJump& MultiJump::select(Is... indices) {
-    const std::size_t sz = m_work.m_num_successors;
+    const std::size_t sz = Context::work().m_num_successors;
     // 使用折叠表达式依次处理索引，越界项被忽略。
     ([&](std::size_t idx) {
-        if (idx < sz) _insert(m_work.m_edges[idx]);
+        if (idx < sz) _insert(Context::work().m_edges[idx]);
     }(static_cast<std::size_t>(indices)), ...);
     return *this;
 }
@@ -366,17 +366,17 @@ template <typename... Is>
             && (std::integral<Is> && ...)
             && (!std::same_as<std::remove_cvref_t<Is>, bool> && ...)
 inline MultiJump& MultiJump::unselect(Is... indices) noexcept {
-    const std::size_t sz = m_work.m_num_successors;
+    const std::size_t sz = Context::work().m_num_successors;
     ([&](std::size_t idx) {
-        if (idx < sz) _erase(m_work.m_edges[idx]);
+        if (idx < sz) _erase(Context::work().m_edges[idx]);
     }(static_cast<std::size_t>(indices)), ...);
     return *this;
 }
 
 inline MultiJump& MultiJump::select_all() {
-    const std::size_t sz = m_work.m_num_successors;
+    const std::size_t sz = Context::work().m_num_successors;
     for (std::size_t i = 0; i < sz; ++i) {
-        _insert(m_work.m_edges[i]);
+        _insert(Context::work().m_edges[i]);
     }
     return *this;
 }
@@ -394,17 +394,17 @@ inline MultiJump& MultiJump::reset() noexcept {
 template <typename Pred>
     requires std::invocable<Pred&, TaskView> && std::same_as<std::invoke_result_t<Pred&, TaskView>, bool>
 inline MultiJump& MultiJump::select_if(Pred&& pred) {
-    const std::size_t sz = m_work.m_num_successors;
+    const std::size_t sz = Context::work().m_num_successors;
     for (std::size_t i = 0; i < sz; ++i) {
-        if (std::invoke(pred, TaskView{*m_work.m_edges[i]})) {
-            _insert(m_work.m_edges[i]);
+        if (std::invoke(pred, TaskView{*Context::work().m_edges[i]})) {
+            _insert(Context::work().m_edges[i]);
         }
     }
     return *this;
 }
 
 inline std::size_t MultiJump::size() const noexcept {
-    return m_work.m_num_successors;
+    return Context::work().m_num_successors;
 }
 
 }  // namespace tfl

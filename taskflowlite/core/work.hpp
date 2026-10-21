@@ -39,6 +39,7 @@
 #include "work_storage.hpp"
 #include "object_pool.hpp"
 #include "macros.hpp"
+#include "traits.hpp"
 namespace tfl {
 
 /// @brief 表示调度器执行的一个任务节点及其静态关系、运行状态和执行载荷。
@@ -63,6 +64,7 @@ class Work : public Immovable<Work> {
     friend class MultiBranch;
     friend class Jump;
     friend class MultiJump;
+    friend class Coro;
     friend class ScopedExceptionAnchor;
     friend class D2Renderer;
     friend class TaskGroup;

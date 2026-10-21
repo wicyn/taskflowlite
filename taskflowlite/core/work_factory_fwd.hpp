@@ -52,6 +52,10 @@ template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
 [[nodiscard]] Work* make_subflow(const Graph* graph, F&& func);
 
+template <typename F>
+    requires (coro_invocable<F> && capturable<F>)
+[[nodiscard]] Work* make_coro(const Graph* graph, F&& func);
+
 template <graph_holder Gh, predicate P>
     requires capturable<P>
 [[nodiscard]] Work* make_module(const Graph* graph, Gh&& graph_holder, P&& pred);
@@ -88,6 +92,10 @@ template <typename F, typename... Args>
     requires (std::same_as<F, std::decay_t<F>> && subflow_invocable<F> && std::constructible_from<F, Args&&...>)
 [[nodiscard]] std::pair<Work*, F&> make_subflow_object(const Graph* graph, Args&&... args);
 
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && coro_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_coro_object(const Graph* graph, Args&&... args);
+
 template <typename Gh, predicate P, typename... Args>
     requires (std::same_as<Gh, std::decay_t<Gh>> && graph_holder<Gh> && capturable<P> && std::constructible_from<Gh, Args&&...>)
 [[nodiscard]] std::pair<Work*, Gh&> make_module_object(const Graph* graph, P&& pred, Args&&... args);
@@ -107,6 +115,10 @@ template <typename F>
 template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
 [[nodiscard]] Work* make_silent_async_subflow(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
+
+template <typename F>
+    requires (coro_invocable<F> && capturable<F>)
+[[nodiscard]] Work* make_silent_async_coro(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
 
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
@@ -128,6 +140,10 @@ template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
 [[nodiscard]] std::pair<Work*, ResultSlot<subflow_return_t<F>>*> make_async_subflow(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
 
+template <typename F>
+    requires (coro_invocable<F> && capturable<F>)
+[[nodiscard]] std::pair<Work*, ResultSlot<coro_result_t<F>>*> make_async_coro(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
+
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
 [[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_module(Work* parent, Executor& executor, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback);
@@ -148,6 +164,10 @@ template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
 [[nodiscard]] std::pair<Work*, ResultSlot<subflow_return_t<F>>*> make_async_task_subflow(Executor& executor, F&& func);
 
+template <typename F>
+    requires (coro_invocable<F> && capturable<F>)
+[[nodiscard]] std::pair<Work*, ResultSlot<coro_result_t<F>>*> make_async_task_coro(Executor& executor, F&& func);
+
 template <graph_holder Gh, predicate P, callback C>
     requires capturable<P, C>
 [[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_task_module(Executor& executor, Gh&& graph_holder, P&& pred, C&& callback);
@@ -167,6 +187,10 @@ template <typename F, typename... Args>
 template <typename F, typename... Args>
     requires (std::same_as<F, std::decay_t<F>> && subflow_invocable<F> && std::constructible_from<F, Args&&...>)
 [[nodiscard]] std::tuple<Work*, ResultSlot<subflow_return_t<F>>*, F&> make_async_task_subflow_object(Executor& executor, Args&&... args);
+
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && coro_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::tuple<Work*, ResultSlot<coro_result_t<F>>*, F&> make_async_task_coro_object(Executor& executor, Args&&... args);
 
 template <typename Gh, predicate P, callback C, typename... Args>
     requires (std::same_as<Gh, std::decay_t<Gh>> && graph_holder<Gh> && capturable<P, C> && std::constructible_from<Gh, Args&&...>)

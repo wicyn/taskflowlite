@@ -18,6 +18,7 @@
 #include <exception>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <unordered_map>
@@ -55,6 +56,7 @@ class Executor : public Immovable<Executor> {
     friend class Context;
     friend class Runtime;
     friend class SubFlow;
+    friend class Coro;
     friend class Work;
     friend class TaskGroup;
 
@@ -114,6 +116,13 @@ public:
     /// @warning callable 不得保存框架注入的 `SubFlow&`。
     template <typename T>
         requires (subflow_invocable<T> && capturable<T>)
+    void silent_async(T&& task);
+
+    /// @brief 即发即弃执行 Coroutine callable，并由 Executor 管理协程挂起与恢复。
+    /// @tparam T 满足 coro_invocable concept 的任务体。
+    /// @param task 接收 Coro& 并返回 CoroTask<R> 的 callable。
+    template <typename T>
+        requires (coro_invocable<T> && capturable<T>)
     void silent_async(T&& task);
 
     /// @brief 提交任务图执行一次（即发即弃）；给了 @p cb 则完成后执行。
@@ -187,6 +196,16 @@ public:
     template <typename T, async_future... Deps>
         requires (subflow_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_return_t<T>>;
+
+    /// @brief 异步执行 Coroutine callable，返回其最终协程结果。
+    /// @tparam T 满足 coro_invocable concept 的任务体。
+    /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
+    /// @param task 接收 Coro& 并返回 CoroTask<R> 的 callable。
+    /// @param deps 前置依赖列表。
+    /// @return AsyncFuture<coro_result_t<T>>，直到根 Coroutine 和全部子 Work 完成才就绪。
+    template <typename T, async_future... Deps>
+        requires (coro_invocable<T> && capturable<T>)
+    [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<coro_result_t<T>>;
 
     /// @brief 异步执行任务图一次，并在全部前置依赖完成后开始执行。
     /// @tparam Gh 满足 graph_holder concept。
@@ -291,6 +310,15 @@ public:
         requires (subflow_invocable<T> && capturable<T>)
     [[nodiscard]] auto defer_async(T&& task) -> AsyncTask<subflow_return_t<T>>;
 
+    /// @brief 创建尚未启动的 Coroutine AsyncTask，支持结果与显式动态依赖。
+    /// @tparam T 满足 coro_invocable concept 的 callable 类型。
+    /// @param task 接收 Coro& 并返回 CoroTask<R> 的 callable。
+    /// @return AsyncTask<coro_result_t<T>>；通过 start() 提交执行。
+    /// @note 实现定义于 async_task.hpp，避免在此使用尚未完整定义的 AsyncTask。
+    template <typename T>
+        requires (coro_invocable<T> && capturable<T>)
+    [[nodiscard]] auto defer_async(T&& task) -> AsyncTask<coro_result_t<T>>;
+
     /// @brief 创建执行一次任务图、尚未启动的异步任务。
     /// @tparam Gh 满足 graph_holder concept 的任务图持有者类型。
     /// @tparam C 完成回调类型，默认为 noop_callback。
@@ -357,6 +385,15 @@ public:
     template <typename T, typename... Args>
         requires (std::same_as<T, std::decay_t<T>> && subflow_invocable<T> && std::constructible_from<T, Args&&...>)
     [[nodiscard]] auto defer_async_object(Args&&... args) -> AsyncTaskObject<subflow_return_t<T>, T>;
+
+    /// @brief 原地构造 Coroutine callable，并创建尚未启动的 AsyncTask。
+    /// @tparam T Coroutine callable 类型，可以不可复制、不可移动。
+    /// @param args 完美转发给 T 构造函数的参数。
+    /// @return AsyncTaskObject<coro_result_t<T>, T>，关联任务与内部 callable 引用。
+    /// @note 实现定义于 async_task_object.hpp。
+    template <typename T, typename... Args>
+        requires (std::same_as<T, std::decay_t<T>> && coro_invocable<T> && std::constructible_from<T, Args&&...>)
+    [[nodiscard]] auto defer_async_object(Args&&... args) -> AsyncTaskObject<coro_result_t<T>, T>;
 
     // ============================================================================
     // 延迟异步 Module 对象节点 —— 默认构造
@@ -802,6 +839,14 @@ private:
     /// @note 调用完成后输入链中的所有 Work 均已重新发布，原 intrusive 链被拆除。
     void _schedule_from_semaphore(Worker& w, Work* work) noexcept;
 
+    /// @brief 根据当前执行上下文调度单个任务。
+    ///
+    /// 若当前线程属于本 Executor 的 Worker，则优先调度到其本地队列；
+    /// 否则直接发布到共享调度分片。
+    /// @param work 待调度的 Work。
+    /// @pre work 非空。
+    void _dispatch(Work* work);
+
     /// @brief 在当前 Worker 上协作执行其他任务，直到 @p pred 返回 true。
     ///
     /// 该等待不会阻塞 Worker：优先消费本地队列，本地为空时持续从全部可见队列
@@ -884,11 +929,7 @@ inline void Executor::_launch_silent_async(Work* work) {
     TFL_ASSERT(work);
 
     _increment_topology();
-    if (Worker* worker = _this_worker()) {
-        _schedule(*worker, work);
-    } else {
-        _schedule(work);
-    }
+    _dispatch(work);
 }
 
 template <typename R, async_future... Deps>
@@ -951,11 +992,7 @@ inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result,
         }
     }
 
-    if (Worker* worker = _this_worker()) {
-        _schedule(*worker, work);
-    } else {
-        _schedule(work);
-    }
+    _schedule(work);
 
     return future;
 }
@@ -981,6 +1018,13 @@ template <typename T>
     requires (subflow_invocable<T> && capturable<T>)
 inline void Executor::silent_async(T&& task) {
     Work* work = make_silent_async_subflow(nullptr, *this, nullptr, std::forward<T>(task));
+    _launch_silent_async(work);
+}
+
+template <typename T>
+    requires (coro_invocable<T> && capturable<T>)
+inline void Executor::silent_async(T&& task) {
+    Work* work = make_silent_async_coro(nullptr, *this, nullptr, std::forward<T>(task));
     _launch_silent_async(work);
 }
 
@@ -1026,6 +1070,13 @@ template <typename T, async_future... Deps>
     requires (subflow_invocable<T> && capturable<T>)
 inline auto Executor::async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_return_t<T>> {
     auto [work, result] = make_async_subflow(nullptr, *this, nullptr, std::forward<T>(task));
+    return _launch_async(work, result, std::forward<Deps>(deps)...);
+}
+
+template <typename T, async_future... Deps>
+    requires (coro_invocable<T> && capturable<T>)
+inline auto Executor::async(T&& task, Deps&&... deps) -> AsyncFuture<coro_result_t<T>> {
+    auto [work, result] = make_async_coro(nullptr, *this, nullptr, std::forward<T>(task));
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
@@ -1892,6 +1943,14 @@ inline void Executor::_schedule_from_semaphore(Worker& wr, Work* work) noexcept 
         } else {
             executor._schedule(current);
         }
+    }
+}
+
+inline void Executor::_dispatch(Work* work) {
+    if (Worker* worker = _this_worker()) {
+        _schedule(*worker, work);
+    } else {
+        _schedule(work);
     }
 }
 

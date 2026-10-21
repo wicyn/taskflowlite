@@ -1,4 +1,5 @@
-﻿/// @file traits.hpp
+﻿
+/// @file traits.hpp
 /// @brief 类型概念与萃取 —— 框架的 C++20 concepts 集中定义。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -126,6 +127,7 @@ template <typename T>
 }
 
 }  // namespace detail
+
 /// @brief 检测单个实参能否按值持久化存储。
 ///
 /// 框架使用 `std::decay_t<T>` 作为存储类型：
@@ -220,7 +222,26 @@ concept coroutine_returnable = requires {
     typename std::coroutine_traits<std::remove_cvref_t<R>>::promise_type;
 };
 
-}
+/// @brief 从 CoroTask<R> 提取协程最终结果类型 R。
+template <typename T>
+struct coro_task_result;
+
+template <typename R>
+struct coro_task_result<CoroTask<R>> {
+    using type = R;
+};
+
+/// @brief 从 CoroTask<R>（允许 cv/ref 修饰）提取结果类型 R。
+template <typename T>
+using coro_task_result_t = typename coro_task_result<std::remove_cvref_t<T>>::type;
+
+} // namespace detail
+
+/// @brief 检测类型是否为框架支持的 CoroTask<R>（忽略 cv/ref 修饰）。
+template <typename T>
+concept coro_task = requires {
+    typename detail::coro_task_result_t<T>;
+};
 
 // ============================================================================
 // 返回类型推导
@@ -253,6 +274,15 @@ using runtime_return_t = std::invoke_result_t<std::decay_t<T>&, Runtime&>;
 /// @brief SubFlow callable 的返回类型。
 template <typename T>
 using subflow_return_t = std::invoke_result_t<std::decay_t<T>&, SubFlow&>;
+
+/// @brief Coroutine callable 的返回类型。
+template <typename T>
+using coro_return_t = std::invoke_result_t<std::decay_t<T>&, Coro&>;
+
+/// @brief Coroutine callable 的最终结果类型。
+template <typename T>
+    requires coro_task<coro_return_t<T>>
+using coro_result_t = detail::coro_task_result_t<coro_return_t<T>>;
 
 // ============================================================================
 //  任务 callable 概念
@@ -289,9 +319,14 @@ concept runtime_invocable = std::invocable<std::decay_t<T>&, Runtime&> && !detai
 template <typename T>
 concept subflow_invocable = std::invocable<std::decay_t<T>&, SubFlow&> && !detail::coroutine_returnable<subflow_return_t<T>>;
 
+/// @brief `f(Coro&)` 可调用，并返回框架支持的 CoroTask。
+template <typename T>
+concept coro_invocable = std::invocable<std::decay_t<T>&, Coro&> && coro_task<coro_return_t<T>>;
+
 /// @brief 约束 `Ts...` 为 `{Semaphore, count, Semaphore, count, ...}` 交替序列。
 template <typename... Ts>
 concept sem_count_sequence = detail::is_sem_count_seq<Ts...>::value;
+
 /// @brief 将一次任务创建所需的 callable 和参数按衰减类型组合保存为元组。
 ///
 /// `pack` 按值拥有内部元素，用于批量 `emplace` 时延后展开；左值也会被复制而非借用。
@@ -318,6 +353,7 @@ pack(Ts&&...) -> pack<Ts...>;
 // ============================================================================
 // pack 探测
 // ============================================================================
+
 namespace detail {
 
 /// @brief 将任意普通类型判定为非 `tfl::pack` 的内部类型萃取。
@@ -359,7 +395,6 @@ inline constexpr bool is_async_task_v = is_async_task<std::remove_cvref_t<T>>::v
 
 template <typename T>
 concept async_task = is_async_task_v<T>;
-
 
 // ============================================================================
 // 转发返回类型
