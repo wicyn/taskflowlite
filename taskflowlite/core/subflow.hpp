@@ -67,21 +67,21 @@ private:
 };
 
 inline void SubFlow::run() noexcept {
-    auto num_sources = m_executor._set_up_graph(graph(), m_work);
+    auto num_sources = executor()._set_up_graph(graph(), Context::work());
     if (num_sources == 0) {
         return;
     }
 
-    m_work.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
-    m_executor._schedule(m_worker, graph().begin(), num_sources);
+    Context::work().m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
+    executor()._schedule(worker(), graph().begin(), num_sources);
 }
 
 inline void SubFlow::wait() {
-    m_executor._corun_until(m_worker, [this]() noexcept {
-        return m_work.m_join_counter.load(std::memory_order_acquire) == 1;
+    executor()._corun_until(worker(), [this]() noexcept {
+        return Context::work().m_join_counter.load(std::memory_order_acquire) == 1;
     });
 
-    m_work._rethrow_exception();
+    Context::work()._rethrow_exception();
 }
 
 } // namespace tfl

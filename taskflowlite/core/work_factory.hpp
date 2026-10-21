@@ -169,6 +169,26 @@ template <typename F>
         );
 }
 
+/// @brief 创建 Coroutine 静态任务节点。
+///
+/// callable 返回 CoroTask<R>，在执行时注入 Coro 上下文。
+///
+/// @tparam F callable 类型。
+/// @param graph 节点所属物理 Graph。
+/// @param func Coroutine callable。
+/// @return 创建完成的 Work。
+template <typename F>
+    requires (coro_invocable<F> && capturable<F>)
+[[nodiscard]] Work* make_coro(const Graph* graph, F&& func) {
+    using Invoker = CoroInvoker<std::decay_t<F>>;
+
+    return create_work(
+        std::in_place_type<Invoker>,
+        graph,
+        std::forward<F>(func)
+        );
+}
+
 /// @brief 创建循环执行指定子图的静态 Module 节点。
 ///
 /// Graph holder 按统一 capture 规则保存，predicate 决定是否终止后续迭代。
@@ -354,6 +374,29 @@ template <typename F, typename... Args>
     return {work, work->template target<Invoker>().object()};
 }
 
+/// @brief 原地构造 Coroutine callable，并创建静态任务节点。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param graph 节点所属物理 Graph。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work 和内部 callable 引用。
+/// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && coro_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::pair<Work*, F&> make_coro_object(const Graph* graph, Args&&... args) {
+    using Invoker = CoroInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        graph,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    return {work, work->template target<Invoker>().object()};
+}
+
 /// @brief 原地构造子图持有者，并创建循环执行指定子图的静态 Module 节点。
 ///
 /// @tparam Gh 节点实际保存的 Graph holder 类型。
@@ -443,6 +486,28 @@ template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
 [[nodiscard]] Work* make_silent_async_subflow(Work* parent, Executor& executor, Topology* parent_topology, F&& func) {
     using Invoker = SilentAsyncSubFlowInvoker<std::decay_t<F>>;
+
+    return create_work(
+        std::in_place_type<Invoker>,
+        parent,
+        executor,
+        parent_topology,
+        std::forward<F>(func)
+        );
+}
+
+/// @brief 创建没有外部结果句柄的 Coroutine SilentAsync Work。
+///
+/// @tparam F Coroutine callable 类型。
+/// @param parent 父 Work；根级异步任务允许为空。
+/// @param executor 当前任务所属 Executor。
+/// @param parent_topology 新任务 Topology 的父 Topology。
+/// @param func Coroutine callable。
+/// @return 创建完成的 Work。
+template <typename F>
+    requires (coro_invocable<F> && capturable<F>)
+[[nodiscard]] Work* make_silent_async_coro(Work* parent, Executor& executor, Topology* parent_topology, F&& func) {
+    using Invoker = SilentAsyncCoroInvoker<std::decay_t<F>>;
 
     return create_work(
         std::in_place_type<Invoker>,
@@ -547,6 +612,30 @@ template <typename F>
     requires (subflow_invocable<F> && capturable<F>)
 [[nodiscard]] std::pair<Work*, ResultSlot<subflow_return_t<F>>*> make_async_subflow(Work* parent, Executor& executor, Topology* parent_topology, F&& func) {
     using Invoker = AsyncSubFlowInvoker<std::decay_t<F>>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        parent,
+        executor,
+        parent_topology,
+        std::forward<F>(func)
+        );
+
+    return {work, work->template target<Invoker>().get_result_slot()};
+}
+
+/// @brief 创建带 Coroutine 结果槽的 Async 异步任务。
+///
+/// @tparam F Coroutine callable 类型。
+/// @param parent 父 Work；根级异步任务允许为空。
+/// @param executor 当前任务所属 Executor。
+/// @param parent_topology 新任务 Topology 的父 Topology。
+/// @param func Coroutine callable。
+/// @return 创建完成的 Work 和 ResultSlot。
+template <typename F>
+    requires (coro_invocable<F> && capturable<F>)
+[[nodiscard]] std::pair<Work*, ResultSlot<coro_result_t<F>>*> make_async_coro(Work* parent, Executor& executor, Topology* parent_topology, F&& func) {
+    using Invoker = AsyncCoroInvoker<std::decay_t<F>>;
 
     Work* work = create_work(
         std::in_place_type<Invoker>,
@@ -664,6 +753,28 @@ template <typename F>
     return {work, work->template target<Invoker>().get_result_slot()};
 }
 
+/// @brief 创建已绑定执行器、尚未启动的 Coroutine AsyncTask Work。
+///
+/// @tparam F Coroutine callable 类型。
+/// @param executor 当前任务所属 Executor。
+/// @param func Coroutine callable。
+/// @return 创建完成的 Work 和 ResultSlot。
+/// @note 本函数只创建节点，不启动任务。
+template <typename F>
+    requires (coro_invocable<F> && capturable<F>)
+[[nodiscard]] std::pair<Work*, ResultSlot<coro_result_t<F>>*> make_async_task_coro(Executor& executor, F&& func) {
+    using Invoker = AsyncTaskCoroInvoker<std::decay_t<F>>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        static_cast<Work*>(nullptr),
+        executor,
+        std::forward<F>(func)
+        );
+
+    return {work, work->template target<Invoker>().get_result_slot()};
+}
+
 /// @brief 创建已绑定执行器、尚未启动的 Module AsyncTask 异步任务。
 ///
 /// Module 没有值结果，使用 `ResultSlot<void>` 表示完成状态。
@@ -756,6 +867,31 @@ template <typename F, typename... Args>
     requires (std::same_as<F, std::decay_t<F>> && subflow_invocable<F> && std::constructible_from<F, Args&&...>)
 [[nodiscard]] std::tuple<Work*, ResultSlot<subflow_return_t<F>>*, F&> make_async_task_subflow_object(Executor& executor, Args&&... args) {
     using Invoker = AsyncTaskSubFlowInvoker<F>;
+
+    Work* work = create_work(
+        std::in_place_type<Invoker>,
+        static_cast<Work*>(nullptr),
+        executor,
+        std::in_place,
+        std::forward<Args>(args)...
+        );
+
+    Invoker& invoker = work->template target<Invoker>();
+    return {work, invoker.get_result_slot(), invoker.object()};
+}
+
+/// @brief 原地构造 Coroutine callable，并创建尚未启动的 AsyncTask Work。
+///
+/// @tparam F 节点实际保存的 callable 类型。
+/// @param executor 当前任务所属 Executor。
+/// @param args 完美转发给 F 构造函数的参数。
+/// @return 创建完成的 Work、ResultSlot 和内部 callable 引用。
+/// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+/// @warning 对象销毁或被替换后，返回的引用失效。
+template <typename F, typename... Args>
+    requires (std::same_as<F, std::decay_t<F>> && coro_invocable<F> && std::constructible_from<F, Args&&...>)
+[[nodiscard]] std::tuple<Work*, ResultSlot<coro_result_t<F>>*, F&> make_async_task_coro_object(Executor& executor, Args&&... args) {
+    using Invoker = AsyncTaskCoroInvoker<F>;
 
     Work* work = create_work(
         std::in_place_type<Invoker>,

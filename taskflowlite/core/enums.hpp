@@ -11,16 +11,19 @@
 #include <cstdint>
 #include <ostream>
 #include <string_view>
-#include "traits.hpp"
+#include <version>
 
 namespace tfl {
+
 // ============================================================================
 // 枚举工具
 // ============================================================================
 
 namespace impl {
+
 template <typename T>
 struct EnumMaxImpl;
+
 } // namespace impl
 
 /// @brief 获取框架为枚举类型登记的枚举器数量。
@@ -46,7 +49,8 @@ enum class TaskType : std::int32_t
     Jump        = 5,   ///< 强制激活一个指定后继。
     MultiJump   = 6,   ///< 强制激活多个指定后继。
     Runtime     = 7,   ///< 通过 `Runtime` 在执行期间派发任务。
-    Graph       = 8    ///< 执行封装的子图。
+    Coroutine   = 8,   ///< 执行可挂起并由 Executor 恢复调度的协程任务。
+    Graph       = 9    ///< 执行封装的子图。
 };
 
 /// @brief 将任务类型转换为稳定的英文标识符。
@@ -62,6 +66,7 @@ constexpr const char* to_string(TaskType type) noexcept {
     case TaskType::Jump:        return "jump";
     case TaskType::MultiJump:   return "multi_jump";
     case TaskType::Runtime:     return "runtime";
+    case TaskType::Coroutine:   return "coroutine";
     case TaskType::Graph:       return "graph";
     default:                    return "unknown";
     }
@@ -75,14 +80,16 @@ constexpr std::string_view to_string_view(TaskType type) noexcept {
 }
 
 namespace impl {
+
 /// @brief 为 `TaskType` 登记包含 `None` 在内的有效枚举器数量。
 ///
 /// 该特化只提供编译期常量，不验证任意整数是否为有效枚举值。
 template <>
 struct EnumMaxImpl<TaskType>
 {
-    static constexpr std::int32_t Value = 9;
+    static constexpr std::int32_t Value = 10;
 };
+
 } // namespace impl
 
 /// @brief 将任务类型英文标识写入输出流。
@@ -129,6 +136,7 @@ constexpr std::string_view to_string_view(Direction dir) noexcept {
 }
 
 namespace impl {
+
 /// @brief 为 `Direction` 登记四个独立布局方向的枚举器数量。
 ///
 /// `Default` 是 `Down` 的别名，因此不单独计数。
@@ -137,6 +145,7 @@ struct EnumMaxImpl<Direction>
 {
     static constexpr std::int32_t Value = 4;
 };
+
 } // namespace impl
 
 /// @brief 将布局方向英文标识写入输出流。
@@ -153,18 +162,21 @@ inline std::ostream& operator<<(std::ostream& os, Direction dir) {
 // std::format 支持
 // ============================================================================
 
-#if __cpp_lib_format >= 202110L
+#if defined(__cpp_lib_format) && __cpp_lib_format >= 202110L
+
 #include <format>
+
+namespace std {
 
 /// @brief 将 `tfl::TaskType` 适配为按稳定英文标识输出的 `std::formatter`。
 ///
 /// 格式解析和字符串格式化行为复用 `std::formatter<std::string_view>`。
 template <>
-struct std::formatter<tfl::TaskType> : std::formatter<std::string_view>
+struct formatter<tfl::TaskType> : formatter<std::string_view>
 {
-    auto format(tfl::TaskType type, std::format_context& ctx) const
+    auto format(tfl::TaskType type, format_context& ctx) const
     {
-        return std::formatter<std::string_view>::format(tfl::to_string_view(type), ctx);
+        return formatter<std::string_view>::format(tfl::to_string_view(type), ctx);
     }
 };
 
@@ -172,11 +184,14 @@ struct std::formatter<tfl::TaskType> : std::formatter<std::string_view>
 ///
 /// 格式解析和字符串格式化行为复用 `std::formatter<std::string_view>`。
 template <>
-struct std::formatter<tfl::Direction> : std::formatter<std::string_view>
+struct formatter<tfl::Direction> : formatter<std::string_view>
 {
-    auto format(tfl::Direction dir, std::format_context& ctx) const
+    auto format(tfl::Direction dir, format_context& ctx) const
     {
-        return std::formatter<std::string_view>::format(tfl::to_string_view(dir), ctx);
+        return formatter<std::string_view>::format(tfl::to_string_view(dir), ctx);
     }
 };
+
+} // namespace std
+
 #endif

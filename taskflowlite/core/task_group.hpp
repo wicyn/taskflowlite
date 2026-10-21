@@ -13,12 +13,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <utility>
 
 #include "context.hpp"
 #include "executor.hpp"
 #include "async_future.hpp"
+#include "traits.hpp"
 #include "work_factory_fwd.hpp"
 
 namespace tfl {
@@ -116,6 +118,14 @@ public:
     /// @warning callable 不得保存框架注入的 `SubFlow&`。
     template <typename T>
         requires (subflow_invocable<T> && capturable<T>)
+    void silent_async(T&& task);
+
+    /// @brief Fire-and-forget 执行可接收 `Coro&` 的 Coroutine callable。
+    /// @tparam T 满足 coro_invocable concept 的 callable 类型。
+    /// @param task 要执行的 Coroutine callable。
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <typename T>
+        requires (coro_invocable<T> && capturable<T>)
     void silent_async(T&& task);
 
     /// @brief 异步执行子图一次并返回可等待、可请求停止的结果通道。
@@ -228,13 +238,24 @@ public:
         requires (subflow_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_return_t<T>>;
 
+    /// @brief 异步执行 Coroutine callable 并保存其返回值。
+    /// @tparam T 满足 coro_invocable concept 的 callable 类型。
+    /// @tparam Deps 前驱异步任务类型包。
+    /// @param task 要执行的 Coroutine callable。
+    /// @param deps 可选前驱任务；全部前置依赖完成后才进入调度队列。
+    /// @return `AsyncFuture<R>`，其中 `R = coro_result_t<T>`。
+    /// @note 新任务以 AnchorWork 所属 Topology 作为父 Topology。
+    template <typename T, async_future... Deps>
+        requires (coro_invocable<T> && capturable<T>)
+    [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<coro_result_t<T>>;
+
     /// @brief 将子图源节点挂接到本组并立即提交。
     /// @tparam Gh 满足 graph_holder concept 的图持有者类型。
     /// @param gh 非拥有引用；Graph 及其节点必须存活到组内执行结束。
     /// @note 本函数只提交任务，不等待；需要同步并观察异常时调用 `wait()`。
     /// @note source 发布依赖 Executor 批量调度路径的发布语义；Graph 不得在执行完成前销毁或修改。
     template <graph_holder Gh>
-    void run(Gh&& gh) noexcept;
+    void run(Gh& gh) noexcept;
 
     /// @brief 在当前 Worker 上同步执行指定 Graph，并协作等待本次 Graph 完成。
     ///
@@ -299,9 +320,9 @@ private:
 // ============================================================================
 
 inline TaskGroup::TaskGroup(Context& context) noexcept
-    : m_worker{context.m_worker}
-    , m_executor{context.m_executor}
-    , m_anchor{context.m_work, context.m_executor} {}
+    : m_worker{context.worker()}
+    , m_executor{context.executor()}
+    , m_anchor{context.work(), context.executor()} {}
 
 inline TaskGroup::~TaskGroup() noexcept {
     m_executor._corun_until(m_worker, [this]() noexcept {
@@ -433,6 +454,13 @@ inline void TaskGroup::silent_async(T&& task) {
     _launch_silent_async(work);
 }
 
+template <typename T>
+    requires (coro_invocable<T> && capturable<T>)
+inline void TaskGroup::silent_async(T&& task) {
+    Work* work = make_silent_async_coro(std::addressof(m_anchor), m_executor, m_anchor.m_topology, std::forward<T>(task));
+    _launch_silent_async(work);
+}
+
 // ============================================================================
 // TaskGroup：带结果通道的组内任务
 // ============================================================================
@@ -493,12 +521,19 @@ inline auto TaskGroup::async(T&& task, Deps&&... deps) -> AsyncFuture<subflow_re
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
+template <typename T, async_future... Deps>
+    requires (coro_invocable<T> && capturable<T>)
+inline auto TaskGroup::async(T&& task, Deps&&... deps) -> AsyncFuture<coro_result_t<T>> {
+    auto [work, result] = make_async_coro(std::addressof(m_anchor), m_executor, m_anchor.m_topology, std::forward<T>(task));
+    return _launch_async(work, result, std::forward<Deps>(deps)...);
+}
+
 // ============================================================================
 // TaskGroup::run
 // ============================================================================
 
 template <graph_holder Gh>
-inline void TaskGroup::run(Gh&& gh) noexcept {
+inline void TaskGroup::run(Gh& gh) noexcept {
     Graph& graph = detail::to_graph(gh);
     if (graph.empty()) {
         return;

@@ -24,6 +24,8 @@
 #include "d2_render.hpp"
 #include "work_storage.hpp"
 #include "macros.hpp"
+#include "coro.hpp"
+#include "coro_task.hpp"
 namespace tfl {
 
 /// @brief 可选的 Work 单轮执行一致性检查。
@@ -69,7 +71,7 @@ do {                                                                            
     } while (false)
 
 #define TFL_RELEASE_SEMAPHORES(work, worker, executor)                                      \
-    do {                                                                                    \
+        do {                                                                                    \
             if ((work).m_semaphores && !(work).m_semaphores->releases.empty()) {            \
                 Work* first = nullptr;                                                      \
                 Work* last = nullptr;                                                       \
@@ -365,7 +367,52 @@ protected:
     TFL_NO_UNIQUE_ADDRESS F m_func;
 };
 
+// ============================================================================
+// TaskType::Coro 家族
+// ============================================================================
 
+/// @brief 为协程任务提供 callable 存储、`TaskType::Coro` 和 D2 渲染语义。
+///
+/// CoroWork 只按值保存用户 callable，不参与 coroutine frame、挂起恢复、pending 计数和
+/// 生命周期管理；这些运行期状态统一由 CoroInvoker 内部的 Coro 管理。
+///
+/// @tparam F 节点按值拥有的 coroutine callable 类型。
+template <typename F>
+class CoroWork {
+public:
+    static constexpr TaskType TYPE = TaskType::Coroutine;
+
+    /// @brief 从传入的 callable 复制或移动构造内部对象。
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit CoroWork(U&& f) noexcept(noexcept(F{std::forward<U>(f)}))
+        : m_func{std::forward<U>(f)} {}
+
+    /// @brief 使用参数直接在内部存储中构造 callable。
+    /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit CoroWork(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<F, Args&&...>)
+        : m_func(std::forward<Args>(args)...) {}
+
+    /// @brief 返回内部保存的 callable 引用。
+    /// @warning 引用不延长对象生命周期；对象销毁或被替换后失效。
+    [[nodiscard]] F& object() noexcept {
+        return m_func;
+    }
+
+    /// @brief 返回内部保存的 callable 常量引用。
+    [[nodiscard]] const F& object() const noexcept {
+        return m_func;
+    }
+
+    void dump(const Work& w, std::ostream& os) const {
+        D2Renderer::render_work(os, w, "rectangle", "#ede9fe", "#8b5cf6", "#4c1d95", "30");
+    }
+
+protected:
+    TFL_NO_UNIQUE_ADDRESS F m_func;
+};
 
 /// @brief 为内部持有或借用 Graph 的 Invoker 提供统一 `TaskType::Graph` 与 D2 图渲染语义。
 ///
@@ -502,9 +549,7 @@ public:
         }
 
         TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
         TFL_WORK_EXECUTION_BEGIN(w);
-
         w._notify_before(wr);
 
         TFL_TRY {
@@ -514,9 +559,7 @@ public:
         }
 
         w._notify_after(wr);
-
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
-
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_task(w, wr, cache);
     }
@@ -559,11 +602,8 @@ public:
         }
 
         TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
         TFL_WORK_EXECUTION_BEGIN(w);
-
         w._notify_before(wr);
-
         Branch branch{w, wr, exe};
 
         TFL_TRY {
@@ -573,9 +613,7 @@ public:
         }
 
         w._notify_after(wr);
-
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
-
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_branch_task(w, wr, cache, branch.m_target);
     }
@@ -617,11 +655,8 @@ public:
         }
 
         TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
         TFL_WORK_EXECUTION_BEGIN(w);
-
         w._notify_before(wr);
-
         MultiBranch branch{w, wr, exe};
 
         TFL_TRY {
@@ -631,9 +666,7 @@ public:
         }
 
         w._notify_after(wr);
-
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
-
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_multi_branch_task(w, wr, cache, branch.m_targets);
     }
@@ -676,11 +709,8 @@ public:
         }
 
         TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
         TFL_WORK_EXECUTION_BEGIN(w);
-
         w._notify_before(wr);
-
         Jump jump{w, wr, exe};
 
         TFL_TRY {
@@ -690,9 +720,7 @@ public:
         }
 
         w._notify_after(wr);
-
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
-
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_jump_task(w, wr, cache, jump.m_target);
     }
@@ -735,11 +763,8 @@ public:
         }
 
         TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
         TFL_WORK_EXECUTION_BEGIN(w);
-
         w._notify_before(wr);
-
         MultiJump jump{w, wr, exe};
 
         TFL_TRY {
@@ -749,9 +774,7 @@ public:
         }
 
         w._notify_after(wr);
-
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
-
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_multi_jump_task(w, wr, cache, jump.m_targets);
     }
@@ -800,14 +823,10 @@ public:
             }
 
             TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED | Work::Properties::IMPLICIT_ANCHOR;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
-
             w._notify_before(wr);
-
             Runtime runtime{w, wr, exe};
 
             TFL_TRY {
@@ -822,17 +841,118 @@ public:
         }
 
         w._notify_after(wr);
-
         // 最终完成：当前 Work 的所有动态 child / 子图已经归还等待 slot。
         w.m_properties &= ~(Work::Properties::PREEMPTED | Work::Properties::IMPLICIT_ANCHOR);
-
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
-
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_task(w, wr, cache);
     }
 };
 
+/// @brief 执行 Coroutine Work，支持外部挂起恢复和子协程对称转移。
+///
+/// CoroInvoker 持有一个 Coro 上下文和一个根 CoroTask。
+///
+/// 首次执行时创建根 Coroutine frame，并绑定 Coro 上下文；
+/// 挂起恢复时通过 Coro 保存的句柄恢复当前 Coroutine；
+/// 子 Coroutine 的对称转移由 CoroTask::Awaiter 和 FinalAwaiter 完成。
+///
+/// Coroutine 挂起期间保留 Work 的执行生命周期，只有根 Coroutine
+/// 最终完成后才释放 Semaphore 并执行 Work tear-down。
+///
+/// @tparam F 返回 CoroTask<R>、接受 Coro& 的可调用对象类型。
+template <typename F>
+class CoroInvoker final : public CoroWork<F> {
+    using R = coro_result_t<F>;
+    using Base = CoroWork<F>;
+
+    using Base::m_func;
+
+    Coro m_coro;
+    CoroTask<R> m_cotask;
+
+public:
+    static constexpr Work::Properties::type PROPERTIES = Work::Properties::STRONG;
+    static constexpr Work::Control::type CONTROL = Work::Control::NONE;
+
+    template <typename U>
+        requires std::constructible_from<F, U&&>
+    explicit CoroInvoker(U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
+        : Base{std::forward<U>(f)} {}
+
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit CoroInvoker(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Base(std::in_place, std::forward<Args>(args)...) {}
+
+    /// @brief 执行或恢复当前 Coroutine Work。
+    ///
+    /// 首次执行时创建根 CoroTask，并建立一个基准 join slot。
+    /// Coroutine 挂起后由 Executor 重新调度恢复。
+    /// 根 Coroutine 完成后，等待所有派生子 Work 完成，再执行最终收尾。
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
+        m_coro._rebind(w, wr, exe);
+
+        if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
+            if (w.m_topology->_stop_requested()) [[unlikely]] {
+                exe._schedule_parent(w.m_parent, wr, cache);
+                return;
+            }
+
+            TFL_TRY_ACQUIRE_SEMAPHORES(w);
+            TFL_WORK_EXECUTION_BEGIN(w);
+            w.m_properties |= Work::Properties::PREEMPTED | Work::Properties::IMPLICIT_ANCHOR;
+            w.m_join_counter.fetch_add(1, std::memory_order_release);
+            w._notify_before(wr);
+
+            TFL_TRY {
+                m_cotask = std::invoke(m_func, m_coro);
+            } TFL_CATCH_ALL {
+                w._process_exception();
+                w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel);
+                goto cleanup;
+            }
+
+            m_coro._start(m_cotask.m_handle);
+        }
+
+        if (!m_cotask.m_handle.done()) {
+            auto handle = std::exchange(m_coro.m_resume, std::coroutine_handle<>{});
+
+            TFL_ASSERT(handle);
+            handle.resume();
+
+            // fork 挂起：移交子 Work，在当前 Invoker 返回后调度父 Work。
+            if ((cache = std::exchange(m_coro.m_child, nullptr))) {
+                exe._schedule(wr, std::addressof(w));
+                return;
+            }
+
+            if (!m_cotask.m_handle.done()) {
+                return;
+            }
+        }
+
+        // 根 Coroutine 释放一次基准计数，等待全部派生子 Work 完成。
+        if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
+            return;
+        }
+
+        // 根 Coroutine 和所有子 Work 均已完成。
+        if (std::exception_ptr eptr = m_cotask._take_exception()) [[unlikely]] {
+            w._process_exception(std::move(eptr));
+        }
+
+        m_coro._finish();
+        m_cotask.reset();
+    cleanup:
+        w._notify_after(wr);
+        w.m_properties &= ~(Work::Properties::PREEMPTED | Work::Properties::IMPLICIT_ANCHOR);
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
+        TFL_WORK_EXECUTION_END(w);
+        exe._tear_down_task(w, wr, cache);
+    }
+};
 
 /// @brief 执行静态 SubFlow callable，并等待其动态子图完成后恢复当前节点。
 ///
@@ -874,14 +994,10 @@ public:
             }
 
             TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
-
             w._notify_before(wr);
-
             SubFlow flow{m_graph, w, wr, exe};
 
             TFL_TRY {
@@ -896,12 +1012,9 @@ public:
         }
 
         w._notify_after(wr);
-
         // 最终完成：当前 Work 的所有动态 child / 子图已经归还等待 slot。
         w.m_properties &= ~Work::Properties::PREEMPTED;
-
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
-
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_task(w, wr, cache);
     }
@@ -982,9 +1095,7 @@ public:
             }
 
             TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED;
             w._notify_before(wr);
             m_num_sources = exe._set_up_graph(graph, w);
@@ -993,11 +1104,8 @@ public:
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
         if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
             w._notify_after(wr);
-
             w.m_properties &= ~Work::Properties::PREEMPTED;
-
             TFL_RELEASE_SEMAPHORES(w, wr, exe);
-
             TFL_WORK_EXECUTION_END(w);
             exe._tear_down_task(w, wr, cache);
             return;
@@ -1097,10 +1205,8 @@ public:
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
-
             Runtime rt{w, wr, exe};
 
             TFL_TRY {
@@ -1116,7 +1222,88 @@ public:
 
         // 最终完成。
         w.m_properties &= ~Work::Properties::PREEMPTED;
+        TFL_WORK_EXECUTION_END(w);
+        exe._tear_down_silent_async_task(w, wr, cache);
+    }
+};
 
+
+/// @brief 执行无外部结果句柄的 SilentAsync Coroutine callable。
+///
+/// 通过 TopologyStorage 按值拥有独立 Topology，CoroWork 保存 Coroutine callable。
+/// 首次执行创建根 CoroTask；Coroutine 挂起后等待 Executor 恢复。
+/// 根 Coroutine 与全部派生子 Work 完成后，销毁 Coroutine frame 并进入 SilentAsync tear-down。
+///
+/// @tparam F 返回 CoroTask<R>、接受 Coro& 的可调用对象类型。
+template <typename F>
+class SilentAsyncCoroInvoker final : public TopologyStorage, public CoroWork<F> {
+    using R = coro_result_t<F>;
+    using Base = CoroWork<F>;
+
+    using Base::m_func;
+
+    Coro m_coro;
+    CoroTask<R> m_cotask;
+
+public:
+    static constexpr Work::Properties::type PROPERTIES = Work::Properties::IMPLICIT_ANCHOR;
+    static constexpr Work::Control::type CONTROL = Work::Control::NONE;
+
+    template <typename U>
+        requires std::constructible_from<Base, U&&>
+    explicit SilentAsyncCoroInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(noexcept(Base{std::forward<U>(f)}))
+        : TopologyStorage{executor, parent_topology}
+        , Base{std::forward<U>(f)} {}
+
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
+        m_coro._rebind(w, wr, exe);
+
+        if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
+            TFL_WORK_EXECUTION_BEGIN(w);
+            w.m_properties |= Work::Properties::PREEMPTED;
+            w.m_join_counter.fetch_add(1, std::memory_order_release);
+
+            TFL_TRY {
+                m_cotask = std::invoke(m_func, m_coro);
+            } TFL_CATCH_ALL {
+                w._process_exception();
+                w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel);
+                goto cleanup;
+            }
+
+            m_coro._start(m_cotask.m_handle);
+        }
+
+        if (!m_cotask.m_handle.done()) {
+            auto handle = std::exchange(m_coro.m_resume, std::coroutine_handle<>{});
+
+            TFL_ASSERT(handle);
+            handle.resume();
+
+            // fork 挂起：移交子 Work，在当前 Invoker 返回后调度父 Work。
+            if ((cache = std::exchange(m_coro.m_child, nullptr))) {
+                exe._schedule(wr, std::addressof(w));
+                return;
+            }
+
+            if (!m_cotask.m_handle.done()) {
+                return;
+            }
+        }
+
+        // 根 Coroutine 释放一次基准计数，等待全部派生子 Work 完成。
+        if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
+            return;
+        }
+
+        if (std::exception_ptr eptr = m_cotask._take_exception()) [[unlikely]] {
+            w._process_exception(std::move(eptr));
+        }
+
+        m_coro._finish();
+        m_cotask.reset();
+    cleanup:
+        w.m_properties &= ~Work::Properties::PREEMPTED;
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_silent_async_task(w, wr, cache);
     }
@@ -1151,10 +1338,8 @@ public:
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
-
             SubFlow flow{m_graph, w, wr, exe};
 
             TFL_TRY {
@@ -1225,7 +1410,6 @@ public:
         // 首次进入：初始化整个子图。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED;
             m_num_sources = exe._set_up_graph(graph, w);
         }
@@ -1233,7 +1417,6 @@ public:
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
         if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
             w._invoke_callback(m_callback);
-
             w.m_properties &= ~Work::Properties::PREEMPTED;
             TFL_WORK_EXECUTION_END(w);
             exe._tear_down_silent_async_task(w, wr, cache);
@@ -1343,10 +1526,8 @@ public:
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
-
             Runtime rt{w, wr, exe};
 
             TFL_TRY {
@@ -1362,11 +1543,102 @@ public:
 
         // 最终完成。
         w.m_properties &= ~Work::Properties::PREEMPTED;
-
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_async_task(w, wr, cache);
     }
 };
+
+/// @brief 执行带结果槽的 Async Coroutine callable，并支持外部挂起恢复。
+///
+/// ResultStorage<R> 保存独立 Topology 和结果槽，CoroWork 保存 Coroutine callable。
+/// 根 Coroutine 与全部派生子 Work 完成后提取结果，并由 Async tear-down 发布完成状态。
+///
+/// @tparam F 返回 CoroTask<R>、接受 Coro& 的可调用对象类型。
+template <typename F>
+class AsyncCoroInvoker final : public ResultStorage<coro_result_t<F>>, public CoroWork<F> {
+    using R = coro_result_t<F>;
+    using Storage = ResultStorage<R>;
+    using Base = CoroWork<F>;
+
+    using Base::m_func;
+
+    Coro m_coro;
+    CoroTask<R> m_cotask;
+
+public:
+    static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
+    static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
+
+    template <typename U>
+        requires std::constructible_from<Base, U&&>
+    explicit AsyncCoroInvoker(Executor& executor, Topology* parent_topology, U&& f) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && noexcept(Base{std::forward<U>(f)}))
+        : Storage{executor, parent_topology}
+        , Base{std::forward<U>(f)} {}
+
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
+        m_coro._rebind(w, wr, exe);
+
+        if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
+            TFL_WORK_EXECUTION_BEGIN(w);
+            w.m_properties |= Work::Properties::PREEMPTED;
+            w.m_join_counter.fetch_add(1, std::memory_order_release);
+            TFL_TRY {
+                m_cotask = std::invoke(m_func, m_coro);
+            } TFL_CATCH_ALL {
+                w._process_exception();
+                w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel);
+                goto cleanup;
+            }
+
+            m_coro._start(m_cotask.m_handle);
+        }
+
+        if (!m_cotask.m_handle.done()) {
+            auto handle = std::exchange(m_coro.m_resume, std::coroutine_handle<>{});
+
+            TFL_ASSERT(handle);
+            handle.resume();
+
+            // fork 挂起：移交子 Work，在当前 Invoker 返回后调度父 Work。
+            if ((cache = std::exchange(m_coro.m_child, nullptr))) {
+                exe._schedule(wr, std::addressof(w));
+                return;
+            }
+
+            if (!m_cotask.m_handle.done()) {
+                return;
+            }
+        }
+
+        // 根 Coroutine 释放一次基准计数，等待全部派生子 Work 完成。
+        if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
+            return;
+        }
+
+        // 根 Coroutine 和所有子 Work 完成后，将协程结果写入 Async 结果槽。
+        if (auto eptr = m_cotask._take_exception()) [[unlikely]] {
+            w._process_exception(std::move(eptr));
+        } else {
+            TFL_TRY {
+                if constexpr (std::is_void_v<R>) {
+                    m_cotask._take_result();
+                } else {
+                    Storage::get_result_slot()->return_value(m_cotask._take_result());
+                }
+            } TFL_CATCH_ALL {
+                w._process_exception();
+            }
+        }
+
+        m_coro._finish();
+        m_cotask.reset();
+    cleanup:
+        w.m_properties &= ~Work::Properties::PREEMPTED;
+        TFL_WORK_EXECUTION_END(w);
+        exe._tear_down_async_task(w, wr, cache);
+    }
+};
+
 
 /// @brief 执行可返回结果的 Async SubFlow callable，并等待内部动态子图完成。
 ///
@@ -1398,10 +1670,8 @@ public:
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
-
             SubFlow flow{m_graph, w, wr, exe};
 
             TFL_TRY {
@@ -1417,7 +1687,6 @@ public:
 
         // 最终完成。
         w.m_properties &= ~Work::Properties::PREEMPTED;
-
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_async_task(w, wr, cache);
     }
@@ -1473,7 +1742,6 @@ public:
         // 首次进入：初始化整个子图。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED;
             m_num_sources = exe._set_up_graph(graph, w);
         }
@@ -1481,7 +1749,6 @@ public:
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
         if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
             w._invoke_callback(m_callback);
-
             w.m_properties &= ~Work::Properties::PREEMPTED;
             TFL_WORK_EXECUTION_END(w);
             exe._tear_down_async_task(w, wr, cache);
@@ -1554,9 +1821,7 @@ public:
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
         TFL_WORK_EXECUTION_BEGIN(w);
-
         w._notify_before(wr);
 
         TFL_TRY {
@@ -1566,9 +1831,7 @@ public:
         }
 
         w._notify_after(wr);
-
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
-
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_async_task(w, wr, cache);
     }
@@ -1612,14 +1875,10 @@ public:
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
-
             w._notify_before(wr);
-
             Runtime rt{w, wr, exe};
 
             TFL_TRY {
@@ -1635,11 +1894,111 @@ public:
 
         // 最终完成。
         w._notify_after(wr);
-
         w.m_properties &= ~Work::Properties::PREEMPTED;
-
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
+        TFL_WORK_EXECUTION_END(w);
+        exe._tear_down_async_task(w, wr, cache);
+    }
+};
 
+
+/// @brief 执行 AsyncTask Coroutine callable，并支持前驱依赖、Semaphore 和 Observer。
+///
+/// 首次执行时获取 Semaphore、创建根 CoroTask，并建立基准 join slot。
+/// 根 Coroutine 与全部派生子 Work 完成后保存结果、触发 Observer after、释放 Semaphore，
+/// 最后由 AsyncTask 共用的 Async tear-down 发布完成状态并传播动态后继。
+///
+/// @tparam F 返回 CoroTask<R>、接受 Coro& 的可调用对象类型。
+template <typename F>
+class AsyncTaskCoroInvoker final : public ResultStorage<coro_result_t<F>>, public CoroWork<F> {
+    using R = coro_result_t<F>;
+    using Storage = ResultStorage<R>;
+    using Base = CoroWork<F>;
+
+    using Base::m_func;
+
+    Coro m_coro;
+    CoroTask<R> m_cotask;
+
+public:
+    static constexpr Work::Properties::type PROPERTIES = Work::Properties::NONE;
+    static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
+
+    template <typename U>
+        requires std::constructible_from<Base, U&&>
+    explicit AsyncTaskCoroInvoker(Executor& executor, U&& f) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && noexcept(Base{std::forward<U>(f)}))
+        : Storage{executor}
+        , Base{std::forward<U>(f)} {}
+
+    template <typename... Args>
+        requires std::constructible_from<F, Args&&...>
+    explicit AsyncTaskCoroInvoker(Executor& executor, std::in_place_t, Args&&... args) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>> && std::is_nothrow_constructible_v<Base, std::in_place_t, Args&&...>)
+        : Storage{executor}
+        , Base(std::in_place, std::forward<Args>(args)...) {}
+
+    void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
+        m_coro._rebind(w, wr, exe);
+
+        if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
+            TFL_TRY_ACQUIRE_SEMAPHORES(w);
+            TFL_WORK_EXECUTION_BEGIN(w);
+            w.m_properties |= Work::Properties::PREEMPTED;
+            w.m_join_counter.fetch_add(1, std::memory_order_release);
+            w._notify_before(wr);
+            TFL_TRY {
+                m_cotask = std::invoke(m_func, m_coro);
+            } TFL_CATCH_ALL {
+                w._process_exception();
+                w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel);
+                goto cleanup;
+            }
+
+            m_coro._start(m_cotask.m_handle);
+        }
+
+        if (!m_cotask.m_handle.done()) {
+            auto handle = std::exchange(m_coro.m_resume, std::coroutine_handle<>{});
+
+            TFL_ASSERT(handle);
+            handle.resume();
+
+            // fork 挂起：移交子 Work，在当前 Invoker 返回后调度父 Work。
+            if ((cache = std::exchange(m_coro.m_child, nullptr))) {
+                exe._schedule(wr, std::addressof(w));
+                return;
+            }
+
+            if (!m_cotask.m_handle.done()) {
+                return;
+            }
+        }
+
+        // 根 Coroutine 释放一次基准计数，等待全部派生子 Work 完成。
+        if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
+            return;
+        }
+
+        // 根 Coroutine 和所有子 Work 完成后，将协程结果写入 Async 结果槽。
+        if (auto eptr = m_cotask._take_exception()) [[unlikely]] {
+            w._process_exception(std::move(eptr));
+        } else {
+            TFL_TRY {
+                if constexpr (std::is_void_v<R>) {
+                    m_cotask._take_result();
+                } else {
+                    Storage::get_result_slot()->return_value(m_cotask._take_result());
+                }
+            } TFL_CATCH_ALL {
+                w._process_exception();
+            }
+        }
+
+        m_coro._finish();
+        m_cotask.reset();
+    cleanup:
+        w._notify_after(wr);
+        w.m_properties &= ~Work::Properties::PREEMPTED;
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_async_task(w, wr, cache);
     }
@@ -1685,14 +2044,10 @@ public:
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
-
             w._notify_before(wr);
-
             SubFlow flow{m_graph, w, wr, exe};
 
             TFL_TRY {
@@ -1708,11 +2063,8 @@ public:
 
         // 最终完成。
         w._notify_after(wr);
-
         w.m_properties &= ~Work::Properties::PREEMPTED;
-
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
-
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_async_task(w, wr, cache);
     }
@@ -1794,9 +2146,7 @@ public:
 
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_TRY_ACQUIRE_SEMAPHORES(w);
-
             TFL_WORK_EXECUTION_BEGIN(w);
-
             w.m_properties |= Work::Properties::PREEMPTED;
             w._notify_before(wr);
             m_num_sources = exe._set_up_graph(graph, w);
@@ -1805,11 +2155,9 @@ public:
         // 无 source、异常/停止或循环条件满足时结束整个 Module。
         if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
             w._notify_after(wr);
-
             w._invoke_callback(m_callback);
             w.m_properties &= ~Work::Properties::PREEMPTED;
             TFL_RELEASE_SEMAPHORES(w, wr, exe);
-
             TFL_WORK_EXECUTION_END(w);
             exe._tear_down_async_task(w, wr, cache);
             return;

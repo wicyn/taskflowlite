@@ -32,6 +32,7 @@ class Topology : public Immovable<Topology> {
     friend class Task;
     friend class Context;
     friend class Runtime;
+    friend class Coro;
     friend class Executor;
     friend class TaskGroup;
     template <typename> friend class AsyncFuture;
