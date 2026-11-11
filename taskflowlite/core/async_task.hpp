@@ -42,12 +42,12 @@ namespace tfl {
 /// 句柄通过 AsyncFuture<R> 持有 Work 强引用；复制共享任务状态，移动转移句柄关联。
 ///
 /// 非空任务由 Executor::defer_async 创建，创建时绑定执行器，状态为 Idle。
-/// 调用 start(deps...) 时保存前驱依赖并提交任务；前驱必须已经启动或完成。
+/// 调用 start(deps...) 时登记前驱依赖并提交任务；前驱必须已经启动或完成。
 /// 任一共享句柄成功启动后，其他共享句柄不能再次启动同一任务。
 ///
 /// 未启动任务不计入 Executor 的活动拓扑数量；最后一份强引用释放时正常销毁。
 /// 已启动任务持有额外执行引用，执行完成后释放执行引用并归还活动拓扑计数。
-/// 保存的前驱强引用在当前 Work 真正销毁时释放。
+/// 前驱仅在 start() 期间借用，不因依赖关系延长其生命周期。
 ///
 /// 本类提供任务配置与启动；等待、结果访问、异常传播和停止请求由 AsyncFuture<R> 提供。
 ///
@@ -99,7 +99,7 @@ public:
     explicit AsyncTask(std::nullptr_t) noexcept;
 
 
-    /// @brief 保存前驱依赖，并通过创建时绑定的 Executor 启动当前任务。
+    /// @brief 登记前驱依赖，并通过创建时绑定的 Executor 启动当前任务。
     /// @tparam Deps 满足 async_future concept 的前驱句柄类型包。
     /// @param deps 前驱 AsyncTask / AsyncFuture 句柄，支持不同结果类型。
     /// @return `*this`。
@@ -107,9 +107,9 @@ public:
     /// @pre Executor 必须在本次调用和任务执行期间保持有效。
     /// @pre 当前句柄和传入依赖句柄不得被并发重置或移动。
     /// @pre 任务配置不得与启动或执行并发修改。
-    /// @note 空依赖忽略；重复依赖按传入次数保存，不移动或清空前驱句柄。
-    /// @note 每个依赖条目持有一份前驱强引用，直到当前 Work 真正销毁。
-    /// @note 本函数不等待任务完成，暂不处理内存分配失败后的提交恢复。
+    /// @note 空依赖忽略；重复依赖按传入次数登记，不移动或清空前驱句柄。
+    /// @note 前驱由传入句柄及其自身执行引用保护，当前 Work 不持有前驱强引用。
+    /// @note 本函数不等待任务完成；依赖登记失败时恢复 Idle，允许修复后重新 start()。
     template <async_future... Deps>
     AsyncTask& start(Deps&&... deps);
 
@@ -399,20 +399,15 @@ AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) {
     TFL_ASSERT(work->m_edges.empty() && work->m_num_successors == 0);
 
     if constexpr (num_dependencies != 0) {
-        if (num_predecessors != 0) {
-            auto& edges = work->m_edges;
-            edges.reserve(num_predecessors);
-
-            // 每个条目持有一份前驱强引用，直到当前 Work 销毁。
-            for (std::size_t i = 0; i < num_predecessors; ++i) {
-                Work* const predecessor = predecessors[i];
-                edges.push_back(predecessor);
-                predecessor->m_topology->_increment_ref();
-            }
-        }
-
         // 保留一个提交保护计数，依赖登记结束前禁止当前任务就绪。
         work->m_join_counter.store(static_cast<std::uint32_t>(num_predecessors + 1), std::memory_order_relaxed);
+        TFL_TRY {
+            work->_register_async_dependencies(predecessors.data(), predecessors.data() + num_predecessors);
+        } TFL_CATCH_ALL {
+            // 部分依赖已由 Work::_register_async_dependencies 撤销，当前状态仍为 Idle。
+            control.fetch_and(~Topology::Control::LOCKED, std::memory_order_release);
+            TFL_RETHROW();
+        }
     } else {
         work->m_join_counter.store(0, std::memory_order_relaxed);
     }
@@ -426,11 +421,6 @@ AsyncTask<R>& AsyncTask<R>::start(Deps&&... deps) {
     control.fetch_and(~Topology::Control::LOCKED, std::memory_order_release);
 
     if constexpr (num_dependencies != 0) {
-        // 发布后自身边表可能被其他后继修改，使用局部数组遍历前驱。
-        if (num_predecessors != 0) {
-            executor._link_predecessors(work, predecessors.begin(), predecessors.begin() + num_predecessors);
-        }
-
         // 最后释放提交保护计数，取得 1 -> 0 的线程负责调度。
         if (work->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
             return *this;

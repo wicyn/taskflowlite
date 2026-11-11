@@ -322,8 +322,8 @@ private:
     /// @brief 提交 Async 子任务，并建立 Future 引用和执行生命周期引用.
     ///
     /// Future 持有一份外部强引用，调度执行再额外持有一份执行强引用.
-    /// 如果任务尚未成功发布就发生异常，则依次撤销 parent slot、Future 引用和
-    /// 执行引用，并在最后一个强引用离开时销毁 Work.
+    /// 登记失败时撤销部分建边、预占的 parent slot 和执行引用，
+    /// 最后由 Future 释放尚未向调用方返回的 Work.
     ///
     /// @tparam R 子任务结果类型.
     /// @param work 已完成构造、尚未发布的 Async Work.
@@ -354,12 +354,12 @@ inline AsyncFuture<R> Runtime::_launch_async(Work* work, ResultSlot<R>* result, 
     TFL_ASSERT(result);
     TFL_ASSERT(work->m_edges.empty() && work->m_num_successors == 0);
 
-    constexpr std::size_t num_predecessors = sizeof...(Deps);
+    constexpr std::size_t num_dependencies = sizeof...(Deps);
     AsyncFuture<R> future{work, result};
+    std::array<Work*, num_dependencies> predecessors{deps.m_work...};
+    std::size_t num_predecessors = 0;
 
-    if constexpr (num_predecessors != 0) {
-        std::array<Work*, num_predecessors> predecessors{deps.m_work...};
-
+    if constexpr (num_dependencies != 0) {
         // 先校验全部非空依赖，未启动的依赖不允许提交。
         for (Work* predecessor : predecessors) {
             if (predecessor) {
@@ -368,17 +368,8 @@ inline AsyncFuture<R> Runtime::_launch_async(Work* work, ResultSlot<R>* result, 
                 if (Topology::Control::status(current) == Topology::Control::Status::Idle) [[unlikely]] {
                     TFL_THROW(Exception{"Runtime::async: dependency has not been started."});
                 }
-            }
-        }
 
-        auto& edges = work->m_edges;
-        edges.reserve(num_predecessors);
-
-        // 每个非空条目持有一份前驱强引用，直到当前 Work 销毁。
-        for (Work* predecessor : predecessors) {
-            if (predecessor) {
-                edges.push_back(predecessor);
-                predecessor->m_topology->_increment_ref();
+                predecessors[num_predecessors++] = predecessor;
             }
         }
     }
@@ -389,20 +380,25 @@ inline AsyncFuture<R> Runtime::_launch_async(Work* work, ResultSlot<R>* result, 
     TFL_ASSERT(Topology::Control::status(current) == Topology::Control::Status::Idle);
     TFL_ASSERT(!Topology::Control::locked(current));
 
-    control.store(Topology::Control::set_status(current, Topology::Control::Status::Running), std::memory_order_relaxed);
-
     // 执行生命周期额外持有一份强引用，由 Async tear-down 释放。
+    control.store(Topology::Control::set_status(current, Topology::Control::Status::Running), std::memory_order_relaxed);
     work->m_topology->_increment_ref();
 
     // 将当前异步任务计入 Runtime 的派生任务数量。
     Context::work().m_join_counter.fetch_add(1, std::memory_order_relaxed);
 
-    if constexpr (num_predecessors != 0) {
-        auto& edges = work->m_edges;
-
-        // 使用实际保存的前驱数量，额外保留一个提交保护计数。
-        work->m_join_counter.store(edges.size() + 1, std::memory_order_relaxed);
-        executor()._link_predecessors(work, edges.begin(), edges.end());
+    if constexpr (num_dependencies != 0) {
+        work->m_join_counter.store(static_cast<std::uint32_t>(num_predecessors + 1), std::memory_order_relaxed);
+        TFL_TRY {
+            work->_register_async_dependencies(predecessors.data(), predecessors.data() + num_predecessors);
+        } TFL_CATCH_ALL {
+            // 部分依赖已撤销，归还当前 Runtime 的子任务计数和执行引用。
+            control.fetch_and(~Topology::Control::STATE_MASK, std::memory_order_relaxed);
+            Context::work().m_join_counter.fetch_sub(1, std::memory_order_acq_rel);
+            [[maybe_unused]] const bool last = work->m_topology->_decrement_ref();
+            TFL_ASSERT(!last); // 当前 Future 仍持有一份引用。
+            TFL_RETHROW();
+        }
 
         if (work->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
             return future;

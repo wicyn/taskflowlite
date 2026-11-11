@@ -1,4 +1,5 @@
-﻿/// @file coro_awaiter.hpp
+﻿
+/// @file coro_awaiter.hpp
 /// @brief CoroAwaiter —— 自定义 Coroutine 操作的挂起适配器。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -14,6 +15,7 @@
 #include <utility>
 
 #include "coro_token.hpp"
+#include "macros.hpp"
 
 namespace tfl {
 
@@ -22,11 +24,16 @@ namespace tfl {
 /// 自定义操作负责就绪判断、异步操作注册和结果读取。
 /// await_suspend() 接收 CoroToken，不直接访问 Coro 执行上下文。
 ///
-/// @warning await_suspend() 必须为 noexcept，且返回 void。
+/// await_ready() 返回 true 时直接执行 await_resume()。
+/// await_suspend() 返回 true 表示挂起，false 表示继续执行。
+/// 三个接口均允许抛异常。
+///
+/// @warning await_suspend() 返回 false 或抛异常时，不得留下有效的恢复回调，
+///          也不得已经提交恢复通知。
 template <typename A>
 concept CoroOperation = requires(std::remove_reference_t<A>& op, CoroToken token) {
-    { op.await_ready() } -> std::convertible_to<bool>;
-    { op.await_suspend(token) } noexcept -> std::same_as<void>;
+    { op.await_ready() } -> std::same_as<bool>;
+    { op.await_suspend(token) } -> std::same_as<bool>;
     op.await_resume();
 };
 
@@ -35,8 +42,13 @@ concept CoroOperation = requires(std::remove_reference_t<A>& op, CoroToken token
 /// 框架保存当前 Coroutine 的恢复句柄并维护挂起状态。
 /// 自定义操作通过 CoroToken 提交恢复请求，不直接访问 Coro。
 ///
+/// await_suspend() 先登记挂起，再启动自定义操作。
+/// 操作返回 false 或抛异常时，撤销挂起登记。
+/// 操作返回 true 后完成交接：提前通知已到达时直接继续，否则置位 Invoker 返回标志。
+///
 /// @tparam A 自定义操作类型，可为值类型或引用类型。
 /// @warning 异步回调使用 CoroToken 时，必须保证所属 Coro 仍然存活。
+/// @warning 交接后当前 Awaiter 和 Coro 可能已被其他 Worker 销毁，不得再访问。
 template <typename A>
 class CoroAwaiter final {
     static_assert(CoroOperation<A>, "CoroAwaiter requires a valid CoroOperation");
@@ -50,11 +62,13 @@ public:
 
     /// @brief 检查操作是否已就绪。
     /// @return 已就绪时返回 true，直接执行 await_resume()。
-    [[nodiscard]] constexpr bool await_ready() noexcept(noexcept(static_cast<bool>(m_op.await_ready())));
+    [[nodiscard]] constexpr bool await_ready() noexcept(noexcept(m_op.await_ready()));
 
     /// @brief 保存当前 Coroutine 的恢复句柄并启动自定义异步操作。
     /// @param handle 当前正在挂起的 Coroutine 句柄。
-    void await_suspend(std::coroutine_handle<> handle) noexcept;
+    /// @return true 表示挂起，false 表示继续执行。
+    /// @throws 自定义操作启动时抛出的异常。
+    [[nodiscard]] bool await_suspend(std::coroutine_handle<> handle);
 
     /// @brief 获取自定义操作的完成结果。
     /// @return 原样转发自定义操作的 await_resume() 返回值。
@@ -75,14 +89,24 @@ inline CoroAwaiter<A>::CoroAwaiter(Coro& coro, A&& op) noexcept(std::is_nothrow_
     , m_op{std::forward<A>(op)} {}
 
 template <typename A>
-inline constexpr bool CoroAwaiter<A>::await_ready() noexcept(noexcept(static_cast<bool>(m_op.await_ready()))) {
-    return static_cast<bool>(m_op.await_ready());
+inline constexpr bool CoroAwaiter<A>::await_ready() noexcept(noexcept(m_op.await_ready())) {
+    return m_op.await_ready();
 }
 
 template <typename A>
-inline void CoroAwaiter<A>::await_suspend(std::coroutine_handle<> handle) noexcept {
-    m_coro._suspend(handle);
-    m_op.await_suspend(CoroToken{m_coro});
+inline bool CoroAwaiter<A>::await_suspend(std::coroutine_handle<> handle) {
+    m_coro._prepare_suspend(handle);
+    TFL_TRY {
+        if (!m_op.await_suspend(CoroToken{m_coro})) {
+            m_coro._cancel_suspend();
+            return false;
+        }
+    } TFL_CATCH_ALL {
+        m_coro._cancel_suspend();
+        TFL_RETHROW();
+    }
+
+    return m_coro._commit_suspend();
 }
 
 template <typename A>
