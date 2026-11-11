@@ -855,7 +855,7 @@ public:
 ///
 /// 首次执行时创建根 Coroutine frame，并绑定 Coro 上下文；
 /// 挂起恢复时通过 Coro 保存的句柄恢复当前 Coroutine；
-/// 子 Coroutine 的对称转移由 CoroTask::Awaiter 和 FinalAwaiter 完成。
+/// 子 Coroutine 的对称转移由 Coro::CallOperation 和 FinalAwaiter 完成。
 ///
 /// Coroutine 挂起期间保留 Work 的执行生命周期，只有根 Coroutine
 /// 最终完成后才释放 Semaphore 并执行 Work tear-down。
@@ -891,9 +891,8 @@ public:
     /// Coroutine 挂起后由 Executor 重新调度恢复。
     /// 根 Coroutine 完成后，等待所有派生子 Work 完成，再执行最终收尾。
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
-        m_coro._rebind(w, wr, exe);
-
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
+            m_coro._rebind(w, wr, exe);
             if (w.m_topology->_stop_requested()) [[unlikely]] {
                 exe._schedule_parent(w.m_parent, wr, cache);
                 return;
@@ -910,32 +909,34 @@ public:
             } TFL_CATCH_ALL {
                 w._process_exception();
                 w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel);
-                goto cleanup;
+                goto finalize;
             }
 
             m_coro._start(m_cotask.m_handle);
+        } else {
+            m_coro._rebind_worker(wr);
         }
 
         if (!m_cotask.m_handle.done()) {
+            bool should_return = false;
+            m_coro.m_cache = &cache;
+            m_coro.m_return_flag = &should_return;
             auto handle = std::exchange(m_coro.m_resume, std::coroutine_handle<>{});
 
             TFL_ASSERT(handle);
             handle.resume();
 
-            // fork 挂起：移交子 Work，在当前 Invoker 返回后调度父 Work。
-            if ((cache = std::exchange(m_coro.m_child, nullptr))) {
-                exe._schedule(wr, std::addressof(w));
+            if (should_return) {
                 return;
             }
 
-            if (!m_cotask.m_handle.done()) {
+            // 真正挂起时已由 should_return 退出；此处根 Coroutine 必已完成。
+            TFL_ASSERT(m_cotask.m_handle.done());
+
+            // 根 Coroutine 首次完成，归还一次基准 slot。
+            if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
                 return;
             }
-        }
-
-        // 根 Coroutine 释放一次基准计数，等待全部派生子 Work 完成。
-        if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
-            return;
         }
 
         // 根 Coroutine 和所有子 Work 均已完成。
@@ -943,9 +944,9 @@ public:
             w._process_exception(std::move(eptr));
         }
 
-        m_coro._finish();
-        m_cotask.reset();
-    cleanup:
+        m_cotask._reset();
+    finalize:
+        m_coro._reset();
         w._notify_after(wr);
         w.m_properties &= ~(Work::Properties::PREEMPTED | Work::Properties::IMPLICIT_ANCHOR);
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
@@ -1256,9 +1257,8 @@ public:
         , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
-        m_coro._rebind(w, wr, exe);
-
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
+            m_coro._rebind(w, wr, exe);
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
@@ -1268,41 +1268,43 @@ public:
             } TFL_CATCH_ALL {
                 w._process_exception();
                 w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel);
-                goto cleanup;
+                goto finalize;
             }
 
             m_coro._start(m_cotask.m_handle);
+        } else {
+            m_coro._rebind_worker(wr);
         }
 
         if (!m_cotask.m_handle.done()) {
+            bool should_return = false;
+            m_coro.m_cache = &cache;
+            m_coro.m_return_flag = &should_return;
             auto handle = std::exchange(m_coro.m_resume, std::coroutine_handle<>{});
 
             TFL_ASSERT(handle);
             handle.resume();
 
-            // fork 挂起：移交子 Work，在当前 Invoker 返回后调度父 Work。
-            if ((cache = std::exchange(m_coro.m_child, nullptr))) {
-                exe._schedule(wr, std::addressof(w));
+            if (should_return) {
                 return;
             }
 
-            if (!m_cotask.m_handle.done()) {
+            // 真正挂起时已由 should_return 退出；此处根 Coroutine 必已完成。
+            TFL_ASSERT(m_cotask.m_handle.done());
+
+            // 根 Coroutine 首次完成，归还一次基准 slot。
+            if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
                 return;
             }
-        }
-
-        // 根 Coroutine 释放一次基准计数，等待全部派生子 Work 完成。
-        if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
-            return;
         }
 
         if (std::exception_ptr eptr = m_cotask._take_exception()) [[unlikely]] {
             w._process_exception(std::move(eptr));
         }
 
-        m_coro._finish();
-        m_cotask.reset();
-    cleanup:
+        m_cotask._reset();
+    finalize:
+        m_coro._reset();
         w.m_properties &= ~Work::Properties::PREEMPTED;
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_silent_async_task(w, wr, cache);
@@ -1576,9 +1578,8 @@ public:
         , Base{std::forward<U>(f)} {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
-        m_coro._rebind(w, wr, exe);
-
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
+            m_coro._rebind(w, wr, exe);
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
@@ -1587,32 +1588,34 @@ public:
             } TFL_CATCH_ALL {
                 w._process_exception();
                 w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel);
-                goto cleanup;
+                goto finalize;
             }
 
             m_coro._start(m_cotask.m_handle);
+        } else {
+            m_coro._rebind_worker(wr);
         }
 
         if (!m_cotask.m_handle.done()) {
+            bool should_return = false;
+            m_coro.m_cache = &cache;
+            m_coro.m_return_flag = &should_return;
             auto handle = std::exchange(m_coro.m_resume, std::coroutine_handle<>{});
 
             TFL_ASSERT(handle);
             handle.resume();
 
-            // fork 挂起：移交子 Work，在当前 Invoker 返回后调度父 Work。
-            if ((cache = std::exchange(m_coro.m_child, nullptr))) {
-                exe._schedule(wr, std::addressof(w));
+            if (should_return) {
                 return;
             }
 
-            if (!m_cotask.m_handle.done()) {
+            // 真正挂起时已由 should_return 退出；此处根 Coroutine 必已完成。
+            TFL_ASSERT(m_cotask.m_handle.done());
+
+            // 根 Coroutine 首次完成，归还一次基准 slot。
+            if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
                 return;
             }
-        }
-
-        // 根 Coroutine 释放一次基准计数，等待全部派生子 Work 完成。
-        if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
-            return;
         }
 
         // 根 Coroutine 和所有子 Work 完成后，将协程结果写入 Async 结果槽。
@@ -1630,9 +1633,9 @@ public:
             }
         }
 
-        m_coro._finish();
-        m_cotask.reset();
-    cleanup:
+        m_cotask._reset();
+    finalize:
+        m_coro._reset();
         w.m_properties &= ~Work::Properties::PREEMPTED;
         TFL_WORK_EXECUTION_END(w);
         exe._tear_down_async_task(w, wr, cache);
@@ -1937,9 +1940,8 @@ public:
         , Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
-        m_coro._rebind(w, wr, exe);
-
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
+            m_coro._rebind(w, wr, exe);
             TFL_TRY_ACQUIRE_SEMAPHORES(w);
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED;
@@ -1950,32 +1952,34 @@ public:
             } TFL_CATCH_ALL {
                 w._process_exception();
                 w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel);
-                goto cleanup;
+                goto finalize;
             }
 
             m_coro._start(m_cotask.m_handle);
+        } else {
+            m_coro._rebind_worker(wr);
         }
 
         if (!m_cotask.m_handle.done()) {
+            bool should_return = false;
+            m_coro.m_cache = &cache;
+            m_coro.m_return_flag = &should_return;
             auto handle = std::exchange(m_coro.m_resume, std::coroutine_handle<>{});
 
             TFL_ASSERT(handle);
             handle.resume();
 
-            // fork 挂起：移交子 Work，在当前 Invoker 返回后调度父 Work。
-            if ((cache = std::exchange(m_coro.m_child, nullptr))) {
-                exe._schedule(wr, std::addressof(w));
+            if (should_return) {
                 return;
             }
 
-            if (!m_cotask.m_handle.done()) {
+            // 真正挂起时已由 should_return 退出；此处根 Coroutine 必已完成。
+            TFL_ASSERT(m_cotask.m_handle.done());
+
+            // 根 Coroutine 首次完成，归还一次基准 slot。
+            if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
                 return;
             }
-        }
-
-        // 根 Coroutine 释放一次基准计数，等待全部派生子 Work 完成。
-        if (w.m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
-            return;
         }
 
         // 根 Coroutine 和所有子 Work 完成后，将协程结果写入 Async 结果槽。
@@ -1993,9 +1997,9 @@ public:
             }
         }
 
-        m_coro._finish();
-        m_cotask.reset();
-    cleanup:
+        m_cotask._reset();
+    finalize:
+        m_coro._reset();
         w._notify_after(wr);
         w.m_properties &= ~Work::Properties::PREEMPTED;
         TFL_RELEASE_SEMAPHORES(w, wr, exe);

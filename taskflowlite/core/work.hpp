@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <new>
@@ -24,6 +25,7 @@
 #include <span>
 #include <stack>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -142,8 +144,8 @@ public:
 
         /// @brief 当前配置下所有原子控制标志位。
         static constexpr type FLAG_MASK = EXPLICIT_ANCHOR | EXCEPTION | EXCEPTION_CAUGHT | EXECUTION;
-#else \
-    /// @brief 当前配置下所有原子控制标志位。
+#else
+        /// @brief 当前配置下所有原子控制标志位。
         static constexpr type FLAG_MASK = EXPLICIT_ANCHOR | EXCEPTION | EXCEPTION_CAUGHT;
 #endif
     };
@@ -565,7 +567,7 @@ private:
     std::atomic<Control::type>          m_control{Control::NONE};           ///< 并发控制位；保存异常锚点、异常传播/归档及可选执行检查状态。
     std::atomic<std::uint32_t>          m_join_counter{0};                  ///< 运行期 join 计数；用于 strong predecessor 到达、动态子任务等待及父节点恢复。
     std::uint32_t                       m_num_successors{0};                ///< `m_edges` 的后继数量，同时作为 `[后继 | 前驱]` 两个逻辑区间的分割点。
-    std::vector<Work*>                  m_edges;                            ///< 非拥有的统一邻接表；布局固定为 `[后继 | 前驱]`：静态边和动态后继非拥有；异步前驱各持一份强引用。
+    std::vector<Work*>                  m_edges;                            ///< 非拥有的邻接表；静态图布局为 `[后继 | 前驱]`，异步 Work 只保存动态后继。
     std::unique_ptr<SemaphoreData>      m_semaphores;                       ///< 按需分配的信号量约束；保存执行前 acquire 与执行后 release 请求。
     std::unique_ptr<ObserverData>       m_observers;                        ///< 按需分配的观察者集合；在节点执行前后触发生命周期通知。
 
@@ -1121,6 +1123,37 @@ private:
     void _clear_successors() noexcept;
 
 
+    // ---- 异步动态依赖登记与异常回滚 ----
+
+    /// @brief 将当前异步 Work 登记为一组前驱的动态后继，并修正尚未满足的依赖数量。
+    ///
+    /// 通过各前驱 Topology 的 LOCKED 位与完成路径串行化；已完成前驱直接递减
+    /// 当前节点的 join_counter，其余前驱在持锁期间追加当前节点到动态后继表。
+    /// 当前节点不保存前驱，也不增加前驱强引用。
+    ///
+    /// @tparam I 前驱区间迭代器类型。
+    /// @tparam S 前驱区间哨兵类型。
+    /// @param first 前驱区间起点。
+    /// @param last 前驱区间终点。
+    /// @pre 前驱非空、非 this、已经启动，并由调用方句柄保证本次调用期间存活。
+    /// @pre 当前节点由调用方句柄保持存活，join_counter 包含全部前驱及一个提交保护计数。
+    /// @throws 内存分配失败时撤销本次已登记的依赖，将 join_counter 恢复为零后重抛。
+    template <std::forward_iterator I, std::sentinel_for<I> S>
+        requires std::convertible_to<std::iter_reference_t<I>, Work*>
+    void _register_async_dependencies(I first, S last);
+
+    /// @brief 仅在依赖登记失败时撤销本次登记，并等待已经发布 Finished 的前驱完成通知。
+    /// @param first 前驱区间起点。
+    /// @param processed_end 已成功处理的前驱区间末尾，可能包含无需建边的已完成前驱。
+    /// @param last 前驱区间终点。
+    /// @pre [first, processed_end) 已处理；[processed_end, last) 尚未处理；全部前驱仍由调用方句柄保护。
+    /// @pre 当前节点的提交保护计数尚未释放，失败前驱的动态依赖锁已释放。
+    /// @post 前驱不再可能访问当前节点，join_counter 为零；本函数不分配内存。
+    template <std::forward_iterator I, std::sentinel_for<I> S>
+        requires std::convertible_to<std::iter_reference_t<I>, Work*>
+    TFL_NOINLINE TFL_COLD void _rollback_async_dependencies(I first, I processed_end, S last) noexcept;
+
+
     // ---- 静态图建边合法性与无 Jump 路径检测 ----
 
     /// @brief 检查从 @p from 到 @p to 是否存在一条不经过 Jump/MultiJump 的有向路径。
@@ -1151,31 +1184,6 @@ private:
     /// @return 合法时返回 `std::nullopt`；非法时返回对应错误描述。
     /// @note 本函数只负责检查，不修改任何边表。
     [[nodiscard]] std::optional<std::string_view> _can_precede(Work* target) const;
-
-
-    /// @brief 销毁当前零引用异步 Work，并迭代回收其前驱强引用链。
-    ///
-    /// 当前 Work 的 Topology 强引用已经归零后，由唯一回收线程进入本函数。
-    /// 实现先接管当前节点的边表，再销毁当前 Work，随后逐个释放其中异步前驱持有的
-    /// 强引用；若某个前驱的引用同时归零，则借用该前驱的 `m_parent` 字段将其挂入
-    /// 待回收链，并继续以迭代方式处理，避免递归销毁造成调用栈增长。
-    ///
-    /// 当前节点销毁前会先将需要继续使用的数据转移到局部对象中，因此 `destroy_work()`
-    /// 返回后不再访问已经销毁节点的任何成员。
-    ///
-    /// @pre 当前 Work 的强引用已归零，并由当前线程独占回收。
-    /// @pre 当前 Work 不再可能进入执行、调度、等待或其他并发访问路径。
-    /// @pre `m_num_successors <= m_edges.size()`，且前驱区保存的异步前驱各持有一份强引用。
-    /// @pre 待回收节点原有 `m_parent` 不再承担正常执行期父子关系语义，可安全借作回收链链接槽。
-    /// @pre `destroy_work()` 只负责销毁当前节点自身，不再次递归释放其前驱引用。
-    /// @pre 节点析构逻辑不得依赖已经从节点中接管出去的边表内容。
-    ///
-    /// @note 前驱强引用覆盖当前 Work 的完整析构过程，确保析构期间所有前驱仍然有效。
-    /// @note 整个回收过程使用迭代链完成，不因依赖深度增加递归栈消耗。
-    /// @note 借用零引用节点的 `m_parent` 串联待回收链，不额外分配辅助链表节点。
-    /// @warning 本函数会销毁 `this`；进入实际销毁后不得再访问当前 Work。
-    /// @warning 调用返回时 `this` 已经失效，调用方不得再读取、写入、比较解引用或重新调度该指针。
-    void _destroy_async() noexcept;
 };
 
 
@@ -1260,6 +1268,92 @@ inline void Work::_clear_successors() noexcept {
     // 擦除后继前缀，由 vector 将前驱区间整体前移到 m_edges 起始位置。
     m_edges.erase(m_edges.begin(), m_edges.begin() + m_num_successors);
     m_num_successors = 0;
+}
+
+template <std::forward_iterator I, std::sentinel_for<I> S>
+    requires std::convertible_to<std::iter_reference_t<I>, Work*>
+TFL_FORCE_INLINE void Work::_register_async_dependencies(I first, S last) {
+    const I begin = first;
+    for (; first != last; ++first) {
+        Work* const predecessor = *first;
+        auto& control = predecessor->m_topology->m_control;
+        auto current = control.load(std::memory_order_acquire);
+
+        for (;;) {
+            const auto status = Topology::Control::status(current);
+
+            if (status == Topology::Control::Status::Finished) {
+                m_join_counter.fetch_sub(1, std::memory_order_acq_rel);
+                break;
+            }
+
+            TFL_ASSERT(status == Topology::Control::Status::Idle || status == Topology::Control::Status::Running);
+
+            // CAS 只允许从未锁定状态获取动态依赖锁。
+            current &= ~Topology::Control::LOCKED;
+
+            if (control.compare_exchange_weak(current,
+                                              current | Topology::Control::LOCKED,
+                                              std::memory_order_acquire,
+                                              std::memory_order_acquire)) {
+                // 异步 Work 只保存非拥有的动态后继，前驱由提交方句柄保护。
+                TFL_ASSERT(predecessor->m_edges.size() == predecessor->m_num_successors);
+                TFL_TRY {
+                    predecessor->m_edges.push_back(this);
+                } TFL_CATCH_ALL {
+                    control.fetch_and(~Topology::Control::LOCKED, std::memory_order_release);
+                    _rollback_async_dependencies(begin, first, last);
+                    TFL_RETHROW();
+                }
+                ++predecessor->m_num_successors;
+
+                control.fetch_and(~Topology::Control::LOCKED, std::memory_order_release);
+                break;
+            }
+        }
+    }
+}
+
+template <std::forward_iterator I, std::sentinel_for<I> S>
+    requires std::convertible_to<std::iter_reference_t<I>, Work*>
+TFL_NOINLINE TFL_COLD void Work::_rollback_async_dependencies(I first, I processed_end, S last) noexcept {
+    auto num_unlinked = static_cast<std::uint32_t>(std::ranges::distance(processed_end, last));
+
+    for (; first != processed_end; ++first) {
+        Work* const predecessor = *first;
+        auto& control = predecessor->m_topology->m_control;
+        auto current = control.load(std::memory_order_acquire);
+
+        for (;;) {
+            if (Topology::Control::status(current) == Topology::Control::Status::Finished) {
+                // Finished 后边表已冻结，不能与完成线程同时修改；保留该次到达。
+                break;
+            }
+
+            current &= ~Topology::Control::LOCKED;
+            if (control.compare_exchange_weak(current,
+                                              current | Topology::Control::LOCKED,
+                                              std::memory_order_acquire,
+                                              std::memory_order_acquire)) {
+                auto& edges = predecessor->m_edges;
+                const auto found = std::find(edges.begin(), edges.end(), this);
+                TFL_ASSERT(found != edges.end());
+                *found = edges.back();
+                edges.pop_back();
+                --predecessor->m_num_successors;
+                ++num_unlinked;
+                control.fetch_and(~Topology::Control::LOCKED, std::memory_order_release);
+                break;
+            }
+        }
+    }
+
+    // 撤销未登记和已移除的 slot；剩余 slot 只属于已经进入完成路径的前驱。
+    m_join_counter.fetch_sub(num_unlinked, std::memory_order_acq_rel);
+    while (m_join_counter.load(std::memory_order_acquire) != 1) {
+        std::this_thread::yield();
+    }
+    m_join_counter.store(0, std::memory_order_relaxed);
 }
 
 inline std::optional<std::string_view> Work::_can_precede(Work* const target) const {
@@ -1650,40 +1744,6 @@ TFL_FORCE_INLINE void destroy_work(Work* work) noexcept {
 #else
     delete work;
 #endif
-}
-
-inline void Work::_destroy_async() noexcept {
-    Work* pending = this;
-    pending->m_parent = nullptr;
-
-    while (pending) {
-        Work* const current = pending;
-        pending = std::exchange(current->m_parent, nullptr);
-
-        TFL_ASSERT(current->m_num_successors <= current->m_edges.size());
-
-        const auto num_successors = current->m_num_successors;
-
-        // 接管边表及前驱引用，并将当前节点的边表恢复为空。
-        std::vector<Work*> edges;
-        edges.swap(current->m_edges);
-        current->m_num_successors = 0;
-
-        // 前驱引用尚未释放，覆盖当前 Work 的完整析构。
-        destroy_work(current);
-
-        // current 已销毁，此后仅访问局部变量和其他待回收节点。
-        while (edges.size() > num_successors) {
-            Work* const predecessor = edges.back();
-            TFL_ASSERT(predecessor);
-            edges.pop_back();
-
-            if (predecessor->m_topology->_decrement_ref()) {
-                predecessor->m_parent = pending;
-                pending = predecessor;
-            }
-        }
-    }
 }
 
 }  // namespace tfl

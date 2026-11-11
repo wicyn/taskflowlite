@@ -399,7 +399,7 @@ void AsyncFuture<R>::_decrement_ref() noexcept {
     m_result = nullptr;
 
     if (work && work->m_topology->_decrement_ref()) {
-        work->_destroy_async();
+        destroy_work(work);
     }
 }
 
