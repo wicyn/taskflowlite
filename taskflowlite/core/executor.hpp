@@ -568,13 +568,14 @@ private:
     ///
     /// @param work 已完成构造、尚未发布的 SilentAsync Work.
     /// @pre work 非空，且 `_schedule()` 抛异常时保证 work 尚未被调度器发布。
-    void _launch_silent_async(Work* work);
+    void _launch_silent_async(Work* work) noexcept;
 
 
     /// @brief 发布一个顶层 Async Work，并按动态前置依赖决定是否立即调度。
     ///
     /// 返回的 Future 持有一份外部强引用；任务执行期间额外持有一份执行强引用。
     /// 存在未完成依赖时，Work 暂不进入调度队列，由最后一个完成的前驱负责发布。
+    /// 依赖登记失败时撤销部分建边和预占的执行引用、活动拓扑计数。
     ///
     /// @tparam R 任务结果类型。
     /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
@@ -583,7 +584,7 @@ private:
     /// @param deps 前置依赖列表。
     /// @return 关联该顶层任务的 AsyncFuture。
     template <typename R, async_future... Deps>
-    [[nodiscard]] AsyncFuture<R> _launch_async(Work* work, ResultSlot<R>* result, const Deps&... deps);
+    [[nodiscard]] AsyncFuture<R> _launch_async(Work* work, ResultSlot<R>* result, const Deps&... deps) noexcept(sizeof...(Deps) == 0);
 
     /// @brief 执行一个 Work，并沿 `cache` 接力链连续执行后续就绪任务。
     ///
@@ -706,24 +707,9 @@ private:
     /// @param cache cache 接力槽.
     void _tear_down_silent_async_task(Work& w, Worker& wr, Work*& cache) noexcept;
 
-    /// @brief 将一组 AsyncTask 作为 @p w 的动态前驱，并修正尚未满足的依赖数量。
+    /// @brief 完成 Async Work，冻结动态后继表并向所有后继传播完成信号。
     ///
-    /// 对每个有效且非自身的前驱，通过其 Topology `LOCKED` 位与完成路径串行化：
-    /// 若前驱已经 Finished，则直接递减 w 的 join_counter；否则在持锁期间把 w
-    /// 追加到前驱动态后继表。空前驱和 w 自身同样视为无需等待。
-    ///
-    /// @tparam I 前驱区间迭代器类型。
-    /// @tparam S 前驱区间哨兵类型。
-    /// @param w 正在建立动态依赖的目标 Work。
-    /// @param first 前驱区间起点。
-    /// @param last 前驱区间终点。
-    template <std::forward_iterator I, std::sentinel_for<I> S>
-        requires std::convertible_to<std::iter_reference_t<I>, Work*>
-    void _link_predecessors(Work* w, I first, S last);
-
-    /// @brief 完成 AsyncTask AsyncTask，冻结动态后继表并向所有后继传播完成信号。
-    ///
-    /// 完成路径通过 CAS 与 `_link_predecessors()` 的 LOCKED 插边协议竞争，只有在
+    /// 完成路径通过 CAS 与 `Work::_register_async_dependencies()` 的 LOCKED 插边协议竞争，只有在
     /// 未锁定 Running 状态下才能发布 Finished。成功后动态边表被冻结，随后逐个
     /// 递减后继 join_counter；ready 后继按其所属 Executor 在本地 cache / 队列
     /// 或跨 Executor 共享调度路径中发布。
@@ -845,7 +831,7 @@ private:
     /// 否则直接发布到共享调度分片。
     /// @param work 待调度的 Work。
     /// @pre work 非空。
-    void _dispatch(Work* work);
+    void _dispatch(Work* work) noexcept;
 
     /// @brief 在当前 Worker 上协作执行其他任务，直到 @p pred 返回 true。
     ///
@@ -882,7 +868,7 @@ private:
     /// @brief 根据当前 `std::thread::id` 查询是否运行在本 Executor 的 Worker 线程上。
     /// @return 当前线程对应的 Worker；非本 Executor Worker 时返回 nullptr。
     /// @note 映射在 Executor 构造阶段建立，正常运行期间只读。
-    [[nodiscard]] Worker* _this_worker();
+    [[nodiscard]] Worker* _this_worker() noexcept;
 
 };
 
@@ -925,7 +911,7 @@ inline Executor::~Executor() noexcept {
     _shutdown();
 }
 
-inline void Executor::_launch_silent_async(Work* work) {
+inline void Executor::_launch_silent_async(Work* work) noexcept {
     TFL_ASSERT(work);
 
     _increment_topology();
@@ -933,18 +919,19 @@ inline void Executor::_launch_silent_async(Work* work) {
 }
 
 template <typename R, async_future... Deps>
-inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result, const Deps&... deps) {
+inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result, const Deps&... deps) noexcept(sizeof...(Deps) == 0) {
     static_assert(sizeof...(Deps) < std::numeric_limits<std::uint32_t>::max());
 
     TFL_ASSERT(work);
     TFL_ASSERT(result);
     TFL_ASSERT(work->m_edges.empty() && work->m_num_successors == 0);
 
-    constexpr std::size_t num_predecessors = sizeof...(Deps);
+    constexpr std::size_t num_dependencies = sizeof...(Deps);
     AsyncFuture<R> future{work, result};
+    std::array<Work*, num_dependencies> predecessors{deps.m_work...};
+    std::size_t num_predecessors = 0;
 
-    if constexpr (num_predecessors != 0) {
-        std::array<Work*, num_predecessors> predecessors{deps.m_work...};
+    if constexpr (num_dependencies != 0) {
         // 先校验全部非空依赖，未启动的依赖不允许提交。
         for (Work* predecessor : predecessors) {
             if (predecessor) {
@@ -953,17 +940,8 @@ inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result,
                 if (Topology::Control::status(current) == Topology::Control::Status::Idle) [[unlikely]] {
                     TFL_THROW(Exception{"Executor::async: dependency has not been started."});
                 }
-            }
-        }
 
-        auto& edges = work->m_edges;
-        edges.reserve(num_predecessors);
-
-        // 每个非空条目持有一份前驱强引用，直到当前 Work 销毁。
-        for (Work* predecessor : predecessors) {
-            if (predecessor) {
-                edges.push_back(predecessor);
-                predecessor->m_topology->_increment_ref();
+                predecessors[num_predecessors++] = predecessor;
             }
         }
     }
@@ -975,25 +953,27 @@ inline AsyncFuture<R> Executor::_launch_async(Work* work, ResultSlot<R>* result,
     TFL_ASSERT(!Topology::Control::locked(current));
 
     control.store(Topology::Control::set_status(current, Topology::Control::Status::Running), std::memory_order_relaxed);
-
-    // 执行生命周期额外持有一份强引用，由 Async tear-down 释放。
     work->m_topology->_increment_ref();
     _increment_topology();
 
-    if constexpr (num_predecessors != 0) {
-        auto& edges = work->m_edges;
-
-        // 使用实际保存的前驱数量，额外保留一个提交保护计数。
-        work->m_join_counter.store(edges.size() + 1, std::memory_order_relaxed);
-        _link_predecessors(work, edges.begin(), edges.end());
+    if constexpr (num_dependencies != 0) {
+        work->m_join_counter.store(static_cast<std::uint32_t>(num_predecessors + 1), std::memory_order_relaxed);
+        TFL_TRY {
+            work->_register_async_dependencies(predecessors.data(), predecessors.data() + num_predecessors);
+        } TFL_CATCH_ALL {
+            // 部分依赖已撤销，归还本入口预占的顶层拓扑计数和执行引用。
+            control.fetch_and(~Topology::Control::STATE_MASK, std::memory_order_relaxed);
+            _decrement_topology();
+            [[maybe_unused]] const bool last = work->m_topology->_decrement_ref();
+            TFL_ASSERT(!last); // 当前 Future 仍持有一份引用。
+            TFL_RETHROW();
+        }
 
         if (work->m_join_counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
             return future;
         }
     }
-
-    _schedule(work);
-
+    _dispatch(work);
     return future;
 }
 
@@ -1651,43 +1631,6 @@ TFL_FORCE_INLINE void Executor::_tear_down_silent_async_task(Work& w, Worker& wr
     }
 }
 
-template <std::forward_iterator I, std::sentinel_for<I> S>
-    requires std::convertible_to<std::iter_reference_t<I>, Work*>
-TFL_FORCE_INLINE void Executor::_link_predecessors(Work* w, I first, S last) {
-    for (; first != last; ++first) {
-        Work* const work = *first;
-        auto& control = work->m_topology->m_control;
-        auto current = control.load(std::memory_order_acquire);
-
-        for (;;) {
-            const auto status = Topology::Control::status(current);
-
-            if (status == Topology::Control::Status::Finished) {
-                w->m_join_counter.fetch_sub(1, std::memory_order_acq_rel);
-                break;
-            }
-
-            TFL_ASSERT(status == Topology::Control::Status::Idle || status == Topology::Control::Status::Running);
-
-            // CAS 只允许从未锁定状态获取动态依赖锁。
-            current &= ~Topology::Control::LOCKED;
-
-            if (control.compare_exchange_weak(current,
-                                              current | Topology::Control::LOCKED,
-                                              std::memory_order_acquire,
-                                              std::memory_order_acquire)) {
-                // 只登记后继，维护 work 的 [后继 | 前驱] 分区。
-                work->m_edges.push_back(w);
-                std::swap(work->m_edges[work->m_num_successors], work->m_edges.back());
-                ++work->m_num_successors;
-
-                control.fetch_and(~Topology::Control::LOCKED, std::memory_order_release);
-                break;
-            }
-        }
-    }
-}
-
 TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*& cache) noexcept {
     Topology* const topology = w.m_topology;
     Work* const parent = w.m_parent;
@@ -1697,7 +1640,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*
 
     // 只能从未锁定的 Running 状态进入 Finished。
     //
-    // 如果 _link_predecessors 正持有 LOCKED，CAS 会失败并把实际控制值
+    // 如果 Work::_register_async_dependencies 正持有 LOCKED，CAS 会失败并把实际控制值
     // 写回 current；下一轮清除 expected 中的 LOCKED 后继续等待解锁。
     for (;;) {
         current &= ~Topology::Control::LOCKED;
@@ -1717,7 +1660,7 @@ TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*
     // Finished 已通过成功 CAS 的 release 部分发布；此后唤醒等待当前 Topology 的线程。
     control.notify_all();
 
-    // 成功发布 Finished 后，_link_predecessors() 会直接把该前驱视为已完成，
+    // 成功发布 Finished 后，Work::_register_async_dependencies() 会直接把该前驱视为已完成，
     // 因而不会再向当前 Work 追加动态后继；此刻动态后继前缀已经冻结。
     const std::size_t num_successors = w.m_num_successors;
 
@@ -1740,8 +1683,8 @@ TFL_FORCE_INLINE void Executor::_tear_down_async_task(Work& w, Worker& wr, Work*
 
     // 释放本次执行持有的一份强引用；若没有外部 AsyncTask 句柄继续持有，
     // 当前线程可能成为最后一个引用释放者并立即销毁 Work。
-    if (w.m_topology->_decrement_ref()) {
-        w._destroy_async();
+    if (topology->_decrement_ref()) {
+        destroy_work(std::addressof(w));
     }
 
     // 上一步可能已经销毁 w，因此从这里开始禁止再次访问 w，只使用提前缓存的 parent。
@@ -1946,7 +1889,7 @@ inline void Executor::_schedule_from_semaphore(Worker& wr, Work* work) noexcept 
     }
 }
 
-inline void Executor::_dispatch(Work* work) {
+inline void Executor::_dispatch(Work* work) noexcept {
     if (Worker* worker = _this_worker()) {
         _schedule(*worker, work);
     } else {
@@ -2033,7 +1976,7 @@ inline void Executor::_decrement_topology() noexcept {
     }
 }
 
-inline Worker* Executor::_this_worker() {
+inline Worker* Executor::_this_worker() noexcept {
     auto itr = m_tid_to_worker.find(std::this_thread::get_id());
     return itr == m_tid_to_worker.end() ? nullptr : itr->second;
 }

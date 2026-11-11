@@ -85,11 +85,16 @@ protected:
     ///
     /// 主要用于默认构造的 Coro，在首次 invoke() 时绑定。
     ///
-    /// @pre 当前 Context 尚未绑定任何执行对象。
+    /// @pre 当前没有有效的外部控制令牌；新一轮执行可以重新绑定 Executor。
     void _rebind(Work& work, Worker& worker, Executor& executor) noexcept {
         m_work = std::addressof(work);
         m_worker = std::addressof(worker);
         m_executor = std::addressof(executor);
+    }
+
+    /// @brief Coroutine 恢复时只更新 Worker，保持外部 Token 读取的绑定不变。
+    void _rebind_worker(Worker& worker) noexcept {
+        m_worker = std::addressof(worker);
     }
 
     /// @brief 获取当前执行上下文所属的 Work。

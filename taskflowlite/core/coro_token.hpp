@@ -34,7 +34,7 @@ public:
 
     /// @brief 请求恢复当前 Coroutine。
     /// @return 成功提交恢复请求时返回 true。
-    [[nodiscard]] bool resume() const;
+    [[nodiscard]] bool resume() noexcept;
 
     /// @brief 查询当前 Coroutine 所属任务是否收到停止请求。
     /// @return 收到停止请求时返回 true。
@@ -53,7 +53,7 @@ private:
 inline CoroToken::CoroToken(Coro& coro) noexcept
     : m_coro{std::addressof(coro)} {}
 
-inline bool CoroToken::resume() const {
+inline bool CoroToken::resume() noexcept {
     return m_coro->resume();
 }
 
