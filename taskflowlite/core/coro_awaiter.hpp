@@ -1,5 +1,4 @@
-﻿
-/// @file coro_awaiter.hpp
+﻿/// @file coro_awaiter.hpp
 /// @brief CoroAwaiter —— 自定义 Coroutine 操作的挂起适配器。
 /// @author wicyn
 /// @contact https://github.com/wicyn
@@ -11,6 +10,7 @@
 
 #include <concepts>
 #include <coroutine>
+#include <memory>
 #include <type_traits>
 #include <utility>
 
@@ -47,7 +47,7 @@ concept CoroOperation = requires(std::remove_reference_t<A>& op, CoroToken token
 /// 操作返回 true 后完成交接：提前通知已到达时直接继续，否则置位 Invoker 返回标志。
 ///
 /// @tparam A 自定义操作类型，可为值类型或引用类型。
-/// @warning 异步回调使用 CoroToken 时，必须保证所属 Coro 仍然存活。
+/// @warning 空删除器不延长 Coro 的真实生命周期；外部回调必须遵守恢复和销毁时序。
 /// @warning 交接后当前 Awaiter 和 Coro 可能已被其他 Worker 销毁，不得再访问。
 template <typename A>
 class CoroAwaiter final {
@@ -55,7 +55,10 @@ class CoroAwaiter final {
 
 public:
     /// @brief 绑定当前 Coroutine 并保存自定义操作。
-    explicit CoroAwaiter(Coro& coro, A&& op) noexcept(std::is_nothrow_constructible_v<A, A&&>);
+    explicit CoroAwaiter(Coro& coro, A&& op);
+
+    /// @brief 先使 Token 控制块失效，再销毁自定义操作。
+    ~CoroAwaiter() noexcept;
 
     CoroAwaiter(const CoroAwaiter&) = delete;
     CoroAwaiter& operator=(const CoroAwaiter&) = delete;
@@ -64,7 +67,7 @@ public:
     /// @return 已就绪时返回 true，直接执行 await_resume()。
     [[nodiscard]] constexpr bool await_ready() noexcept(noexcept(m_op.await_ready()));
 
-    /// @brief 保存当前 Coroutine 的恢复句柄并启动自定义异步操作。
+    /// @brief 保存当前 Coroutine 恢复句柄并启动自定义异步操作。
     /// @param handle 当前正在挂起的 Coroutine 句柄。
     /// @return true 表示挂起，false 表示继续执行。
     /// @throws 自定义操作启动时抛出的异常。
@@ -75,7 +78,7 @@ public:
     constexpr decltype(auto) await_resume() noexcept(noexcept(m_op.await_resume()));
 
 private:
-    Coro& m_coro;
+    std::shared_ptr<Coro> m_coro;
     A m_op;
 };
 
@@ -84,9 +87,14 @@ private:
 // ============================================================================
 
 template <typename A>
-inline CoroAwaiter<A>::CoroAwaiter(Coro& coro, A&& op) noexcept(std::is_nothrow_constructible_v<A, A&&>)
-    : m_coro{coro}
+inline CoroAwaiter<A>::CoroAwaiter(Coro& coro, A&& op)
+    : m_coro{std::addressof(coro), [](Coro*) noexcept {}}
     , m_op{std::forward<A>(op)} {}
+
+template <typename A>
+inline CoroAwaiter<A>::~CoroAwaiter() noexcept {
+    m_coro.reset();
+}
 
 template <typename A>
 inline constexpr bool CoroAwaiter<A>::await_ready() noexcept(noexcept(m_op.await_ready())) {
@@ -95,18 +103,18 @@ inline constexpr bool CoroAwaiter<A>::await_ready() noexcept(noexcept(m_op.await
 
 template <typename A>
 inline bool CoroAwaiter<A>::await_suspend(std::coroutine_handle<> handle) {
-    m_coro._prepare_suspend(handle);
+    m_coro->_prepare_suspend(handle);
     TFL_TRY {
         if (!m_op.await_suspend(CoroToken{m_coro})) {
-            m_coro._cancel_suspend();
+            m_coro->_cancel_suspend();
             return false;
         }
     } TFL_CATCH_ALL {
-        m_coro._cancel_suspend();
+        m_coro->_cancel_suspend();
         TFL_RETHROW();
     }
 
-    return m_coro._commit_suspend();
+    return m_coro->_commit_suspend();
 }
 
 template <typename A>

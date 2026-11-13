@@ -9,6 +9,7 @@
 #pragma once
 
 #include <memory>
+#include <utility>
 
 #include "coro.hpp"
 
@@ -19,7 +20,12 @@ namespace tfl {
 /// 自定义 Coroutine 操作通过 CoroToken 提交恢复请求和查询停止状态，
 /// 不直接访问 Coro 的内部执行上下文。
 ///
-/// @warning 不持有 Coro 所有权，使用期间必须保证 Coro 仍然存活。
+/// Token 弱引用当前 CoroAwaiter 持有的 shared_ptr 控制块；
+/// Awaiter 结束后，若没有其他线程持有已锁定的强引用，Token 自动失效。
+/// shared_ptr 使用空删除器，不持有 Coro 对象本身的所有权。
+///
+/// @warning weak_ptr 只能保护控制块；已经 lock() 的线程仍需遵守 Coro 的生命周期与恢复协议。
+/// @warning 外部恢复操作必须管理好回调的取消或完成同步，避免已 lock() 的回调访问已销毁的 Coro。
 /// @warning resume() 仅提交恢复请求，不保证 Coroutine 已经执行。
 class CoroToken final {
     template <typename>
@@ -32,33 +38,39 @@ public:
     CoroToken& operator=(const CoroToken&) noexcept = default;
     CoroToken& operator=(CoroToken&&) noexcept = default;
 
-    /// @brief 请求恢复当前 Coroutine。
+    /// @brief 请求恢复当前 Coroutine；本次 Awaiter 已失效时返回 false。
     /// @return 成功提交恢复请求时返回 true。
     [[nodiscard]] bool resume() noexcept;
 
     /// @brief 查询当前 Coroutine 所属任务是否收到停止请求。
-    /// @return 收到停止请求时返回 true。
+    /// @return Awaiter 已失效或所属任务收到停止请求时返回 true。
     [[nodiscard]] bool stop_requested() const noexcept;
 
 private:
-    explicit CoroToken(Coro& coro) noexcept;
+    explicit CoroToken(std::weak_ptr<Coro> coro) noexcept;
 
-    Coro* m_coro;
+    std::weak_ptr<Coro> m_coro;
 };
 
 // ============================================================================
 // CoroToken 实现
 // ============================================================================
 
-inline CoroToken::CoroToken(Coro& coro) noexcept
-    : m_coro{std::addressof(coro)} {}
+inline CoroToken::CoroToken(std::weak_ptr<Coro> coro) noexcept
+    : m_coro{std::move(coro)} {}
 
 inline bool CoroToken::resume() noexcept {
-    return m_coro->resume();
+    if (auto coro = m_coro.lock()) {
+        return coro->resume();
+    }
+    return false;
 }
 
 inline bool CoroToken::stop_requested() const noexcept {
-    return m_coro->stop_requested();
+    if (auto coro = m_coro.lock()) {
+        return coro->stop_requested();
+    }
+    return true;
 }
 
 } // namespace tfl

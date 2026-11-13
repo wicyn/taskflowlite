@@ -93,10 +93,10 @@ class Coro final : public Context {
     static_assert(std::atomic<State::type>::is_always_lock_free);
 
 public:
-    /// @brief 销毁 Coroutine 上下文并释放剩余空根栈段；所有 Frame 必须已先完成 LIFO 回收。
-    /// @note 正常执行收尾已归还根栈段；析构不访问 Worker。
+    /// @brief 销毁已完成收尾或从未启动的 Coroutine 上下文。
+    /// @pre 所有 Frame 已按 LIFO 回收，根栈段已由 _reset() 归还并置空。
     ~Coro() noexcept {
-        Stacklet::destroy(m_stacklet);
+        TFL_ASSERT(m_stacklet == nullptr);
     }
 
     /// @brief 协作等待当前 Coroutine Work 派生的全部子 Work 完成。
@@ -132,36 +132,24 @@ public:
     };
 
     /// @brief 延迟创建子 Coroutine，通过对称转移执行并回收其 Frame。
-    /// @note func 与 args 必须与协程函数形参匹配，不自动注入 Coro 或 self。
+    /// @note callable 自行捕获参数，call() 自动注入当前 Coro&。
     /// @note 支持顺序多次 co_await，但不允许同一个 Operation 被并发等待。
-    template <typename F, typename... Args>
+    template <typename T>
     class [[nodiscard("CallOperation must be co_awaited")]] CallOperation final
-        : public std::suspend_always, public Immovable<CallOperation<F, Args...>> {
+        : public std::suspend_always, public Immovable<CallOperation<T>> {
         friend class Coro;
 
         template <typename>
         friend class CoroTask;
 
-        static_assert(std::invocable<F, Args...>,
-                      "Coro::call arguments do not match the coroutine function");
+        static_assert(coro_invocable<T>, "Coro::call requires a callable accepting Coro& and returning CoroTask");
 
-        using task_type = std::invoke_result_t<F, Args...>;
+        using task_type = coro_return_t<T>;
         static_assert(coro_task<task_type> && std::same_as<task_type, std::remove_cvref_t<task_type>>,
                       "Coro::call requires a non-const CoroTask returned by value");
 
         using R = typename task_type::result_type;
         using handle_type = typename task_type::handle_type;
-
-        /// @brief 确保结果提取完成或发生异常后销毁子 Coroutine Frame。
-        struct FrameGuard {
-            handle_type handle;
-
-            FrameGuard(const FrameGuard&) = delete;
-            FrameGuard& operator=(const FrameGuard&) = delete;
-
-            explicit FrameGuard(handle_type handle) noexcept;
-            ~FrameGuard() noexcept;
-        };
 
     public:
         /// @brief 回收仍由当前操作持有的子 Coroutine Frame。
@@ -174,12 +162,13 @@ public:
         R await_resume();
 
     private:
-        /// @brief 保存 callable 和完整参数，延迟到 await_suspend 时创建子 Coroutine。
-        explicit CallOperation(Coro& coro, F&& func, Args&&... args);
+        /// @brief 按值保存 callable，延迟到 await_suspend 时创建子 Coroutine。
+        template <typename U>
+            requires std::constructible_from<T, U&&>
+        explicit CallOperation(Coro& coro, U&& func) noexcept(std::is_nothrow_constructible_v<T, U&&>);
 
         Coro& m_coro;
-        F m_func;
-        std::tuple<Args...> m_args;
+        T m_func;
         handle_type m_handle{};
     };
 
@@ -278,10 +267,10 @@ public:
     };
 
 public:
-    /// @brief 延迟调用协程函数，要求显式传入至少一个非 const Coro&。
-    template <typename F, typename... Args>
-        requires ((std::same_as<Args, Coro&> || ...) && std::invocable<F, Args...>)
-    [[nodiscard]] auto call(F&& func, Args&&... args) -> CallOperation<F, Args...>;
+    /// @brief 延迟执行自行捕获参数的 Coroutine callable，自动注入当前 Coro&。
+    template <typename T>
+        requires (coro_invocable<T> && capturable<T>)
+    [[nodiscard]] auto call(T&& task) noexcept(std::is_nothrow_constructible_v<std::decay_t<T>, T&&>) -> CallOperation<std::decay_t<T>>;
 
     // ============================================================================
     // SilentFork —— 不返回 Future 的派生任务
@@ -549,32 +538,19 @@ private:
 // Coro::CallOperation
 // ============================================================================
 
-template <typename F, typename... Args>
-inline Coro::CallOperation<F, Args...>::FrameGuard::FrameGuard(handle_type handle) noexcept
-    : handle{handle} {}
-
-template <typename F, typename... Args>
-inline Coro::CallOperation<F, Args...>::FrameGuard::~FrameGuard() noexcept {
-    if (handle) {
-        handle.destroy();
-    }
-}
-
-template <typename F, typename... Args>
-inline Coro::CallOperation<F, Args...>::~CallOperation() noexcept {
+template <typename T>
+inline Coro::CallOperation<T>::~CallOperation() noexcept {
     if (m_handle) {
         m_handle.destroy();
     }
 }
 
-template <typename F, typename... Args>
-inline std::coroutine_handle<> Coro::CallOperation<F, Args...>::await_suspend(std::coroutine_handle<> parent) {
+template <typename T>
+inline std::coroutine_handle<> Coro::CallOperation<T>::await_suspend(std::coroutine_handle<> parent) {
     TFL_ASSERT(parent);
     TFL_ASSERT(!m_handle);
 
-    auto task = std::apply([this](auto&... args) {
-        return std::invoke(std::forward<F>(m_func), std::forward<Args>(args)...);
-    }, m_args);
+    auto task = std::invoke(m_func, m_coro);
 
     TFL_ASSERT(task.m_handle);
 
@@ -588,30 +564,26 @@ inline std::coroutine_handle<> Coro::CallOperation<F, Args...>::await_suspend(st
     return m_handle;
 }
 
-template <typename F, typename... Args>
-inline auto Coro::CallOperation<F, Args...>::await_resume() -> R {
+template <typename T>
+inline auto Coro::CallOperation<T>::await_resume() -> R {
     TFL_ASSERT(m_handle && m_handle.done());
 
-    FrameGuard guard{std::exchange(m_handle, handle_type{})};
-    auto& promise = guard.handle.promise();
-
-    if (auto eptr = promise._take_exception()) [[unlikely]] {
-        std::rethrow_exception(eptr);
-    }
-
-    return std::move(promise).take();
+    // CoroTask 在返回结果或异常退出时统一回收子 Frame。
+    task_type task{std::exchange(m_handle, handle_type{})};
+    return task._result();
 }
 
-template <typename F, typename... Args>
-inline Coro::CallOperation<F, Args...>::CallOperation(Coro& coro, F&& func, Args&&... args)
+template <typename T>
+template <typename U>
+    requires std::constructible_from<T, U&&>
+inline Coro::CallOperation<T>::CallOperation(Coro& coro, U&& func) noexcept(std::is_nothrow_constructible_v<T, U&&>)
     : m_coro{coro}
-    , m_func{std::forward<F>(func)}
-    , m_args{std::forward<Args>(args)...} {}
+    , m_func{std::forward<U>(func)} {}
 
-template <typename F, typename... Args>
-    requires ((std::same_as<Args, Coro&> || ...) && std::invocable<F, Args...>)
-inline auto Coro::call(F&& func, Args&&... args) -> CallOperation<F, Args...> {
-    return CallOperation<F, Args...>{*this, std::forward<F>(func), std::forward<Args>(args)...};
+template <typename T>
+    requires (coro_invocable<T> && capturable<T>)
+inline auto Coro::call(T&& task) noexcept(std::is_nothrow_constructible_v<std::decay_t<T>, T&&>) -> CallOperation<std::decay_t<T>> {
+    return CallOperation<std::decay_t<T>>{*this, std::forward<T>(task)};
 }
 
 inline bool Coro::JoinOperation::await_suspend(std::coroutine_handle<> handle) noexcept {
