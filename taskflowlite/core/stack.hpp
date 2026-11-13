@@ -17,7 +17,7 @@
 #include <utility>
 
 #include "macros.hpp"
-
+#include "utility.hpp"
 namespace tfl {
 
 /// @brief 由 Coro 独占的 Coroutine Frame 栈段。
@@ -29,7 +29,7 @@ namespace tfl {
 ///
 /// @warning try_allocate / deallocate 必须严格遵循 LIFO；不负责析构 Frame。
 /// @warning 只保证不超过 alignof(std::max_align_t) 的对齐。
-class alignas(alignof(std::max_align_t)) Stacklet final {
+class alignas(alignof(std::max_align_t)) Stacklet final : public Immovable<Stacklet> {
     friend class Stack;
 
 public:
@@ -42,20 +42,6 @@ public:
     static_assert(std::has_single_bit(default_size));
     static_assert(std::has_single_bit(alignment));
     static_assert(default_size % alignment == 0);
-
-    Stacklet(const Stacklet&) = delete;
-    Stacklet& operator=(const Stacklet&) = delete;
-    Stacklet(Stacklet&&) = delete;
-    Stacklet& operator=(Stacklet&&) = delete;
-
-    /// @brief 销毁独立且已经退空的栈段。
-    static void destroy(Stacklet* stacklet) noexcept {
-        TFL_ASSERT(!stacklet || (stacklet->empty() && !stacklet->m_prev && !stacklet->m_next));
-        if (stacklet) {
-            stacklet->~Stacklet();
-            std::free(stacklet);
-        }
-    }
 
     /// @brief 尝试分配 size 字节，空间不足返回 nullptr，不创建新段。
     /// @pre size > 0。
@@ -151,6 +137,15 @@ private:
         return stacklet;
     }
 
+    /// @brief 销毁独立且已经退空的栈段。
+    static void destroy(Stacklet* stacklet) noexcept {
+        TFL_ASSERT(!stacklet || (stacklet->empty() && !stacklet->m_prev && !stacklet->m_next));
+        if (stacklet) {
+            stacklet->~Stacklet();
+            std::free(stacklet);
+        }
+    }
+
     [[nodiscard]] const std::byte* _begin() const noexcept {
         return reinterpret_cast<const std::byte*>(this) + sizeof(Stacklet);
     }
@@ -176,15 +171,10 @@ static_assert(std::is_trivially_destructible_v<Stacklet>);
 ///
 /// @warning 不能缓存仍然包含活动 Coroutine Frame 的栈段。
 /// @warning 仅供所属 Worker 线程访问，不支持并发调用。
-class Stack final {
+class Stack final : public Immovable<Stack> {
 public:
     /// @brief 创建 Worker 缓存，并预先分配一个默认栈段。
     Stack() : m_free{Stacklet::create()} {}
-
-    Stack(const Stack&) = delete;
-    Stack& operator=(const Stack&) = delete;
-    Stack(Stack&&) = delete;
-    Stack& operator=(Stack&&) = delete;
 
     /// @brief 释放缓存中的所有空闲栈段。
     ~Stack() noexcept {

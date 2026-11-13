@@ -250,8 +250,8 @@ public:
     }
 
     /// @brief 校验并透传同一 Coro 的延迟协程调用。
-    template <typename F, typename... Args>
-    [[nodiscard]] Coro::CallOperation<F, Args...>& await_transform(Coro::CallOperation<F, Args...>& op) {
+    template <typename T>
+    [[nodiscard]] Coro::CallOperation<T>& await_transform(Coro::CallOperation<T>& op) {
         if (std::addressof(op.m_coro) != std::addressof(m_coro)) [[unlikely]] {
             TFL_THROW(Exception{"CoroTask: CallOperation belongs to another Coro."});
         }
@@ -260,8 +260,8 @@ public:
     }
 
     /// @brief 校验并透传右值 CallOperation，不移动操作对象。
-    template <typename F, typename... Args>
-    [[nodiscard]] Coro::CallOperation<F, Args...>&& await_transform(Coro::CallOperation<F, Args...>&& op) {
+    template <typename T>
+    [[nodiscard]] Coro::CallOperation<T>&& await_transform(Coro::CallOperation<T>&& op) {
         if (std::addressof(op.m_coro) != std::addressof(m_coro)) [[unlikely]] {
             TFL_THROW(Exception{"CoroTask: CallOperation belongs to another Coro."});
         }
