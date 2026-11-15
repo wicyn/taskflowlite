@@ -3,14 +3,15 @@
 **Public API · Graph · Async · Runtime · Scheduling · Lifetime**  
 公开接口 · 任务图 · 异步执行 · 动态运行时 · 调度模型 · 生命周期
 
-- 适用版本：**TaskflowLite 3.2.0**
+- 适用版本：**TaskflowLite 3.3.0**
 - 源码基线：`wicyn/taskflowlite` `main`
-- 核对提交：`58eedba09f4e7a9cec5304008007777947efbb59`
-- 核对日期：**2026-09-29**
+- 核对提交：[`72f6d846d337`](https://github.com/wicyn/taskflowlite/commit/72f6d846d337e714e4061222762afc3af4711e3e)
+- 核对日期：**2026-11-15**
 - 语言标准：**C++20**
 - 许可证：**MIT**
 
-> 本手册以当前 `main` 分支的 `taskflowlite/core`、入口头文件、CMake、测试与 01-39 示例为准，并额外提供 31 组按当前公开 API 编写的实战场景。
+> 本手册以当前 `main` 分支的 `taskflowlite/core`、入口头文件、CMake、测试与 01-42 示例为准，并额外提供 31 组按当前公开 API 编写的实战场景。
+> 本版 Markdown 与 PDF 同步基于 **3.3.0** 最新源码重新整理；旧 3.2.0 PDF 的历史插图及其旧生命周期说明不再作为本手册依据。协程和依赖规则已合并到正文，仓库专题资料见[协程指南](https://github.com/wicyn/taskflowlite/blob/main/documentation/coroutines.md)及[依赖说明](https://github.com/wicyn/taskflowlite/blob/main/documentation/async-task-dependency-design.md)。
 > 当历史文档、旧版 PDF 或旧示例与当前代码不一致时，以当前源码实现和测试契约为准。
 
 ---
@@ -30,11 +31,12 @@ TaskflowLite 的公共接口不多，但它同时覆盖静态任务图、动态�
 4. 条件与循环：10 → 11 → 12。
 5. 维护调度器：36 → 37 → 38 → 39 → 40 → 41。
 6. 排查异常/卡住：26 → 27 → 28 → 42。
-7. 直接看代码：51（31 组实战）→ 52（仓库 01-39 示例路线）。
+7. 直接看代码：51（31 组实战）→ 52（仓库 01-42 示例路线）。
+8. 协程任务：58 → 40–42 示例，先掌握 `call` / `fork` / `join`，再接入外部完成操作。
 
 ### 图示约定
 
-本文所有结构图使用同一套技术手册视觉语言：**蓝色**表示执行/调度入口，**青色**表示 Graph/Work 等核心对象，**紫色**表示 Topology/异步状态，**绿色**表示 ready/完成，**橙色**只用于条件判断、资源配额等控制语义。节点统一使用圆角矩形；主关系使用细实线箭头；继承、回流或辅助关系使用虚线；复杂回路才使用弧线，避免无意义的折线和交叉。
+本版重新绘制的核心机制图采用 Mermaid（Markdown）与等价的矢量图（PDF）；旧 3.2.0 图示不再混入现行契约。本文的结构图使用同一套技术手册视觉语言：**蓝色**表示执行/调度入口，**青色**表示 Graph/Work 等核心对象，**紫色**表示 Topology/异步状态，**绿色**表示 ready/完成，**橙色**只用于条件判断、资源配额等控制语义。节点统一使用圆角矩形；主关系使用细实线箭头；继承、回流或辅助关系使用虚线；复杂回路才使用弧线，避免无意义的折线和交叉。
 
 ### 文档中的术语
 
@@ -69,10 +71,17 @@ Executor 负责：
 - 没工作时退避并进入 Notifier 两阶段休眠；
 - 完成时传播依赖、异常、停止与父子完成计数。
 
-<figure class="tfl-figure">
-<img src="img/diagram-01.svg" alt="图 1：TaskflowLite 从用户任务图到 Executor 调度与 Work 收尾的主路径"/>
-<figcaption>图 1 · TaskflowLite 从用户任务图到 Executor 调度与 Work 收尾的主路径</figcaption>
-</figure>
+```mermaid
+%% diagram-id: overview
+flowchart TD
+    U[Flow / Task / Async / Coro] --> E[Executor]
+    E --> Q[Worker local queue]
+    E --> S[SharedWorkStack shards]
+    Q --> W[Worker: invoke]
+    S --> W
+    W --> D[tear-down / dependency propagation]
+    D --> R[Completion / parent slot]
+```
 
 ## 1.1 当前公开能力
 
@@ -84,6 +93,7 @@ Executor 负责：
 | 即时异步 | `Executor::async`、`silent_async` |
 | 延迟启动 | `Executor::defer_async` + `AsyncTask::start` |
 | 异步依赖 | `AsyncFuture` / `AsyncTask` 作为动态前置依赖 |
+| 协程 | `Coro` / `CoroTask<R>` / `CoroToken`，`call` / `fork` / `join` |
 | 动态执行 | `Runtime` |
 | 动态子图 | `SubFlow` |
 | 局部分组 | `TaskGroup` |
@@ -111,11 +121,6 @@ Executor 负责：
 | 控制资源并发 | `Task::acquire/release` + `Semaphore` | 框架挂起/重新发布 Work | 不阻塞 Worker |
 | 保留业务对象状态 | `emplace_object/defer_async_object` | `object()` | `object()` 本身不做同步 |
 
-<figure class="tfl-figure">
-<img src="img/diagram-02.svg" alt="图 2：按使用需求选择 TaskflowLite 入口"/>
-<figcaption>图 2 · 按使用需求选择 TaskflowLite 入口</figcaption>
-</figure>
-
 ## 1.2 当前没有作为正式公共 API 提供的能力
 
 当前 `core` **没有独立的 STL 风格并行算法层**，例如不存在正式发布的：
@@ -137,11 +142,6 @@ merge
 # 2. 三层心智模型
 
 理解 TaskflowLite 最重要的是把“图”“执行”和“调度器内部”分开。
-
-<figure class="tfl-figure">
-<img src="img/diagram-03.svg" alt="图 3：TaskflowLite 的三层心智模型"/>
-<figcaption>图 3 · TaskflowLite 的三层心智模型</figcaption>
-</figure>
 
 ### 描述层回答“做什么”
 
@@ -188,8 +188,8 @@ ready Work 可能：
 #include <iostream>
 
 int main() {
-    std::cout << tfl::version << '\n';       // 3.2.0
-    std::cout << tfl::version.to_string();   // "3.2.0"
+    std::cout << tfl::version << '\n';       // 3.3.0
+    std::cout << tfl::version.to_string();   // "3.3.0"
 }
 ```
 
@@ -259,6 +259,8 @@ target_link_libraries(app PRIVATE TaskflowLite::taskflowlite)
 | --- | ---: | --- |
 | `TFL_BUILD_EXAMPLES` | 顶层项目 ON | 构建示例 |
 | `TFL_BUILD_TESTS` | OFF | 构建测试；可能获取 Catch2 |
+| `TFL_TEST_CORE_ALLOCATION_FAILURE` | 测试开启时 ON | 普通测试构建默认进行分配失败回滚验证；Sanitizer 模式跳过 |
+| `TFL_TEST_HEADERS` | 测试开启时 ON | 独立头文件编译检查 |
 | `TFL_BUILD_BENCHMARKS` | OFF | 构建基准；对比项需要 Taskflow |
 | `TFL_BUILD_DOCS` | OFF | 生成 Doxygen |
 | `TFL_NATIVE_ARCH` | OFF | Release 内部目标按本机构架优化 |
@@ -299,11 +301,6 @@ int main() {
     return result == 42 ? 0 : 1;
 }
 ```
-
-<figure class="tfl-figure">
-<img src="img/diagram-04.svg" alt="图 4：最小 DAG：两个并行前驱汇聚到一个后继"/>
-<figcaption>图 4 · 最小 DAG：两个并行前驱汇聚到一个后继</figcaption>
-</figure>
 
 `a` 和 `b` 可以并行；`c` 必须等两个强前驱都到达后才 ready。
 
@@ -538,7 +535,7 @@ executor.corun(flow);
 assert(counter.value == 1);
 ```
 
-`work()` / `work_object()` 不改变 Work 身份、名称、已有边、Semaphore 配置和 Observer；替换失败时当前实现保留旧 payload，图仍可继续使用。
+`work()` / `work_object()` 不改变 Work 身份、名称、已有边、Semaphore 配置和 Observer；替换先销毁旧 payload，新构造失败后必须重新绑定有效 callable 才能再次执行或导出；不能依赖保留旧对象。
 
 # 8. 建边：checked 与 unchecked
 
@@ -582,6 +579,7 @@ flow.linearize<false>(a, b, c);
 | `Jump` | `f(Jump&)` | 强制激活一个目标 |
 | `MultiJump` | `f(MultiJump&)` | 强制激活多个目标 |
 | `Runtime` | `f(Runtime&)` | 执行期间派生工作 |
+| `Coroutine` | `f(Coro&) -> CoroTask<R>` | 挂起、恢复和结构化子任务 |
 | `Graph` | graph holder | 执行嵌套子图 |
 
 `SubFlow` callable 也是公共构图方式：
@@ -662,21 +660,11 @@ br[2] = true;
 
 如果目标还有其他强前驱，Branch 只是为被选目标提供**一次正常 strong arrival**；目标仍需满足自己的全部 join 条件。
 
-<figure class="tfl-figure">
-<img src="img/diagram-05.svg" alt="图 5：Branch 仍遵守目标节点的 strong dependency join"/>
-<figcaption>图 5 · Branch 仍遵守目标节点的 strong dependency join</figcaption>
-</figure>
-
 ---
 
 # 11. Jump 与 MultiJump：强制激活
 
 Jump 的关键不是“选路径”三个字，而是：**它会绕过目标普通 strong join 屏障，强制把目标带入可执行状态**。
-
-<figure class="tfl-figure">
-<img src="img/diagram-06.svg" alt="图 6：Branch 与 Jump 对目标节点就绪语义的差异"/>
-<figcaption>图 6 · Branch 与 Jump 对目标节点就绪语义的差异</figcaption>
-</figure>
 
 ## 11.1 单目标 Jump
 
@@ -726,11 +714,6 @@ mj.reset();
 
 ## 11.4 Branch 与 Jump 的选择规则放在一起看
 
-<figure class="tfl-figure">
-<img src="img/diagram-07.svg" alt="图 7：普通 strong arrival 与强制激活的对比"/>
-<figcaption>图 7 · 普通 strong arrival 与强制激活的对比</figcaption>
-</figure>
-
 因此：
 
 - **Branch** 适合 `if/else`、路由、策略选择；
@@ -754,7 +737,7 @@ auto module = outer.emplace(child);
 ## 12.1 定次重复
 
 ```cpp
-auto module = outer.emplace(child, 3);
+auto module = outer.emplace(child, std::uint64_t{3});
 ```
 
 表示最多执行子图 3 次。空子图、停止或异常都可能让实际次数提前结束。
@@ -798,7 +781,7 @@ main.linearize(input, module, output);
 ### 固定重复 N 次
 
 ```cpp
-auto warmup = main.emplace(decode, 5);
+auto warmup = main.emplace(decode, std::uint64_t{5});
 ```
 
 ### 由谓词决定是否继续
@@ -809,11 +792,6 @@ auto loop = main.emplace(decode, [&] {
     return done.load(std::memory_order_acquire);
 });
 ```
-
-<figure class="tfl-figure">
-<img src="img/diagram-08.svg" alt="图 8：Module 节点驱动子图重复执行"/>
-<figcaption>图 8 · Module 节点驱动子图重复执行</figcaption>
-</figure>
 
 Module 负责复用子图结构；如果需要在运行期间按输入动态创建不同节点，应使用 `SubFlow`。
 
@@ -893,11 +871,6 @@ Executor 不拥有 handler，handler 必须活过整个 Executor。
 
 ## 14.1 三类提交方式
 
-<figure class="tfl-figure">
-<img src="img/diagram-09.svg" alt="图 9：Executor 三种提交模式及返回形式"/>
-<figcaption>图 9 · Executor 三种提交模式及返回形式</figcaption>
-</figure>
-
 ### Fire-and-forget
 
 ```cpp
@@ -942,11 +915,6 @@ std::cout << task.get();
 | `defer_async_object<T>` | 否 | `AsyncTaskObject<R,T>` | 原地业务对象 + 延迟启动 |
 | `corun(graph)` | 是 | 同步返回 | 同步执行一张图 |
 | `wait_for_all()` | - | - | 等当前观察到的顶层 topology 归零 |
-
-<figure class="tfl-figure">
-<img src="img/diagram-10.svg" alt="图 10：如何在 silent_async、async、defer_async 与 corun 之间选择"/>
-<figcaption>图 10 · 如何在 silent_async、async、defer_async 与 corun 之间选择</figcaption>
-</figure>
 
 ### callable、Runtime、SubFlow、Graph 都可提交
 
@@ -1020,10 +988,7 @@ const std::string& ref = future.get();
 ## 15.3 停止
 
 ```cpp
-future.request_stop();
-if (future.stop_requested()) {
-    ...
-}
+future.request_stop(); // 发出请求；执行中的任务通过 Context::stop_requested() 查询
 ```
 
 停止是协作式请求，不会强制中断正在执行的 C++ 代码。
@@ -1101,11 +1066,6 @@ task.start(empty, a);
 
 ## 16.3 AsyncTask 生命周期
 
-<figure class="tfl-figure">
-<img src="img/diagram-11.svg" alt="图 11：AsyncTask 从创建到完成与销毁的生命周期"/>
-<figcaption>图 11 · AsyncTask 从创建到完成与销毁的生命周期</figcaption>
-</figure>
-
 `start()` 成功后不能再次启动同一底层 Work；复制 `AsyncTask` 只是共享同一个任务，并不会得到第二次启动机会。
 
 ### 启动前集中配置
@@ -1136,11 +1096,6 @@ task.get();
 
 > **动态依赖只保证“前驱完成后，后继才具备调度条件”，并不会自动把前驱结果或前驱异常传给后继。**
 
-<figure class="tfl-figure">
-<img src="img/diagram-12.svg" alt="图 12：异步依赖只建立 completion edge，不自动传递结果或异常"/>
-<figcaption>图 12 · 异步依赖只建立 completion edge，不自动传递结果或异常</figcaption>
-</figure>
-
 正确取结果：
 
 ```cpp
@@ -1156,11 +1111,19 @@ std::cout << sum.get();   // 42
 
 这里传 `a, b` 作为 deps 负责顺序；lambda 内的 `a.get()/b.get()` 负责读取结果并显式传播前驱异常。
 
-## 17.1 为什么依赖会保留前驱生命周期
+```mermaid
+%% diagram-id: deps
+flowchart LR
+    A[AsyncFuture A] -->|completion only| C[successor C]
+    B[AsyncFuture B] -->|completion only| C
+    C -->|explicit get A/B| R[read result / rethrow error]
+```
 
-当前任务保存每个有效前驱的强引用，直到当前 Work 最终销毁。这样即使调用方先释放自己的 predecessor 句柄，动态依赖表仍不会引用已经销毁的 Work。
+## 17.1 完成依赖不保留前驱资源
 
-重复传入同一前驱属于重复条目，会按传入次数建立依赖计数/引用；不要把“重复依赖自动去重”当作接口保证。
+当前异步 Work 只保存非拥有的动态后继边；不保存前驱表或前驱强引用。提交期间由调用方句柄保护前驱，运行中的前驱由自身执行引用保护。需要读取结果时，应在后继 callable 中按值捕获 Future。
+
+重复前驱按次数登记完成计数，不增加持久强引用。登记分配失败会撤销部分边、释放锁并归还计数，AsyncTask 保持 Idle，可重新 start；详见[依赖说明](https://github.com/wicyn/taskflowlite/blob/main/documentation/async-task-dependency-design.md)。
 
 ## 17.2 跨 Executor
 
@@ -1170,11 +1133,6 @@ std::cout << sum.get();   // 42
 
 
 ## 17.3 多前驱依赖的运行顺序
-
-<figure class="tfl-figure">
-<img src="img/diagram-13.svg" alt="图 13：多个异步前驱完成后使后继任务 ready"/>
-<figcaption>图 13 · 多个异步前驱完成后使后继任务 ready</figcaption>
-</figure>
 
 如果 A 在 C 登记前已经 Finished，登记阶段会直接把对应依赖视为已满足；如果 A 与登记并发完成，则通过 `Topology::Control::LOCKED` 协议串行化“完成”和“追加动态后继”。
 
@@ -1306,7 +1264,7 @@ executor.wait_for_all();
 
 # 21. Context：执行期统一上下文
 
-`Context` 是 Runtime、Branch/Jump 等执行期对象共享的上下文基础。
+`Context` 是 Runtime、SubFlow、Coro、Branch/Jump 等执行期对象共享的上下文基础。
 
 可访问：
 
@@ -1324,7 +1282,7 @@ context.name();
 - Worker；
 - Executor。
 
-**Context 和由它返回的引用不能逃逸当前任务回调，也不能跨线程保存。**
+**Context 由当前任务借用，不能传给外部线程。Coro 可以跨挂起点存活，但 worker() 引用只适用于本次执行，不得跨挂起保存；外部操作使用 CoroToken。**
 
 这条规则同样适用于 `Runtime&`、`SubFlow&`、`Branch&`、`Jump&` 等框架注入对象。
 
@@ -1354,11 +1312,6 @@ Runtime 派生的工作：
 - 会计入当前父 Work 的完成计数；
 - 异步子任务拥有独立 Topology；
 - 子 Topology 以当前 Topology 为父，因此继承父级停止请求。
-
-<figure class="tfl-figure">
-<img src="img/diagram-14.svg" alt="图 14：Runtime 派生任务的父 Topology 停止继承关系"/>
-<figcaption>图 14 · Runtime 派生任务的父 Topology 停止继承关系</figcaption>
-</figure>
 
 ## 22.2 `run(graph)`
 
@@ -1426,11 +1379,6 @@ assert(total.get() == 42);
 
 ### `run` 与 `corun` 的范围差异
 
-<figure class="tfl-figure">
-<img src="img/diagram-15.svg" alt="图 15：Runtime::run/wait 与 Runtime::corun 的等待范围差异"/>
-<figcaption>图 15 · Runtime::run/wait 与 Runtime::corun 的等待范围差异</figcaption>
-</figure>
-
 # 23. SubFlow：执行期间动态构图
 
 ```cpp
@@ -1478,7 +1426,7 @@ flow.emplace([](tfl::SubFlow& sf) {
 ---
 
 
-## 23.3 动态数量节点示例
+## 23.2 动态数量节点示例
 
 ```cpp
 auto parent = executor.async([&](tfl::SubFlow& sf) {
@@ -1533,6 +1481,9 @@ group.wait();       // 等组内全部工作
 group.corun(flow);  // 只等这次图
 ```
 
+Runtime / TaskGroup 的 `run` 只接受可修改的左值图持有者，借用的图须存活到 `wait()` 返回；
+同步 `corun` 支持临时图，其寿命覆盖整个同步调用。
+
 ## 24.3 独立于父停止域的任务
 
 如果业务上需要独立顶层任务，不要通过当前 group/runtime 派生，而是显式使用：
@@ -1562,11 +1513,6 @@ auto parent = executor.async([](tfl::Runtime& rt) {
 });
 ```
 
-<figure class="tfl-figure">
-<img src="img/diagram-16.svg" alt="图 16：TaskGroup 通过 AnchorWork 聚合完成、停止与异常边界"/>
-<figcaption>图 16 · TaskGroup 通过 AnchorWork 聚合完成、停止与异常边界</figcaption>
-</figure>
-
 TaskGroup 析构会确保组内任务完成，但析构是 `noexcept`；要在当前作用域处理组内异常，显式调用 `group.wait()`。
 
 # 25. 为什么 Worker 内要协作等待
@@ -1589,11 +1535,6 @@ TaskflowLite 的 `Runtime::wait`、`wait_until`、`corun`、`TaskGroup::wait/cor
 3. 窃取其他队列；
 4. 执行拿到的 Work；
 5. 再检查目标条件。
-
-<figure class="tfl-figure">
-<img src="img/diagram-17.svg" alt="图 17：协作等待循环：等待期间 Worker 继续推进其他 ready Work"/>
-<figcaption>图 17 · 协作等待循环：等待期间 Worker 继续推进其他 ready Work</figcaption>
-</figure>
 
 因此 Worker 在“等待”时仍然是调度系统的一部分。
 
@@ -1621,11 +1562,6 @@ future.get();
 ## 26.1 停止沿父 Topology 链继承
 
 Runtime、TaskGroup 派生任务会检查当前 Topology 及祖先 Topology。
-
-<figure class="tfl-figure">
-<img src="img/diagram-18.svg" alt="图 18：停止请求沿 Topology 父链向下传播"/>
-<figcaption>图 18 · 停止请求沿 Topology 父链向下传播</figcaption>
-</figure>
 
 顶层 `executor.async` 创建独立停止域。
 
@@ -1703,11 +1639,6 @@ try {
 
 
 ## 27.4 异常从哪里观察
-
-<figure class="tfl-figure">
-<img src="img/diagram-19.svg" alt="图 19：任务异常的归档、局部锚点与重新抛出路径"/>
-<figcaption>图 19 · 任务异常的归档、局部锚点与重新抛出路径</figcaption>
-</figure>
 
 常见同步边界：
 
@@ -1795,11 +1726,6 @@ task.acquire(gpu_slot);
 5. 释放资源后，waiter 被重新发布；
 6. 被唤醒 Work 重新竞争它的全部资源。
 
-<figure class="tfl-figure">
-<img src="img/diagram-20.svg" alt="图 20：多 Semaphore all-or-nothing 获取协议"/>
-<figcaption>图 20 · 多 Semaphore all-or-nothing 获取协议</figcaption>
-</figure>
-
 这避免“先拿到 A、拿不到 B、自己占着 A 等 B”的资源死锁模式。
 
 ## 29.2 reset
@@ -1840,11 +1766,6 @@ task.acquire(camera)
 ```
 
 内部不会按调用顺序一个个“拿锁”。Work 会把 acquire 请求按 Semaphore 地址建立固定顺序，在统一持锁后先检查全部配额：
-
-<figure class="tfl-figure">
-<img src="img/diagram-21.svg" alt="图 21：一个 Work 同时获取多个 Semaphore 时的固定锁序与两阶段检查"/>
-<figcaption>图 21 · 一个 Work 同时获取多个 Semaphore 时的固定锁序与两阶段检查</figcaption>
-</figure>
 
 `reset()` 只适合资源静止期配置；当前存在 waiter 时返回 `false` 并保持原状态。
 
@@ -1887,6 +1808,29 @@ Observer 位于实际任务调用路径，不要在热任务中做重锁、大�
 
 ---
 
+## 30.1 一个可计时的 TaskObserver
+
+```cpp
+struct TimingObserver final : tfl::TaskObserver {
+    std::atomic<std::uint64_t> starts{0};
+    std::atomic<std::uint64_t> finishes{0};
+
+    void on_before(tfl::WorkerView) override {
+        starts.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void on_after(tfl::WorkerView) override {
+        finishes.fetch_add(1, std::memory_order_relaxed);
+    }
+};
+
+auto observer = task.register_observer<TimingObserver>();
+executor.corun(flow);
+assert(observer->starts == observer->finishes);
+```
+
+Observer 可能被多个 Worker 并发调用；观察者内部共享状态需要自行同步。Observer 回调抛出的异常也进入当前 Work 的统一异常归档路径。
+
 # 31. WorkerHandler：线程生命周期钩子
 
 ```cpp
@@ -1927,35 +1871,7 @@ worker.thread().get_id();
 ---
 
 
-## 30.3 一个可计时的 TaskObserver
-
-```cpp
-struct TimingObserver final : tfl::TaskObserver {
-    std::atomic<std::uint64_t> starts{0};
-    std::atomic<std::uint64_t> finishes{0};
-
-    void on_before(tfl::WorkerView) override {
-        starts.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    void on_after(tfl::WorkerView) override {
-        finishes.fetch_add(1, std::memory_order_relaxed);
-    }
-};
-
-auto observer = task.register_observer<TimingObserver>();
-executor.corun(flow);
-assert(observer->starts == observer->finishes);
-```
-
-<figure class="tfl-figure">
-<img src="img/diagram-22.svg" alt="图 22：TaskObserver 在 callable 前后执行，异常统一进入 Work 归档路径"/>
-<figcaption>图 22 · TaskObserver 在 callable 前后执行，异常统一进入 Work 归档路径</figcaption>
-</figure>
-
-Observer 可能被多个 Worker 并发调用；观察者内部共享状态需要自行同步。Observer 回调抛出的异常也进入当前 Work 的统一异常归档路径。
-
-## 31.3 WorkerHandler 的典型用途
+## 31.1 WorkerHandler 的典型用途
 
 ```cpp
 struct Handler final : tfl::WorkerHandler {
@@ -2005,7 +1921,7 @@ D2 输出描述的是**结构与节点配置**，不是执行时序 trace。要�
 ---
 
 
-## 32.3 导出到文件
+## 32.1 导出到文件
 
 ```cpp
 tfl::Flow flow("vision-pipeline");
@@ -2022,8 +1938,6 @@ std::cout << flow.dump(tfl::Direction::Down);
 ```
 
 D2 输出描述的是**当前图结构**；它不是运行时 trace。要分析实际 Worker 执行顺序，应结合 `TaskObserver` 或外部 tracing。
-
-<figure class="tfl-figure"><img src="img/diagram-50.svg" alt="图 50：D2 导出定位"/><figcaption>图 50 · dump 输出结构描述；真实执行历史应由 Observer / tracing 记录</figcaption></figure>
 
 # 33. 并行模式一：fan-out / fan-in
 
@@ -2052,11 +1966,6 @@ d.precede(reduce);
 
 executor.corun(flow);
 ```
-
-<figure class="tfl-figure">
-<img src="img/diagram-23.svg" alt="图 23：并行 fan-out 后汇聚到归约节点"/>
-<figcaption>图 23 · 并行 fan-out 后汇聚到归约节点</figcaption>
-</figure>
 
 这是当前 core 实现 `parallel reduce` 的基础积木：分块任务并行产生部分结果，最后一个汇聚任务归并。
 
@@ -2145,7 +2054,7 @@ Branch 适合“选择正常路径”，Jump 适合“强制重新激活某个�
 ---
 
 
-## 35.3 一个完整的三阶段 Pipeline
+## 35.4 一个完整的三阶段 Pipeline
 
 ```cpp
 tfl::Flow flow;
@@ -2167,14 +2076,9 @@ for (auto task : infer) task.precede(write);
 executor.corun(flow);
 ```
 
-<figure class="tfl-figure">
-<img src="img/diagram-24.svg" alt="图 24：Pipeline 中多个处理支路并行后汇聚写出"/>
-<figcaption>图 24 · Pipeline 中多个处理支路并行后汇聚写出</figcaption>
-</figure>
-
 这种写法适合阶段固定、每个元素工作独立的 CPU/GPU 前后处理。若每轮节点数量动态变化，把创建逻辑放到 `SubFlow` 或 `Runtime`。
 
-## 35.4 Map-Reduce 模式
+## 35.5 Map-Reduce 模式
 
 ```cpp
 std::array<int, 4> partial{};
@@ -2198,11 +2102,6 @@ for (auto task : map) task.precede(reduce);
 # 36. Executor 视角：一次图执行发生什么
 
 这一节不是要求普通用户依赖私有函数，而是帮助排查卡住、重复执行、队列与计数问题。
-
-<figure class="tfl-figure">
-<img src="img/diagram-25.svg" alt="图 25：静态图从 setup、schedule、invoke 到 tear-down 的完整执行链"/>
-<figcaption>图 25 · 静态图从 setup、schedule、invoke 到 tear-down 的完整执行链</figcaption>
-</figure>
 
 ## 36.1 `_set_up_graph`
 
@@ -2230,12 +2129,7 @@ for (auto task : map) task.precede(reduce);
 ---
 
 
-## 36.4 `corun` 在外部线程和 Worker 内部的差异
-
-<figure class="tfl-figure">
-<img src="img/diagram-26.svg" alt="图 26：Executor::corun 在外部线程与 Worker 内部的两种等待路径"/>
-<figcaption>图 26 · Executor::corun 在外部线程与 Worker 内部的两种等待路径</figcaption>
-</figure>
+## 36.3 `corun` 在外部线程和 Worker 内部的差异
 
 这也是为什么在单 Worker 场景中，Worker 内部同步跑子图应优先使用 `corun`/Runtime 协作等待，而不是在同一个 Worker 上直接阻塞普通 Future。
 
@@ -2270,11 +2164,6 @@ Owner 的 LIFO 有利于局部性；Stealer 从另一端拿较老工作，减少
 - 单 Work 按地址哈希选择分片；
 - 批量 Work 尽量均匀分散；
 - Worker 窃取时把本地 Worker 队列和共享分片都视为 victim 候选。
-
-<figure class="tfl-figure">
-<img src="img/diagram-27.svg" alt="图 27：Worker 本地 BoundedQueue 与分片 SharedWorkStack 的协作关系"/>
-<figcaption>图 27 · Worker 本地 BoundedQueue 与分片 SharedWorkStack 的协作关系</figcaption>
-</figure>
 
 ---
 
@@ -2431,11 +2320,6 @@ C 开始执行
 C 完成: fetch_add(join_weight=2)，恢复到下一轮需要的状态
 ```
 
-<figure class="tfl-figure">
-<img src="img/diagram-28.svg" alt="图 28：两个前驱通过 join_counter 完成最后到达者判定，并在执行后恢复静态权重"/>
-<figcaption>图 28 · 两个前驱通过 join_counter 完成最后到达者判定，并在执行后恢复静态权重</figcaption>
-</figure>
-
 恢复使用 `fetch_add` 而不是 `store`，是为了保留循环控制流中“下一轮前驱已经提前到达”的递减进度。
 
 # 41. Branch、Jump 在 tear-down 阶段的区别
@@ -2516,7 +2400,7 @@ Idle -> Running -> Finished
 
 ## 43.2 SmallVector
 
-Work 的边、动态目标、观察数据等热点小容器会使用 SmallVector，目标是：
+SmallVector 用于 MultiBranch / MultiJump 的小规模目标集合；Work 的边表、Semaphore 请求和观察者列表使用 std::vector。SmallVector 的目标是：
 
 - 常见小规模不分配；
 - 需要时再扩容；
@@ -2535,14 +2419,19 @@ TaskObject 和 AsyncTaskObject 让业务类型直接构造在 Work 的 Invoker/P
 ---
 
 
-## 43.5 Async Work 生命周期图
+```mermaid
+%% diagram-id: async_lifetime
+flowchart TD
+    H[Caller holds predecessor Future] --> L[Register completion edges]
+    L --> P[Predecessor executing: own run ref]
+    P --> F[Finished: notify successor]
+    F --> S[Successor scheduled]
+    H -. explicit capture if result needed .-> S
+```
 
-<figure class="tfl-figure">
-<img src="img/diagram-29.svg" alt="图 29：Async Work 的句柄引用、执行引用、前驱引用与最终销毁关系"/>
-<figcaption>图 29 · Async Work 的句柄引用、执行引用、前驱引用与最终销毁关系</figcaption>
-</figure>
+## 43.5 Async Work 生命周期要点
 
-因此“Future 句柄析构”不等于“任务立即销毁”：任务可能仍在执行，也可能仍被后继依赖持有。相反，一个已完成任务如果仍被 Future 保存，也会继续保留结果槽供重复 `get()`。
+因此“Future 句柄析构”不等于“任务立即销毁”：任务可能仍在执行，或仍被用户持有的 Future / Task 强引用保护。相反，一个已完成任务如果仍被 Future 保存，也会继续保留结果槽供重复 `get()`。
 
 # 44. 禁用异常
 
@@ -2718,7 +2607,7 @@ group.wait();
 
 # 48. 内存分配失败与强保证边界
 
-当前仓库专门提供 standalone allocator fault-injection 回归，覆盖：
+当前仓库在普通测试构建中默认启用独立 allocator fault-injection 回归（`TFL_TEST_CORE_ALLOCATION_FAILURE=ON`；Sanitizer 构建跳过全局分配器注入），覆盖：
 
 - `AsyncTask::start` dependency storage；
 - predecessor 动态 successor 注册；
@@ -2771,7 +2660,7 @@ TSan 只支持配置好的 Unix GCC/Clang 路线；Windows 使用 ASan。
 
 ## 49.3 Header 独立编译
 
-测试系统会把活动 core header 单独作为 translation unit 编译，避免 umbrella header 偶然掩盖缺失 include。
+测试系统会把活动 core header 分别以正常模式和关闭异常模式作为独立 translation unit 编译，避免 umbrella header 偶然掩盖缺失 include。
 
 ## 49.4 no-exception 测试
 
@@ -2829,7 +2718,7 @@ cmake --build build/bench --parallel
 
 这一章不再重复解释 API 定义，而是回答“**实际代码怎么组合**”。为了控制篇幅，除特别标注外，代码块省略重复的 `#include <taskflowlite/taskflowlite.hpp>` 和 `main()` 外壳；把代码放入 `main()` 即可按同样方式使用。
 
-当前手册提供 **31 组使用场景**，再加上仓库自身的 01-39 示例，形成从入门到内部调试的完整练习路径。
+当前手册提供 **31 组使用场景**，再加上仓库自身的 01-42 示例，形成从入门到内部调试的完整练习路径。
 
 | 组别 | 示例 | 重点 |
 | --- | ---: | --- |
@@ -2841,8 +2730,6 @@ cmake --build build/bench --parallel
 ## 51.1 示例 1：最小但完整的 fan-out / fan-in DAG
 
 **场景**：初始化完成后并行执行两个步骤，二者都完成后再汇聚。
-
-<figure class="tfl-figure"><img src="img/diagram-30.svg" alt="图 30：基础 fan-out / fan-in DAG"/><figcaption>图 30 · A → (B, C) → D 是最基本、也最常复用的任务图形状</figcaption></figure>
 
 ```cpp
 int main() {
@@ -2886,8 +2773,6 @@ executor.corun(flow);
 
 ## 51.3 示例 3：Placeholder 先占拓扑，稍后绑定执行体
 
-<figure class="tfl-figure"><img src="img/diagram-31.svg" alt="图 31：Placeholder 后绑定 callable"/><figcaption>图 31 · Placeholder 适合先生成结构、后决定 callable 的构图器</figcaption></figure>
-
 ```cpp
 tfl::Flow flow;
 auto input = flow.emplace([] { std::cout << "input\n"; });
@@ -2906,8 +2791,6 @@ executor.corun(flow);
 节点身份和已有边没有变化，变的是 Work 的 payload。适合插件算法、运行模式切换、测试替身。
 
 ## 51.4 示例 4：Branch 实现真正的 if/else 路由
-
-<figure class="tfl-figure"><img src="img/diagram-32.svg" alt="图 32：Branch 条件路由"/><figcaption>图 32 · Branch 只把正常 strong arrival 传播到被选路径</figcaption></figure>
 
 ```cpp
 bool fast_mode = true;
@@ -2945,8 +2828,6 @@ route.precede(log, debug, save);
 
 ## 51.6 示例 6：Jump 构造受控 retry 循环
 
-<figure class="tfl-figure"><img src="img/diagram-33.svg" alt="图 33：Jump retry 循环"/><figcaption>图 33 · Jump 的回边会强制重新激活目标节点</figcaption></figure>
-
 ```cpp
 int attempts = 0;
 
@@ -2971,8 +2852,6 @@ Jump 会绕过目标普通 strong join 屏障，因此只应在明确需要重�
 
 ## 51.7 示例 7：Module 把成熟子流程复用 3 次
 
-<figure class="tfl-figure"><img src="img/diagram-34.svg" alt="图 34：Module 重复子图"/><figcaption>图 34 · Module 复用同一子图结构，不需要每轮重新构图</figcaption></figure>
-
 ```cpp
 tfl::Flow child("child");
 int calls = 0;
@@ -2982,7 +2861,7 @@ c1.precede(c2);
 
 tfl::Flow outer("outer");
 auto begin  = outer.emplace([] { std::cout << "begin\n"; });
-auto module = outer.emplace(child, 3ULL);
+auto module = outer.emplace(child, std::uint64_t{3});
 auto end    = outer.emplace([&] { std::cout << "calls=" << calls << '\n'; });
 outer.linearize(begin, module, end);
 
@@ -2992,8 +2871,6 @@ executor.corun(outer);
 左值 `child` 是借用关系，必须活到模块最后一次执行结束。
 
 ## 51.8 示例 8：TaskObject 保存不可移动业务状态
-
-<figure class="tfl-figure"><img src="img/diagram-35.svg" alt="图 35：TaskObject 对象与 Work 生命周期"/><figcaption>图 35 · 业务对象直接位于 Work payload 内，object() 只是借用引用</figcaption></figure>
 
 ```cpp
 struct Counter {
@@ -3036,8 +2913,6 @@ executor.corun(flow);
 已有名称、边、Semaphore 和 Observer 都留在同一个 Work 上；旧对象引用在替换成功后失效。
 
 ## 51.10 示例 10：`async` 返回值与重复 `get()`
-
-<figure class="tfl-figure"><img src="img/diagram-36.svg" alt="图 36：AsyncFuture wait 与 get"/><figcaption>图 36 · wait 只等待，get 才负责结果与异常传播</figcaption></figure>
 
 ```cpp
 auto future = executor.async([] { return 42; });
@@ -3100,8 +2975,6 @@ load.get();
 
 ## 51.14 示例 14：AsyncFuture 钻石依赖
 
-<figure class="tfl-figure"><img src="img/diagram-37.svg" alt="图 37：AsyncFuture 钻石依赖"/><figcaption>图 37 · root 完成后 left/right 并行，merge 等两者都完成</figcaption></figure>
-
 ```cpp
 auto root  = executor.async([] { return 1; });
 auto left  = executor.async([root] { return root.get() + 10; }, root);
@@ -3117,8 +2990,6 @@ std::cout << merge.get() << '\n';        // 112
 
 ## 51.15 示例 15：跨 Executor 的完成依赖
 
-<figure class="tfl-figure"><img src="img/diagram-38.svg" alt="图 38：跨 Executor 动态依赖"/><figcaption>图 38 · 前驱在哪个 Executor 完成不影响后继在自己的 Executor 上被调度</figcaption></figure>
-
 ```cpp
 tfl::Executor io_executor(2);
 tfl::Executor cpu_executor(4);
@@ -3129,7 +3000,7 @@ auto cpu = cpu_executor.async([io] { return io.get() + 2; }, io);
 std::cout << cpu.get() << '\n';
 ```
 
-依赖注册保存前驱强引用；后继 ready 后仍发布到**后继所属 Executor**。
+依赖注册不保存前驱强引用；如需读取结果应捕获 Future。后继 ready 后仍发布到**后继所属 Executor**。
 
 ## 51.16 示例 16：AsyncTaskObject 同时保存任务状态和结果
 
@@ -3155,8 +3026,6 @@ std::cout << task.object().calls << '\n';
 
 ## 51.17 示例 17：Runtime 动态 fan-out，然后协作等待
 
-<figure class="tfl-figure"><img src="img/diagram-39.svg" alt="图 39：Runtime 动态 fan-out 与协作等待"/><figcaption>图 39 · Runtime 子任务计入父 Work 完成范围，等待时 Worker 继续做其他 ready Work</figcaption></figure>
-
 ```cpp
 auto parent = executor.async([](tfl::Runtime& rt) {
     std::array<std::atomic<int>, 4> out{};
@@ -3178,8 +3047,6 @@ std::cout << parent.get() << '\n';        // 10
 `rt.wait()` 是协作等待，不是把 Worker 线程睡死。
 
 ## 51.18 示例 18：Runtime 中同步执行一个已有子图
-
-<figure class="tfl-figure"><img src="img/diagram-40.svg" alt="图 40：Runtime run 与 corun 范围"/><figcaption>图 40 · run 负责挂接，corun 建立独立同步等待范围</figcaption></figure>
 
 ```cpp
 tfl::Flow child("decode");
@@ -3220,8 +3087,6 @@ auto parent = executor.async([](tfl::Runtime& rt) {
 
 ## 51.20 示例 20：SubFlow 根据输入动态构图
 
-<figure class="tfl-figure"><img src="img/diagram-41.svg" alt="图 41：SubFlow 动态构图生命周期"/><figcaption>图 41 · SubFlow 必须显式 run；局部借用变量要在离开 callback 前 wait 完</figcaption></figure>
-
 ```cpp
 std::vector<int> values{1, 2, 3, 4};
 
@@ -3238,8 +3103,6 @@ executor.async([&](tfl::SubFlow& sf) {
 只 `emplace()` 不会自动执行；如果子任务捕获 callback 的局部变量，应在 callback 返回前 `wait()`。
 
 ## 51.21 示例 21：TaskGroup 管理局部批次
-
-<figure class="tfl-figure"><img src="img/diagram-42.svg" alt="图 42：TaskGroup 局部范围"/><figcaption>图 42 · TaskGroup 用 AnchorWork 聚合一组动态任务的完成范围</figcaption></figure>
 
 ```cpp
 auto parent = executor.async([](tfl::Runtime& rt) {
@@ -3259,8 +3122,6 @@ std::cout << parent.get() << '\n';
 
 ## 51.22 示例 22：协作式停止
 
-<figure class="tfl-figure"><img src="img/diagram-43.svg" alt="图 43：停止沿父 Topology 传播"/><figcaption>图 43 · request_stop 设置控制域；真正退出由任务中的 stop_requested 检查完成</figcaption></figure>
-
 ```cpp
 auto job = executor.async([](tfl::Runtime& rt) {
     for (int i = 0; i < 1000; ++i) {
@@ -3277,8 +3138,6 @@ std::cout << job.get() << '\n';
 停止不是强制杀线程，也不会回滚已发生的副作用。
 
 ## 51.23 示例 23：Semaphore 把并行任务限制为固定资源数
-
-<figure class="tfl-figure"><img src="img/diagram-44.svg" alt="图 44：Semaphore 任务级资源配额"/><figcaption>图 44 · 配额不足的 Work 进入 waiter 链，不阻塞 Worker</figcaption></figure>
 
 ```cpp
 tfl::Semaphore gpu_slots(2);
@@ -3308,8 +3167,6 @@ infer.release(buffers, 2).release(gpu);
 只有两个资源都满足时才统一扣减；任何一个不足都不会留下“部分占有”。
 
 ## 51.25 示例 25：Observer 做轻量任务计数
-
-<figure class="tfl-figure"><img src="img/diagram-45.svg" alt="图 45：Observer 与 WorkerHandler 的观察层级"/><figcaption>图 45 · Observer 包围单个 callable；WorkerHandler 包围 Worker OS 线程生命周期</figcaption></figure>
 
 ```cpp
 struct CounterObserver final : tfl::TaskObserver {
@@ -3348,8 +3205,6 @@ tfl::Executor executor(handler, 4);
 这里适合设置线程名、CPU affinity、TLS、每线程 profiler；不适合做每任务 tracing。
 
 ## 51.27 示例 27：手工 parallel-for 分块
-
-<figure class="tfl-figure"><img src="img/diagram-46.svg" alt="图 46：并行分块与汇聚"/><figcaption>图 46 · 当前 core 没有独立 STL 算法层，常见做法是按 chunk 建任务或 Runtime 动态扇出</figcaption></figure>
 
 ```cpp
 std::vector<int> data(1000, 1);
@@ -3399,8 +3254,6 @@ executor.corun(flow);
 
 ## 51.29 示例 29：Retry + backoff 状态机
 
-<figure class="tfl-figure"><img src="img/diagram-47.svg" alt="图 47：Retry backoff 状态机"/><figcaption>图 47 · 先更新重试状态，再由 Jump 显式回到 Attempt</figcaption></figure>
-
 ```cpp
 int attempt = 0;
 int backoff_ms = 1;
@@ -3429,8 +3282,6 @@ executor.corun(flow);
 
 ## 51.30 示例 30：运行之间替换算法，但不重新构图
 
-<figure class="tfl-figure"><img src="img/diagram-49.svg" alt="图 49：Work payload 替换"/><figcaption>图 49 · task.work 只替换 payload；拓扑身份保持不变</figcaption></figure>
-
 ```cpp
 int value = 0;
 auto input = flow.emplace([&] { value = 10; });
@@ -3450,8 +3301,6 @@ executor.corun(flow);                 // 15
 ## 51.31 示例 31：完整视觉处理 Pipeline
 
 这是一个更接近工程代码的组合：Capture 产生帧；Detect 与 Measure 并行；Decision 汇聚；Writer 受 I/O 配额限制；Detect 受 GPU 配额限制；整个 Flow 可以反复执行处理多帧。
-
-<figure class="tfl-figure"><img src="img/diagram-48.svg" alt="图 48：视觉处理综合 Pipeline"/><figcaption>图 48 · Capture → Detect/Measure → Decision → Writer，并在任务层配置 GPU/I/O 资源约束</figcaption></figure>
 
 ```cpp
 struct Frame { int id{}; };
@@ -3519,7 +3368,7 @@ int main() {
 
 <div class="part-anchor">Part X — API & Source Reference / 接口、源码与维护</div>
 
-# 52. 39 个示例阅读路线
+# 52. 42 个示例阅读路线
 
 | 示例 | 主题 |
 | ---: | --- |
@@ -3562,6 +3411,9 @@ int main() {
 | 37 | no exceptions |
 | 38 | Context and stop |
 | 39 | Observer errors |
+| 40 | Coroutine / call |
+| 41 | Coroutine fork / join |
+| 42 | External completion / CoroToken / stop |
 
 ### 推荐顺序
 
@@ -3711,8 +3563,7 @@ done();
 wait();                 // 只等待
 get();                  // 等待 + 重抛异常 + 结果
 
-request_stop();
-stop_requested();
+request_stop(); // 状态查询由执行中的 Context 或外部 CoroToken 提供
 
 use_count();
 hash_value();
@@ -3807,8 +3658,7 @@ run(graph);
 corun(graph);
 wait();
 
-request_stop();
-stop_requested();
+request_stop(); // 状态查询由执行中的 Context 或外部 CoroToken 提供
 size();
 ```
 
@@ -3932,9 +3782,9 @@ auto parent = executor.async([&](tfl::Runtime& rt) {
 
 ---
 
-# 54. 当前 `main` 相对旧 PDF 必须更新的重点
+# 54. 从 3.2.0 到 3.3.0 的语义升级
 
-旧版手册的总体结构仍然有价值，但以 2026-09-29 当前 core 为准，至少要把以下内容按新语义理解：
+3.2.0 的总体教学结构仍有价值，但旧版 PDF 不能作为 3.3.0 API 契约。以本次核对的 `72f6d846d337` 为准，以下差异已纳入正文：
 
 1. **`Executor::corun`** 已成为正式同步图执行入口，并有独立完整回归测试。
 2. **`Context`** 统一执行期 Worker/Executor/stop/type/name 访问。
@@ -3945,9 +3795,15 @@ auto parent = executor.async([&](tfl::Runtime& rt) {
 7. **静态 strong join**按当前统一 `fetch_sub` + 完成时 `fetch_add(join_weight)` 恢复协议说明。
 8. **Observer 异常**进入 Work 异常归档流程。
 9. **无异常模式**要覆盖显式 opt-out 和编译器真正禁用异常两种路径。
-10. **示例已经扩展到 39 个**，新增 `corun`、no-exceptions、Context/stop、Observer errors。
+10. **仓库示例已经扩展到 42 个**，包括 `corun`、no-exceptions、Context/stop、Observer errors 和 Coroutine。
 11. **Task/Async 对象原地构造**应覆盖 `work_object`、`emplace_object`、`defer_async_object` 当前接口。
 12. **算法层**只能按当前示例中的并行模式介绍，不能把尚未进入 core 的未来 API 写成正式能力。
+13. **协程**使用 `CoroTask` / `Coro` / `CoroToken`；子调用走 `call`，并行子 Work 走 `fork/join`。
+14. **依赖生命周期**不再保留前驱强引用；读取结果或对象时必须持有句柄。
+15. **分配失败**的动态依赖登记有回滚，payload 替换失败则需要重新绑定。
+16. **停止查询**集中到 Context，外部等待另有 CoroToken；Future / TaskGroup 发出请求，不能假定停止会自动唤醒外部挂起。
+17. **Frame 对齐**当前只保证 `alignof(std::max_align_t)`，过度对齐的协程帧并非已支持的公共保证。
+18. **协程外部回调**的 Token 弱控制块不拥有 Coro，适配器需要保证注销与销毁同步。
 
 ---
 
@@ -3962,9 +3818,9 @@ auto parent = executor.async([&](tfl::Runtime& rt) {
 5. Async 动态依赖只表达“完成先后”，不自动传播前驱结果和异常。
 6. Worker 内等待动态工作优先使用 Runtime/TaskGroup 的协作等待。
 7. Branch 遵守普通 join；Jump 强制激活，二者不是同一种控制流。
-8. Runtime/SubFlow/TaskGroup/Branch/Jump 都是回调期借用对象，不能逃逸。
+8. Runtime/SubFlow/TaskGroup/Branch/Jump 是回调期借用对象；Coro 可跨挂起存活，但 `worker()` 引用与工作线程绑定，不能跨挂起保存。
 9. Semaphore 多资源获取是 all-or-nothing，拿不到资源的 Work 不阻塞 Worker。
-10. 排查调度问题时沿着 `source -> schedule -> queue/shared -> invoke -> tear-down -> join_counter -> parent slot` 这条链看。
+10. 排查调度问题时沿着 `source -> schedule -> queue/shared -> invoke -> tear-down -> join_counter -> parent slot` 这条链看；协程再检查恢复交接、Token 生命周期和 Frame LIFO。
 
 ---
 
@@ -3991,6 +3847,10 @@ taskflowlite/core/jump.hpp
 taskflowlite/core/semaphore.hpp
 taskflowlite/core/observer.hpp
 taskflowlite/core/worker.hpp
+taskflowlite/core/coro.hpp
+taskflowlite/core/coro_task.hpp
+taskflowlite/core/coro_awaiter.hpp
+taskflowlite/core/coro_token.hpp
 ```
 
 理解内部调度：
@@ -4008,6 +3868,7 @@ taskflowlite/core/notifier.hpp
 taskflowlite/core/small_vector.hpp
 taskflowlite/core/object_pool.hpp
 taskflowlite/core/spin_mutex.hpp
+taskflowlite/core/stack.hpp
 ```
 
 ---
@@ -4024,11 +3885,277 @@ taskflowlite/core/spin_mutex.hpp
 6. 核对队列和 Notifier；
 7. 核对 Semaphore；
 8. 核对异常/无异常宏；
-9. 核对 `examples/README.md` 与示例数量；
-10. 跑测试与 sanitizer；
-11. 最后才更新 PDF。
+9. 核对协程 `Coro/CoroTask/CoroToken` 的状态交接、Frame 对齐及新示例；
+10. 核对 `examples/README.md` 与示例数量；
+11. 跑测试与 sanitizer，并运行 `python .github/scripts/check_docs.py`；
+12. 最后从同一份 Markdown 导出 PDF，验证页数、链接、目录和中文字体。
 
 这样可以避免“文档已经写成理想设计，但 core 其实还没实现”的问题。
+
+
+---
+
+<div class="part-anchor">Part XI — Coroutine / 协程、外部恢复与帧生命周期</div>
+
+# 58. Coroutine：完整使用、内部交接与安全边界
+
+本章以 [最新 `main` 提交](https://github.com/wicyn/taskflowlite/commit/72f6d846d337e714e4061222762afc3af4711e3e) 的 `coro.hpp`、`coro_task.hpp`、`coro_awaiter.hpp`、`coro_token.hpp`、`stack.hpp`、[官方协程指南](https://github.com/wicyn/taskflowlite/blob/main/documentation/coroutines.md)和示例 40–42 为依据。**这是实际公开 API 与当前源码行为的说明，不是尚未实现的设计提案。**
+
+## 58.1 四条执行路径必须区分
+
+| 操作 | 子任务属于哪个 Work | `co_await` 返回时代表什么 | 结果/异常在哪观察 |
+| --- | --- | --- | --- |
+| `co_await coro.call(callable)` | 与父协程同一个 Work、Coro、Topology | 子协程执行到 `co_return`，对称转移回父协程 | 当前 `co_await` 返回值或抛异常 |
+| `co_await coro.fork(callable, deps...)` | 新的子 Work、子 Topology | **子任务已提交**，不表示执行结束 | 返回 `AsyncFuture<R>`，在安全等待后 `get()` |
+| `co_await coro.silent_fork(callable)` | 新的子 Work、子 Topology | 子 Work 已提交；不返回 Future | 框架异常锚点；不提供结果句柄 |
+| `co_await coro.join()` | 不创建新 Work | 已挂接到本父 Work 的子工作全部完成 | 不消费结果，也不自动调用子 Future 的 `get()` |
+| `co_await external_operation` | 当前协程 Work | 外部操作按 Token 协议完成并恢复当前协程 | 自定义 `await_resume()` 的结果或异常 |
+
+```mermaid
+%% diagram-id: coroutine_routes
+flowchart TD
+    P[Coroutine Work / Coro] --> C[call: same Work, symmetric transfer]
+    P --> F[fork: new child Work + AsyncFuture]
+    P --> J[join: wait child completion]
+    P --> X[external operation]
+    X --> T[CoroToken: resume request]
+    T --> E[Executor dispatch]
+```
+
+`CoroTask<R>` 是框架管理的协程返回类型；不是 `std::future`，**没有公开 `get()` 或直接 `operator co_await`**。同 Work 子协程必须经 `coro.call()` 进入，不应直接 `co_await` 一个由用户创建的 `CoroTask`。
+
+## 58.2 入口、返回类型和提交方式
+
+协程 callable 的形式是 `f(tfl::Coro&) -> tfl::CoroTask<R>`。它可以作为 `Flow::emplace()` 节点，或交给 `Executor::async()` / `silent_async()` / `defer_async()`，以及 Runtime / TaskGroup 动态异步提交与对象型任务。当前节点类型为 `TaskType::Coroutine`。
+
+```cpp
+#include <taskflowlite/taskflowlite.hpp>
+#include <iostream>
+
+int main() {
+    tfl::Executor executor(1);
+    auto result = executor.async([](tfl::Coro&) -> tfl::CoroTask<int> {
+        co_return 42;
+    });
+    std::cout << result.get() << '\n';
+}
+```
+
+`R` 支持 `void`、普通值类型和左值引用，不支持右值引用结果。异步结果被 `AsyncFuture<R>` 共享：值结果 `get()` 返回 `const R&`，引用结果返回原 `R` 对应引用；结果、引用和其拥有者的寿命必须分别检查。
+
+## 58.3 `call`：父子 Frame 的对称转移与顺序重用
+
+```cpp
+auto result = executor.async([](tfl::Coro& coro) -> tfl::CoroTask<int> {
+    auto op = coro.call([](tfl::Coro&) -> tfl::CoroTask<int> {
+        co_return 21;
+    });
+    int left = co_await op;
+    int right = co_await op;  // 可顺序重用；不是并发调用
+    co_return left + right;
+});
+```
+
+`Coro::call()` 保存衰减后的 callable，**延迟到 `await_suspend` 时创建子 Coroutine Frame**，自动传入当前 `Coro&`；子帧保存父句柄 continuation，并通过对称转移进入子协程。子任务完成到 `final_suspend` 时，转回父句柄；父侧 `await_resume()` 读取结果或传播异常，随后回收子帧。`CallOperation` 可以顺序多次 `co_await`，不允许同一个操作并发等待。
+
+`call` 不增生新的 Work 或线程池调度任务；如果希望独立并行子 Work，应使用 `fork()`。子帧回收遵守当前 `Stacklet` 的 **LIFO（后进先出）** 约束。
+
+## 58.4 `fork` / `silent_fork`：启动时机及依赖
+
+```cpp
+auto answer = executor.async([](tfl::Coro& coro) -> tfl::CoroTask<int> {
+    auto left  = co_await coro.fork([] { return 20; });
+    auto right = co_await coro.fork([](tfl::Coro&) -> tfl::CoroTask<int> {
+        co_return 22;
+    });
+    auto sum = co_await coro.fork([left, right] {
+        return left.get() + right.get();
+    }, left, right);
+    co_await coro.join();
+    co_return sum.get();
+});
+```
+
+`fork()` 操作在创建时准备子 Work/Future 和依赖句柄，**真正提交发生在 `co_await`**。没有 `co_await` 就销毁操作时，未提交的子工作按自身句柄/资源所有权规则清理。`fork` 可接受普通 Basic、Runtime、SubFlow、Coroutine callable 和 Graph 的单次/多次/谓词形式，Graph 还支持完成回调。所借用的图及其业务对象必须活到执行结束。
+
+`fork()` 返回 Future 是“提交成功”的里程碑，不是“完成”的保证。若依赖尚未满足，父协程可能继续运行，而子 Work 等前驱全部完成后才就绪。**不要在子工作未完成时于父协程直接阻塞 `future.get()`；先 `co_await coro.join()`，然后 `get()`。**
+
+动态依赖只建立完成边、不传递结果或异常。3.3.0 当前实现也不为后继长期保留前驱强引用：子后继需要结果时必须按值捕获前驱 Future。
+
+**当前接口限制**：`Coro::fork(..., AsyncTask<R>)` 直接实例化存在私有成员访问编译问题；应先把已启动的 `AsyncTask<R>` 转换为公开 `AsyncFuture<R>`，再作为依赖传入：
+
+```cpp
+auto deferred = executor.defer_async([] { return 21; });
+deferred.start();
+tfl::AsyncFuture<int> dependency = deferred;
+auto result = executor.async([dependency](tfl::Coro& coro) -> tfl::CoroTask<int> {
+    auto child = co_await coro.fork([dependency] {
+        return dependency.get() * 2;
+    }, dependency);
+    co_await coro.join();
+    co_return child.get();
+});
+```
+
+## 58.5 `join`：为什么不能依赖父 Work 最终收尾来保护局部变量
+
+```mermaid
+%% diagram-id: join
+flowchart TD
+    P[Parent Coroutine] -->|fork| A[Child A: Work]
+    P -->|fork| B[Child B: Work]
+    A -->|parent completion slot| J[join counter]
+    B -->|parent completion slot| J
+    P -->|co_await join| J
+    J -->|all children done| C[Resume parent]
+```
+
+`join()` 通过父 Work 的未完成计数与 `PREEMPTED`/恢复交接协调：没有未完成子工作时继续；否则让出 Worker，待最后一个子工作归还完成槽后恢复。它不从子 Future 中自动提取结果、也不自动重抛子 Future 保存的异常。
+
+尤其要区分**父 Work 尚未完成**与**父协程帧里局部变量还活着**。若子工作引用父协程帧中的局部变量，必须在局部变量析构前显式 `co_await coro.join()`，不能依赖父任务后续自动收尾：
+
+```cpp
+co_await coro.silent_fork([&local] { consume(local); });
+co_await coro.join();  // local 的寿命到这里才安全
+```
+
+`consume()` 与 `local` 只代表用户业务函数/变量，此片段是生命周期模式示意。`join` 之后仍应通过各 Future 的 `get()` 明确读取所需结果并观察异常。
+
+## 58.6 外部 `CoroOperation` 的确切接口
+
+```cpp
+struct Completion {
+    // ... 保存外部注册所需的状态 ...
+    bool await_ready();
+    bool await_suspend(tfl::CoroToken token);
+    void await_resume();
+};
+```
+
+`CoroOperation` 要求 `await_ready()` 与 `await_suspend(token)` **精确返回 `bool`**，`await_resume()` 可返回自定义结果。三个操作都可以抛异常。框架通过 `promise_type::await_transform` 将操作包装成 `CoroAwaiter<A>`；用户只需写 `co_await operation`，无需直接操作标准 `coroutine_handle`。
+
+| 阶段 | 当前实现的规则 | 外部适配器必须保证 |
+| --- | --- | --- |
+| `await_ready() == true` | 直接 `await_resume()`，不登记挂起 | 结果已真正就绪 |
+| `await_suspend(token) == false` | 撤销已登记的恢复点并继续 | 没有提前通知恢复；不遗留有效回调 |
+| `await_suspend(token) == true` | 提交挂起；允许启动期间提前通知 | 外部完成方最终只对本次等待发有效通知 |
+| `await_suspend` 抛异常 | 回滚挂起登记，异常进入协程 | 不遗留完成回调或已提交的恢复通知 |
+
+这不是通用标准 `std::awaitable` 接口的“随便传一个 handle”语义；它是 TaskflowLite 明确限定的 **Token 注册/恢复协议**。当前框架不会在 `await_suspend()` 返回 `false` 的同时再替用户撤销已发布的 I/O 完成事件。
+
+## 58.7 防止提前恢复与重复执行的状态交接
+
+```mermaid
+%% diagram-id: coro_handshake
+sequenceDiagram
+    participant W as Worker / Awaiter
+    participant O as External operation
+    participant T as CoroToken
+    participant E as Executor
+    W->>W: prepare_suspend(handle)
+    W->>O: await_suspend(token)
+    O-->>W: true
+    W->>W: commit_suspend()
+    O->>T: resume()
+    T->>E: dispatch after handoff
+    E->>W: resume on a Worker
+```
+
+实际顺序为 `CoroAwaiter::await_suspend(handle)` 先 `_prepare_suspend(handle)`，再调用 `m_op.await_suspend(token)`。返回 `false` 或抛异常则执行 `_cancel_suspend()`；返回 `true` 则进入 `_commit_suspend()`。因此**注册阶段与外部完成通知允许并发发生**：
+
+- 通知先到：`Coro::resume()` 记录提前到达，不会在原 Worker 尚未完成交接时递归执行协程；`_commit_suspend()` 检测通知并让当前协程直接继续。
+- 交接先完成：`_commit_suspend()` 设置本次 Invoker 的返回标志，之后外部 `resume()` 通过 Executor 重新调度 Work。旧 Invoker 只按自身局部标志退出，不继续访问可能已被其他 Worker 销毁的帧。
+- 重复通知：`resume()` 以原子状态位仲裁，未处于有效的等待状态时返回 `false`，不能把重复通知理解为允许外部回调无限存活。
+
+这些交接的关键在于 **`Coro` 中原子状态负责唯一恢复请求，本次 Invoker 的局部返回标志负责退出旧执行栈**；仅靠一个独立 `bool` 不足以解决跨线程并发通知的所有次序问题。
+
+## 58.8 `CoroToken` 的弱引用不等于 Coro 的真实所有权
+
+`CoroAwaiter<A>` 内有 `std::shared_ptr<Coro>` 控制块，采用**空删除器**；`CoroToken` 只保存该控制块的 `std::weak_ptr<Coro>`。本次 Awaiter 析构时，控制块的最后强引用消失后 Token 就会失效：之后 `resume() == false` 且 `stop_requested() == true`。
+
+需要特别注意：Token 不延长 `Coro` 自身寿命；即使线程 A 的 `weak_ptr::lock()` 已成功，线程 B 仍可能在不正确的销毁时序下销毁真实 Coro。**外部 I/O 回调适配器必须同步完成/注销回调，确保已锁定控制块的回调不会并发访问已销毁 Coro**。`weak_ptr` 的自动失效不能替代对回调活动期的管理。
+
+`CoroToken::resume()` 返回 `true` 仅表示恢复请求被接受，**不表示协程已经执行完成**。它可复制/移动，但不可默认构造；只对应当前一次等待，不可复用于下一次 `co_await`。
+
+## 58.9 可独立运行的外部恢复与停止示例
+
+下面直接采用当前仓库示例 42 的公开 API 形态，重点展示“单 Worker 可以执行其他任务”和“停止不会自动唤醒”。实际 I/O 框架仍需额外实现回调注销同步。
+
+```cpp
+#include <taskflowlite/taskflowlite.hpp>
+#include <future>
+#include <iostream>
+
+struct Completion {
+    std::promise<tfl::CoroToken>& registered;
+    bool await_ready() const noexcept { return false; }
+    bool await_suspend(tfl::CoroToken token) {
+        registered.set_value(std::move(token));
+        return true;
+    }
+    void await_resume() const noexcept {}
+};
+
+int main() {
+    std::promise<tfl::CoroToken> registered;
+    auto notification = registered.get_future();
+    tfl::Executor executor(1);
+    auto task = executor.async([&](tfl::Coro& coro) -> tfl::CoroTask<bool> {
+        co_await Completion{registered};
+        co_return coro.stop_requested();
+    });
+
+    auto token = notification.get();
+    const int other = executor.async([] { return 42; }).get();
+    const bool requested = task.request_stop();
+    const bool observed = token.stop_requested();
+    const bool resumed = token.resume();
+    const bool stopped = task.get();
+    const bool expired = !token.resume() && token.stop_requested();
+
+    std::cout << other << ' ' << requested << ' ' << stopped << '\n';
+    return other == 42 && requested && observed && resumed && stopped && expired ? 0 : 1;
+}
+```
+
+`request_stop()` 是协作式请求，不会自动完成外部 I/O，不会强制唤醒已挂起协程。操作持有者需要取消或完成 I/O，再按协议触发本次有效 Token 的恢复，协程中的清理代码才能继续执行。`Coro::worker()` 表示本次执行 Worker；跨挂起点可能换 Worker，不能保存该 Worker 引用，也不能让绑定线程的 TaskGroup/ScopedExceptionAnchor 跨挂起持有。
+
+## 58.10 Stacklet：Frame 分配、对齐与 LIFO 回收
+
+```mermaid
+%% diagram-id: stack
+flowchart LR
+    W[Worker Stack cache] -->|acquire| R[Root Stacklet]
+    R -->|full: push| N[Next Stacklet]
+    N -->|LIFO pop| W
+    R -->|root reset| W
+    W -->|large empty segment| X[free]
+```
+
+当前 `Stacklet` 持有同一块 malloc 内存中的段头与用户存储区，默认**总段大小 4096 字节**；总大小始终按不小于该值的 2 次幂增长。每次帧分配向上推进栈指针，释放时回退到最近一次分配地址，必须保持 LIFO。Coro 优先在活动栈段分配；空间不足时从当前 Worker 的 `Stack` 缓存取新段或新建。扩展段退空后归还 Worker，根段由 `_reset()` 回收；默认大小段可缓存复用，大段直接释放。
+
+`CoroTask<R>::promise_type::operator new(size, Args&...)` 从协程参数里查找 `Coro&`，申请额外 `FrameHeader` 保存 `Coro*`；`operator delete` 根据头部回到同一 Coro 的最后一次分配。**当前实现保证的对齐仅为 `Stacklet::alignment == alignof(std::max_align_t)`**，并非已实现任意 `alignas(64)` 等过度对齐 Frame 的通用分配契约。使用依赖过度对齐的协程对象前，必须先修正源码中 aligned allocation 的成对 `new/delete` 及回退计算，并做编译器、Sanitizer 回归；本手册不把未实现能力写成已支持。
+
+对子 `call`，帧在父协程恢复取结果后立即回收；对独立 `fork`，每个子 Work 有自己的 Coro/帧与执行生命周期。**Worker 的缓存只由当前 Worker 独占访问**，但 Coro 恢复可以换 Worker，因此 Frame 释放应由当前合法执行该 Coro 的 Worker 完成，而不是从外部 Token 线程直接销毁。
+
+## 58.11 常见错误速查与最小回归矩阵
+
+| 错误用法 | 问题与处理 |
+| --- | --- |
+| `co_await some_CoroTask` | 不是受支持的公开 awaitable；通过 `co_await coro.call(lambda)` |
+| `auto f = co_await coro.fork(...); f.get();` | `fork` 只保证提交；先 `co_await coro.join()`，再 `get()` |
+| 忘记 `co_await` ForkOperation | 操作尚未提交，析构处理未启动子 Work |
+| 只调用 `request_stop()` 等待外部 I/O | 停止不代表完成/恢复，操作适配器必须通知有效 Token |
+| 在外部线程调用标准 `coroutine_handle.resume()` | 绕过调度和唯一恢复权；只能使用 `CoroToken::resume()` |
+| 认为 `weak_ptr` 自动解决并发销毁 | 弱控制块不拥有 Coro；同步注销/完成外部回调 |
+| `co_await coro.fork(callable, deferred)` | 当前需先将已启动的 `AsyncTask` 转换为 `AsyncFuture` |
+| 保存 `coro.worker()` 跨 `co_await` | 恢复线程可能改变，应在每次执行段重新获取 Worker |
+| 过度对齐 Frame 直接进入 Stacklet | 只保证 `max_align_t`，不能假设 aligned-new 自动受支持 |
+
+建议至少覆盖：单/多 Worker 顺序 `call`、结果/异常、顺序复用；`fork/join` 与前驱完成依赖；注册期间提前通知、重复通知、Token 失效；请求停止与外部完成交错；Frame LIFO、大小溢出和对齐；无异常构建，以及 ASan/TSan。仓库已有 `test/test_coro.cpp`、`test/test_coro_awaiter.cpp`、`test/test_stack.cpp` 与 `test/no_exceptions.cpp` 作为对应回归入口。
+
+**源码定位**：[coro.hpp](https://github.com/wicyn/taskflowlite/blob/main/taskflowlite/core/coro.hpp) · [coro_task.hpp](https://github.com/wicyn/taskflowlite/blob/main/taskflowlite/core/coro_task.hpp) · [coro_awaiter.hpp](https://github.com/wicyn/taskflowlite/blob/main/taskflowlite/core/coro_awaiter.hpp) · [coro_token.hpp](https://github.com/wicyn/taskflowlite/blob/main/taskflowlite/core/coro_token.hpp) · [stack.hpp](https://github.com/wicyn/taskflowlite/blob/main/taskflowlite/core/stack.hpp)。完整示例：[40 call](https://github.com/wicyn/taskflowlite/blob/main/examples/40_coroutine.cpp) · [41 fork/join](https://github.com/wicyn/taskflowlite/blob/main/examples/41_coroutine_fork.cpp) · [42 外部恢复](https://github.com/wicyn/taskflowlite/blob/main/examples/42_coroutine_external.cpp)。
+
 
 ---
 

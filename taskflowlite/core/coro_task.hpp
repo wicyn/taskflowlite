@@ -167,14 +167,15 @@ private:
     static_assert(sizeof(FrameHeader) % Stacklet::alignment == 0);
 
     /// @brief 从协程函数参数中查找第一个非 const Coro&。
+    /// @note 协程分配和 Promise 构造收到的参数均为左值；这里只借用查找，不转移参数。
     template <typename T, typename... Rest>
-    [[nodiscard]] static Coro& _find_coro(T&& value, Rest&&... rest) noexcept {
-        if constexpr (std::same_as<T, Coro&>) {
+    [[nodiscard]] static Coro& _find_coro(T& value, Rest&... rest) noexcept {
+        if constexpr (std::same_as<T, Coro>) {
             return value;
         } else {
             static_assert(sizeof...(Rest) > 0, "CoroTask coroutine requires a Coro& argument");
             if constexpr (sizeof...(Rest) > 0) {
-                return _find_coro(std::forward<Rest>(rest)...);
+                return _find_coro(rest...);
             }
         }
     }
@@ -191,12 +192,12 @@ public:
     /// @brief 从所属 Coro 的活动 Stacklet 分配 Frame；空间不足时获取新的栈段。
     /// @pre 所属 Coro 已绑定当前 Worker；根 Frame 也通过该 Worker 获取栈段。
     template <typename... Args>
-    [[nodiscard]] static void* operator new(std::size_t size, Args&&... args) {
+    [[nodiscard]] static void* operator new(std::size_t size, Args&... args) {
         if (size > std::numeric_limits<std::size_t>::max() - sizeof(FrameHeader)) [[unlikely]] {
             TFL_THROW(std::bad_alloc{});
         }
 
-        Coro& coro = _find_coro(std::forward<Args>(args)...);
+        Coro& coro = _find_coro(args...);
 
         auto* memory = static_cast<std::byte*>(coro._allocate_frame(size + sizeof(FrameHeader)));
         ::new (memory) FrameHeader{std::addressof(coro)};
@@ -223,9 +224,10 @@ public:
 
     /// @brief 创建 Promise 时自动绑定协程函数参数中的第一个非 const Coro&。
     /// @note 结果槽构造可能抛异常，此时由 Coroutine 创建路径回收已申请的 Frame。
+    /// @note 使用左值引用，避开 GCC PR115550 对隐式对象参数的转发引用推导问题。
     template <typename... Args>
-    explicit promise_type(Args&&... args) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>>)
-        : m_coro{_find_coro(std::forward<Args>(args)...)} {}
+    explicit promise_type(Args&... args) noexcept(std::is_nothrow_default_constructible_v<ResultSlot<R>>)
+        : m_coro{_find_coro(args...)} {}
 
     [[nodiscard]] CoroTask get_return_object() noexcept {
         return CoroTask{handle_type::from_promise(*this)};

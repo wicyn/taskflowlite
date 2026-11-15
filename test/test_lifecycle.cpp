@@ -160,7 +160,7 @@ TEST_CASE("Lifecycle: Subflow nesting does not leak", "[lifecycle][subflow]") {
 
         tfl::Flow outer;
         outer.emplace(Probe{});
-        outer.emplace(std::move(inner), 3ULL);  // 子图运行 3 次
+        outer.emplace(std::move(inner), std::uint64_t{3});  // 子图运行 3 次
         outer.emplace(Probe{});
 
         env.executor.async(outer).wait();

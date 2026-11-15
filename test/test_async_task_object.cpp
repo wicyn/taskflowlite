@@ -180,12 +180,12 @@ TEST_CASE("AsyncTaskObject: last idle handle destroys unstarted object", "[async
     env.executor.wait_for_all();
 }
 
-TEST_CASE("AsyncTaskObject: dependencies retain the business object", "[async_task_object][deps][lifetime]") {
+TEST_CASE("AsyncTaskObject: captured handle retains the business object beyond completion", "[async_task_object][deps][lifetime]") {
     std::atomic<int> destroyed{0};
     tfl_test::TestEnv env;
     auto source = env.executor.defer_async_object<Lifetime>(destroyed);
-    auto* object = &source.object();
-    auto ordinary = env.executor.defer_async([object] { return (*object)() + 1; });
+    // Completion edges do not own the source. Keep a handle for object access.
+    auto ordinary = env.executor.defer_async([source] { return source.object()() + 1; });
     source.start();
     ordinary.start(source);
     source.reset();

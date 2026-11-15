@@ -34,3 +34,6 @@ cmake --build build/examples --config Release --target tfl_ex_01_basic_dag
 | [37_no_exceptions.cpp](37_no_exceptions.cpp) | 禁用编译器异常的完整程序 |
 | [38_context_and_stop.cpp](38_context_and_stop.cpp) | Context 信息与子任务停止继承 |
 | [39_observer_errors.cpp](39_observer_errors.cpp) | 观察者异常与任务结果 |
+| [40_coroutine.cpp](40_coroutine.cpp) | Coroutine 节点、call 子协程与重复等待 |
+| [41_coroutine_fork.cpp](41_coroutine_fork.cpp) | fork 依赖、join 与结果读取 |
+| [42_coroutine_external.cpp](42_coroutine_external.cpp) | 外部 CoroToken、协作停止与令牌失效 |
