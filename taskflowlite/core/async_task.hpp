@@ -56,7 +56,7 @@ namespace tfl {
 /// @warning 任务配置不得与启动、执行或其他配置修改并发进行。
 template <typename R>
 class AsyncTask : public AsyncFuture<R> {
-
+    friend class Coro;
     friend class Runtime;
     friend class Executor;
     friend class TaskGroup;
