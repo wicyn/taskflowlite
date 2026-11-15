@@ -84,7 +84,7 @@ TEST_CASE("FlowBuilder: pack forwards module count and predicate", "[builder][pa
     int count = 0, callbacks = 0;
     (void)inner.emplace([&] { ++count; });
     auto [first, second, third] = flow.emplace(
-        tfl::pack{std::move(inner), 2ULL},
+        tfl::pack{std::move(inner), std::uint64_t{2}},
         tfl::pack{[&] { ++callbacks; }},
         tfl::pack{[] {}});
     flow.linearize(first, second, third);

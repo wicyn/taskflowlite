@@ -25,6 +25,8 @@ jobs:
     # Formatting remains an optional local tool, not a CI requirement.
     - name: Test changed-file selection
       run: python3 -m unittest discover -s .github/scripts -p 'test_check_cpp.py'
+    - name: Check documentation links
+      run: python3 .github/scripts/check_docs.py
     - name: Test sanitizer configuration
       run: cmake -P .github/scripts/check_build_options.cmake
 

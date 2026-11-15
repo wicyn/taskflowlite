@@ -24,6 +24,7 @@ ctest --preset windows-asan
 | `TFL_BUILD_EXAMPLES` | 顶层 ON，子项目 OFF | 构建示例 |
 | `TFL_BUILD_TESTS` | OFF | 构建并注册单元测试 |
 | `TFL_TEST_HEADERS` | ON | 启用测试时普通与禁用异常模式下逐头文件编译 |
+| `TFL_TEST_CORE_ALLOCATION_FAILURE` | ON | 普通构建中运行独立的依赖登记失败回滚测试 |
 | `TFL_BUILD_BENCHMARKS` | OFF | 构建对比基准和 core API 基准 |
 | `TFL_BUILD_DOCS` | OFF | 提供 Doxygen 的 `GenerateDocs` 目标 |
 | `TFL_SANITIZER` | OFF | OFF / ASAN / TSAN，互斥 |
@@ -76,3 +77,6 @@ target_compile_definitions(app PRIVATE TFL_ENABLE_EXCEPTIONS=0)
 所有使用本库的翻译单元须采用一致设置。若编译器已禁用异常（GCC/Clang 的 `-fno-exceptions`，MSVC 的 `/EHs-c-` 配合 `_HAS_EXCEPTIONS=0`），库会自动关闭异常支持。不可在编译器禁用异常时强制设为 1。
 
 普通 Catch2 测试包含抛异常场景，不应给整个测试构建统一添加禁用异常选项。默认构建会单独生成 `tfl_test_opt_out`、`tfl_test_no_exceptions`、无异常头文件检查和示例 37；CTest 同时检查正常执行与终止路径。安装导出目标不会强制改变应用的异常配置。
+
+协程要求编译器具备 C++20 coroutine 支持，直接使用公共入口头文件即可。普通测试和无异常测试
+均实例化 `CoroTask` / `call` / `fork` / `join`；安装包消费检查也验证协程入口。

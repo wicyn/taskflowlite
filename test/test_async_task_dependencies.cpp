@@ -73,7 +73,7 @@ TEST_CASE("AsyncTask: empty dependencies are ignored", "[async][deps]") {
     REQUIRE(env.executor.defer_async([] { return 7; }).start(empty_task, empty_future).get() == 7);
 }
 
-TEST_CASE("AsyncTask: mixed results and rvalue handles retain predecessors", "[async][deps][result]") {
+TEST_CASE("AsyncTask: mixed results and rvalue dependencies preserve caller handles", "[async][deps][result]") {
     TestEnv env;
     int number = 20;
     auto a = env.executor.defer_async([&]() -> int& { return number; }).start();
@@ -93,7 +93,7 @@ TEST_CASE("AsyncTask: mixed results and rvalue handles retain predecessors", "[a
     REQUIRE(&a.get() == &number);
 }
 
-TEST_CASE("AsyncTask: duplicates retain references until the last dependent handle resets", "[async][deps][refcount]") {
+TEST_CASE("AsyncTask: duplicate completion edges do not retain predecessor references", "[async][deps][refcount]") {
     TestEnv env;
     auto a = env.executor.defer_async([] {}).start();
     a.get();
@@ -104,12 +104,12 @@ TEST_CASE("AsyncTask: duplicates retain references until the last dependent hand
     auto c = env.executor.defer_async([] { return 42; }).start(a, alias, future);
     c.get();
     env.executor.wait_for_all();
-    REQUIRE(a.use_count() == before + 3);
+    REQUIRE(a.use_count() == before);
     auto copy = c;
     c.reset();
     tfl::AsyncFuture<int> survivor = std::move(copy);
     REQUIRE_FALSE(copy);
-    REQUIRE(a.use_count() == before + 3);
+    REQUIRE(a.use_count() == before);
     REQUIRE(survivor.get() == 42);
     survivor.reset();
     REQUIRE(a.use_count() == before);
@@ -132,7 +132,7 @@ TEST_CASE("AsyncTask: idle future conversion retains callable without submitting
     REQUIRE(lifetime.expired());
 }
 
-TEST_CASE("AsyncTask: completed predecessor is retained until dependent destruction", "[async][deps][refcount]") {
+TEST_CASE("AsyncTask: completed predecessor can be destroyed while dependent handles remain", "[async][deps][refcount]") {
     TestEnv env;
     std::weak_ptr<int> lifetime;
     tfl::AsyncTask<void> dependent;
@@ -145,7 +145,8 @@ TEST_CASE("AsyncTask: completed predecessor is retained until dependent destruct
     }
     dependent.get();
     env.executor.wait_for_all();
-    REQUIRE_FALSE(lifetime.expired());
+    REQUIRE(lifetime.expired());
+    REQUIRE(dependent.valid());
     dependent.reset();
     REQUIRE(lifetime.expired());
 }
@@ -191,7 +192,7 @@ TEST_CASE("AsyncTask: runtime and subflow dependencies include nested children",
     REQUIRE(result.get() == 42);
 }
 
-TEST_CASE("Submission: all contexts validate and retain mixed dependencies", "[async][deps][runtime][task-group]") {
+TEST_CASE("Submission: all contexts validate and borrow mixed dependencies", "[async][deps][runtime][task-group]") {
     TestEnv env(1);
     const int context = GENERATE(0, 1, 2);
     auto a = env.executor.defer_async([] { return 20; }).start();
@@ -224,7 +225,7 @@ TEST_CASE("Submission: all contexts validate and retain mixed dependencies", "[a
     }
     REQUIRE(child.get() == 42);
     env.executor.wait_for_all();
-    REQUIRE(a.use_count() == 3);
+    REQUIRE(a.use_count() == 1);
     child.reset();
     REQUIRE(a.use_count() == 1);
 }
@@ -250,7 +251,7 @@ TEST_CASE("AsyncTask: dependencies can cross bound executors", "[async][deps][ex
     REQUIRE(b.get().second == &second.executor);
 }
 
-TEST_CASE("AsyncTask: submitted temporary keeps dependencies without external handles", "[async][deps][refcount]") {
+TEST_CASE("AsyncTask: execution references protect submitted temporaries", "[async][deps][refcount]") {
     TestEnv env(1);
     int value = 0;
     auto a = env.executor.defer_async([&] { value = 20; }).start();
@@ -282,7 +283,7 @@ TEST_CASE("Runtime: independent deferred tasks use explicit cooperative wait", "
     REQUIRE(parent.get() == 42);
 }
 
-TEST_CASE("AsyncTask: successor growth preserves a live predecessor suffix", "[async][deps][refcount]") {
+TEST_CASE("AsyncTask: successor growth preserves concurrent completion edges", "[async][deps][refcount]") {
     TestEnv env(1);
     tfl::Semaphore gate{1, 0};
     auto root = env.executor.defer_async([] { return 20; }).acquire(gate).start();
@@ -342,7 +343,7 @@ TEST_CASE("AsyncTask: concurrent fan-in registration races predecessor completio
     }
 }
 
-TEST_CASE("AsyncTask: long retained dependency chains are reclaimed iteratively", "[async][deps][refcount]") {
+TEST_CASE("AsyncTask: a live chain tail does not retain completed predecessors", "[async][deps][refcount]") {
     TestEnv env(1);
     std::weak_ptr<int> lifetime;
     auto token = std::make_shared<int>(42);
@@ -352,7 +353,8 @@ TEST_CASE("AsyncTask: long retained dependency chains are reclaimed iteratively"
     for (int i = 0; i < 20000; ++i) tail = env.executor.defer_async([] {}).start(tail);
     tail.get();
     env.executor.wait_for_all();
-    REQUIRE_FALSE(lifetime.expired());
+    REQUIRE(lifetime.expired());
+    REQUIRE(tail.valid());
     tail.reset();
     REQUIRE(lifetime.expired());
 }

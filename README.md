@@ -1,4 +1,4 @@
-# TaskflowLite
+﻿# TaskflowLite
 
 [![Ubuntu](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml)
 [![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
@@ -11,19 +11,22 @@
 
 **简体中文** · [English](README.en.md)
 
-TaskflowLite（简称 tfl）是一个轻量级、仅头文件的 C++20 任务并行库，受 [Taskflow](https://github.com/taskflow/taskflow) 启发，提供任务依赖图、异步调度和运行时控制流。
+TaskflowLite（简称 tfl）是一个轻量级、仅头文件的 C++20 任务并行库，受 [Taskflow](https://github.com/taskflow/taskflow) 启发，将任务图、异步任务、协程和运行时控制流交给同一个执行器调度。
 
-你描述任务之间的依赖，执行器负责在线程池中调度可运行的任务。它适合处理有依赖关系的计算、批处理工作流，以及运行期间才确定的子任务。
+你描述任务之间的依赖，执行器负责在线程池中调度可运行的任务。它适合处理有依赖关系的计算、批处理工作流、运行期间才确定的子任务，以及需要挂起并等待外部完成通知的协程。
 
-[快速开始](#快速开始) · [安装与集成](#安装与集成) · [核心概念](#核心概念) · [基本用法](#基本用法) · [执行语义与使用约定](#执行语义与使用约定) · [构建与测试](#构建与测试) · [文档与示例](#文档与示例)
+[快速开始](#快速开始) · [安装与集成](#安装与集成) · [核心概念](#核心概念) · [基本用法](#基本用法) · [协程](#协程任务) · [执行约定](#执行语义与使用约定) · [构建与测试](#构建与测试) · [文档与示例](#文档与示例)
 
-[![TaskflowLite 任务图概览：分支、跳转、嵌套子图与任务内 TaskGroup](documentation/img/taskflowlite-overview.png)](documentation/img/taskflowlite-overview.png)
+[![TaskflowLite 任务图概览：分支、跳转、嵌套子图、TaskGroup、Coroutine 与 CoroToken 外部恢复](documentation/img/taskflowlite-overview.png)](documentation/img/taskflowlite-overview.png)
+
+协程节点支持 `call`、`fork/join` 和通过 `CoroToken` 恢复外部等待，详见[协程指南](documentation/coroutines.md)。
 
 ## 特性
 
 - **任务图**：构建 DAG，管理任务依赖，支持占位节点和任务重绑定。
 - **异步任务**：即时提交、延迟启动、依赖编排与共享结果。
 - **对象任务**：`TaskObject<T>` / `AsyncTaskObject<R, T>` 原地构造业务对象，通过 `object()` 访问状态，支持不可复制、不可移动类型。
+- **协程**：`CoroTask<R>`、顺序子协程、fork/join 和外部完成令牌。
 - **动态调度**：Runtime、动态 SubFlow 和作用域 TaskGroup。
 - **控制流**：条件分支、多分支、跳转、重复执行和模块嵌套。
 - **执行控制**：协作等待、异常传播、协作取消和信号量限流。
@@ -32,7 +35,7 @@ TaskflowLite（简称 tfl）是一个轻量级、仅头文件的 C++20 任务并
 
 ## 环境要求
 
-- C++20 编译器与标准库，支持 `std::format`、原子等待等 C++20 功能。
+- C++20 编译器与标准库，支持协程、`std::format` 和原子等待等 C++20 功能。
 - 使用 GCC 时需要 GCC 13 及以上版本的配套 libstdc++；Clang / MSVC 需要具备相应功能的标准库。
 - CMake 3.21 或更高版本（使用 CMake 时）。
 
@@ -73,6 +76,13 @@ A、B 可以并行执行，C 在两者完成后执行，程序输出 `42`。`C.s
 保存为 `main.cpp`，再按下一节配置 CMake 即可构建。完整独立示例见 [01_basic_dag.cpp](examples/01_basic_dag.cpp)。
 
 ## 安装与集成
+
+获取源码后，可选择子项目集成、安装 CMake 包或直接使用头文件：
+
+```sh
+git clone https://github.com/wicyn/taskflowlite.git
+cd taskflowlite
+```
 
 ### 作为 CMake 子项目
 
@@ -120,7 +130,14 @@ add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE TaskflowLite::taskflowlite)
 ```
 
-配置消费项目时添加 `-DCMAKE_PREFIX_PATH=/absolute/path/to/taskflowlite/install`，替换为上一步安装目录的绝对路径。仅安装头文件和 CMake 包时不需要先编译库。
+在消费项目根目录配置并构建，将下面的路径替换为上一步安装目录的绝对路径：
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/absolute/path/to/taskflowlite/install
+cmake --build build --config Release --parallel 4
+```
+
+仅安装头文件和 CMake 包时不需要先编译库。
 
 ### 直接使用头文件
 
@@ -134,6 +151,8 @@ target_link_libraries(my_app PRIVATE TaskflowLite::taskflowlite)
 | `Flow` / `Task` | 拥有任务图 / 引用图中的节点 | 提前构图，配置依赖后执行；完成后可再次提交 |
 | `AsyncFuture<R>` | 共享完成状态与结果 | 接收 `async()` 的结果或作为异步前驱 |
 | `AsyncTask<R>` | 可配置、延迟启动的共享任务句柄 | `defer_async()` 创建，配置完成后调用 `start()` |
+| `Coro` / `CoroTask<R>` | 可挂起的任务执行上下文 / 协程返回类型 | `call`、`fork/join` 和外部完成通知 |
+| `CoroToken` | 当前协程等待的非拥有恢复令牌 | 外部完成源请求恢复，并查询停止状态 |
 | `Runtime` | 任务执行期间的调度上下文 | 派发子任务、协作等待 |
 | `SubFlow` | 任务执行期间构建的子图 | 动态构图后显式 `run()` |
 | `TaskGroup` | 管理一个作用域内的子任务 | 分组等待和局部异常处理 |
@@ -141,8 +160,9 @@ target_link_libraries(my_app PRIVATE TaskflowLite::taskflowlite)
 | `Branch` / `MultiBranch` | 选择一个或多个后继 | 条件路径 |
 | `Jump` / `MultiJump` | 显式跳转控制流 | 重试、状态机与循环 |
 | `Semaphore` | 管理任务执行前后的资源配额 | 限制并发数、协调受限资源 |
+| `Context` | `Runtime`、`SubFlow`、`Coro` 的公共执行上下文 | 查询任务信息、所属 Executor 和停止状态 |
 
-已知完整依赖图时从 `Flow` 开始；需要直接获得一个计算结果时使用 `async()`；需要先配置再提交时使用 `defer_async()`；只有任务执行时才知道子任务内容时使用 `Runtime` 或 `SubFlow`。
+已知完整依赖图时从 `Flow` 开始；需要直接获得一个计算结果时使用 `async()`；需要先配置再提交时使用 `defer_async()`；只有任务执行时才知道子任务内容时使用 `Runtime` 或 `SubFlow`。需要在等待子任务或外部操作时挂起当前任务，可使用 `Coro`，通过 `co_await` 交还执行权。
 
 ## 基本用法
 
@@ -180,10 +200,44 @@ int result = second.get();  // 42
 
 `defer_async()` 创建绑定当前执行器的 Idle 任务，配置后通过 `start(依赖...)` 启动一次。
 前驱必须已启动或完成；支持混合 `AsyncTask` / `AsyncFuture`，空依赖忽略。
-重复依赖分别持有强引用，直到后继任务对象销毁；执行器须在启动及执行期间保持有效。
+重复依赖分别登记完成计数，不持有前驱强引用；需要读取前驱结果时按值捕获 Future。执行器须在启动及执行期间保持有效。
 Runtime / TaskGroup 的子任务使用各自的 `async()`；通过 `defer_async().start()` 启动的是独立顶层任务。
 
-完整语义及内存分配失败限制见[异步任务依赖说明](documentation/async-task-dependency-design.md)。
+完整语义及依赖登记失败回滚见[异步任务依赖说明](documentation/async-task-dependency-design.md)。
+
+### 协程任务
+
+协程 callable 接收 `tfl::Coro&`，返回 `tfl::CoroTask<R>`。可通过 `Executor::async()` 提交、`Flow::emplace()` 构图或 Runtime / TaskGroup 派发异步任务；也支持 `emplace_object()` 和 `defer_async_object()` 对象任务接口。
+
+```cpp
+auto answer = executor.async([](tfl::Coro& coro) -> tfl::CoroTask<int> {
+    const int base = co_await coro.call([](tfl::Coro&) -> tfl::CoroTask<int> {
+        co_return 20;
+    });
+
+    auto child = co_await coro.fork([] { return 22; });
+    co_await coro.join();
+    co_return base + child.get();
+});
+
+int result = answer.get();  // 42
+```
+
+| 操作 | 等待完成后的含义 |
+| --- | --- |
+| `co_await coro.call(callable)` | 顺序执行子协程，取得其结果或异常；父子共享当前任务上下文 |
+| `co_await coro.fork(callable, deps...)` | 子任务已提交，取得 `AsyncFuture<R>`；此时不保证子任务已完成 |
+| `co_await coro.silent_fork(callable)` | 子任务已提交，不返回 Future |
+| `co_await coro.join()` | 已派生子任务完成；通过对应 Future 的 `get()` 读取结果或重抛结果异常 |
+| `co_await operation` | 等待符合 `CoroOperation` 协议的外部操作；完成源通过 `CoroToken::resume()` 请求恢复 |
+
+`CoroTask<R>` 支持值、左值引用及 `void` 结果，由框架管理。子协程通过 `coro.call()` 调用；`CoroTask` 和 `AsyncFuture` 本身不提供直接 `co_await` 接口。
+
+在协程中先 `join()` 再读取尚未完成的子任务结果；直接调用 Future 的 `wait()/get()` 会阻塞当前 Worker。派生任务若借用协程局部变量，须在这些变量销毁前显式 `join()`。同一协程可能在不同 Worker 上恢复，不要跨挂起点保存 Worker 引用或绑定 Worker 的 TaskGroup。
+
+当前 `coro.fork()` 接收延迟任务依赖时，需要先将 `AsyncTask<R>` 转为 `AsyncFuture<R>`。外部操作的注册、取消和回调寿命也须遵守恢复协议，详见[协程指南](documentation/coroutines.md)。
+
+完整示例：[图节点与 call](examples/40_coroutine.cpp) · [fork 依赖与 join](examples/41_coroutine_fork.cpp) · [外部恢复与停止](examples/42_coroutine_external.cpp)。
 
 ### 重复执行
 
@@ -199,6 +253,8 @@ executor.async(flow, [&count]() noexcept {
 ```
 
 次数参数指定执行轮数；终止谓词在每轮执行前检查，返回 `true` 时停止。
+
+只需同步执行并等待时，可使用 `executor.corun(flow)`；在 Worker 内会协作推进任务。见 [corun 示例](examples/36_corun.cpp)。
 
 ### 运行时任务组
 
@@ -313,6 +369,26 @@ try {
 
 `wait()` 仅等待完成，`get()` 还会重抛任务保存的异常。静态图中的异常通过图提交返回的 Future 接收；失败节点的依赖后继不会继续正常执行。顶层 `silent_async()` 没有结果句柄，需要在任务内部处理需报告的异常。更多情形见 [异常与依赖错误](examples/34_dependency_errors.cpp)。
 
+库会自动检测编译器异常支持，也可通过 `TFL_ENABLE_EXCEPTIONS=0` 显式关闭。禁用异常时，库内需要抛出错误的路径会终止进程；所有翻译单元须使用一致配置。见[异常配置](cmake/README.md#异常配置)和[无异常示例](examples/37_no_exceptions.cpp)。
+
+### 协作停止
+
+```cpp
+auto task = executor.async([](tfl::Runtime& runtime) {
+    for (int i = 0; i < 1000; ++i) {
+        if (runtime.stop_requested()) return;
+        // 处理一个工作单元。
+    }
+});
+
+task.request_stop();
+task.get();
+```
+
+`request_stop()` 发出请求；长任务通过执行中的 `Context::stop_requested()` 在合适的位置检查。请求不会强制中断线程，任务也可能在请求到达前完成。
+
+外部操作通过 `CoroToken::stop_requested()` 查询停止状态。停止请求不会自动完成 I/O，也不会唤醒正在等待外部操作的协程；适配器仍须完成或取消操作，并按协议通知恢复。见[停止示例](examples/38_context_and_stop.cpp)和[外部协程示例](examples/42_coroutine_external.cpp)。
+
 ## 执行语义与使用约定
 
 | 主题 | 约定 |
@@ -322,11 +398,14 @@ try {
 | 数据同步 | 依赖边表达执行顺序。没有依赖关系的任务共享可写数据时，需要自行使用原子或锁。 |
 | Future 结果 | Future 可复制，`get()` 不消费结果。值类型结果通过 `const R&` 返回，保留该引用时须确保底层任务仍存活；引用类型结果还受原始对象生命周期约束。 |
 | 延迟任务 | `start()` 只允许成功启动一次；前驱必须已启动或完成。将 Idle 任务转成 Future 不会自动启动它。 |
-| 工作线程内等待 | 使用 `Runtime`、`SubFlow` 或 `TaskGroup` 的协作等待。直接阻塞等待未完成的工作可能耗尽线程池，单工作线程尤其如此。 |
-| 协作取消 | `request_stop()` 发出停止请求，长任务需要检查 `stop_requested()`；不会强制中断线程，也不会撤销已经发生的副作用。 |
-| 子任务停止请求 | `Runtime` / `TaskGroup` 的 `async()`、`silent_async()` 继承父停止请求，无需模板布尔参数。子 Future 查询继承的停止状态时，父上下文须仍有效；需要独立停止域时通过 `Executor` 提交。 |
+| 依赖与资源寿命 | 动态完成依赖不保留前驱对象或结果；后继需要访问时，应按值捕获对应 Future / AsyncTask 句柄。 |
+| 工作线程内等待 | 使用 `Runtime`、`SubFlow`、`TaskGroup` 的协作等待或 `co_await coro.join()`。直接阻塞等待未完成的工作可能耗尽线程池，单工作线程尤其如此。 |
+| 协作取消 | `request_stop()` 发出停止请求，长任务通过 `Context::stop_requested()` 检查；不会强制中断线程，也不会撤销已经发生的副作用。 |
+| 子任务停止请求 | `Runtime` / `TaskGroup` 的 `async()`、`silent_async()` 以及 Coro 的 `fork()`、`silent_fork()` 继承父停止请求。需要独立停止域时通过 `Executor` 提交。 |
+| 外部恢复 | `CoroToken` 不拥有协程。外部操作须同步回调的完成/注销；`resume()` 成功只表示接受恢复请求。 |
+| 任务重绑定 | 替换 callable 前先销毁旧对象；新对象构造失败时，重新绑定有效 callable 后才能执行或导出节点。 |
 
-更详细的依赖规则、引用保留和失败边界见 [异步任务依赖说明](documentation/async-task-dependency-design.md)。
+更详细的依赖规则、结果生命周期和失败回滚见 [异步任务依赖说明](documentation/async-task-dependency-design.md)。
 
 ## 构建与测试
 
@@ -336,6 +415,16 @@ try {
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --parallel 4
 ```
+
+默认构建不下载测试或基准依赖。运行全部示例可使用 `cmake --build build --config Release --target run_all_examples`。
+
+单独构建协程入门示例：
+
+```sh
+cmake --build build --config Release --target tfl_ex_40_coroutine
+```
+
+单配置生成器的程序位于 `build/bin/examples/40_coroutine`；Visual Studio 通常为 `build/bin/examples/Release/40_coroutine.exe`。完整目标列表见[示例索引](examples/README.md)。
 
 启用测试，并执行示例与单元测试：
 
@@ -361,9 +450,9 @@ ctest --preset release -LE perfile --no-tests=error
 | --- | --- | --- |
 | `TFL_BUILD_EXAMPLES` | 顶层 ON，子项目 OFF | 构建完整示例 |
 | `TFL_BUILD_TESTS` | OFF | 构建并注册单元测试 |
-| `TFL_TEST_HEADERS` | ON | 启用测试时检查头文件能否独立编译 |
-| `TFL_TEST_CORE_ALLOCATION_FAILURE` | OFF | 显式启用分配失败回滚诊断；当前实现可能失败或超时，见[测试说明](test/README.md) |
-| `TFL_BUILD_BENCHMARKS` | OFF | 构建 TaskflowLite 与 Taskflow 对比程序 |
+| `TFL_TEST_HEADERS` | ON | 启用测试时在普通及禁用异常模式下逐头文件编译 |
+| `TFL_TEST_CORE_ALLOCATION_FAILURE` | ON | 普通测试构建中运行分配失败回滚检查；Sanitizer 构建跳过，见[测试说明](test/README.md) |
+| `TFL_BUILD_BENCHMARKS` | OFF | 构建 TaskflowLite / Taskflow 对比程序与 `bench_core` |
 | `TFL_BUILD_DOCS` | OFF | 启用 Doxygen `GenerateDocs` 目标 |
 | `TFL_SANITIZER` | OFF | `OFF`、`ASAN` 或 `TSAN`；MSVC 不支持 TSAN |
 | `TFL_NATIVE_ARCH` | OFF | GCC/Clang 内部 Release 目标使用本机指令集优化 |
@@ -420,15 +509,16 @@ ctest --preset release -LE perfile --no-tests=error
 
 | 主题 | 入口 |
 | --- | --- |
-| 完整中文使用手册 | [PDF 手册](documentation/TaskflowLite-Guide.zh-CN.pdf) · [手册源稿](documentation/TaskflowLite-Guide.zh-CN.md) |
-| 实现原理与调度算法 | [架构 PDF](documentation/TaskflowLite-Architecture.zh-CN.pdf) · [源稿](documentation/TaskflowLite-Architecture.zh-CN.md)：有界队列、共享工作栈、唤醒协议、依赖计数、资源等待与回收，含 48 幅矢量图 |
+| 完整中文使用手册 | [当前手册](documentation/TaskflowLite-Guide.zh-CN.md) |
 | 示例索引与运行方式 | [examples/README.md](examples/README.md) |
 | 构建选项、依赖与安装 | [cmake/README.md](cmake/README.md) |
 | 测试命令与可选诊断 | [构建与测试](#构建与测试) · [测试说明](test/README.md) |
 | 异步依赖与生命周期 | [依赖说明](documentation/async-task-dependency-design.md) |
+| 协程与外部操作 | [协程指南](documentation/coroutines.md) · [call](examples/40_coroutine.cpp) · [fork/join](examples/41_coroutine_fork.cpp) · [CoroToken](examples/42_coroutine_external.cpp) |
 | 分支、跳转与模块 | [条件分支](examples/05_branch.cpp)、[跳转](examples/06_jump.cpp)、[嵌套模块](examples/08_subflow.cpp) |
 | 动态任务 | [Runtime](examples/04_runtime.cpp)、[TaskGroup](examples/26_task_group.cpp)、[动态子图](examples/27_dynamic_subflow.cpp) |
 | 执行控制 | [异常](examples/16_error_handling.cpp)、[取消](examples/17_cancellation.cpp)、[信号量](examples/07_semaphore.cpp) |
+| 同步执行与无异常模式 | [corun](examples/36_corun.cpp) · [禁用异常](examples/37_no_exceptions.cpp) · [Context 与停止](examples/38_context_and_stop.cpp) |
 | 观察与追踪 | [Observer](examples/15_observer.cpp)、[追踪](examples/21_observer_tracing.cpp)、[Worker 回调](examples/30_worker_handler.cpp) |
 | 性能测试方法 | [benchmarks/README.md](benchmarks/README.md) |
 
@@ -456,7 +546,7 @@ cmake --build build/docs --target GenerateDocs
 
 通过 [Issues](https://github.com/wicyn/taskflowlite/issues) 报告问题或提出功能建议。问题报告请包含最小复现、预期与实际行为、编译器及标准库版本、操作系统、构建选项和相关日志。
 
-提交代码改动时请附上对应测试；公共接口变更请同步更新示例和中英文 README。提交前运行相关测试，并使用仓库的 `.clang-format` 保持代码格式一致。
+提交代码改动时请附上对应测试；公共接口变更请同步更新示例和中英文 README。提交前运行相关测试，并使用仓库的 `.clang-format` 保持代码格式一致。修改文档后可运行 `python .github/scripts/check_docs.py` 检查仓库内文件链接。
 
 ## 许可证
 

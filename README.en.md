@@ -1,4 +1,4 @@
-# TaskflowLite
+﻿# TaskflowLite
 
 [![Ubuntu](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/ubuntu.yml)
 [![Windows](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/wicyn/taskflowlite/actions/workflows/windows.yml)
@@ -11,19 +11,22 @@
 
 [简体中文](README.md) · **English**
 
-TaskflowLite (tfl) is a lightweight, header-only C++20 task-parallel library inspired by [Taskflow](https://github.com/taskflow/taskflow). It provides task dependency graphs, asynchronous scheduling, and runtime control flow.
+TaskflowLite (tfl) is a lightweight, header-only C++20 task-parallel library inspired by [Taskflow](https://github.com/taskflow/taskflow). It schedules task graphs, asynchronous tasks, coroutines, and runtime control flow through a shared executor.
 
-Describe the dependencies between tasks, and the executor schedules ready tasks on its worker pool. Use it for dependent computations, batch workflows, and tasks whose child work is only known at runtime.
+Describe the dependencies between tasks, and the executor schedules ready tasks on its worker pool. Use it for dependent computations, batch workflows, tasks whose child work is only known at runtime, and coroutines that suspend until an external completion event.
 
-[Quick start](#quick-start) · [Installation](#installation-and-integration) · [Core concepts](#core-concepts) · [Usage](#basic-usage) · [Execution semantics](#execution-semantics-and-lifetimes) · [Build and test](#building-and-testing) · [Documentation](#documentation-and-examples)
+[Quick start](#quick-start) · [Installation](#installation-and-integration) · [Core concepts](#core-concepts) · [Usage](#basic-usage) · [Coroutines](#coroutine-tasks) · [Execution semantics](#execution-semantics-and-lifetimes) · [Build and test](#building-and-testing) · [Documentation](#documentation-and-examples)
 
-[![TaskflowLite task graph overview: branches, jumps, nested graphs, and a task-local TaskGroup](documentation/img/taskflowlite-overview.png)](documentation/img/taskflowlite-overview.png)
+[![TaskflowLite task graph overview: branches, jumps, nested graphs, TaskGroup, Coroutine, and external resumption through CoroToken](documentation/img/taskflowlite-overview.png)](documentation/img/taskflowlite-overview.png)
+
+Coroutine nodes support `call`, `fork/join`, and external resumption through `CoroToken`; see the [coroutine guide](documentation/coroutines.md).
 
 ## Features
 
 - **Task graphs**: DAG construction, dependencies, placeholders, and task rebinding.
 - **Asynchronous tasks**: immediate submission, deferred execution, dependencies, and shared results.
 - **Object tasks**: `TaskObject<T>` / `AsyncTaskObject<R, T>` construct business objects in place and expose their state through `object()`, including non-copyable, non-movable types.
+- **Coroutines**: `CoroTask<R>`, sequential child calls, fork/join, and external completion tokens.
 - **Dynamic scheduling**: Runtime, dynamic SubFlow, and scoped TaskGroup.
 - **Control flow**: branches, multi-branches, jumps, repeated execution, and nested modules.
 - **Execution control**: cooperative waiting, exception propagation, cooperative cancellation, and semaphore limits.
@@ -32,7 +35,7 @@ Describe the dependencies between tasks, and the executor schedules ready tasks 
 
 ## Requirements
 
-- A C++20 compiler and standard library with support for `std::format`, atomic waiting, and related C++20 facilities.
+- A C++20 compiler and standard library with support for coroutines, `std::format`, and atomic waiting.
 - GCC 13 or newer with its matching libstdc++; Clang / MSVC require a standard library providing the same facilities.
 - CMake 3.21 or newer when using CMake.
 
@@ -73,6 +76,13 @@ A and B may run in parallel; C runs after both finish, and the program prints `4
 Save this as `main.cpp` and use the CMake configuration below to build it. See [01_basic_dag.cpp](examples/01_basic_dag.cpp) for a complete standalone example.
 
 ## Installation and Integration
+
+Get the source, then choose subproject integration, an installed CMake package, or direct header use:
+
+```sh
+git clone https://github.com/wicyn/taskflowlite.git
+cd taskflowlite
+```
 
 ### CMake Subproject
 
@@ -120,7 +130,14 @@ add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE TaskflowLite::taskflowlite)
 ```
 
-Configure the consumer with `-DCMAKE_PREFIX_PATH=/absolute/path/to/taskflowlite/install`, replacing the path with the absolute installation directory from the previous step. Installing only the headers and CMake package does not require compiling the library first.
+Configure and build from the consumer project's root, replacing the path below with the absolute installation directory from the previous step:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/absolute/path/to/taskflowlite/install
+cmake --build build --config Release --parallel 4
+```
+
+Installing only the headers and CMake package does not require compiling the library first.
 
 ### Using the Headers Directly
 
@@ -134,6 +151,8 @@ Copy the repository's `taskflowlite/` directory into your project's include dire
 | `Flow` / `Task` | Owns a graph / refers to a graph node | Build dependencies before execution; resubmit after completion |
 | `AsyncFuture<R>` | Shares completion state and a result | Receive an `async()` result or supply an asynchronous predecessor |
 | `AsyncTask<R>` | Configurable, deferred shared task handle | Create with `defer_async()`, configure, then call `start()` |
+| `Coro` / `CoroTask<R>` | Suspendable execution context / coroutine return type | Child calls, fork/join, and external completion |
+| `CoroToken` | Non-owning token for the current coroutine wait | Request resumption and check cancellation from an external completion source |
 | `Runtime` | Scheduling context inside a running task | Dispatch children and wait cooperatively |
 | `SubFlow` | Graph constructed inside a running task | Build a dynamic graph and explicitly call `run()` |
 | `TaskGroup` | Owns a scope for child work | Wait for a group and handle errors locally |
@@ -141,8 +160,9 @@ Copy the repository's `taskflowlite/` directory into your project's include dire
 | `Branch` / `MultiBranch` | Selects one or more successors | Conditional paths |
 | `Jump` / `MultiJump` | Explicit jump control flow | Retries, state machines, and loops |
 | `Semaphore` | Manages resource quotas around task execution | Limit concurrency and coordinate scarce resources |
+| `Context` | Common execution context of `Runtime`, `SubFlow`, and `Coro` | Query task information, the executor, and cancellation |
 
-Start with `Flow` when you know the dependency graph, `async()` when you need a computation's result, and `defer_async()` when you need to configure work before submitting it. Use `Runtime` or `SubFlow` when child work is only known during execution.
+Start with `Flow` when you know the dependency graph, `async()` when you need a computation's result, and `defer_async()` when you need to configure work before submitting it. Use `Runtime` or `SubFlow` when child work is only known during execution. Use `Coro` to suspend a task while waiting for children or external operations and yield execution through `co_await`.
 
 ## Basic Usage
 
@@ -180,10 +200,44 @@ int result = second.get();  // 42
 
 `defer_async()` creates an idle task bound to the executor. Configure it, then call `start(dependencies...)` once.
 Predecessors must already be started or finished. Mixed `AsyncTask` / `AsyncFuture` dependencies are supported; empty handles are ignored.
-Each duplicate dependency retains a strong reference until the successor task object is destroyed. The executor must outlive submission and execution.
+Duplicate dependencies register separate completion arrivals without retaining predecessor references. Capture a Future by value when reading its result. The executor must outlive submission and execution.
 Use `Runtime::async()` or `TaskGroup::async()` for child tasks; `defer_async().start()` creates an independent top-level task.
 
-See the [dependency notes](documentation/async-task-dependency-design.md) for the full contract and allocation-failure limitations.
+See the [dependency notes](documentation/async-task-dependency-design.md) for the full contract and dependency-registration rollback.
+
+### Coroutine Tasks
+
+A coroutine callable accepts `tfl::Coro&` and returns `tfl::CoroTask<R>`. Submit it through `Executor::async()`, insert it with `Flow::emplace()`, or use Runtime / TaskGroup asynchronous submission. Coroutine callables also work with `emplace_object()` and `defer_async_object()`.
+
+```cpp
+auto answer = executor.async([](tfl::Coro& coro) -> tfl::CoroTask<int> {
+    const int base = co_await coro.call([](tfl::Coro&) -> tfl::CoroTask<int> {
+        co_return 20;
+    });
+
+    auto child = co_await coro.fork([] { return 22; });
+    co_await coro.join();
+    co_return base + child.get();
+});
+
+int result = answer.get();  // 42
+```
+
+| Operation | Meaning when the await completes |
+| --- | --- |
+| `co_await coro.call(callable)` | A sequential child coroutine has returned its result or exception; parent and child share the current task context |
+| `co_await coro.fork(callable, deps...)` | A child has been submitted and an `AsyncFuture<R>` is available; completion is not yet guaranteed |
+| `co_await coro.silent_fork(callable)` | A child has been submitted without returning a Future |
+| `co_await coro.join()` | Spawned children have completed; use their Futures' `get()` to read results or rethrow result exceptions |
+| `co_await operation` | An external operation following the `CoroOperation` protocol completes; its completion source requests resumption through `CoroToken::resume()` |
+
+`CoroTask<R>` supports value, lvalue-reference, and `void` results and is managed by the framework. Invoke child coroutines through `coro.call()`; `CoroTask` and `AsyncFuture` are not directly awaitable.
+
+Join before reading an unfinished child's result inside a coroutine. Calling a Future's `wait()/get()` directly blocks the current worker. Explicitly join children that borrow coroutine-local variables before those variables are destroyed. A coroutine may resume on a different worker; do not retain worker references or a TaskGroup bound to a worker across suspension points.
+
+With the current API, convert an `AsyncTask<R>` dependency to `AsyncFuture<R>` before passing it to `coro.fork()`. External registration, cancellation, and callback lifetimes must follow the resumption protocol; see the [coroutine guide](documentation/coroutines.md).
+
+Complete examples: [graph nodes and call](examples/40_coroutine.cpp) · [fork dependencies and join](examples/41_coroutine_fork.cpp) · [external resumption and cancellation](examples/42_coroutine_external.cpp).
 
 ### Repeated Execution
 
@@ -199,6 +253,8 @@ executor.async(flow, [&count]() noexcept {
 ```
 
 The count specifies the number of iterations. A stop predicate is checked before each iteration; returning `true` ends execution.
+
+Use `executor.corun(flow)` when you only need synchronous execution and completion. On a worker, it cooperatively advances tasks. See the [corun example](examples/36_corun.cpp).
 
 ### Runtime Task Groups
 
@@ -313,6 +369,26 @@ try {
 
 `wait()` only waits; `get()` also rethrows a stored exception. Static graph failures reach the Future returned by graph submission; dependent successors of a failed node do not continue normal execution. Top-level `silent_async()` has no result handle, so handle reportable errors inside the task. See [exceptions and dependency errors](examples/34_dependency_errors.cpp) for more cases.
 
+The library detects compiler exception support automatically; `TFL_ENABLE_EXCEPTIONS=0` explicitly disables it. In this mode, library error paths that would throw terminate the process. Use consistent settings across translation units. See the [exception configuration](cmake/README.md#异常配置) and [no-exceptions example](examples/37_no_exceptions.cpp).
+
+### Cooperative Cancellation
+
+```cpp
+auto task = executor.async([](tfl::Runtime& runtime) {
+    for (int i = 0; i < 1000; ++i) {
+        if (runtime.stop_requested()) return;
+        // Process one unit of work.
+    }
+});
+
+task.request_stop();
+task.get();
+```
+
+`request_stop()` sends a request. Long-running tasks check `Context::stop_requested()` at suitable points during execution. A request does not forcibly interrupt a thread, and the task may finish before the request arrives.
+
+External operations query `CoroToken::stop_requested()`. A stop request neither completes I/O nor wakes a coroutine waiting for an external operation. The adapter must still complete or cancel the operation and notify resumption according to the protocol. See the [context and cancellation example](examples/38_context_and_stop.cpp) and [external coroutine example](examples/42_coroutine_external.cpp).
+
 ## Execution Semantics and Lifetimes
 
 | Topic | Contract |
@@ -322,11 +398,14 @@ try {
 | Data synchronization | Edges express execution order. Independent tasks sharing writable data need their own atomics or locks. |
 | Future results | Futures are copyable; `get()` does not consume the result. Value results are returned as `const R&`; keep the underlying task alive while retaining that reference. Reference results also depend on the original object's lifetime. |
 | Deferred tasks | A task may be successfully started only once; predecessors must be started or completed. Converting an idle task to a Future does not start it. |
-| Waiting on workers | Use cooperative waiting through `Runtime`, `SubFlow`, or `TaskGroup`. Blocking on unfinished work can exhaust the worker pool, especially with one worker. |
-| Cooperative cancellation | `request_stop()` requests cancellation; long tasks check `stop_requested()`. It neither interrupts a thread forcibly nor rolls back completed side effects. |
-| Child cancellation | `Runtime` / `TaskGroup` submissions through `async()` and `silent_async()` inherit parent stop requests without a template boolean. Keep the parent context alive when querying a child's inherited stop state. Use `Executor` for an independent stop scope. |
+| Dependency lifetimes | Dynamic completion dependencies do not retain predecessor objects or results. Capture a Future / AsyncTask handle by value when a successor needs to access them. |
+| Waiting on workers | Use cooperative waiting through `Runtime`, `SubFlow`, `TaskGroup`, or `co_await coro.join()`. Blocking on unfinished work can exhaust the worker pool, especially with one worker. |
+| Cooperative cancellation | `request_stop()` requests cancellation; long tasks check `Context::stop_requested()`. It neither interrupts a thread forcibly nor rolls back completed side effects. |
+| Child cancellation | `Runtime` / `TaskGroup` submissions through `async()` and `silent_async()`, and Coro submissions through `fork()` and `silent_fork()`, inherit parent stop requests. Use `Executor` for an independent stop scope. |
+| External resumption | `CoroToken` does not own the coroutine. Synchronize callback completion/unregistration; successful `resume()` only means that the resumption request was accepted. |
+| Task rebinding | Replacing a callable destroys the old object first. If construction fails, bind a valid callable before executing or dumping the node. |
 
-See the [asynchronous dependency notes](documentation/async-task-dependency-design.md) for dependency rules, retained references, and failure boundaries.
+See the [asynchronous dependency notes](documentation/async-task-dependency-design.md) for dependency rules, result lifetimes, and submission rollback.
 
 ## Building and Testing
 
@@ -336,6 +415,16 @@ Run these commands from a complete repository checkout. Examples are built by de
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --parallel 4
 ```
+
+The default build does not download test or benchmark dependencies. Run all examples with `cmake --build build --config Release --target run_all_examples`.
+
+To build only the introductory coroutine example:
+
+```sh
+cmake --build build --config Release --target tfl_ex_40_coroutine
+```
+
+The executable is `build/bin/examples/40_coroutine` with a single-configuration generator, or usually `build/bin/examples/Release/40_coroutine.exe` with Visual Studio. See the [example index](examples/README.md) for the full list.
 
 Enable tests and run the examples and unit tests:
 
@@ -361,9 +450,9 @@ The `release` preset requires Ninja and enables tests. For Visual Studio on Wind
 | --- | --- | --- |
 | `TFL_BUILD_EXAMPLES` | ON at top level, OFF as subproject | Build complete examples |
 | `TFL_BUILD_TESTS` | OFF | Build and register unit tests |
-| `TFL_TEST_HEADERS` | ON | Check standalone header compilation when tests are enabled |
-| `TFL_TEST_CORE_ALLOCATION_FAILURE` | OFF | Opt in to allocation-failure rollback diagnostics, which may fail or time out; see the [test guide](test/README.md) |
-| `TFL_BUILD_BENCHMARKS` | OFF | Build TaskflowLite and Taskflow comparison programs |
+| `TFL_TEST_HEADERS` | ON | Compile each header independently with and without exceptions when tests are enabled |
+| `TFL_TEST_CORE_ALLOCATION_FAILURE` | ON | Check allocation-failure rollback in ordinary test builds; skipped under sanitizers; see the [test guide](test/README.md) |
+| `TFL_BUILD_BENCHMARKS` | OFF | Build TaskflowLite / Taskflow comparison programs and `bench_core` |
 | `TFL_BUILD_DOCS` | OFF | Enable the Doxygen `GenerateDocs` target |
 | `TFL_SANITIZER` | OFF | `OFF`, `ASAN`, or `TSAN`; MSVC does not support TSAN |
 | `TFL_NATIVE_ARCH` | OFF | Enable native CPU optimization for internal GCC/Clang Release targets |
@@ -420,15 +509,16 @@ Times are in milliseconds. Speedup = Taskflow time / TaskflowLite time.
 
 | Topic | Entry point |
 | --- | --- |
-| Complete guide (Chinese) | [PDF manual](documentation/TaskflowLite-Guide.zh-CN.pdf) · [Manual source](documentation/TaskflowLite-Guide.zh-CN.md) |
-| Implementation and scheduling (Chinese) | [Architecture PDF](documentation/TaskflowLite-Architecture.zh-CN.pdf) · [Source](documentation/TaskflowLite-Architecture.zh-CN.md): bounded deque, shared work stacks, wakeups, dependency counters, resource waits, and reclamation, with 48 vector diagrams |
+| Complete guide (Chinese) | [Current manual](documentation/TaskflowLite-Guide.zh-CN.md) |
 | Example index and run instructions | [examples/README.md](examples/README.md) |
 | Build options, dependencies, and installation | [cmake/README.md](cmake/README.md) |
 | Test commands and optional diagnostics | [Building and testing](#building-and-testing) · [Test guide](test/README.md) |
 | Asynchronous dependencies and lifetimes | [Dependency notes](documentation/async-task-dependency-design.md) |
+| Coroutines and external operations | [Coroutine guide](documentation/coroutines.md) · [call](examples/40_coroutine.cpp) · [fork/join](examples/41_coroutine_fork.cpp) · [CoroToken](examples/42_coroutine_external.cpp) |
 | Branches, jumps, and modules | [Branches](examples/05_branch.cpp), [jumps](examples/06_jump.cpp), [nested modules](examples/08_subflow.cpp) |
 | Dynamic work | [Runtime](examples/04_runtime.cpp), [TaskGroup](examples/26_task_group.cpp), [dynamic subgraphs](examples/27_dynamic_subflow.cpp) |
 | Execution control | [Exceptions](examples/16_error_handling.cpp), [cancellation](examples/17_cancellation.cpp), [semaphores](examples/07_semaphore.cpp) |
+| Synchronous execution and exception opt-out | [corun](examples/36_corun.cpp) · [no exceptions](examples/37_no_exceptions.cpp) · [context and cancellation](examples/38_context_and_stop.cpp) |
 | Observability | [Observer](examples/15_observer.cpp), [tracing](examples/21_observer_tracing.cpp), [worker callbacks](examples/30_worker_handler.cpp) |
 | Benchmark methodology | [benchmarks/README.md](benchmarks/README.md) |
 
@@ -456,7 +546,7 @@ Export D2 text with `flow.dump()`, then render it to SVG with D2. [View the full
 
 Report bugs and suggest features through [Issues](https://github.com/wicyn/taskflowlite/issues). Include a minimal reproduction, expected and actual behavior, compiler and standard library versions, operating system, build options, and relevant logs.
 
-Include tests with code changes. Update examples and both READMEs when public interfaces change. Run relevant tests before submitting and use the repository's `.clang-format` for consistent formatting.
+Include tests with code changes. Update examples and both READMEs when public interfaces change. Run relevant tests before submitting and use the repository's `.clang-format` for consistent formatting. After editing documentation, run `python .github/scripts/check_docs.py` to check repository-local file links.
 
 ## License
 

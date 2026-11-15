@@ -36,7 +36,7 @@ int main() {
     });
 
     // 3. 将子图挂载到主图中，循环 2 次
-    auto subflow_task = main_flow.emplace(std::move(subflow), 2ULL).name("Subflow_Container");
+    auto subflow_task = main_flow.emplace(std::move(subflow), std::uint64_t{2}).name("Subflow_Container");
 
     auto end = main_flow.emplace([&global_record] {
         std::osyncstream(std::cout) << "[Main] System Shutdown. Final Record: " << global_record << "\n";

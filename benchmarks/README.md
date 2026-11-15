@@ -1,6 +1,6 @@
 # Benchmark
 
-`bench_taskflowlite` 与 `bench_taskflow` 使用相同场景、重复次数和共享计数校验，适合在同一机器和构建配置下比较。`bench_core` 单独覆盖同步 corun、三种执行上下文，以及 Runtime / TaskGroup 的重复和已完成依赖。
+`bench_taskflowlite` 与 `bench_taskflow` 使用相同场景、重复次数和共享计数校验，适合在同一机器和构建配置下比较。`bench_core` 单独覆盖同步 corun、三种执行上下文，以及 Runtime / TaskGroup 的重复和已完成依赖，另含 Coroutine 的 call / fork / join 场景。
 
 ```sh
 cmake --preset benchmarks

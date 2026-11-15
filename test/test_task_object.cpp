@@ -1,5 +1,5 @@
 /// @file test_task_object.cpp
-/// @brief TaskObject：原地构造、八种节点、Module 重载和派生句柄拓扑操作。
+/// @brief TaskObject：原地构造、节点类型、Module 重载和派生句柄拓扑操作。
 #include "test_common.hpp"
 #include "object_task_fixtures.hpp"
 #include <array>

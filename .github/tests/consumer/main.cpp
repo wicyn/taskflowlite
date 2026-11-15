@@ -20,6 +20,13 @@ int main() {
         return last.get();
     });
     if (result.get() != 42) return 1;
+    auto coroutine = executor.async([](tfl::Coro& coro) -> tfl::CoroTask<int> {
+        const int base = co_await coro.call([](tfl::Coro&) -> tfl::CoroTask<int> { co_return 20; });
+        auto child = co_await coro.fork([] { return 22; });
+        co_await coro.join();
+        co_return base + child.get();
+    });
+    if (coroutine.get() != 42) return 1;
     tfl::Semaphore gate(1);
     return count.load() == 6 && gate.reset(2) && gate.value() == 2 ? 0 : 1;
 }

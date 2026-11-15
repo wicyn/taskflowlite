@@ -8,17 +8,15 @@
 
 #pragma once
 
-#include <cstdio>
-#include <memory>
-#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cmath>
+#include <cstdio>
 #include <format>
 #include <iterator>
+#include <memory>
 #include <ostream>
 #include <span>
-#include <string>
 #include <string_view>
 
 #include "enums.hpp"
@@ -32,6 +30,10 @@ namespace tfl {
 ///
 /// 全部接口均为静态操作，只读取传入的 `Work`、`Graph` 和 `Semaphore` 元数据并
 /// 写入调用方提供的流；渲染器不拥有这些对象，也不缓存渲染状态。
+///
+/// 普通 Work 通过单层 Grid 使标题、类型及 Semaphore 标签共用列宽。
+/// 无信号量的非矩形节点和 Graph 使用 D2 原生多行标签，保证文本居中。
+/// 所有路径均不生成 HTML，保留 Work 形状、颜色及 Graph 子节点路径。
 class D2Renderer {
 public:
     /// @brief 信号量请求只读视图。
@@ -41,15 +43,13 @@ public:
     // Palette 颜色转换
     // ============================================================================
 
-    static constexpr size_t COLOR_HEX_LEN = 8;
+    static constexpr std::size_t COLOR_HEX_LEN = 8;
 
     /// @brief 保存同一信号量在 D2 标签中使用的三组固定长度十六进制颜色。
-    ///
-    /// 该结构是纯值结果，不持有 `Semaphore` 或输出流引用。
     struct Palette {
-        char bg[COLOR_HEX_LEN];  ///< pill 暗底色。
-        char fg[COLOR_HEX_LEN];  ///< pill 亮字色。
-        char md[COLOR_HEX_LEN];  ///< |md 块内文字色。
+        char bg[COLOR_HEX_LEN]; ///< pill 暗底色。
+        char fg[COLOR_HEX_LEN]; ///< pill 亮字色。
+        char md[COLOR_HEX_LEN]; ///< 保留供外部使用的 Markdown 配色。
     };
 
     /// @brief 计算 HSL 转 RGB 过程中的单个颜色通道。
@@ -75,36 +75,43 @@ public:
     // 底层写入器
     // ============================================================================
 
-    /// @brief 写入经过 HTML 转义的 D2 Markdown 文本。
-    /// @param os 目标输出流。
-    /// @param s 原始文本。
+    /// @brief HTML/XML 文本转义（兼容原有外部调用；D2 渲染不再使用）。
     static void write_html_escaped(std::ostream& os, std::string_view s);
 
+    /// @brief 写入经过 Markdown 转义的节点文本，禁止原始 HTML 被解析。
+    /// @note 将名称中的换行和制表符折叠为空格，避免破坏 D2 块结构。
+    static void write_markdown_escaped(std::ostream& os, std::string_view s);
+
     /// @brief 写入经过转义的 D2 双引号字符串内容。
-    /// @param os 目标输出流。
-    /// @param s 原始文本。
     static void write_quoted_escaped(std::ostream& os, std::string_view s);
 
     /// @brief 将指针地址写成以字母开头的 D2 节点 ID。
-    /// @param os 目标输出流。
-    /// @param p 要格式化的指针。
     static void format_id(std::ostream& os, const void* p);
 
     // ============================================================================
-    // 信号量药丸写入器
+    // 信号量标签与节点标题
     // ============================================================================
 
-    /// @brief 写入矩形节点使用的网格信号量标签。
+    /// @brief 用单行 D2 网格节点写入彩色信号量 pill，保留原有深色背景和亮字配色。
     /// @param os 目标输出流。
     /// @param reqs 信号量请求列表。
-    /// @param tag 标签前缀。
+    /// @param tag 标签前缀（"acq" 或 "rel"）。
     static void write_sem_pill_grid(std::ostream& os, SemReqs reqs, const char* tag);
 
-    /// @brief 写入非矩形节点使用的内联信号量标签。
-    /// @param os 目标输出流。
-    /// @param reqs 信号量请求列表。
-    /// @param tag 标签前缀。
+    /// @brief 保留原有接口，改为写入原生 D2 水平 pill 网格（不再输出 HTML）。
+    /// @note 此函数现在应在 D2 容器内调用，不应插入 |md 文本块。
     static void write_sem_pill_row(std::ostream& os, SemReqs reqs, const char* tag);
+
+    /// @brief 向当前 Grid 直接添加名称、类型两个透明矩形（禁止额外嵌套 Grid）。
+    /// @note 两个节点与 Acquire/Release 同为外层网格的直接子节点，自动等宽居中。
+    /// @param key 两个文本节点的 ID 前缀（"mid" 或 "title"）。
+    static void write_title_grid(std::ostream& os, const Work& w, std::string_view type_name,
+                                 const char* font_color, const char* key,
+                                 int type_font_size = 11);
+
+    // ============================================================================
+    // 公开渲染器
+    // ============================================================================
 
     /// @brief 渲染单个 Work 节点。
     /// @param os 目标输出流。
@@ -126,7 +133,13 @@ public:
     /// @param graph 内嵌子图。
     static void render_graph(std::ostream& os, const Work& w, const char* type_name,
                              const Graph& graph);
+
+private:
+    /// @brief 原生 D2 pill 共用实现；radius/font_size 用于贴近原来的两种样式。
+    static void write_sem_pill_native(std::ostream& os, SemReqs reqs, const char* tag,
+                                      int radius, int font_size);
 };
+
 // ============================================================================
 // 实现
 // ============================================================================
@@ -136,6 +149,7 @@ public:
 inline std::uint8_t D2Renderer::format_hsl_component(float p, float q, float t) noexcept {
     if (t < 0.f) t += 1.f;
     if (t > 1.f) t -= 1.f;
+
     float v;
     if (t < 1.f / 6.f)
         v = p + (q - p) * 6.f * t;
@@ -145,6 +159,7 @@ inline std::uint8_t D2Renderer::format_hsl_component(float p, float q, float t) 
         v = p + (q - p) * (2.f / 3.f - t) * 6.f;
     else
         v = p;
+
     return static_cast<std::uint8_t>(v * 255.f + 0.5f);
 }
 
@@ -157,14 +172,13 @@ inline void D2Renderer::format_hsl_hex(float h, float s, float l, char* out) noe
 }
 
 inline D2Renderer::Palette D2Renderer::format_palette(const Semaphore* sem) noexcept {
-    // 黄金比例逆元旋转 hue， 让相邻 sem 地址的颜色尽量分散
     constexpr float PHI_INV = 0.6180339887498949f;
-    // splitmix64 位混合： 指针 -> 64 位 -> xor-shift -> multiply -> xor-shift
+
     auto v = reinterpret_cast<std::uintptr_t>(sem);
     v ^= v >> 16;
     v *= 0x45d9f3bu;
     v ^= v >> 16;
-    // 取 hi 16 位， 归一化到 [0,1)， 再乘 PHI_INV 旋转
+
     const float hue = std::fmod(static_cast<float>(v & 0xFFFFu) / 65536.f * PHI_INV, 1.f);
 
     Palette p{};
@@ -174,28 +188,69 @@ inline D2Renderer::Palette D2Renderer::format_palette(const Semaphore* sem) noex
     return p;
 }
 
-// ---- 底层写入器 ------------------------------------------------------
+// ---- 底层写入器 -----------------------------------------------------------
 
 inline void D2Renderer::write_html_escaped(std::ostream& os, std::string_view s) {
     for (char c : s) {
         switch (c) {
-            case '"':
-                os << "&quot;";
-                break;
-            case '&':
-                os << "&amp;";
-                break;
-            case '<':
-                os << "&lt;";
-                break;
-            case '>':
-                os << "&gt;";
-                break;
-            case '\\':
-                os << "\\\\";
-                break;
-            default:
-                os << c;
+        case '"':
+            os << "&quot;";
+            break;
+        case '&':
+            os << "&amp;";
+            break;
+        case '<':
+            os << "&lt;";
+            break;
+        case '>':
+            os << "&gt;";
+            break;
+        case '\\':
+            os << "\\\\";
+            break;
+        default:
+            os << c;
+            break;
+        }
+    }
+}
+
+inline void D2Renderer::write_markdown_escaped(std::ostream& os, std::string_view s) {
+    for (char c : s) {
+        switch (c) {
+        // 不让名称注入 Markdown 强调、链接、标题、HTML 等语法。
+        case '\\':
+        case '`':
+        case '*':
+        case '_':
+        case '{':
+        case '}':
+        case '[':
+        case ']':
+        case '(':
+        case ')':
+        case '#':
+        case '+':
+        case '-':
+        case '.':
+        case '!':
+        case '|':
+        case '<':
+        case '>':
+        case '~':
+            os << '\\' << c;
+            break;
+        case '&':
+            os << "&amp;";
+            break;
+        case '\r':
+        case '\n':
+        case '\t':
+            os << ' ';
+            break;
+        default:
+            os << c;
+            break;
         }
     }
 }
@@ -203,14 +258,23 @@ inline void D2Renderer::write_html_escaped(std::ostream& os, std::string_view s)
 inline void D2Renderer::write_quoted_escaped(std::ostream& os, std::string_view s) {
     for (char c : s) {
         switch (c) {
-            case '"':
-                os << "\\\"";
-                break;
-            case '\\':
-                os << "\\\\";
-                break;
-            default:
-                os << c;
+        case '"':
+            os << "\\\"";
+            break;
+        case '\\':
+            os << "\\\\";
+            break;
+        case '\n':
+            os << "\\n";
+            break;
+        case '\r':
+            break;
+        case '\t':
+            os << ' ';
+            break;
+        default:
+            os << c;
+            break;
         }
     }
 }
@@ -220,8 +284,10 @@ inline void D2Renderer::format_id(std::ostream& os, const void* pointer) {
                    reinterpret_cast<std::uintptr_t>(pointer));
 }
 
-// ---- 信号量药丸写入器 -------------------------------------------------
-inline void D2Renderer::write_sem_pill_grid(std::ostream& os, SemReqs reqs, const char* tag) {
+// ---- 原生 D2 彩色信号量节点 ----------------------------------------------
+
+inline void D2Renderer::write_sem_pill_native(std::ostream& os, SemReqs reqs,
+                                              const char* tag, int radius, int font_size) {
     os << "  " << tag[0]
        << "_bar: \"\" {\n"
           "    style.fill: transparent\n"
@@ -231,81 +297,106 @@ inline void D2Renderer::write_sem_pill_grid(std::ostream& os, SemReqs reqs, cons
 
     for (std::size_t i = 0; i < reqs.size(); ++i) {
         const auto& req = reqs[i];
-        const auto pal = format_palette(req.sem);
+        const auto  pal = format_palette(req.sem);
 
         os << "    " << tag[0] << i << ": \"" << tag << ":[";
         write_quoted_escaped(os, req.sem->name());
         os << "][" << req.count << '/' << req.sem->max_value()
            << "]\" {\n"
               "      shape: rectangle\n"
-              "      style.border-radius: 12\n"
-              "      style.fill: \""
-           << pal.bg
-           << "\"\n"
-              "      style.font-color: \""
-           << pal.fg
-           << "\"\n"
-              "      style.stroke: transparent\n"
-              "      style.font-size: 10\n"
-              "      height: 20\n"
-              "    }\n";
+              "      style.border-radius: "
+           << radius << "\n"
+                        "      style.fill: \""
+           << pal.bg << "\"\n"
+                        "      style.font-color: \""
+           << pal.fg << "\"\n"
+                        "      style.stroke: transparent\n"
+                        "      style.font-size: "
+           << font_size << "\n"
+                           "      height: 20\n"
+                           "    }\n";
     }
+
     os << "  }\n\n";
 }
 
-inline void D2Renderer::write_sem_pill_row(std::ostream& os, SemReqs reqs, const char* tag) {
-    for (const auto& req : reqs) {
-        const auto pal = format_palette(req.sem);
-
-        os << "  <span style=\"background-color:" << pal.bg << "; color:" << pal.fg
-           << "; border-radius:8px"
-              "; padding:1px 6px"
-              "; font-size:9px;\">"
-           << tag << ":[";
-        write_html_escaped(os, req.sem->name());
-        os << "][" << req.count << '/' << req.sem->max_value() << "]</span> ";
-    }
-    os << "<br/>\n";
+inline void D2Renderer::write_sem_pill_grid(std::ostream& os, SemReqs reqs, const char* tag) {
+    // 原矩形节点使用 10px 字号、12px 圆角的 pill。
+    write_sem_pill_native(os, reqs, tag, 12, 10);
 }
 
-// ---- 公开渲染器 -------------------------------------------------------
+inline void D2Renderer::write_sem_pill_row(std::ostream& os, SemReqs reqs, const char* tag) {
+    // 原非矩形节点的 HTML span 使用 9px 字号、8px 圆角。
+    write_sem_pill_native(os, reqs, tag, 8, 9);
+}
+
+// ---- 原生 D2 节点标题 -----------------------------------------------------
+
+inline void D2Renderer::write_title_grid(std::ostream& os, const Work& w,
+                                         std::string_view type_name, const char* font_color,
+                                         const char* key, int type_font_size) {
+    // 关键：直接输出两个兄弟节点，不包一层 mid/title 网格。
+    // 外层 grid-columns: 1 使名称、类型与信号量条使用相同的列宽。
+    os << "  " << key << "_name: \"";
+
+    if (const std::string_view raw = w._name(); raw.empty())
+        format_id(os, std::addressof(w));
+    else
+        write_quoted_escaped(os, raw);
+
+    os << "\" {\n"
+          "    shape: rectangle\n"
+          "    style.fill: transparent\n"
+          "    style.stroke: transparent\n"
+          "    style.bold: true\n"
+          "    style.font-size: 14\n"
+          "    style.font-color: \""
+       << font_color
+       << "\"\n"
+          "    height: 24\n"
+          "  }\n\n"
+          "  "
+       << key << "_type: \"[ ";
+
+    write_quoted_escaped(os, type_name);
+
+    os << " ]\" {\n"
+          "    shape: rectangle\n"
+          "    style.fill: transparent\n"
+          "    style.stroke: transparent\n"
+          "    style.bold: false\n"
+          "    style.font-size: "
+       << type_font_size << "\n"
+                            "    style.font-color: \"#6b7280\"\n"
+                            "    height: 20\n"
+                            "  }\n\n";
+}
+
+// ---- 公开渲染器 -----------------------------------------------------------
 
 inline void D2Renderer::render_work(std::ostream& os, const Work& w, const char* shape,
                                     const char* fill, const char* stroke, const char* font_color,
                                     const char* border_radius, const char* stroke_dash) {
     const char* type_name = to_string(w.type());
     const auto* sd = w.m_semaphores.get();
-    const bool has_acq = sd && !sd->acquires.empty();
-    const bool has_rel = sd && !sd->releases.empty();
-    const bool is_rect = std::string_view{shape} == "rectangle";
-    std::string_view raw = w._name();
+    const bool  has_acq = sd && !sd->acquires.empty();
+    const bool  has_rel = sd && !sd->releases.empty();
+    const bool  is_rect = std::string_view{shape} == "rectangle";
 
-    auto write_name = [&] {
-        if (raw.empty())
+    format_id(os, std::addressof(w));
+
+    // 非矩形且无信号量：使用原生普通双行标签。
+    // D2 普通形状的多行标签会以节点为基准居中；|md 默认左对齐。
+    // 原生标签无法分别为两行指定颜色/字号，优先保证形状与居中效果。
+    if (!is_rect && !has_acq && !has_rel) [[likely]] {
+        os << ": \"";
+        if (const std::string_view raw = w._name(); raw.empty())
             format_id(os, std::addressof(w));
         else
-            write_html_escaped(os, raw);
-    };
-
-    // Path A — |md 块 (无信号量 或 非矩形)
-    if (!(has_acq || has_rel) || !is_rect) [[likely]] {
-        format_id(os, std::addressof(w));
-        os << ": |md\n  <center>\n";
-
-        if (has_acq) write_sem_pill_row(os, sd->acquires, "acq");
-
-        os << "  <span style=\"color:" << font_color << ";\"><b>";
-        write_name();
-        os << "</b></span><br/>\n"
-              "  <span style=\"color: #6b7280;\">[ "
-           << type_name << " ]</span>\n";
-
-        if (has_rel) {
-            os << "  <br/>\n";
-            write_sem_pill_row(os, sd->releases, "rel");
-        }
-
-        os << "  </center>\n| {\n"
+            write_quoted_escaped(os, raw);
+        os << "\\n[ ";
+        write_quoted_escaped(os, type_name);
+        os << " ]\" {\n"
               "  shape: "
            << shape
            << "\n"
@@ -320,14 +411,18 @@ inline void D2Renderer::render_work(std::ostream& os, const Work& w, const char*
            << "\"\n"
               "  style.border-radius: "
            << border_radius << "\n";
-        if (stroke_dash && stroke_dash[0]) os << "  style.stroke-dash: " << stroke_dash << "\n";
+        if (stroke_dash && stroke_dash[0]) os << "  style.stroke-dash: " << stroke_dash << '\n';
         os << "  style.font-size: 14\n}";
         return;
     }
 
-    // Path B — rectangle + 信号量： grid pill bar
-    format_id(os, std::addressof(w));
+    // 矩形（包括无信号量）及带信号量的非矩形：使用同一层 Grid。
+    // 名称、类型和信号量条是同级子节点，消除内层 Grid 导致的偏左。
+    // ACQ/REL 使用真正的带圆角 D2 节点，避免原生 Markdown SVG 的 HTML 错误。
     os << ": \"\" {\n"
+          "  shape: "
+       << shape
+       << "\n"
           "  style.fill: \""
        << fill
        << "\"\n"
@@ -336,22 +431,23 @@ inline void D2Renderer::render_work(std::ostream& os, const Work& w, const char*
        << "\"\n"
           "  style.border-radius: "
        << border_radius << "\n";
-    if (stroke_dash && stroke_dash[0]) os << "  style.stroke-dash: " << stroke_dash << "\n";
-    os << "  grid-columns: 1\n  grid-gap: 6\n\n";
+    if (stroke_dash && stroke_dash[0]) os << "  style.stroke-dash: " << stroke_dash << '\n';
+    os << "  grid-columns: 1\n  grid-gap: 4\n\n";
 
-    if (has_acq) write_sem_pill_grid(os, sd->acquires, "acq");
-
-    os << "  mid: |md\n    <center>\n"
-          "    <span style=\"color:"
-       << font_color << "; font-size:14px;\"><b>";
-    write_name();
-    os << "</b></span><br/>\n"
-          "    <span style=\"color:#6b7280; font-size:11px;\">[ "
-       << type_name
-       << " ]</span>\n"
-          "    </center>\n  | {\n    shape: text\n  }\n\n";
-
-    if (has_rel) write_sem_pill_grid(os, sd->releases, "rel");
+    if (has_acq) {
+        if (is_rect)
+            write_sem_pill_grid(os, sd->acquires, "acq");
+        else
+            write_sem_pill_row(os, sd->acquires, "acq");
+    }
+    // 原版无信号量矩形节点的灰色副标题继承 14px；有信号量时为 11px。
+    write_title_grid(os, w, type_name, font_color, "mid", (has_acq || has_rel) ? 11 : 14);
+    if (has_rel) {
+        if (is_rect)
+            write_sem_pill_grid(os, sd->releases, "rel");
+        else
+            write_sem_pill_row(os, sd->releases, "rel");
+    }
 
     os << "}";
 }
@@ -364,38 +460,39 @@ inline void D2Renderer::render_graph(std::ostream& os, const Work& w, const char
     }
 
     const auto* sd = w.m_semaphores.get();
-    const bool has_acq = sd && !sd->acquires.empty();
-    const bool has_rel = sd && !sd->releases.empty();
-    std::string_view raw = w._name();
+    const bool  has_acq = sd && !sd->acquires.empty();
+    const bool  has_rel = sd && !sd->releases.empty();
 
-    auto write_name = [&] {
-        if (raw.empty())
+    format_id(os, std::addressof(w));
+
+    // 无信号量 Graph：使用原生多行标签保证两行居中。
+    // 保持 graph.dump(os) 直接位于容器内，子节点引用路径不变。
+    if (!has_acq && !has_rel) [[likely]] {
+        os << ": \"";
+        if (const std::string_view raw = w._name(); raw.empty())
             format_id(os, std::addressof(w));
         else
-            write_html_escaped(os, raw);
-    };
-
-    // Path A — 无信号量： |md 块内嵌子图
-    if (!has_acq && !has_rel) [[likely]] {
-        format_id(os, std::addressof(w));
-        os << ": |md\n  <center>";
-        write_name();
-        os << "<br/><span style=\"color: #6b7280;\">[ " << type_name
-           << " ]</span></center>\n| {\n"
+            write_quoted_escaped(os, raw);
+        os << "\\n[ ";
+        write_quoted_escaped(os, type_name);
+        os << " ]\" {\n"
               "  shape: rectangle\n"
               "  label.near: top-center\n"
               "  style.fill: \"#e8f5e9\"\n"
               "  style.stroke: \"#10b981\"\n"
               "  style.stroke-width: 2\n"
-              "  style.border-radius: 14\n\n";
+              "  style.border-radius: 14\n"
+              "  style.font-color: \"#065f46\"\n"
+              "  style.font-size: 14\n\n";
         graph.dump(os);
         os << "}";
         return;
     }
 
-    // Path B — 有信号量： grid(title + content)
-    format_id(os, std::addressof(w));
+    // 有信号量：标题、类型、内容与信号量栏同为单列 Grid 的直接子节点。
+    // 两行分别配色，同时避免二次嵌套网格使标题靠左。
     os << ": \"\" {\n"
+          "  shape: rectangle\n"
           "  style.fill: \"#e8f5e9\"\n"
           "  style.stroke: \"#10b981\"\n"
           "  style.stroke-width: 2\n"
@@ -404,12 +501,9 @@ inline void D2Renderer::render_graph(std::ostream& os, const Work& w, const char
           "  grid-gap: 4\n\n";
 
     if (has_acq) write_sem_pill_grid(os, sd->acquires, "acq");
+    write_title_grid(os, w, type_name, "#065f46", "title");
 
-    os << "  title: |md\n    <center>";
-    write_name();
-    os << "<br/><span style=\"color: #6b7280;\">[ " << type_name
-       << " ]</span></center>\n  | { shape: text }\n\n"
-          "  content: \"\" {\n"
+    os << "  content: \"\" {\n"
           "    style.fill: transparent\n"
           "    style.stroke: transparent\n\n";
     graph.dump(os);
@@ -420,4 +514,4 @@ inline void D2Renderer::render_graph(std::ostream& os, const Work& w, const char
     os << "}";
 }
 
-}  // namespace tfl
+} // namespace tfl

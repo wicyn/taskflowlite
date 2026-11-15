@@ -49,6 +49,19 @@ int main(int argc, char** argv) {
         }).get();
     }
     verify(runs * 6);
+    g_counter = 0;
+    {
+        Timer timer("Coroutine | call / fork / join");
+        executor.async([&](tfl::Coro& coro) -> tfl::CoroTask<> {
+            for (int i = 0; i < runs; ++i) {
+                co_await coro.call([](tfl::Coro&) -> tfl::CoroTask<> { add_one(); co_return; });
+                auto child = co_await coro.fork([] { add_one(); });
+                co_await coro.join();
+                child.get();
+            }
+        }).get();
+    }
+    verify(runs * 2);
     executor.wait_for_all();
     return g_failures == 0 && executor.num_topologies() == 0 ? 0 : 1;
 }
