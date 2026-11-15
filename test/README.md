@@ -38,21 +38,30 @@ cmake --build build/tests --config Release --target run_test_semaphore
 | `TFL_TEST_HEADERS` | ON | 检查各有效 core 头文件能否独立编译 |
 | `TFL_TEST_PER_FILE_DEFAULT` | OFF | 将各模块测试加入默认构建并注册到 CTest |
 | `TFL_TEST_RUN_TARGETS` | OFF | 生成 `run_test_<模块名>` 目标 |
-| `TFL_TEST_CORE_ALLOCATION_FAILURE` | OFF | 普通构建中启用 core 分配失败回滚诊断，当前实现可能失败或超时 |
+| `TFL_TEST_CORE_ALLOCATION_FAILURE` | ON | 普通构建中运行独立分配失败回滚测试；Sanitizer 构建跳过 |
 
 ## 回归覆盖
 
 默认测试覆盖异步依赖、提交前的依赖校验、停止继承、执行上下文、corun、观察者异常、对象任务、信号量、调度容器及内存生命周期。
 
+协程测试覆盖 Coroutine 图节点与重复执行、各提交入口、值/引用/移动结果、call 的帧回收及异常恢复、
+fork/join 与重复依赖、外部等待的提前通知/跨线程恢复、Token 失效、协作停止，以及 Stacklet 的分配/归还。
+单 Worker 场景验证挂起会让出执行资源；多 Worker 场景验证相同结果。
+可用 `TaskflowLiteTest "[coro]"` 单独运行，或构建 `tfl_test_coro`、`tfl_test_coro_awaiter`、`tfl_test_stack`。
+当前 `Coro::fork` 的 AsyncTask 依赖需显式转为 AsyncFuture，详见[接口限制](../documentation/coroutines.md)。
+
 头文件分别在普通模式和禁用编译器异常模式下独立编译。独立进程验证显式 `TFL_ENABLE_EXCEPTIONS=0` 与编译器自动检测，以及非法调用的终止行为。
 
 普通构建默认运行 `tfl_test.async_task_allocation_failure`，检查延迟任务构造失败时的资源清理与重新创建。Sanitizer 构建保留正常提交检查，不替换全局分配器。
 
-## 可选的分配失败回滚诊断
+## 分配失败回滚测试
 
-`core_allocation_failure.cpp` 包含七项 `tfl_test.core_allocation.*` 诊断，检查启动失败后的重试、依赖登记失败后的清理，以及 callable 替换失败后是否保留旧对象。当前 core 对提交中途的分配失败不提供完整回滚保证，因此这些诊断可能失败或超时，默认不构建、不注册到 CTest。
+`core_allocation_failure.cpp` 包含七项 `tfl_test.core_allocation.*` 测试，检查已完成依赖不分配前驱表、
+活动前驱登记失败后的解锁与重试、各提交上下文的分配失败清理，以及 callable 替换失败后释放旧对象、
+重新绑定再执行的契约。测试按当前实现的分配点注入失败，并同时要求失败与成功路径都被执行。
+旧的重复缺陷复现程序已合并到这组测试中。
 
-如需单独复现，在普通构建中显式开启：
+普通构建默认开启，也可单独运行：
 
 ```sh
 cmake -S . -B build/allocation-diagnostics -DCMAKE_BUILD_TYPE=Release -DTFL_BUILD_TESTS=ON -DTFL_BUILD_EXAMPLES=OFF -DTFL_TEST_CORE_ALLOCATION_FAILURE=ON -DTFL_SANITIZER=OFF
@@ -60,4 +69,4 @@ cmake --build build/allocation-diagnostics --config Release --target tfl_test_co
 ctest --test-dir build/allocation-diagnostics -C Release -R '^tfl_test[.]core_allocation[.]' --output-on-failure
 ```
 
-这个开关只控制诊断的构建与运行，不改变 core 的异常处理行为，也不表示上述回滚问题已修复。
+设置 `TFL_TEST_CORE_ALLOCATION_FAILURE=OFF` 可跳过分配注入；该开关不改变库本身的行为。

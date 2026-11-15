@@ -117,7 +117,7 @@ int main() {
     a_write.release(db_pool, 1);
 
     // sub_a (Subflow/Graph): 整条管线执行期间占用 GPU 显存
-    auto sub_a = flow.emplace(std::move(pipeline_a), 1);
+    auto sub_a = flow.emplace(std::move(pipeline_a));
     sub_a.name("pipeline_A");
     sub_a.acquire(gpu_mem, 1);
     sub_a.release(gpu_mem, 1);
@@ -144,14 +144,14 @@ int main() {
 
     tfl::Flow pipeline_b;
     auto b_init    = pipeline_b.emplace([]{});  b_init.name("init_B");
-    auto inner_etl = pipeline_b.emplace(std::move(etl_inner), 2);
+    auto inner_etl = pipeline_b.emplace(std::move(etl_inner), std::uint64_t{2});
     inner_etl.name("ETL_inner");
     auto b_done    = pipeline_b.emplace([]{});  b_done.name("done_B");
     b_init.precede(inner_etl);
     inner_etl.precede(b_done);
 
     // sub_b (Subflow/Graph): 整条管线占用事务锁 + GPU 显存
-    auto sub_b = flow.emplace(std::move(pipeline_b), 1);
+    auto sub_b = flow.emplace(std::move(pipeline_b));
     sub_b.name("pipeline_B");
     sub_b.acquire(txn_lock, 1);
     sub_b.acquire(gpu_mem, 1);
@@ -179,7 +179,7 @@ int main() {
     c_check.release(cache_lock, 1);
 
     // sub_c (Subflow/Graph): 整条管线占用 GPU 显存
-    auto sub_c = flow.emplace(std::move(pipeline_c), 1);
+    auto sub_c = flow.emplace(std::move(pipeline_c));
     sub_c.name("pipeline_C");
     sub_c.acquire(gpu_mem, 1);
     sub_c.release(gpu_mem, 1);

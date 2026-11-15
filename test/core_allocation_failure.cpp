@@ -119,27 +119,28 @@ int main(int argc, char** argv) {
         ThrowOnCopy replacement;
         bool caught = false;
         try { task.work(replacement); } catch (const std::runtime_error&) { caught = true; }
-        const bool preserved = !old_callable.expired();
-        std::printf("caught=%d old_callable_preserved=%d\n", caught, preserved);
+        const bool released = old_callable.expired();
+        std::printf("caught=%d old_callable_released=%d\n", caught, released);
         // Restore a valid payload before any graph execution.
         task.work([] {});
-        return caught && preserved ? 0 : 1;
+        tfl::Executor executor(1);
+        executor.corun(flow);
+        return caught && released ? 0 : 1;
     }
 
     tfl::Executor executor(2);
-    if (std::strcmp(argv[1], "start_reserve") == 0) {
+    if (std::strcmp(argv[1], "completed_dependency") == 0) {
         auto predecessor = executor.async([] {});
         executor.wait_for_all();
         auto task = executor.defer_async([] {});
         bool caught = false;
-        fail_after = 0; // First allocation is the deferred task's predecessor table.
+        fail_after = 0; // Completed dependencies no longer allocate a predecessor table.
         try { task.start(predecessor); } catch (const std::bad_alloc&) { caught = true; }
         fail_after = -1;
-        std::printf("caught=%d running=%d topologies=%zu; retrying\n",
-                    caught, task.running(), executor.num_topologies());
-        if (!caught) return 3; // The intended fault was not exercised.
-        task.start(predecessor).get(); // Failure must leave Idle retryable.
-        return 0;
+        if (caught) return 3;
+        task.get();
+        executor.wait_for_all();
+        return predecessor.use_count() == 1 ? 0 : 1;
     }
     if (std::strcmp(argv[1], "link_alloc") == 0) {
         std::atomic<bool> release{false};
@@ -148,7 +149,7 @@ int main(int argc, char** argv) {
         });
         auto task = executor.defer_async([] {});
         bool caught = false;
-        fail_after = 1; // Own edge table succeeds; predecessor successor table fails.
+        fail_after = 0; // The live predecessor's first successor allocation fails.
         try { task.start(predecessor); } catch (const std::bad_alloc&) { caught = true; }
         fail_after = -1;
         std::printf("caught=%d running=%d topologies=%zu; releasing predecessor\n",

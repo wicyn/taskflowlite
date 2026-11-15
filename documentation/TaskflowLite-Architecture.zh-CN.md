@@ -2,19 +2,15 @@
 
 **执行模型 · 多线程调度 · 并发算法 · 生命周期 · Executor 编排 · Algorithm Visual Atlas**
 
-- TaskflowLite: **3.2.0**
+- TaskflowLite: **3.3.0**
 - 基线分支: `main`
-- 基线提交: `58eedba09f4e7a9cec5304008007777947efbb59`
-- 提交时间: 2026-09-28 14:51:14 UTC
+- 基线提交: `c31f328`
+- 核对日期: 2026-11-15
 - 范围: `taskflowlite/core`
 - 文档原则: 正文以该提交实际参与编译的 Core 为准；旧版页面只复用仍与当前实现一致的图形表达。
 - Edition: **Polished Technical Reference Edition v2** — 合并最新版正确性、组件细节、Executor-Centric 页面与 Algorithm Visual Atlas，并统一全书图文系统。
 
-- Visual baseline: **2026-09-29 Polished Technical Diagram System**
-- 前 82 张基础/并发图重新裁切、放大，统一卡片、留白、图例与读图要点；后 49 张成熟算法板保持大图结构。
-- 代码、伪代码、状态摘写全部改为浅色技术框，取消黑底代码块。
-- 核心图恢复标准工程图表达：同层流程用直线，分叉与跨层关系仅使用短弧线，回路才使用曲线；图内只保留对象名、关键原子操作和状态转换。
-- 对原先没有图的二级主题补充简洁视觉摘要；摘要图采用固定三段式结构，不为装饰增加多余连线。
+> 原版图形资源未随 Markdown 入库，本文链接至 3.2 历史 PDF 供查图；旧图中的依赖所有权和回收路径以当前文字为准。
 
 > 这份完整版本围绕一条主线组织：**Work 怎样被创建、发布、取得执行权、推进依赖、挂起/恢复、发布完成并最终回收。** 每个并发算法都明确线程角色、共享状态、线性化点和生命周期边界。
 
@@ -23,7 +19,7 @@
 
 ## 0. 阅读约定与正确性边界
 
-![0. 阅读约定与正确性边界 - 视觉摘要](assets/supp_000.png)
+[历史插图：0. 阅读约定与正确性边界 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：0. 阅读约定与正确性边界 的关键对象、核心规则与边界关系*
 
@@ -48,7 +44,7 @@
 
 ## 1. 从四条主线理解 Core
 
-![TaskflowLite Core 的四层结构](assets/01_overall.png)
+[历史插图：TaskflowLite Core 的四层结构](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：TaskflowLite Core 的四层结构*
 
@@ -66,7 +62,7 @@
 
 ## 2. 多线程下，类之间到底怎样关联
 
-![Executor、Worker、本地队列、共享栈和 Notifier 的线程角色](assets/02_threads_std.png)
+[历史插图：Executor、Worker、本地队列、共享栈和 Notifier 的线程角色](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Executor、Worker、本地队列、共享栈和 Notifier 的线程角色*
 
@@ -79,7 +75,7 @@
 
 ## 3. Work 的物理结构
 
-![Work 的物理字段与外部对象](assets/03_work_layout.png)
+[历史插图：Work 的物理字段与外部对象](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Work 的物理字段与外部对象*
 
@@ -92,7 +88,7 @@ Work 是调度器真正传递的对象。用户侧 `Task` 只是句柄。关键�
 
 ## 4. 三种“关系”必须分开
 
-![依赖边、Work 父链、Topology 父链是三种不同关系](assets/04_relations.png)
+[历史插图：依赖边、Work 父链、Topology 父链是三种不同关系](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：依赖边、Work 父链、Topology 父链是三种不同关系*
 
@@ -100,14 +96,14 @@ Work 是调度器真正传递的对象。用户侧 `Task` 只是句柄。关键�
 - `m_parent` 决定 child 完成时把 slot 归还给谁，也用于异常向上寻找锚点；
 - `Topology::m_parent` 用于停止请求向后代传播，并由强引用协议保证父 Topology 的可访问期。
 
-Runtime 子任务可以不继承父 Topology 的停止域，但仍通过 Work parent 计入父完成计数。因此“父 Work”和“父 Topology”不是同一概念。
+Runtime / TaskGroup / Coro 派生任务继承父 Topology 停止域，并通过 Work parent 计入父完成计数。通过 Executor 直接提交的任务才是独立顶层任务。因此“父 Work”和“父 Topology”不是同一概念。
 
 
 
 
 ## 5. Topology：状态、锁、停止和引用都在一个控制字
 
-![Topology::Control 位域和状态机](assets/05_topology_word.png)
+[历史插图：Topology::Control 位域和状态机](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Topology::Control 位域和状态机*
 
@@ -120,7 +116,7 @@ Topology 的原子控制字打包 `STOP_REQUESTED | LOCKED | Status | use_count`
 
 ## 6. 原子操作分别解决什么
 
-![6. 原子操作分别解决什么 - 视觉摘要](assets/supp_006.png)
+[历史插图：6. 原子操作分别解决什么 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：6. 原子操作分别解决什么 的关键对象、核心规则与边界关系*
 
@@ -147,7 +143,7 @@ Topology 的原子控制字打包 `STOP_REQUESTED | LOCKED | Status | use_count`
 
 ## 7. Flow / FlowBuilder：静态 Graph 的构建入口
 
-![从 emplace 到 Graph 接管 Work 的完整创建链](assets/06a_build_chain.png)
+[历史插图：从 emplace 到 Graph 接管 Work 的完整创建链](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：从 emplace 到 Graph 接管 Work 的完整创建链*
 
@@ -159,7 +155,7 @@ Topology 的原子控制字打包 `STOP_REQUESTED | LOCKED | Status | use_count`
 
 ## 8. WorkFactory / Invoker：把 callable 类型映射成统一 Work
 
-![WorkFactory、Concrete Invoker 与 Payload 类型擦除](assets/06b_factory_invoker.png)
+[历史插图：WorkFactory、Concrete Invoker 与 Payload 类型擦除](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：WorkFactory、Concrete Invoker 与 Payload 类型擦除*
 
@@ -171,7 +167,7 @@ Executor 最终只看到统一的 `Work::invoke(worker, executor, cache)`。任�
 
 ## 9. Task / TaskView：句柄不是所有权
 
-![静态句柄、视图和异步强引用的所有权差异](assets/06c_handle_ownership.png)
+[历史插图：静态句柄、视图和异步强引用的所有权差异](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：静态句柄、视图和异步强引用的所有权差异*
 
@@ -183,7 +179,7 @@ AsyncFuture/AsyncTask 不同：它们通过 Topology `use_count` 持有强引用
 
 ## 10. TaskObject / AsyncTaskObject：对象引用实际指向哪里
 
-![对象型句柄只保存 Invoker 内部业务对象地址](assets/06d_object_handle.png)
+[历史插图：对象型句柄只保存 Invoker 内部业务对象地址](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：对象型句柄只保存 Invoker 内部业务对象地址*
 
@@ -193,9 +189,9 @@ AsyncFuture/AsyncTask 不同：它们通过 Topology `use_count` 持有强引用
 
 
 
-## 11. TaskType：八种可调度语义最终仍落到同一 Work
+## 11. TaskType：九种可调度语义最终仍落到同一 Work
 
-![当前 TaskType 家族与统一执行内核](assets/06e_task_types.png)
+[历史插图：当前 TaskType 家族与统一执行内核](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：当前 TaskType 家族与统一执行内核*
 
@@ -206,6 +202,7 @@ AsyncFuture/AsyncTask 不同：它们通过 Topology `use_count` 持有强引用
 | Branch / MultiBranch | 运行期筛选普通 strong 后继 |
 | Jump / MultiJump | 绕过普通 strong join，显式激活目标 |
 | Runtime | callable 内动态派生 child，可 PREEMPT/恢复 |
+| Coroutine | CoroTask 帧可挂起；call 对称转移，fork 创建子 Work，Token 请求恢复 |
 | Graph | SubFlow / Module 等子图型 Invoker |
 
 `SubFlow` 不是独立 TaskType；其 Invoker 归到 `TaskType::Graph`。Async 也不是 TaskType，它是 Work storage、Topology 和 tear-down 生命周期语义的另一维。
@@ -214,7 +211,7 @@ AsyncFuture/AsyncTask 不同：它们通过 Topology `use_count` 持有强引用
 
 ## 12. Context：运行期注入对象只在当前 callable 内有效
 
-![Context 家族的栈绑定生命周期](assets/06f_context_lifetime.png)
+[历史插图：Context 家族的栈绑定生命周期](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Context 家族的栈绑定生命周期*
 
@@ -226,7 +223,7 @@ Context 统一借用当前 `Work& / Worker& / Executor&`。Runtime、SubFlow、B
 
 ## 13. Async storage：Topology 与 ResultSlot 跟着 Invoker 按值存在
 
-![ResultStorage 把 Topology 和结果槽放进 Async Invoker 生命周期](assets/06g_async_storage.png)
+[历史插图：ResultStorage 把 Topology 和结果槽放进 Async Invoker 生命周期](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：ResultStorage 把 Topology 和结果槽放进 Async Invoker 生命周期*
 
@@ -238,7 +235,7 @@ ResultSlot 不做同步：任务线程写结果，Future 只能在 Finished 的 
 
 ## 14. Core 类的并发访问边界总表
 
-![14. Core 类的并发访问边界总表 - 视觉摘要](assets/supp_014.png)
+[历史插图：14. Core 类的并发访问边界总表 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：14. Core 类的并发访问边界总表 的关键对象、核心规则与边界关系*
 
@@ -267,7 +264,7 @@ ResultSlot 不做同步：任务线程写结果，Future 只能在 Finished 的 
 
 ## 15. BoundedQueue 的线程契约
 
-![15. BoundedQueue 的线程契约 - 视觉摘要](assets/supp_015.png)
+[历史插图：15. BoundedQueue 的线程契约 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：15. BoundedQueue 的线程契约 的关键对象、核心规则与边界关系*
 
@@ -285,7 +282,7 @@ ResultSlot 不做同步：任务线程写结果，Future 只能在 Finished 的 
 
 ## 16. BoundedQueue 内存布局
 
-![BoundedQueue 的槽位、top、bottom 与线程写权限](assets/10_bq_layout.png)
+[历史插图：BoundedQueue 的槽位、top、bottom 与线程写权限](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：BoundedQueue 的槽位、top、bottom 与线程写权限*
 
@@ -296,7 +293,7 @@ ResultSlot 不做同步：任务线程写结果，Future 只能在 Finished 的 
 
 ## 17. 逻辑索引与物理环
 
-![逻辑索引映射到固定物理槽](assets/11_bq_ring.png)
+[历史插图：逻辑索引映射到固定物理槽](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：逻辑索引映射到固定物理槽*
 
@@ -307,7 +304,7 @@ ResultSlot 不做同步：任务线程写结果，Future 只能在 Finished 的 
 
 ## 18. 单元素 push：先写槽，再发布 bottom
 
-![Owner push 的发布顺序与 release/acquire 关系](assets/12_bq_push.png)
+[历史插图：Owner push 的发布顺序与 release/acquire 关系](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Owner push 的发布顺序与 release/acquire 关系*
 
@@ -320,7 +317,7 @@ ResultSlot 不做同步：任务线程写结果，Future 只能在 Finished 的 
 
 ## 19. 批量 push：一次 release 发布整个前缀
 
-![批量 push 的本地前缀与共享溢出](assets/13_bq_batch.png)
+[历史插图：批量 push 的本地前缀与共享溢出](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：批量 push 的本地前缀与共享溢出*
 
@@ -333,7 +330,7 @@ ResultSlot 不做同步：任务线程写结果，Future 只能在 Finished 的 
 
 ## 20. Owner pop：为什么先缩 bottom
 
-![Owner pop 的三种分支](assets/14_bq_pop.png)
+[历史插图：Owner pop 的三种分支](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Owner pop 的三种分支*
 
@@ -344,7 +341,7 @@ Owner 先把 bottom 减一，相当于预占尾部候选；随后 seq_cst fence 
 
 ## 21. 最后一项竞争：两个线程都可能先读到同一 Work*
 
-![Owner 与 Stealer 对最后一个逻辑槽的 CAS 竞争](assets/15_last_item_race.png)
+[历史插图：Owner 与 Stealer 对最后一个逻辑槽的 CAS 竞争](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Owner 与 Stealer 对最后一个逻辑槽的 CAS 竞争*
 
@@ -355,7 +352,7 @@ Owner 先把 bottom 减一，相当于预占尾部候选；随后 seq_cst fence 
 
 ## 22. Steal：一次尝试，不在容器内部自旋
 
-![Stealer 从逻辑头部取得执行权](assets/16_bq_steal.png)
+[历史插图：Stealer 从逻辑头部取得执行权](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Stealer 从逻辑头部取得执行权*
 
@@ -366,7 +363,7 @@ Stealer 读取 top，经过 seq_cst fence 再 acquire 读取 bottom；观察到�
 
 ## 23. 多 thief 为什么不会执行同一项两次
 
-![23. 多 thief 为什么不会执行同一项两次 - 视觉摘要](assets/supp_023.png)
+[历史插图：23. 多 thief 为什么不会执行同一项两次 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：23. 多 thief 为什么不会执行同一项两次 的关键对象、核心规则与边界关系*
 
@@ -385,7 +382,7 @@ Stealer 读取 top，经过 seq_cst fence 再 acquire 读取 bottom；观察到�
 
 ## 24. 为什么槽位本身也必须 atomic
 
-![落后 thief 与环槽复用](assets/17_slot_reuse.png)
+[历史插图：落后 thief 与环槽复用](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：落后 thief 与环槽复用*
 
@@ -396,7 +393,7 @@ Stealer 读取 top，经过 seq_cst fence 再 acquire 读取 bottom；观察到�
 
 ## 25. BoundedQueue memory-order 表
 
-![25. BoundedQueue memory-order 表 - 视觉摘要](assets/supp_025.png)
+[历史插图：25. BoundedQueue memory-order 表 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：25. BoundedQueue memory-order 表 的关键对象、核心规则与边界关系*
 
@@ -419,7 +416,7 @@ Stealer 读取 top，经过 seq_cst fence 再 acquire 读取 bottom；观察到�
 
 ## 26. BoundedQueue 在 Executor 中不是孤立容器
 
-![Ready Work 从 cache 到本地队列再到共享层](assets/18_bq_integration.png)
+[历史插图：Ready Work 从 cache 到本地队列再到共享层](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Ready Work 从 cache 到本地队列再到共享层*
 
@@ -437,7 +434,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 27. SharedWorkStack 的三个字段
 
-![incoming、state、head 的线程访问域](assets/21_sws_layout.png)
+[历史插图：incoming、state、head 的线程访问域](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：incoming、state、head 的线程访问域*
 
@@ -450,7 +447,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 28. push：计数先加，再发布 incoming
 
-![SharedWorkStack push 的两阶段发布](assets/22_sws_push.png)
+[历史插图：SharedWorkStack push 的两阶段发布](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：SharedWorkStack push 的两阶段发布*
 
@@ -463,7 +460,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 29. 批量 push：链只在发布前遍历一次
 
-![29. 批量 push：链只在发布前遍历一次 - 视觉摘要](assets/supp_029.png)
+[历史插图：29. 批量 push：链只在发布前遍历一次 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：29. 批量 push：链只在发布前遍历一次 的关键对象、核心规则与边界关系*
 
@@ -477,7 +474,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 30. steal：先竞争 consumer gate，再碰 m_head
 
-![SharedWorkStack steal 完整路径](assets/23_sws_steal.png)
+[历史插图：SharedWorkStack steal 完整路径](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：SharedWorkStack steal 完整路径*
 
@@ -490,7 +487,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 31. 两个 thief 同时到达时发生什么
 
-![多个 thief 对消费 gate 的竞争](assets/24_sws_two_thief.png)
+[历史插图：多个 thief 对消费 gate 的竞争](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：多个 thief 对消费 gate 的竞争*
 
@@ -503,7 +500,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 32. incoming 与 m_head 为什么分开
 
-![消费者一次接管整条 incoming 链](assets/25_sws_handoff.png)
+[历史插图：消费者一次接管整条 incoming 链](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：消费者一次接管整条 incoming 链*
 
@@ -514,7 +511,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 33. SharedWorkStack 的 count 语义
 
-![33. SharedWorkStack 的 count 语义 - 视觉摘要](assets/supp_033.png)
+[历史插图：33. SharedWorkStack 的 count 语义 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：33. SharedWorkStack 的 count 语义 的关键对象、核心规则与边界关系*
 
@@ -532,7 +529,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 34. Executor 如何把共享任务分片
 
-![_push_shared 的分片策略](assets/26_shared_shards.png)
+[历史插图：_push_shared 的分片策略](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：_push_shared 的分片策略*
 
@@ -552,7 +549,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 35. Executor 持有哪些并发核心对象
 
-![Executor 的运行期对象图](assets/30_executor_graph.png)
+[历史插图：Executor 的运行期对象图](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Executor 的运行期对象图*
 
@@ -563,7 +560,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 36. Worker 主循环
 
-![Worker 从 cache/local 到 wait_for_work 的循环](assets/31_worker_loop.png)
+[历史插图：Worker 从 cache/local 到 wait_for_work 的循环](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Worker 从 cache/local 到 wait_for_work 的循环*
 
@@ -574,7 +571,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 37. `_wait_for_work` 是三阶段退避
 
-![快速 steal → yield → Notifier 的三阶段搜索](assets/32_wait_for_work.png)
+[历史插图：快速 steal → yield → Notifier 的三阶段搜索](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：快速 steal → yield → Notifier 的三阶段搜索*
 
@@ -590,7 +587,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 38. Ready Work 的四种发布方式
 
-![Executor 根据调用线程和批量大小选择发布路径](assets/33_schedule_paths.png)
+[历史插图：Executor 根据调用线程和批量大小选择发布路径](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Executor 根据调用线程和批量大小选择发布路径*
 
@@ -606,7 +603,7 @@ SharedWorkStack 使用 Work::m_next 组成 intrusive 链，生产者与消费者
 
 ## 39. cache handoff 为什么重要
 
-![第一 Ready 后继继承 parent slot 并直接接力](assets/34_cache_handoff.png)
+[历史插图：第一 Ready 后继继承 parent slot 并直接接力](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：第一 Ready 后继继承 parent slot 并直接接力*
 
@@ -617,7 +614,7 @@ cache 不是一个第二队列，只是 `_invoke` 当前调用链的单个直达
 
 ## 40. Lost wake-up：为什么不能“看空后直接睡”
 
-![没有两阶段协议时的危险窗口](assets/36_lost_wakeup.png)
+[历史插图：没有两阶段协议时的危险窗口](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：没有两阶段协议时的危险窗口*
 
@@ -628,7 +625,7 @@ Producer 的 notify 可能发生在 Worker 检查队列为空之后、实际 par
 
 ## 41. Notifier 状态字与 per-Worker Waiter
 
-![Notifier 64 位状态字与 Waiter 三态机](assets/37_notifier_word.png)
+[历史插图：Notifier 64 位状态字与 Waiter 三态机](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Notifier 64 位状态字与 Waiter 三态机*
 
@@ -639,7 +636,7 @@ Producer 的 notify 可能发生在 Worker 检查队列为空之后、实际 par
 
 ## 42. prepare → double-check → cancel/commit
 
-![两阶段等待协议](assets/38_notifier_protocol.png)
+[历史插图：两阶段等待协议](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：两阶段等待协议*
 
@@ -652,7 +649,7 @@ commit/cancel 用 prepare 时记录的 epoch + 当时 prewaiter 个数恢复“�
 
 ## 43. notify 为什么优先消费 prewaiter
 
-![43. notify 为什么优先消费 prewaiter - 视觉摘要](assets/supp_043.png)
+[历史插图：43. notify 为什么优先消费 prewaiter - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：43. notify 为什么优先消费 prewaiter 的关键对象、核心规则与边界关系*
 
@@ -666,7 +663,7 @@ commit/cancel 用 prepare 时记录的 epoch + 当时 prewaiter 个数恢复“�
 
 ## 44. park / unpark 三态机
 
-![Waiter::state 关闭“入栈到 park”窗口](assets/39_park_unpark.png)
+[历史插图：Waiter::state 关闭“入栈到 park”窗口](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Waiter::state 关闭“入栈到 park”窗口*
 
@@ -677,7 +674,7 @@ commit/cancel 用 prepare 时记录的 epoch + 当时 prewaiter 个数恢复“�
 
 ## 45. Notifier 正确性边界
 
-![45. Notifier 正确性边界 - 视觉摘要](assets/supp_045.png)
+[历史插图：45. Notifier 正确性边界 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：45. Notifier 正确性边界 的关键对象、核心规则与边界关系*
 
@@ -694,7 +691,7 @@ commit/cancel 用 prepare 时记录的 epoch + 当时 prewaiter 个数恢复“�
 
 ## 46. Executor shutdown
 
-![Executor 析构的顺序](assets/80_shutdown.png)
+[历史插图：Executor 析构的顺序](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Executor 析构的顺序*
 
@@ -712,7 +709,7 @@ commit/cancel 用 prepare 时记录的 epoch + 当时 prewaiter 个数恢复“�
 
 ## 47. Graph 的所有权模型
 
-![47. Graph 的所有权模型 - 视觉摘要](assets/supp_047.png)
+[历史插图：47. Graph 的所有权模型 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：47. Graph 的所有权模型 的关键对象、核心规则与边界关系*
 
@@ -726,7 +723,7 @@ Graph 的结构修改不得与执行并发。Executor 在运行期会原地把 s
 
 ## 48. Work 边表为什么是 `[successors | predecessors]`
 
-![48. Work 边表为什么是 `[successors | predecessors]` - 视觉摘要](assets/supp_048.png)
+[历史插图：48. Work 边表布局](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：48. Work 边表为什么是 `[successors | predecessors]` 的关键对象、核心规则与边界关系*
 
@@ -740,7 +737,7 @@ Graph 的结构修改不得与执行并发。Executor 在运行期会原地把 s
 
 ## 49. `_set_up_graph`：运行前重新绑定所有状态
 
-![Graph 每轮运行的 setup](assets/43_setup_graph.png)
+[历史插图：Graph 每轮运行的 setup](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Graph 每轮运行的 setup*
 
@@ -753,7 +750,7 @@ Graph 的结构修改不得与执行并发。Executor 在运行期会原地把 s
 
 ## 50. strong join 的执行权只有最后一个到达者拿到
 
-![多个 strong predecessor 汇聚到一个后继](assets/44_join_counter.png)
+[历史插图：多个 strong predecessor 汇聚到一个后继](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：多个 strong predecessor 汇聚到一个后继*
 
@@ -766,7 +763,7 @@ acq_rel RMW 还把多个 predecessor 的完成写入汇合到最后到达线程�
 
 ## 51. `_tear_down_task`：先恢复自己，再推进别人
 
-![普通 Work tear-down 的顺序](assets/45_teardown.png)
+[历史插图：普通 Work tear-down 的顺序](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：普通 Work tear-down 的顺序*
 
@@ -779,7 +776,7 @@ acq_rel RMW 还把多个 predecessor 的完成写入汇合到最后到达线程�
 
 ## 52. fan-out：第一 Ready 后继与额外 Ready 后继待遇不同
 
-![52. fan-out：第一 Ready 后继与额外 Ready 后继待遇不同 - 视觉摘要](assets/supp_052.png)
+[历史插图：52. fan-out：第一 Ready 后继与额外 Ready 后继待遇不同 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：52. fan-out：第一 Ready 后继与额外 Ready 后继待遇不同 的关键对象、核心规则与边界关系*
 
@@ -793,7 +790,7 @@ acq_rel RMW 还把多个 predecessor 的完成写入汇合到最后到达线程�
 
 ## 53. parent slot 守恒
 
-![每个活动 child 对 parent join_counter 的责任](assets/46_parent_slots.png)
+[历史插图：每个活动 child 对 parent join_counter 的责任](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：每个活动 child 对 parent join_counter 的责任*
 
@@ -811,7 +808,7 @@ Runtime / TaskGroup / Graph source 发布也遵守同一个“先建立 slot，�
 
 ## 54. `_schedule_parent` 为什么先缓存 PREEMPTED
 
-![54. `_schedule_parent` 为什么先缓存 PREEMPTED - 视觉摘要](assets/supp_054.png)
+[历史插图：54. `_schedule_parent` 为什么先缓存 PREEMPTED - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：54. `_schedule_parent` 为什么先缓存 PREEMPTED 的关键对象、核心规则与边界关系*
 
@@ -825,7 +822,7 @@ Runtime / TaskGroup / Graph source 发布也遵守同一个“先建立 slot，�
 
 ## 55. Branch 与 Jump 的本质区别
 
-![Branch 仍走 strong join；Jump 强制激活](assets/48_branch_jump.png)
+[历史插图：Branch 仍走 strong join；Jump 强制激活](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Branch 仍走 strong join；Jump 强制激活*
 
@@ -838,7 +835,7 @@ Branch 只是在运行期选择“哪些普通依赖边要传播”，目标仍�
 
 ## 56. Basic Work 完整执行管线
 
-![从 Ready 到 tear-down 的同步节点路径](assets/49_basic_pipeline.png)
+[历史插图：从 Ready 到 tear-down 的同步节点路径](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：从 Ready 到 tear-down 的同步节点路径*
 
@@ -851,7 +848,7 @@ Semaphore 获取失败时 Invoker 直接 return：Work 没执行 callable，也�
 
 ## 57. Observer 为什么不能依赖 thread_local “同一任务同一线程”
 
-![57. Observer 为什么不能依赖 thread_local “同一任务同一线程” - 视觉摘要](assets/supp_057.png)
+[历史插图：57. Observer 为什么不能依赖 thread_local “同一任务同一线程” - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：57. Observer 为什么不能依赖 thread_local “同一任务同一线程” 的关键对象、核心规则与边界关系*
 
@@ -865,7 +862,7 @@ Semaphore 获取失败时 Invoker 直接 return：Work 没执行 callable，也�
 
 ## 58. 异常沿 Work parent 链，停止沿 Topology parent 链
 
-![异常归档锚点选择](assets/74_exception.png)
+[历史插图：异常归档锚点选择](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：异常归档锚点选择*
 
@@ -885,7 +882,7 @@ Semaphore 获取失败时 Invoker 直接 return：Work 没执行 callable，也�
 
 ## 59. Runtime 的 PREEMPTED 状态机
 
-![Runtime child slot 与 parent 恢复](assets/56_runtime_preempt.png)
+[历史插图：Runtime child slot 与 parent 恢复](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Runtime child slot 与 parent 恢复*
 
@@ -898,7 +895,7 @@ Runtime 首次进入时置 PREEMPTED，并先加一个“body 基准 slot”。�
 
 ## 60. SubFlow 与 Runtime 的共同点和差异
 
-![60. SubFlow 与 Runtime 的共同点和差异 - 视觉摘要](assets/supp_060.png)
+[历史插图：60. SubFlow 与 Runtime 的共同点和差异 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：60. SubFlow 与 Runtime 的共同点和差异 的关键对象、核心规则与边界关系*
 
@@ -912,7 +909,7 @@ Runtime 首次进入时置 PREEMPTED，并先加一个“body 基准 slot”。�
 
 ## 61. 协作式等待 `_corun_until`
 
-![61. 协作式等待 `_corun_until` - 视觉摘要](assets/supp_061.png)
+[历史插图：61. 协作式等待 `_corun_until` - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：61. 协作式等待 `_corun_until` 的关键对象、核心规则与边界关系*
 
@@ -931,7 +928,7 @@ Worker 线程等待 child 时不会直接阻塞 OS 线程。`_corun_until` 反�
 
 ## 62. TaskGroup：一个栈绑定 AnchorWork 聚合动态任务
 
-![TaskGroup 的 AnchorWork 完成域](assets/58_taskgroup.png)
+[历史插图：TaskGroup 的 AnchorWork 完成域](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：TaskGroup 的 AnchorWork 完成域*
 
@@ -944,7 +941,7 @@ AnchorWork 同时是 EXPLICIT_ANCHOR，因此组内异常有稳定的归档位�
 
 ## 63. Semaphore 数据结构
 
-![63. Semaphore 数据结构 - 视觉摘要](assets/supp_063.png)
+[历史插图：63. Semaphore 数据结构 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：63. Semaphore 数据结构 的关键对象、核心规则与边界关系*
 
@@ -958,7 +955,7 @@ Work 的 acquire 列表在配置时按 `Semaphore*` 全局顺序排序并去重�
 
 ## 64. 多 Semaphore acquire：锁全部，再先检查、后提交
 
-![当前 Semaphore 的 all-check-then-commit 事务](assets/60_semaphore_acquire.png)
+[历史插图：当前 Semaphore 的 all-check-then-commit 事务](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：当前 Semaphore 的 all-check-then-commit 事务*
 
@@ -971,7 +968,7 @@ Work 的 acquire 列表在配置时按 `Semaphore*` 全局顺序排序并去重�
 
 ## 65. release 只提供“重试机会”
 
-![Semaphore release 与 waiter 重调度](assets/61_semaphore_release.png)
+[历史插图：Semaphore release 与 waiter 重调度](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Semaphore release 与 waiter 重调度*
 
@@ -991,7 +988,7 @@ release 增加 quota 后，会把**当前整条 waiter 链**一次摘下并追�
 
 ## 66. AsyncFuture / ResultSlot 只负责结果与寿命，不负责调度 Ready
 
-![66. AsyncFuture / ResultSlot 只负责结果与寿命，不负责调度 Ready - 视觉摘要](assets/supp_066.png)
+[历史插图：66. AsyncFuture / ResultSlot 只负责结果与寿命，不负责调度 Ready - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：66. AsyncFuture / ResultSlot 只负责结果与寿命，不负责调度 Ready 的关键对象、核心规则与边界关系*
 
@@ -1005,20 +1002,20 @@ release 增加 quota 后，会把**当前整条 waiter 链**一次摘下并追�
 
 ## 67. AsyncTask::start 是一次提交事务
 
-![AsyncTask::start 的八个阶段](assets/63_async_start.png)
+[历史插图：AsyncTask::start 的八个阶段](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：AsyncTask::start 的八个阶段*
 
 公开 AsyncTask 先校验所有 dependency，再在自身 Topology 仍为 Idle 时 CAS 取得 LOCKED，保证并发 start 只有一个线程进入准备区。
 
-保存 predecessor edge 时同时给每个 predecessor 增一份强引用。`join_counter = N + 1` 中的 `+1` 是 submission guard：依赖登记全部结束之前，无论多少 predecessor 提前完成，都不能让当前任务 Ready。
+当前提交不保存 predecessor 表或增加前驱强引用，而是在尚未完成的 predecessor 上登记非拥有的 successor 边。`join_counter = N + 1` 中的 `+1` 是 submission guard：依赖登记全部结束之前，无论多少 predecessor 提前完成，都不能让当前任务 Ready。登记失败时撤销已插边并恢复 Idle。
 
 
 
 
 ## 68. 为什么必须有 submission guard
 
-![68. 为什么必须有 submission guard - 视觉摘要](assets/supp_068.png)
+[历史插图：68. 为什么必须有 submission guard - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：68. 为什么必须有 submission guard 的关键对象、核心规则与边界关系*
 
@@ -1035,9 +1032,9 @@ Guard 让最终 `1 -> 0` 只能发生在两种安全时机之一：
 
 
 
-## 69. `_link_predecessors` 与 predecessor 完成竞争
+## 69. `_register_async_dependencies` 与 predecessor 完成竞争
 
-![动态后继登记与 Finished 发布的互斥窗口](assets/64_async_link_finish_race.png)
+[历史插图：动态后继登记与 Finished 发布的互斥窗口](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：动态后继登记与 Finished 发布的互斥窗口*
 
@@ -1050,11 +1047,11 @@ Finisher 要从 Running CAS 到 Finished，也必须在控制字未 LOCKED 时�
 
 ## 70. Async 完成：先发布 Finished，再冻结后继
 
-![Async tear-down 的完成顺序](assets/65_async_finish.png)
+[历史插图：Async tear-down 的完成顺序](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Async tear-down 的完成顺序*
 
-完成方 CAS Running→Finished，成功 CAS 的 release 部分发布结果和此前普通写；随后 `notify_all()` Future waiter。Finished 之后新的 `_link_predecessors` 会直接走“已完成”分支，不再向当前 Work 追加后继，因此 `m_num_successors` 可以冻结并顺序传播。
+完成方 CAS Running→Finished，成功 CAS 的 release 部分发布结果和此前普通写；随后 `notify_all()` Future waiter。Finished 之后新的 `_register_async_dependencies` 会直接走“已完成”分支，不再向当前 Work 追加后继，因此 `m_num_successors` 可以冻结并顺序传播。
 
 传播 Ready successor 时，如果 successor 属于另一个 Executor，就调用目标 Executor 的 `_schedule(successor)`，从其共享分片发布。
 
@@ -1063,41 +1060,29 @@ Finisher 要从 Running CAS 到 Finished，也必须在控制字未 LOCKED 时�
 
 ## 71. Finished 与 Destroyed 是两个事件
 
-![Async Work 的强引用来源](assets/66_async_lifetime.png)
+[历史插图：Async Work 的强引用来源](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Async Work 的强引用来源*
 
-一个 Async Work 可能同时被外部句柄、执行生命周期、后继的 predecessor 引用持有。Finished 只说明结果已经发布，Future 可观察；只有最后一份强引用释放，才由 `_destroy_async()` 真正销毁。
+一个 Async Work 由外部句柄、执行引用或子 Topology 的父引用保持存活；完成依赖不持有前驱。Finished 发布后，最后一份强引用释放者通过 destroy_work 销毁对象。
 
 
 
 
-## 72. `_destroy_async` 为什么先析构自己，再释放前驱
+## 72. 完成依赖与销毁解耦
 
-![异步依赖链的迭代销毁](assets/67_destroy_async.png)
+异步 Work 只保留非拥有动态后继；不保存前驱数组，因此也不沿完成依赖递归释放前驱。
+最后一个引用释放者调用 destroy_work；Topology 析构归还父 Topology 引用。用户 callable
+显式捕获的 Future 仍由普通 C++ 析构处理，与框架完成边是两种不同的所有权关系。
 
-*图：异步依赖链的迭代销毁*
+## 73. 动态依赖分配失败的回滚
 
-销毁路径先交换出边表，保存 successor 分割点，随后 `destroy_work(current)`，确保当前 callable、ResultSlot 和 Topology storage 先结束生命周期；之后才对 predecessor 引用逐一 `ref--`。
+Work::_register_async_dependencies 在追加失败时先释放当前前驱锁，再调用
+_rollback_async_dependencies 撤销已插边。已经 Finished 的前驱不能再改边表，
+回滚路径等待其完成通知；提交 guard 阻止目标提前运行。AsyncTask 的失败启动恢复 Idle；
+Executor / Runtime / TaskGroup / Coro 的提交方归还自身执行引用及父完成计数。
 
-如果 predecessor 也归零，不递归调用销毁，而是借用已经死亡执行关系中的 `m_parent` 临时串入 pending 链，继续迭代回收，避免深依赖链造成 C++ 调用栈增长。
-
-
-
-
-## 73. Async 目前最值得继续审查的异常边界
-
-![73. Async 目前最值得继续审查的异常边界 - 视觉摘要](assets/supp_073.png)
-
-*图：73. Async 目前最值得继续审查的异常边界 的关键对象、核心规则与边界关系*
-
-
-当前 `AsyncTask::start` 在取得自身 LOCKED 后仍可能执行 `vector::reserve/push_back`；`_link_predecessors` 在 predecessor LOCKED 区域内也可能 `vector::push_back`。如果这些分配抛异常，强异常回滚需要非常谨慎地恢复锁、引用、部分插边与自身状态。
-
-这不是普通用户 callable 异常路径，不能由 Future 的异常归档机制自动兜底。文档把它列为实现审查点，而不是假定已经完全事务化。
-
-
-
+这一契约由独立的 core_allocation_failure 回归验证；payload 替换仍不保留旧 callable。
 
 # Part VII — Payload / ObjectPool / 辅助容器：运行时内存如何工作
 
@@ -1108,7 +1093,7 @@ Finisher 要从 Running CAS 到 Finished，也必须在控制字未 LOCKED 时�
 
 ## 74. Payload：Work 内部类型擦除 + SBO
 
-![74. Payload：Work 内部类型擦除 + SBO - 视觉摘要](assets/supp_074.png)
+[历史插图：74. Payload：Work 内部类型擦除 + SBO - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：74. Payload：Work 内部类型擦除 + SBO 的关键对象、核心规则与边界关系*
 
@@ -1122,7 +1107,7 @@ Work 按值拥有 `Payload`。Payload 保存 invoke 函数指针、Operations �
 
 ## 75. ObjectPool 总体结构
 
-![Work 对象池的 Bucket / Slab / ObjectBlock](assets/70_pool.png)
+[历史插图：Work 对象池的 Bucket / Slab / ObjectBlock](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Work 对象池的 Bucket / Slab / ObjectBlock*
 
@@ -1135,7 +1120,7 @@ Work 按值拥有 `Payload`。Payload 保存 invoke 函数指针、Operations �
 
 ## 76. Tagged head 解决的是 ABA 版本，不是对象寿命本身
 
-![指针地址恢复但 tag 已改变](assets/71_aba.png)
+[历史插图：指针地址恢复但 tag 已改变](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：指针地址恢复但 tag 已改变*
 
@@ -1148,7 +1133,7 @@ FreeStack head 比较 `(pointer,tag)`。地址 A 被 pop、经过其他操作又
 
 ## 77. create 热路径与 refill 冷路径
 
-![对象池从原子 pop 到补充 Slab](assets/72_pool_refill.png)
+[历史插图：对象池从原子 pop 到补充 Slab](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：对象池从原子 pop 到补充 Slab*
 
@@ -1161,7 +1146,7 @@ create 先用 thread_local 计数器选择 Bucket，从 tagged FreeStack pop。�
 
 ## 78. 跨线程 destroy 为什么不需要找到“分配线程”
 
-![78. 跨线程 destroy 为什么不需要找到“分配线程” - 视觉摘要](assets/supp_078.png)
+[历史插图：78. 跨线程 destroy 为什么不需要找到“分配线程” - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：78. 跨线程 destroy 为什么不需要找到“分配线程” 的关键对象、核心规则与边界关系*
 
@@ -1175,7 +1160,7 @@ ObjectBlock 的 `free_stack` 在 Slab 创建时永久绑定。destroy 从对象�
 
 ## 79. SmallVector 和 SplitMix64 的角色
 
-![79. SmallVector 和 SplitMix64 的角色 - 视觉摘要](assets/supp_079.png)
+[历史插图：79. SmallVector 和 SplitMix64 的角色 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：79. SmallVector 和 SplitMix64 的角色 的关键对象、核心规则与边界关系*
 
@@ -1196,7 +1181,7 @@ ObjectBlock 的 `free_stack` 在 Slab 创建时永久绑定。destroy 从对象�
 
 ## 80. 静态菱形图：A → {B,C} → D
 
-![静态 fan-out / fan-in 的一次合法执行](assets/78_static_trace.png)
+[历史插图：静态 fan-out / fan-in 的一次合法执行](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：静态 fan-out / fan-in 的一次合法执行*
 
@@ -1209,7 +1194,7 @@ D 完成且无后继后归还最终 slot，parent 计数归零。若 B/C 的实�
 
 ## 81. Runtime：body 已返回，但 Work 还没有完成
 
-![81. Runtime：body 已返回，但 Work 还没有完成 - 视觉摘要](assets/supp_081.png)
+[历史插图：81. Runtime：body 已返回，但 Work 还没有完成 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：81. Runtime：body 已返回，但 Work 还没有完成 的关键对象、核心规则与边界关系*
 
@@ -1223,7 +1208,7 @@ Runtime body 内派生 child 后，当前 Work 的 PREEMPTED 仍然保持，join
 
 ## 82. Async dependency + Semaphore 资源等待
 
-![Async Ready 后仍可能因资源不足暂停](assets/79_async_sem_trace.png)
+[历史插图：Async Ready 后仍可能因资源不足暂停](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Async Ready 后仍可能因资源不足暂停*
 
@@ -1236,7 +1221,7 @@ Async C 先通过 dependency + guard 协议取得 Ready。Worker 第一次执行
 
 ## 83. Executor 销毁前为什么必须先 `wait_for_all`
 
-![83. Executor 销毁前为什么必须先 `wait_for_all` - 视觉摘要](assets/supp_083.png)
+[历史插图：83. Executor 销毁前为什么必须先 `wait_for_all` - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：83. Executor 销毁前为什么必须先 `wait_for_all` 的关键对象、核心规则与边界关系*
 
@@ -1254,7 +1239,7 @@ Async C 先通过 dependency + guard 协议取得 Ready。Worker 第一次执行
 
 ## 84. BoundedQueue：发布前后四个状态快照
 
-![Owner push 与 Stealer 可见性的四帧状态](assets/80_bq_frames.png)
+[历史插图：Owner push 与 Stealer 可见性的四帧状态](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Owner push 与 Stealer 可见性的四帧状态*
 
@@ -1269,7 +1254,7 @@ Stealer:                              bottom.load(acquire)  ->  slot.load(relaxe
 
 ## 85. BoundedQueue：多个 thief 读到同一候选并不等于重复执行
 
-![两个 thief 对同一 top 的 CAS 仲裁](assets/81_bq_multi_thief.png)
+[历史插图：两个 thief 对同一 top 的 CAS 仲裁](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：两个 thief 对同一 top 的 CAS 仲裁*
 
@@ -1279,7 +1264,7 @@ Stealer:                              bottom.load(acquire)  ->  slot.load(relaxe
 
 ## 86. BoundedQueue：本地容量不足时怎样进入共享层
 
-![批量 Ready 从本地前缀溢出到共享分片](assets/82_bq_overflow_executor.png)
+[历史插图：批量 Ready 从本地前缀溢出到共享分片](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：批量 Ready 从本地前缀溢出到共享分片*
 
@@ -1289,7 +1274,7 @@ Stealer:                              bottom.load(acquire)  ->  slot.load(relaxe
 
 ## 87. SharedWorkStack：两个 Producer 同时 CAS incoming
 
-![多 Producer 只竞争原子 incoming 头](assets/83_sws_producer_race.png)
+[历史插图：多 Producer 只竞争原子 incoming 头](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：多 Producer 只竞争原子 incoming 头*
 
@@ -1299,7 +1284,7 @@ Stealer:                              bottom.load(acquire)  ->  slot.load(relaxe
 
 ## 88. SharedWorkStack：count 非零但本次 steal 仍可能拿不到节点
 
-![count-before-publish 的短暂窗口](assets/84_sws_publication_gap.png)
+[历史插图：count-before-publish 的短暂窗口](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：count-before-publish 的短暂窗口*
 
@@ -1309,7 +1294,7 @@ Stealer:                              bottom.load(acquire)  ->  slot.load(relaxe
 
 ## 89. Work::m_next：同一个字段如何在不同运行期链之间安全复用
 
-![m_next 的链所有权状态机](assets/102_mnext_state_machine.png)
+[历史插图：m_next 的链所有权状态机](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：m_next 的链所有权状态机*
 
@@ -1319,7 +1304,7 @@ Stealer:                              bottom.load(acquire)  ->  slot.load(relaxe
 
 ## 90. Executor：victim index 同时覆盖本地队列与共享分片
 
-![Worker 的统一 victim index 空间](assets/86_executor_victim_space.png)
+[历史插图：Worker 的统一 victim index 空间](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Worker 的统一 victim index 空间*
 
@@ -1329,7 +1314,7 @@ Stealer:                              bottom.load(acquire)  ->  slot.load(relaxe
 
 ## 91. Executor：真正睡眠前的完整时序
 
-![从退避耗尽到 park 的 Executor 时序](assets/87_executor_sleep_timeline.png)
+[历史插图：从退避耗尽到 park 的 Executor 时序](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：从退避耗尽到 park 的 Executor 时序*
 
@@ -1339,7 +1324,7 @@ Stealer:                              bottom.load(acquire)  ->  slot.load(relaxe
 
 ## 92. Notifier：两个 Worker 的票号怎样把物理乱序变成逻辑顺序
 
-![T0/T1 prepare 后的 epoch 结算次序](assets/88_notifier_ticket_order.png)
+[历史插图：T0/T1 prepare 后的 epoch 结算次序](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：T0/T1 prepare 后的 epoch 结算次序*
 
@@ -1349,7 +1334,7 @@ prepare 保存“当时 epoch + 前面已有多少 prewaiter”。commit/cancel 
 
 ## 93. Notifier：notify 抢在 commit 之前为什么不需要 futex wake
 
-![prewaiter 快速路径避免无效 park/wake](assets/89_notifier_fast_path.png)
+[历史插图：prewaiter 快速路径避免无效 park/wake](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：prewaiter 快速路径避免无效 park/wake*
 
@@ -1359,7 +1344,7 @@ notify 消耗 prewaiter 后，相当于已经替该 Worker 完成一次“不要
 
 ## 94. `_set_up_graph`：Graph 物理数组如何变成 source 前缀
 
-![从构建态物理顺序到运行态 source prefix](assets/90_setup_graph_frames.png)
+[历史插图：从构建态物理顺序到运行态 source prefix](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：从构建态物理顺序到运行态 source prefix*
 
@@ -1369,7 +1354,7 @@ source 的原地 swap 只改变 `m_works` 的物理排列，不改变依赖边�
 
 ## 95. `_tear_down_task`：fan-out 的逐帧状态
 
-![A 完成后多个 successor Ready 的责任转移](assets/91_fanout_frames.png)
+[历史插图：A 完成后多个 successor Ready 的责任转移](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：A 完成后多个 successor Ready 的责任转移*
 
@@ -1379,7 +1364,7 @@ source 的原地 swap 只改变 `m_works` 的物理排列，不改变依赖边�
 
 ## 96. parent slot：跨 Worker 执行仍保持守恒
 
-![B/C 分散到不同 Worker 后 parent 计数如何变化](assets/92_parent_slot_timeline.png)
+[历史插图：B/C 分散到不同 Worker 后 parent 计数如何变化](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：B/C 分散到不同 Worker 后 parent 计数如何变化*
 
@@ -1389,7 +1374,7 @@ parent 计数不依赖 child 最终在哪个 Worker 上运行。只要每个新�
 
 ## 97. Runtime：最后一个 child 可以在另一 Worker 上恢复 parent
 
-![PREEMPTED parent 的跨 Worker 恢复](assets/93_runtime_cross_worker.png)
+[历史插图：PREEMPTED parent 的跨 Worker 恢复](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：PREEMPTED parent 的跨 Worker 恢复*
 
@@ -1399,7 +1384,7 @@ parent 计数不依赖 child 最终在哪个 Worker 上运行。只要每个新�
 
 ## 98. Semaphore：全局锁顺序解决的是什么问题
 
-![两个 Work 的多 Semaphore 锁顺序统一](assets/94_semaphore_lock_order.png)
+[历史插图：两个 Work 的多 Semaphore 锁顺序统一](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：两个 Work 的多 Semaphore 锁顺序统一*
 
@@ -1409,7 +1394,7 @@ parent 计数不依赖 child 最终在哪个 Worker 上运行。只要每个新�
 
 ## 99. Semaphore：为什么 blocker 的锁必须最后释放
 
-![加入 waiter 后最后释放 blocker lock 的生命周期边界](assets/95_semaphore_blocker_unlock.png)
+[历史插图：加入 waiter 后最后释放 blocker lock 的生命周期边界](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：加入 waiter 后最后释放 blocker lock 的生命周期边界*
 
@@ -1419,7 +1404,7 @@ parent 计数不依赖 child 最终在哪个 Worker 上运行。只要每个新�
 
 ## 100. AsyncTask：N+1 guard 的实际计数演算
 
-![一个 Finished 前驱 + 一个 Running 前驱的 guard 时间线](assets/96_async_guard_timeline.png)
+[历史插图：一个 Finished 前驱 + 一个 Running 前驱的 guard 时间线](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：一个 Finished 前驱 + 一个 Running 前驱的 guard 时间线*
 
@@ -1429,7 +1414,7 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 
 ## 101. Async：link 与 Finished 的两种合法交错
 
-![动态后继登记与 predecessor 完成的二选一协议](assets/97_async_two_interleavings.png)
+[历史插图：动态后继登记与 predecessor 完成的二选一协议](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：动态后继登记与 predecessor 完成的二选一协议*
 
@@ -1439,17 +1424,17 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 
 ## 102. Async：Finished 之后为什么 Work 仍然可能存在
 
-![执行引用、句柄引用和 predecessor 引用的生命周期](assets/98_async_reference_lifetime.png)
+[历史插图：执行引用、句柄引用和 predecessor 引用的生命周期](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：执行引用、句柄引用和 predecessor 引用的生命周期*
 
-完成状态只发布结果；内存回收由强引用独立决定。特别是一个已 Finished 的 predecessor 仍可能被多个未销毁 successor 的 predecessor edge 持有，因此不能把 `Finished` 当作 `delete` 时刻。
+完成状态只发布结果；内存回收由强引用独立决定。已 Finished 的 Work 仍可能被外部句柄、尚未释放的执行引用或子 Topology 的父引用持有，因此不能把 `Finished` 当作 `delete` 时刻。动态依赖边不保留前驱；后继若要继续读取结果或对象，必须显式持有对应句柄。
 
 
 
 ## 103. ObjectPool：分配线程和最终回收线程可以不同
 
-![ObjectBlock 永久绑定 FreeStack 使跨线程 destroy 成立](assets/99_pool_cross_thread.png)
+[历史插图：ObjectBlock 永久绑定 FreeStack 使跨线程 destroy 成立](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：ObjectBlock 永久绑定 FreeStack 使跨线程 destroy 成立*
 
@@ -1459,7 +1444,7 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 
 ## 104. Topology：状态发布与对象销毁是两条轴
 
-![Topology 状态与 use_count 的正交关系](assets/100_topology_lifetime.png)
+[历史插图：Topology 状态与 use_count 的正交关系](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Topology 状态与 use_count 的正交关系*
 
@@ -1469,7 +1454,7 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 
 ## 105. 异常链与停止链不能画成同一条父关系
 
-![Work parent 与 Topology parent 的不同用途](assets/101_exception_stop_chains.png)
+[历史插图：Work parent 与 Topology parent 的不同用途](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Work parent 与 Topology parent 的不同用途*
 
@@ -1479,7 +1464,7 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 
 ## 106. 静态菱形图：一次真实的双 Worker 交错
 
-![A→{B,C}→D 在两个 Worker 上的责任转移](assets/103_diamond_multithread.png)
+[历史插图：A→{B,C}→D 在两个 Worker 上的责任转移](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：A→{B,C}→D 在两个 Worker 上的责任转移*
 
@@ -1489,7 +1474,7 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 
 ## 107. Async + Semaphore：三个线程域如何连续交接同一个 Work
 
-![从外部 start 到依赖、资源等待、重新发布与完成](assets/104_async_semaphore_multithread.png)
+[历史插图：从外部 start 到依赖、资源等待、重新发布与完成](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：从外部 start 到依赖、资源等待、重新发布与完成*
 
@@ -1499,7 +1484,7 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 
 ## 108. 全局不变量清单
 
-![108. 全局不变量清单 - 视觉摘要](assets/supp_108.png)
+[历史插图：108. 全局不变量清单 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：108. 全局不变量清单 的关键对象、核心规则与边界关系*
 
@@ -1531,7 +1516,7 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 
 ## 109. 已知边界与不应过度宣称的性质
 
-![109. 已知边界与不应过度宣称的性质 - 视觉摘要](assets/supp_109.png)
+[历史插图：109. 已知边界与不应过度宣称的性质 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：109. 已知边界与不应过度宣称的性质 的关键对象、核心规则与边界关系*
 
@@ -1549,7 +1534,7 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 
 ## 110. 当前源码阅读路线
 
-![110. 当前源码阅读路线 - 视觉摘要](assets/supp_110.png)
+[历史插图：110. 当前源码阅读路线 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：110. 当前源码阅读路线 的关键对象、核心规则与边界关系*
 
@@ -1564,8 +1549,8 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 | Branch 与 Jump 差异 | `_tear_down_branch_task` / `_tear_down_jump_task` |
 | Runtime child 怎么恢复父 | `work_invokers.hpp` + `_schedule_parent` |
 | Semaphore 怎么阻塞但不阻塞 Worker | `work.hpp::SemaphoreLock/_try_acquire_semaphores` + `semaphore.hpp::_release` |
-| Async 依赖竞态 | `async_task.hpp::start` + `executor.hpp::_link_predecessors/_tear_down_async_task` |
-| Async 怎么回收 | `work.hpp::_destroy_async` |
+| Async 依赖竞态 | `async_task.hpp::start` + `work.hpp::_register_async_dependencies` + `executor.hpp::_tear_down_async_task` |
+| Async 怎么回收 | `topology.hpp::_decrement_ref` + `destroy_work` |
 | Work 内存池 | `object_pool.hpp` + `work.hpp::create_work/destroy_work` |
 
 
@@ -1573,7 +1558,7 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 
 ## 111. 源码事实表：本版相对旧文档必须保持的纠正
 
-![111. 源码事实表：本版相对旧文档必须保持的纠正 - 视觉摘要](assets/supp_111.png)
+[历史插图：111. 源码事实表：本版相对旧文档必须保持的纠正 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：111. 源码事实表：本版相对旧文档必须保持的纠正 的关键对象、核心规则与边界关系*
 
@@ -1585,7 +1570,7 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 | SharedWorkStack 消费 | LOCKED gate + private `m_head`，不是多消费者 lock-free pop |
 | Batch local push | top 使用 relaxed 读取；一次 release 发布前缀 |
 | Semaphore 多资源获取 | acquire 列表排序；锁全部；check-all；commit-all |
-| AsyncTask start | 自身 LOCKED + `N+1` guard + predecessor 强引用 |
+| AsyncTask start | 自身 LOCKED + `N+1` guard + 非拥有后继登记；失败回滚到 Idle |
 | 动态依赖完成竞态 | predecessor Topology LOCKED 与 Finished CAS |
 | Topology | packed control word，而不是独立 state/use_count 原子 |
 | Source | 物理前驱数为 0，不是 join_weight 为 0 |
@@ -1596,7 +1581,7 @@ Guard 不是额外 dependency，而是提交线程自己的“登记尚未结束
 
 ## 112. 结论：从 Executor 视角把所有算法串起来
 
-![112. 结论：从 Executor 视角把所有算法串起来 - 视觉摘要](assets/supp_112.png)
+[历史插图：112. 结论：从 Executor 视角把所有算法串起来 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：112. 结论：从 Executor 视角把所有算法串起来 的关键对象、核心规则与边界关系*
 
@@ -1618,7 +1603,7 @@ BoundedQueue、SharedWorkStack、Notifier、join_counter、Topology 和 ObjectPo
 
 `SmallVector<T, N>` 用于小规模集合，核心目标是减少小集合 heap allocation。
 
-![SmallVector 内联与堆存储](assets/struct_smallvector.svg)
+[历史插图：SmallVector 内联与堆存储](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：SmallVector 内联与堆存储*
 
@@ -1653,7 +1638,7 @@ m_flag.clear(memory_order_release)
 
 主要用于 Semaphore 内部状态：
 
-![Semaphore 内部组成](assets/struct_semaphore.svg)
+[历史插图：Semaphore 内部组成](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Semaphore 内部组成*
 
@@ -1665,7 +1650,7 @@ m_flag.clear(memory_order_release)
 
 
 
-![ObjectBlock 结构](assets/struct_objectblock.svg)
+[历史插图：ObjectBlock 结构](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：ObjectBlock 结构*
 
@@ -1686,7 +1671,7 @@ m_flag.clear(memory_order_release)
 
 一个 Slab 固定包含多个长期存在的 `ObjectBlock`。
 
-![Slab 与 Bucket](assets/struct_slab.svg)
+[历史插图：Slab 与 Bucket](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Slab 与 Bucket*
 
@@ -1711,13 +1696,13 @@ FreeStack head 不是单纯指针，而是：
 
 ### TaggedHead64
 
-![TaggedHead64 位布局](assets/struct_tagged64.svg)
+[历史插图：TaggedHead64 位布局](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：TaggedHead64 位布局*
 
 ### TaggedHead128
 
-![TaggedHead128 位布局](assets/struct_tagged128.svg)
+[历史插图：TaggedHead128 位布局](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：TaggedHead128 位布局*
 
@@ -1741,7 +1726,7 @@ CAS 仍能通过 tag 区分不同历史状态。
 
 ## 118. ResultSlot：值、引用与 void 三种结果形态
 
-![118. ResultSlot：值、引用与 void 三种结果形态 - 视觉摘要](assets/supp_118.png)
+[历史插图：118. ResultSlot：值、引用与 void 三种结果形态 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：118. ResultSlot：值、引用与 void 三种结果形态 的关键对象、核心规则与边界关系*
 
@@ -1781,7 +1766,7 @@ T* m_value
 
 异步 Invoker 通过 Storage 直接按值拥有 Topology。
 
-![Async Invoker 状态存储](assets/struct_async_storage.svg)
+[历史插图：Async Invoker 状态存储](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Async Invoker 状态存储*
 
@@ -1791,14 +1776,14 @@ T* m_value
 
 ## 120. Work 边表布局：`[successors | predecessors]`
 
-![120. Work 边表布局：`[successors | predecessors]` - 视觉摘要](assets/supp_120.png)
+[历史插图：120. Work 边表布局](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：120. Work 边表布局：`[successors | predecessors]` 的关键对象、核心规则与边界关系*
 
 
 `m_edges` 同时保存后继和前驱：
 
-![Work 边表逻辑分区](assets/struct_edges.svg)
+[历史插图：Work 边表逻辑分区](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Work 边表逻辑分区*
 
@@ -1806,7 +1791,7 @@ T* m_value
 
 - 后继扫描连续；
 - 前驱扫描连续；
-- 单个 SmallVector 即可表达双向边表。
+- 静态 Work 的单个 std::vector 即可表达双向边表；异步 Work 只保存动态后继。
 
 ---
 
@@ -1816,7 +1801,7 @@ T* m_value
 
 建立：
 
-![precede 双向写边](assets/struct_precede.svg)
+[历史插图：precede 双向写边](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：precede 双向写边*
 
@@ -1837,13 +1822,13 @@ B.predecessors += A
 
 普通非 Jump 边建立时通过 DFS 检查是否形成不经过 Jump 的 strict cycle。
 
-![普通 strict cycle](assets/struct_cycle_invalid.svg)
+[历史插图：普通 strict cycle](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：普通 strict cycle*
 
 Jump 控制节点允许表达循环控制：
 
-![Jump 控制循环](assets/struct_cycle_jump.svg)
+[历史插图：Jump 控制循环](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Jump 控制循环*
 
@@ -1864,7 +1849,7 @@ DFS 遇到 Jump / MultiJump 不继续展开，因此显式控制循环与普通 
 | `STRONG` | 作为前驱时参与普通 strong join |
 | `JOIN_WEIGHT` | 低位保存静态 strong predecessor 数量 |
 
-![Work Properties 位布局](assets/struct_properties.svg)
+[历史插图：Work Properties 位布局](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Work Properties 位布局*
 
@@ -1872,7 +1857,7 @@ DFS 遇到 Jump / MultiJump 不继续展开，因此显式控制循环与普通 
 
 ## 124. Work::Control：并发异常位与执行检查
 
-![124. Work::Control：并发异常位与执行检查 - 视觉摘要](assets/supp_124.png)
+[历史插图：124. Work::Control：并发异常位与执行检查 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：124. Work::Control：并发异常位与执行检查 的关键对象、核心规则与边界关系*
 
@@ -1893,7 +1878,7 @@ DFS 遇到 Jump / MultiJump 不继续展开，因此显式控制循环与普通 
 
 ## 125. Payload / Invoker：类型擦除、SBO 与分派入口
 
-![125. Payload / Invoker：类型擦除、SBO 与分派入口 - 视觉摘要](assets/supp_125.png)
+[历史插图：125. Payload / Invoker：类型擦除、SBO 与分派入口 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：125. Payload / Invoker：类型擦除、SBO 与分派入口 的关键对象、核心规则与边界关系*
 
@@ -1913,7 +1898,7 @@ w->invoke(worker, executor, cache)
 
 ## 126. Placeholder：只有依赖传播，没有用户 callable
 
-![126. Placeholder：只有依赖传播，没有用户 callable - 视觉摘要](assets/supp_126.png)
+[历史插图：126. Placeholder：只有依赖传播，没有用户 callable - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：126. Placeholder：只有依赖传播，没有用户 callable 的关键对象、核心规则与边界关系*
 
@@ -1930,7 +1915,7 @@ Placeholder：
 
 ## 127. Basic：统一执行管线的最小任务类型
 
-![127. Basic：统一执行管线的最小任务类型 - 视觉摘要](assets/supp_127.png)
+[历史插图：127. Basic：统一执行管线的最小任务类型 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：127. Basic：统一执行管线的最小任务类型 的关键对象、核心规则与边界关系*
 
@@ -1948,7 +1933,7 @@ Basic 是其他同步任务类型理解的基准。
 
 Branch 在 callable 执行期间构造栈绑定 `Branch` Context：
 
-![Branch 目标存储](assets/struct_branch.svg)
+[历史插图：Branch 目标存储](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Branch 目标存储*
 
@@ -1973,7 +1958,7 @@ Branch 仍属于普通 strong dependency 语义。
 
 MultiBranch 允许选择零到多个后继。
 
-![MultiBranch 目标存储](assets/struct_multibranch.svg)
+[历史插图：MultiBranch 目标存储](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：MultiBranch 目标存储*
 
@@ -1989,7 +1974,7 @@ tear-down 只推进本轮选中的目标集合。
 
 ## 130. Jump：绕过普通 strong join 的强制激活
 
-![130. Jump：绕过普通 strong join 的强制激活 - 视觉摘要](assets/supp_130.png)
+[历史插图：130. Jump：绕过普通 strong join 的强制激活 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：130. Jump：绕过普通 strong join 的强制激活 的关键对象、核心规则与边界关系*
 
@@ -2005,7 +1990,7 @@ Jump 与 Branch 的关键区别：
 
 ## 131. MultiJump：多个目标的强制激活与 parent slot
 
-![131. MultiJump：多个目标的强制激活与 parent slot - 视觉摘要](assets/supp_131.png)
+[历史插图：131. MultiJump：多个目标的强制激活与 parent slot - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：131. MultiJump：多个目标的强制激活与 parent slot 的关键对象、核心规则与边界关系*
 
@@ -2019,7 +2004,7 @@ MultiJump 是多目标显式激活：
 
 ## 132. Branch vs Jump：两个控制流语义不能混用
 
-![132. Branch vs Jump：两个控制流语义不能混用 - 视觉摘要](assets/supp_132.png)
+[历史插图：132. Branch vs Jump：两个控制流语义不能混用 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：132. Branch vs Jump：两个控制流语义不能混用 的关键对象、核心规则与边界关系*
 
@@ -2045,7 +2030,7 @@ Jump   = control-flow activation
 
 ## 133. SubFlow：执行期构图但仍复用 Graph/Work 内核
 
-![133. SubFlow：执行期构图但仍复用 Graph/Work 内核 - 视觉摘要](assets/supp_133.png)
+[历史插图：133. SubFlow：执行期构图但仍复用 Graph/Work 内核 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：133. SubFlow：执行期构图但仍复用 Graph/Work 内核 的关键对象、核心规则与边界关系*
 
@@ -2059,7 +2044,7 @@ SubFlow 节点内部按值保存一个 Graph。
 
 ## 134. SubFlow::run：动态 Graph 如何接入 parent slot
 
-![134. SubFlow::run：动态 Graph 如何接入 parent slot - 视觉摘要](assets/supp_134.png)
+[历史插图：134. SubFlow::run：动态 Graph 如何接入 parent slot - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：134. SubFlow::run：动态 Graph 如何接入 parent slot 的关键对象、核心规则与边界关系*
 
@@ -2071,7 +2056,7 @@ Child Work 共用当前父 Topology，并以当前 SubFlow Work 为 parent。
 
 ## 135. SubFlow::wait：协作等待而不是阻塞 Worker
 
-![135. SubFlow::wait：协作等待而不是阻塞 Worker - 视觉摘要](assets/supp_135.png)
+[历史插图：135. SubFlow::wait：协作等待而不是阻塞 Worker - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：135. SubFlow::wait：协作等待而不是阻塞 Worker 的关键对象、核心规则与边界关系*
 
@@ -2087,7 +2072,7 @@ SubFlow wait 不让当前 Worker 单纯 OS 阻塞。
 
 ## 136. Module / Graph Work：子图作为一个可调度 Work
 
-![136. Module / Graph Work：子图作为一个可调度 Work - 视觉摘要](assets/supp_136.png)
+[历史插图：136. Module / Graph Work：子图作为一个可调度 Work - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：136. Module / Graph Work：子图作为一个可调度 Work 的关键对象、核心规则与边界关系*
 
@@ -2114,7 +2099,7 @@ Graph-family Work 使用 `PREEMPTED + join_counter` 管理内部图完成和父�
 
 Runtime 是当前 Work 执行期间的动态调度入口。
 
-![Runtime 执行上下文](assets/struct_runtime.svg)
+[历史插图：Runtime 执行上下文](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Runtime 执行上下文*
 
@@ -2130,7 +2115,7 @@ Runtime 是当前 Work 执行期间的动态调度入口。
 
 ## 138. Runtime child：创建、发布与父计数
 
-![138. Runtime child：创建、发布与父计数 - 视觉摘要](assets/supp_138.png)
+[历史插图：138. Runtime child：创建、发布与父计数 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：138. Runtime child：创建、发布与父计数 的关键对象、核心规则与边界关系*
 
@@ -2150,7 +2135,7 @@ schedule child
 
 ## 139. PREEMPTED：Runtime / Graph-family 的挂起与恢复
 
-![139. PREEMPTED：Runtime / Graph-family 的挂起与恢复 - 视觉摘要](assets/supp_139.png)
+[历史插图：139. PREEMPTED：Runtime / Graph-family 的挂起与恢复 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：139. PREEMPTED：Runtime / Graph-family 的挂起与恢复 的关键对象、核心规则与边界关系*
 
@@ -2176,7 +2161,7 @@ Topology 是一次独立执行的运行控制块。
 
 核心成员：
 
-![Topology 控制块](assets/struct_topology.svg)
+[历史插图：Topology 控制块](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Topology 控制块*
 
@@ -2190,7 +2175,7 @@ STOP_REQUESTED | LOCKED | STATUS | USE_COUNT
 
 ## 141. Topology 状态机：Idle → Running → Finished
 
-![141. Topology 状态机：Idle → Running → Finished - 视觉摘要](assets/supp_141.png)
+[历史插图：141. Topology 状态机：Idle → Running → Finished - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：141. Topology 状态机：Idle → Running → Finished 的关键对象、核心规则与边界关系*
 
@@ -2210,7 +2195,7 @@ STOP_REQUESTED | LOCKED | STATUS | USE_COUNT
 
 
 
-![Topology Control 位域](assets/struct_topology_control.svg)
+[历史插图：Topology Control 位域](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：Topology Control 位域*
 
@@ -2223,7 +2208,7 @@ STOP_REQUESTED | LOCKED | STATUS | USE_COUNT
 
 ## 143. Topology::_wait：完成发布与 `atomic::wait`
 
-![143. Topology::_wait：完成发布与 `atomic::wait` - 视觉摘要](assets/supp_143.png)
+[历史插图：143. Topology::_wait：完成发布与 `atomic::wait` - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：143. Topology::_wait：完成发布与 `atomic::wait` 的关键对象、核心规则与边界关系*
 
@@ -2249,7 +2234,7 @@ notify_all()
 
 ## 144. Stop propagation：沿 Topology parent 链惰性传播
 
-![144. Stop propagation：沿 Topology parent 链惰性传播 - 视觉摘要](assets/supp_144.png)
+[历史插图：144. Stop propagation：沿 Topology parent 链惰性传播 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：144. Stop propagation：沿 Topology parent 链惰性传播 的关键对象、核心规则与边界关系*
 
@@ -2273,7 +2258,7 @@ Topology 可形成父链：
 
 `AsyncFuture<R>` 保存：
 
-![AsyncFuture 句柄结构](assets/struct_future.svg)
+[历史插图：AsyncFuture 句柄结构](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：AsyncFuture 句柄结构*
 
@@ -2291,7 +2276,7 @@ Topology 可形成父链：
 
 
 
-![AsyncTaskObject 结构](assets/struct_async_object.svg)
+[历史插图：AsyncTaskObject 结构](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：AsyncTaskObject 结构*
 
@@ -2299,68 +2284,26 @@ Topology 可形成父链：
 
 ---
 
-## 147. Async 强引用来源：Handle / Execution / Dependency / Parent
+## 147. Async 强引用来源：Handle / Execution / Parent
 
-![147. Async 强引用来源：Handle / Execution / Dependency / Parent - 视觉摘要](assets/supp_147.png)
+外部 Future、运行期执行引用、子 Topology 的父引用都可能使 Work 保持存活。
+callable 显式捕获 Future 也会增加句柄引用。动态完成依赖边不增加前驱强引用。
+因此 Finished 不等于 use_count 为零，也不等于对象已销毁。
 
-*图：147. Async 强引用来源：Handle / Execution / Dependency / Parent 的关键对象、核心规则与边界关系*
+## 148. Async Work 的最终回收
 
+Topology::_decrement_ref 返回是否释放了最后一份引用；调用方据此调用 destroy_work。
+当前实现没有旧版的 Work::_destroy_async 前驱回收链。后继句柄仍然存活时，
+没有其他所有者的已完成前驱即可销毁。
 
-一个 Async Work 可能同时被以下主体持有：
+## 149. 父拓扑引用与 Work 父链
 
-因此：
-
-```text
-Finished ≠ use_count == 0
-Finished ≠ destroyed
-```
-
----
-
-
-## 148. `_destroy_async`：迭代释放前驱引用
-
-![148. `_destroy_async`：迭代释放前驱引用 - 视觉摘要](assets/supp_148.png)
-
-*图：148. `_destroy_async`：迭代释放前驱引用 的关键对象、核心规则与边界关系*
-
-
-当最后一份强引用释放：
-
-实现不递归，因此依赖链再深也不会按依赖深度增长 C++ 调用栈。
-
----
-
-
-## 149. 为什么零引用回收阶段可以临时借用 `m_parent`
-
-![149. 为什么零引用回收阶段可以临时借用 `m_parent` - 视觉摘要](assets/supp_149.png)
-
-*图：149. 为什么零引用回收阶段可以临时借用 `m_parent` 的关键对象、核心规则与边界关系*
-
-
-进入 `_destroy_async()` 的前提：
-
-- Work 强引用已经归零；
-- 当前线程拥有唯一销毁权；
-- Work 不再执行；
-- Work 不再调度；
-- 原运行期 parent 关系不再被正常执行逻辑使用。
-
-因此 `m_parent` 可临时作为：
-
-```text
-zero-ref recycle chain next
-```
-
-不需要再分配额外链表节点。
-
----
-
+Work::m_parent 用于子任务完成计数与异常传播；Topology::m_parent 用于停止继承和父域生命周期。
+Topology 析构归还父引用。当前实现不再把 m_parent 借作零引用前驱链的回收链接。
 
 ## 150. TaskGroup：栈绑定 AnchorWork 聚合动态任务
 
-![150. TaskGroup：栈绑定 AnchorWork 聚合动态任务 - 视觉摘要](assets/supp_150.png)
+[历史插图：150. TaskGroup：栈绑定 AnchorWork 聚合动态任务 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：150. TaskGroup：栈绑定 AnchorWork 聚合动态任务 的关键对象、核心规则与边界关系*
 
@@ -2379,7 +2322,7 @@ AnchorWork 汇总：
 
 ## 151. TaskGroup 提交顺序：先建 slot，再发布 Work
 
-![151. TaskGroup 提交顺序：先建 slot，再发布 Work - 视觉摘要](assets/supp_151.png)
+[历史插图：151. TaskGroup 提交顺序：先建 slot，再发布 Work - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：151. TaskGroup 提交顺序：先建 slot，再发布 Work 的关键对象、核心规则与边界关系*
 
@@ -2399,7 +2342,7 @@ schedule child
 
 ## 152. TaskGroup::wait：当前 Worker 继续参与调度
 
-![152. TaskGroup::wait：当前 Worker 继续参与调度 - 视觉摘要](assets/supp_152.png)
+[历史插图：152. TaskGroup::wait：当前 Worker 继续参与调度 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：152. TaskGroup::wait：当前 Worker 继续参与调度 的关键对象、核心规则与边界关系*
 
@@ -2411,7 +2354,7 @@ schedule child
 
 ## 153. Implicit Anchor：异常归档的就近边界
 
-![153. Implicit Anchor：异常归档的就近边界 - 视觉摘要](assets/supp_153.png)
+[历史插图：153. Implicit Anchor：异常归档的就近边界 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：153. Implicit Anchor：异常归档的就近边界 的关键对象、核心规则与边界关系*
 
@@ -2429,7 +2372,7 @@ Properties::IMPLICIT_ANCHOR
 
 ## 154. ScopedExceptionAnchor：显式异常作用域
 
-![154. ScopedExceptionAnchor：显式异常作用域 - 视觉摘要](assets/supp_154.png)
+[历史插图：154. ScopedExceptionAnchor：显式异常作用域 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：154. ScopedExceptionAnchor：显式异常作用域 的关键对象、核心规则与边界关系*
 
@@ -2449,7 +2392,7 @@ Control::EXPLICIT_ANCHOR
 
 ## 155. Observer：before / after 可能跨 Worker
 
-![155. Observer：before / after 可能跨 Worker - 视觉摘要](assets/supp_155.png)
+[历史插图：155. Observer：before / after 可能跨 Worker - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：155. Observer：before / after 可能跨 Worker 的关键对象、核心规则与边界关系*
 
@@ -2474,7 +2417,7 @@ on_after(WorkerView)
 
 ## 156. D2Renderer：只负责可视化，不参与调度
 
-![156. D2Renderer：只负责可视化，不参与调度 - 视觉摘要](assets/supp_156.png)
+[历史插图：156. D2Renderer：只负责可视化，不参与调度 - 视觉摘要](TaskflowLite-Architecture.zh-CN.pdf)
 
 *图：156. D2Renderer：只负责可视化，不参与调度 的关键对象、核心规则与边界关系*
 
@@ -2500,56 +2443,56 @@ D2Renderer 只负责可视化导出：
 
 Executor 不只是“线程池对象”，而是 Ready 发布、Worker 搜索、执行接力、完成传播和生命周期计数的算法编排器。
 
-![Executor-Centric 01](assets/exec_01.png)
+[历史插图：Executor-Centric 01](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 158. Executor 入口分类
 
 先分清调用线程和执行类型，后续算法选择才不会混在一起。
 
-![Executor-Centric 02](assets/exec_02.png)
+[历史插图：Executor-Centric 02](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 159. Graph 提交事务
 
 Graph 从静态定义进入运行态，需要先 setup、建立 parent 完成计数，再发布 source。
 
-![Executor-Centric 03](assets/exec_03.png)
+[历史插图：Executor-Centric 03](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 160. _set_up_graph：图初始化循环
 
 一次线性扫描完成本轮 parent/topology 绑定、异常清理、join-weight 计算和 source 前缀聚集。
 
-![Executor-Centric 04](assets/exec_04.png)
+[历史插图：Executor-Centric 04](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 161. Ready Work 发布策略
 
 Executor 按 cache → local queue → shared stack 的顺序尽量缩短 Ready 到执行的路径。
 
-![Executor-Centric 05](assets/exec_05.png)
+[历史插图：Executor-Centric 05](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 162. _schedule(Worker&, Work*)
 
 Worker 内单任务发布优先进入本地队列；队列满才溢出到共享分片。
 
-![Executor-Centric 06](assets/exec_06.png)
+[历史插图：Executor-Centric 06](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 163. _schedule(Worker&, first, n)
 
 批量发布保留批量语义：本地填满前缀，剩余区间一次转交共享调度。
 
-![Executor-Centric 07](assets/exec_07.png)
+[历史插图：Executor-Centric 07](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 164. _push_shared：共享分片选择
 
 共享发布通过 Work 地址哈希选择 SharedWorkStack，降低所有 Producer 争用一个原子 head。
 
-![Executor-Centric 08](assets/exec_08.png)
+[历史插图：Executor-Centric 08](TaskflowLite-Architecture.zh-CN.pdf)
 
 **当前实现校正：** 当前实现中，单 Work `_push_shared(work)` 用 Work 地址哈希选择分片；批量路径不是简单重复哈希：`n <= shard_count` 时从哈希起点轮转分片，`n > shard_count` 时按 `base/extra` 均匀切块后批量发布。
 
@@ -2558,14 +2501,14 @@ Worker 内单任务发布优先进入本地队列；队列满才溢出到共享�
 
 Worker 热路径是 _invoke cache 链，然后 local pop；只有两者都空才进入 _wait_for_work。
 
-![Executor-Centric 09](assets/exec_09.png)
+[历史插图：Executor-Centric 09](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 166. _wait_for_work：搜索状态机
 
 空闲 Worker 先积极窃取，再 yield，最后才进入 Notifier 两阶段等待。
 
-![Executor-Centric 10](assets/exec_10.png)
+[历史插图：Executor-Centric 10](TaskflowLite-Architecture.zh-CN.pdf)
 
 **当前实现校正：** `vtm` 的索引空间同时覆盖 `m_workers[]` 与 `m_shared_stacks[]`。准备睡眠后会先扫描全部共享分片，再扫描除自身外的 Worker 本地队列；只有复查仍无工作才 `commit_wait`。
 
@@ -2574,95 +2517,95 @@ Worker 热路径是 _invoke cache 链，然后 local pop；只有两者都空才
 
 Executor 负责业务条件复查；Notifier 只负责把“准备睡/已经睡/已经通知”的竞态关闭。
 
-![Executor-Centric 11](assets/exec_11.png)
+[历史插图：Executor-Centric 11](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 168. _invoke：cache handoff 执行链
 
 第一个 Ready successor 可直接成为下一个 w，在同一 Worker、同一调用栈继续执行。
 
-![Executor-Centric 12](assets/exec_12.png)
+[历史插图：Executor-Centric 12](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 169. Basic Work：Executor 看到的 invoke 管线
 
 Executor 不关心 callable 类型，但必须理解 Semaphore、Observer、Exception 和 tear-down 在执行链中的位置。
 
-![Executor-Centric 13](assets/exec_13.png)
+[历史插图：Executor-Centric 13](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 170. _tear_down_task：完成传播核心
 
 完成传播的本质是：恢复自身下一轮 join 状态，再为后继竞争 Ready ownership。
 
-![Executor-Centric 14](assets/exec_14.png)
+[历史插图：Executor-Centric 14](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 171. 多 Ready 后继：parent slot 编排
 
 cache successor 继承已有 slot；额外 Ready successor 必须先增加 parent 计数再发布。
 
-![Executor-Centric 15](assets/exec_15.png)
+[历史插图：Executor-Centric 15](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 172. 专用 tear-down 选择
 
 Basic、Branch、Jump 的差异集中在目标集合和 Ready 规则，Executor 的后半段完成协议保持一致。
 
-![Executor-Centric 16](assets/exec_16.png)
+[历史插图：Executor-Centric 16](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 173. _schedule_parent：父完成权
 
 child 无后继接力时归还 parent slot；旧值 1 的线程获得父继续执行或完成的唯一权。
 
-![Executor-Centric 17](assets/exec_17.png)
+[历史插图：Executor-Centric 17](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 174. _corun_until：协作等待
 
 Worker 等待动态子执行完成时继续执行调度器中的 Work，而不是进入 Notifier park。
 
-![Executor-Centric 18](assets/exec_18.png)
+[历史插图：Executor-Centric 18](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 175. Semaphore：阻塞但不占 Worker
 
 资源不足的 Work 进入 Semaphore waiter 链；Worker 立即去执行其他任务。
 
-![Executor-Centric 19](assets/exec_19.png)
+[历史插图：Executor-Centric 19](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 176. _launch_async：异步提交事务
 
-异步提交把 Future 生命周期、dependency 引用、Running 状态、执行引用和 submission guard 一次建立完整。
+异步提交建立 Future 生命周期、非拥有的完成依赖、Running 状态、执行引用和 submission guard；依赖边不持有前驱引用。
 
-![Executor-Centric 20](assets/exec_20.png)
+[历史插图：Executor-Centric 20](TaskflowLite-Architecture.zh-CN.pdf)
 
 **当前实现校正：** 当前立即 async、TaskGroup async 与 `AsyncTask::start` 都保留一份提交保护计数；依赖登记结束后最后释放 guard，取得 `1 -> 0` 的线程负责发布目标任务。
 
 
-## 177. _link_predecessors：完成竞态
+## 177. _register_async_dependencies：完成竞态
 
 Executor 用 predecessor Topology 的 LOCKED，把“注册后继”和“已经完成”变成互斥的两种结果。
 
-![Executor-Centric 21](assets/exec_21.png)
+[历史插图：Executor-Centric 21](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 178. Async completion：Finished 与销毁
 
-执行完成只发布 Finished；真正销毁必须等 Future、依赖和执行引用全部释放。
+执行完成发布 Finished；真正销毁须等 Future、执行引用和子 Topology 父引用全部释放，完成依赖本身不增加前驱引用。
 
-![Executor-Centric 22](assets/exec_22.png)
+[历史插图：Executor-Centric 22](TaskflowLite-Architecture.zh-CN.pdf)
 
-**当前实现校正：** Finished 的发布和 Work 的销毁是两条独立轴：完成线程先冻结动态后继并通知等待者，再释放 execution ref；只有最后一份强引用释放者才进入 `_destroy_async`。
+**当前实现校正：** Finished 的发布和 Work 的销毁是两条独立轴：完成线程先冻结动态后继并通知等待者，再释放 execution ref；只有最后一份强引用释放者才调用 `destroy_work`。
 
 
 ## 179. Executor 全局 Topology 计数
 
 m_num_topologies 跟踪顶层活动执行链，为 wait_for_all 和安全 shutdown 提供统一门槛。
 
-![Executor-Centric 23](assets/exec_23.png)
+[历史插图：Executor-Centric 23](TaskflowLite-Architecture.zh-CN.pdf)
 
 **当前实现校正：** `m_num_topologies` 统计顶层活动执行链，用于 `wait_for_all()` 与 Executor 析构门槛；嵌套 child 的完成责任由 parent slot/AnchorWork 维护。
 
@@ -2671,35 +2614,35 @@ m_num_topologies 跟踪顶层活动执行链，为 wait_for_all 和安全 shutdo
 
 销毁 Executor 时必须先让所有活动 topology 完成，再终止 Worker。
 
-![Executor-Centric 24](assets/exec_24.png)
+[历史插图：Executor-Centric 24](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 181. Static Graph：端到端时间线
 
 把静态 Graph 从调用者提交到 topology 完成按 Executor 的真实调用顺序串起来。
 
-![Executor-Centric 25](assets/exec_25.png)
+[历史插图：Executor-Centric 25](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 182. Runtime / SubFlow：端到端时间线
 
 动态子执行增加 parent slot，必要时 PREEMPT 当前 Work，最后由 _schedule_parent 恢复。
 
-![Executor-Centric 26](assets/exec_26.png)
+[历史插图：Executor-Centric 26](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 183. Async dependencies：端到端时间线
 
 异步依赖最终仍转换为 join_counter 到达和普通 Work schedule，只是依赖边在运行期连接。
 
-![Executor-Centric 27](assets/exec_27.png)
+[历史插图：Executor-Centric 27](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 184. Executor 算法选择矩阵
 
 最后用场景表把 Executor 在不同状态下调用的核心算法与数据结构对应起来。
 
-![Executor-Centric 28](assets/exec_28.png)
+[历史插图：Executor-Centric 28](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 # Part XII — Algorithm Visual Atlas
@@ -2711,147 +2654,145 @@ m_num_topologies 跟踪顶层活动执行链，为 wait_for_all 和安全 shutdo
 
 每个核心算法采用 4 层 zoom：架构边界、数据结构快照、动态协作、并发正确性。关系必须有标签，操作必须编号，关键原子操作直接标 memory order。
 
-![Algorithm Visual Atlas 01](assets/atlas_02.png)
+[历史插图：Algorithm Visual Atlas 01](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 186. BoundedQueue：角色、环形布局与访问权
 
 先固定 Owner/Stealer 权限，再解释 top/bottom 和物理槽位。这样后续 pop/steal 的 CAS 竞争不会失去上下文。
 
-![Algorithm Visual Atlas 02](assets/atlas_03.png)
+[历史插图：Algorithm Visual Atlas 02](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 187. BoundedQueue::push：发布与可见性
 
 把状态快照和 happens-before 放在同一页：slot 的 relaxed 写不是独立同步点，真正的发布点是 bottom 的 release store。
 
-![Algorithm Visual Atlas 03](assets/atlas_04.png)
+[历史插图：Algorithm Visual Atlas 03](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 188. BoundedQueue：最后一项竞争与线性化点
 
 Owner pop 和 Stealer steal 在只剩一个元素时竞争同一个 m_top；CAS 是唯一所有权的线性化点。
 
-![Algorithm Visual Atlas 04](assets/atlas_05.png)
+[历史插图：Algorithm Visual Atlas 04](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 189. SharedWorkStack：Producer/Consumer 双域
 
 把 m_incoming、m_state、m_head 分成两个所有权域，明确 producer 不获取消费锁，只有 LOCKED owner 可以访问 m_head。
 
-![Algorithm Visual Atlas 05](assets/atlas_06.png)
+[历史插图：Algorithm Visual Atlas 05](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 190. SharedWorkStack::push：计数与原子发布
 
 当前实现先增加 size，再用 release CAS 发布 incoming，因此 size 是调度观察计数，不等同于“此刻一定可成功 steal 的节点数”。
 
-![Algorithm Visual Atlas 06](assets/atlas_07.png)
+[历史插图：Algorithm Visual Atlas 06](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 191. SharedWorkStack::steal：消费端独占竞争
 
 两个 thief 同时看到非空也只有一个能拿到 LOCKED；失败 thief 立即返回，不在一个共享分片上等待。
 
-![Algorithm Visual Atlas 07](assets/atlas_08.png)
+[历史插图：Algorithm Visual Atlas 07](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 192. Executor::_wait_for_work：三阶段搜索算法
 
 将快速窃取、steal+yield、Notifier prepare/commit 三阶段拆开，明确预算、victim 空间和休眠前 double-check。
 
-![Algorithm Visual Atlas 08](assets/atlas_09.png)
+[历史插图：Algorithm Visual Atlas 08](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 193. Cache Handoff：调度器旁路
 
 第一个 Ready successor 直接写入 cache，绕过 push/pop round-trip；这是 TaskflowLite 保持当前 Worker locality 的关键热路径。
 
-![Algorithm Visual Atlas 09](assets/atlas_10.png)
+[历史插图：Algorithm Visual Atlas 09](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 194. _tear_down_task：完整数据流
 
 同时展示自身 join 恢复、successor join 到达、Ready ownership、ready-prefix 聚集和 parent slot 建立顺序。
 
-![Algorithm Visual Atlas 10](assets/atlas_11.png)
+[历史插图：Algorithm Visual Atlas 10](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 195. Parent Slot Conservation：0 / 1 / N 三种情况
 
 用三个状态快照解释为什么一个 cache successor 能继承当前 slot，而额外 successor 必须先增加 parent 计数再发布。
 
-![Algorithm Visual Atlas 11](assets/atlas_12.png)
+[历史插图：Algorithm Visual Atlas 11](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 196. Notifier：Lost Wake-up 与两阶段关闭窗口
 
 先画错误 interleaving，再画 prepare -> double-check -> cancel/commit，读者可以直接看到通知为什么不会被永久错过。
 
-![Algorithm Visual Atlas 12](assets/atlas_13.png)
+[历史插图：Algorithm Visual Atlas 12](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 197. Notifier：全局状态字与 Waiter 三态机
 
 把全局 64-bit eventcount 状态与单 Worker Waiter 的 park/unpark 状态分开，不混在一张“等待流程图”里。
 
-![Algorithm Visual Atlas 13](assets/atlas_14.png)
+[历史插图：Algorithm Visual Atlas 13](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 198. Semaphore：Multi-acquire 事务
 
 在统一锁顺序下先检查全部请求，再统一扣减；失败路径不需要回滚已检查 quota，并只挂到第一个 blocker。
 
-![Algorithm Visual Atlas 14](assets/atlas_15.png)
+[历史插图：Algorithm Visual Atlas 14](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 199. ObjectPool：热/冷路径与 ABA
 
 把 Bucket/FreeStack/Slab 的所有权和 tagged-head 的时间线放在一起，说明 tag 为什么必须参与 CAS。
 
-![Algorithm Visual Atlas 15](assets/atlas_16.png)
+[历史插图：Algorithm Visual Atlas 15](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 200. AsyncTask::start：提交事务与发布边界
 
 把 start 拆成校验、准备、guard、Running 发布、连接依赖、释放 guard 六阶段，并标出发布边界前后的异常语义。
 
-![Algorithm Visual Atlas 16](assets/atlas_17.png)
+[历史插图：Algorithm Visual Atlas 16](TaskflowLite-Architecture.zh-CN.pdf)
 
 
-## 201. _link_predecessors：两种合法并发交错
+## 201. _register_async_dependencies：两种合法并发交错
 
 Link First 和 Finish First 并排展示；无论哪种先发生，一个 dependency 到达都只能计数一次。
 
-![Algorithm Visual Atlas 17](assets/atlas_18.png)
+[历史插图：Algorithm Visual Atlas 17](TaskflowLite-Architecture.zh-CN.pdf)
 
 
-## 202. _destroy_async：迭代引用回收
+## 202. 完成依赖不拥有前驱
 
-图中区分当前对象销毁和前驱引用释放；零引用前驱挂入临时 recycle chain，从而避免递归释放。
-
-![Algorithm Visual Atlas 18](assets/atlas_19.png)
-
+前驱的执行引用保护其完成通知，后继的执行引用保护等待中的任务。依赖注册时调用方句柄
+确保前驱存活；读取结果需要额外捕获 Future。历史 PDF 中的迭代前驱回收图不适用于 3.3.0。
 
 ## 203. Runtime / Graph-family：PREEMPTED 恢复
 
 从建立 child slot、置 PREEMPTED、child 完成，到 _schedule_parent 将 parent 放入 cache，完整画出一次挂起/恢复。
 
-![Algorithm Visual Atlas 19](assets/atlas_20.png)
+[历史插图：Algorithm Visual Atlas 19](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 204. Topology：Finished 与 Destroyed 的正交关系
 
-执行状态与强引用计数是两个维度。Finished 只发布完成，最终销毁还要等待全部 handle/execution/dependency 引用释放。
+执行状态与强引用计数是两个维度。Finished 只发布完成，最终销毁还要等待全部 handle/execution/parent 引用释放。
 
-![Algorithm Visual Atlas 20](assets/atlas_21.png)
+[历史插图：Algorithm Visual Atlas 20](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 ## 205. End-to-End Synchronization Map
 
 最后把 publish、steal、invoke、successor join、cache handoff、parent slot、Topology finish 串成一张跨组件同步地图。
 
-![Algorithm Visual Atlas 21](assets/atlas_22.png)
+[历史插图：Algorithm Visual Atlas 21](TaskflowLite-Architecture.zh-CN.pdf)
 
 
 # Appendix A — Core Source Map
@@ -2897,3 +2838,20 @@ Link First 和 Finish First 并排展示；无论哪种先发生，一个 depend
 - 想理解**Work 从创建到回收**：Part 0-A、IV–VII、X；
 - 想理解**Runtime / Async / Semaphore 为什么都能复用同一内核**：Part V–VI + Part XI–XII。
 
+
+
+## 207. Coroutine 的执行与帧生命周期
+
+CoroInvoker 首次执行时绑定 Work、Executor、Worker 并创建根 CoroTask。每次恢复更新 Worker，
+重新绑定本轮 Invoker 的 cache 和局部返回标志；挂起交接后旧 Invoker 不再访问可能被另一个 Worker 回收的帧。
+
+call 在同一 Work 内对称转移到子帧，结束时返回父帧并立即 LIFO 回收；fork 为子任务创建独立 Work / Topology，
+子任务计入父 join_counter。join 释放基准 slot，最后完成者使父协程可继续，恢复时加回 slot。
+
+外部 CoroOperation 的适配器先保存恢复 handle 并登记 SUSPENDED，再调用用户注册逻辑。
+通知提前到达时当前 Worker 继续；交接已经结束时由 Executor 调度恢复。Token 弱控制块在等待结束后失效，
+但不拥有 Coro 的实际寿命，外部回调必须同步完成/注销。
+
+Stacklet 默认 4096 字节，总大小为 2 的幂；Coro 独占活动段，Frame 按 LIFO 释放；
+Worker 的 Stack 只缓存默认大小的空段，大段归还时释放。Stacklet 仅保证 max_align_t 对齐。
+公开用法与限制见[协程指南](coroutines.md)。

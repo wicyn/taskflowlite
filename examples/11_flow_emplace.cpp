@@ -656,7 +656,7 @@ int main() {
     flow.emplace(persistent_sub);
 
     // H3. 固定次数循环
-    flow.emplace(persistent_sub, 5ULL);
+    flow.emplace(persistent_sub, std::uint64_t{5});
 
     // H4. 谓词循环 — Lambda
     {
@@ -673,7 +673,7 @@ int main() {
     {
         tfl::Flow sub2;
         sub2.emplace([]{ std::osyncstream(std::cout) << "H6. subflow rvalue + count\n"; });
-        flow.emplace(std::move(sub2), 2ULL);
+        flow.emplace(std::move(sub2), std::uint64_t{2});
     }
 
     // H7. 子图右值 + 谓词

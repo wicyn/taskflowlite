@@ -17,13 +17,16 @@ TaskflowLite（简称 tfl）是一个轻量级、仅头文件的 C++20 任务并
 
 [快速开始](#快速开始) · [安装与集成](#安装与集成) · [核心概念](#核心概念) · [基本用法](#基本用法) · [执行语义与使用约定](#执行语义与使用约定) · [构建与测试](#构建与测试) · [文档与示例](#文档与示例)
 
-[![TaskflowLite 任务图概览：分支、跳转、嵌套子图与任务内 TaskGroup](documentation/img/taskflowlite-overview.png)](documentation/img/taskflowlite-overview.png)
+[![TaskflowLite 任务图概览：分支、跳转、嵌套子图、TaskGroup、Coroutine 与 CoroToken 外部恢复](documentation/img/taskflowlite-overview.png)](documentation/img/taskflowlite-overview.png)
+
+协程节点支持 `call`、`fork/join` 和通过 `CoroToken` 恢复外部等待，详见[协程指南](documentation/coroutines.md)。
 
 ## 特性
 
 - **任务图**：构建 DAG，管理任务依赖，支持占位节点和任务重绑定。
 - **异步任务**：即时提交、延迟启动、依赖编排与共享结果。
 - **对象任务**：`TaskObject<T>` / `AsyncTaskObject<R, T>` 原地构造业务对象，通过 `object()` 访问状态，支持不可复制、不可移动类型。
+- **协程**：`CoroTask<R>`、顺序子协程、fork/join 和外部完成令牌。
 - **动态调度**：Runtime、动态 SubFlow 和作用域 TaskGroup。
 - **控制流**：条件分支、多分支、跳转、重复执行和模块嵌套。
 - **执行控制**：协作等待、异常传播、协作取消和信号量限流。
@@ -134,6 +137,7 @@ target_link_libraries(my_app PRIVATE TaskflowLite::taskflowlite)
 | `Flow` / `Task` | 拥有任务图 / 引用图中的节点 | 提前构图，配置依赖后执行；完成后可再次提交 |
 | `AsyncFuture<R>` | 共享完成状态与结果 | 接收 `async()` 的结果或作为异步前驱 |
 | `AsyncTask<R>` | 可配置、延迟启动的共享任务句柄 | `defer_async()` 创建，配置完成后调用 `start()` |
+| `Coro` / `CoroTask<R>` | 可挂起的任务执行上下文 / 协程返回类型 | `call`、`fork/join` 和外部完成通知 |
 | `Runtime` | 任务执行期间的调度上下文 | 派发子任务、协作等待 |
 | `SubFlow` | 任务执行期间构建的子图 | 动态构图后显式 `run()` |
 | `TaskGroup` | 管理一个作用域内的子任务 | 分组等待和局部异常处理 |
@@ -180,10 +184,25 @@ int result = second.get();  // 42
 
 `defer_async()` 创建绑定当前执行器的 Idle 任务，配置后通过 `start(依赖...)` 启动一次。
 前驱必须已启动或完成；支持混合 `AsyncTask` / `AsyncFuture`，空依赖忽略。
-重复依赖分别持有强引用，直到后继任务对象销毁；执行器须在启动及执行期间保持有效。
+重复依赖分别登记完成计数，不持有前驱强引用；需要读取前驱结果时按值捕获 Future。执行器须在启动及执行期间保持有效。
 Runtime / TaskGroup 的子任务使用各自的 `async()`；通过 `defer_async().start()` 启动的是独立顶层任务。
 
-完整语义及内存分配失败限制见[异步任务依赖说明](documentation/async-task-dependency-design.md)。
+完整语义及依赖登记失败回滚见[异步任务依赖说明](documentation/async-task-dependency-design.md)。
+
+### 协程任务
+
+```cpp
+auto answer = executor.async([](tfl::Coro& coro) -> tfl::CoroTask<int> {
+    auto child = co_await coro.fork([] { return 42; });
+    co_await coro.join();
+    co_return child.get();
+});
+int result = answer.get();
+```
+
+`fork` 返回已提交子任务的 Future，`join` 协作等待子任务，随后通过 `get()` 读取结果或传播异常。
+子协程使用 `co_await coro.call(callable)`；外部异步操作通过 `CoroToken` 唤醒。
+完整协议和当前接口限制见[协程指南](documentation/coroutines.md)。
 
 ### 重复执行
 
@@ -323,10 +342,10 @@ try {
 | Future 结果 | Future 可复制，`get()` 不消费结果。值类型结果通过 `const R&` 返回，保留该引用时须确保底层任务仍存活；引用类型结果还受原始对象生命周期约束。 |
 | 延迟任务 | `start()` 只允许成功启动一次；前驱必须已启动或完成。将 Idle 任务转成 Future 不会自动启动它。 |
 | 工作线程内等待 | 使用 `Runtime`、`SubFlow` 或 `TaskGroup` 的协作等待。直接阻塞等待未完成的工作可能耗尽线程池，单工作线程尤其如此。 |
-| 协作取消 | `request_stop()` 发出停止请求，长任务需要检查 `stop_requested()`；不会强制中断线程，也不会撤销已经发生的副作用。 |
-| 子任务停止请求 | `Runtime` / `TaskGroup` 的 `async()`、`silent_async()` 继承父停止请求，无需模板布尔参数。子 Future 查询继承的停止状态时，父上下文须仍有效；需要独立停止域时通过 `Executor` 提交。 |
+| 协作取消 | `request_stop()` 发出停止请求，长任务通过 `Context::stop_requested()` 检查；不会强制中断线程，也不会撤销已经发生的副作用。 |
+| 子任务停止请求 | `Runtime` / `TaskGroup` 的 `async()`、`silent_async()` 继承父停止请求，无需模板布尔参数。子任务通过执行中的 `Context::stop_requested()` 查询；需要独立停止域时通过 `Executor` 提交。 |
 
-更详细的依赖规则、引用保留和失败边界见 [异步任务依赖说明](documentation/async-task-dependency-design.md)。
+更详细的依赖规则、结果生命周期和失败回滚见 [异步任务依赖说明](documentation/async-task-dependency-design.md)。
 
 ## 构建与测试
 
@@ -420,8 +439,8 @@ ctest --preset release -LE perfile --no-tests=error
 
 | 主题 | 入口 |
 | --- | --- |
-| 完整中文使用手册 | [PDF 手册](documentation/TaskflowLite-Guide.zh-CN.pdf) · [手册源稿](documentation/TaskflowLite-Guide.zh-CN.md) |
-| 实现原理与调度算法 | [架构 PDF](documentation/TaskflowLite-Architecture.zh-CN.pdf) · [源稿](documentation/TaskflowLite-Architecture.zh-CN.md)：有界队列、共享工作栈、唤醒协议、依赖计数、资源等待与回收，含 48 幅矢量图 |
+| 完整中文使用手册 | [当前手册](documentation/TaskflowLite-Guide.zh-CN.md) · [历史 3.2 PDF](documentation/TaskflowLite-Guide.zh-CN.pdf) |
+| 实现原理与调度算法 | [当前架构](documentation/TaskflowLite-Architecture.zh-CN.md) · [历史 3.2 PDF](documentation/TaskflowLite-Architecture.zh-CN.pdf)：调度、依赖登记、资源等待、协程帧与回收 |
 | 示例索引与运行方式 | [examples/README.md](examples/README.md) |
 | 构建选项、依赖与安装 | [cmake/README.md](cmake/README.md) |
 | 测试命令与可选诊断 | [构建与测试](#构建与测试) · [测试说明](test/README.md) |
@@ -431,6 +450,8 @@ ctest --preset release -LE perfile --no-tests=error
 | 执行控制 | [异常](examples/16_error_handling.cpp)、[取消](examples/17_cancellation.cpp)、[信号量](examples/07_semaphore.cpp) |
 | 观察与追踪 | [Observer](examples/15_observer.cpp)、[追踪](examples/21_observer_tracing.cpp)、[Worker 回调](examples/30_worker_handler.cpp) |
 | 性能测试方法 | [benchmarks/README.md](benchmarks/README.md) |
+
+PDF 保留为 3.2 历史快照；3.3 接口以当前 Markdown 为准，详见[文档版本说明](documentation/README.md)。
 
 示例中的流水线通过 `Flow` 组合实现，完整用法见 [流水线示例](examples/09_pipeline.cpp)。
 

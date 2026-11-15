@@ -116,14 +116,14 @@ TEST_CASE("corun: exceptions are local and the graph can be reused", "[corun][ex
     }
 }
 
-TEST_CASE("Runtime and TaskGroup: forwarding graph holders and local waits", "[corun][runtime][task-group]") {
+TEST_CASE("Runtime and TaskGroup: run borrows lvalues and corun accepts temporaries", "[corun][runtime][task-group]") {
     tfl::Executor executor(1);
     const bool use_group = GENERATE(false, true);
     int count = 0;
     auto parent = executor.async([&](tfl::Runtime& rt) {
         auto run = [&](auto& runner) {
             GraphHolder holder{make_flow(count)};
-            runner.run(std::move(holder)); // run 借用，holder 必须存活到 wait 返回。
+            runner.run(holder); // run 只借用左值，holder 必须存活到 wait 返回。
             runner.wait();
             runner.corun(GraphHolder{make_flow(count)});
             runner.corun(tfl::Flow{});

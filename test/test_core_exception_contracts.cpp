@@ -1,5 +1,5 @@
 /// @file test_core_exception_contracts.cpp
-/// @brief ÑéÖ¤ÈÎÎñ¶ÔÏóÌæ»»Ê§°Ü¡¢Òì²½½á¹û¹¹ÔìÊ§°Ü¼°Î½´ÊÖØÔØµÄÒì³£´«²¥¡£
+/// @brief éªŒè¯ä»»åŠ¡å¯¹è±¡æ›¿æ¢å¤±è´¥ã€å¼‚æ­¥ç»“æœæ„é€ å¤±è´¥åŠè°“è¯é‡è½½çš„å¼‚å¸¸ä¼ æ’­ã€‚
 #include "test_common.hpp"
 #include <atomic>
 #include <stdexcept>
@@ -41,19 +41,19 @@ TEST_CASE("Task: failed object replacement resets callable and preserves graph",
     auto          next = flow.emplace([&] { ++calls; });
     task.precede(next);
 
-    // Ìæ»»Ê§°ÜÊ±Å×³öÒì³£²¢ÖØÖÃ callable£¬Í¼Á¬½Ó±£³Ö²»±ä¡£
+    // æ›¿æ¢å¤±è´¥æ—¶æŠ›å‡ºå¼‚å¸¸å¹¶é‡ç½® callableï¼Œå›¾è¿æ¥ä¿æŒä¸å˜ã€‚
     REQUIRE_THROWS_AS(task.work_object<Replacement>(true), std::runtime_error);
     REQUIRE(task.num_successors() == 1);
     REQUIRE(next.num_predecessors() == 1);
     REQUIRE(calls == 0);
 
-    // ÖØÖÃºóÖØĞÂÔ­µØ¹¹Ôì²»¿É¸´ÖÆ¡¢²»¿ÉÒÆ¶¯µÄ callable¡£
+    // é‡ç½®åé‡æ–°åŸåœ°æ„é€ ä¸å¯å¤åˆ¶ã€ä¸å¯ç§»åŠ¨çš„ callableã€‚
     REQUIRE_NOTHROW(task.work_object<Replacement>(false));
     REQUIRE(task.type() == tfl::TaskType::Basic);
     REQUIRE(task.num_successors() == 1);
     REQUIRE(next.num_predecessors() == 1);
 
-    // Replacement ²»Ôö¼Ó calls£¬Ö»ÓĞºó¼ÌÈÎÎñÔö¼ÓÒ»´Î¡£
+    // Replacement ä¸å¢åŠ  callsï¼Œåªæœ‰åç»§ä»»åŠ¡å¢åŠ ä¸€æ¬¡ã€‚
     executor.corun(flow);
     REQUIRE(calls == 1);
 }
@@ -62,12 +62,12 @@ TEST_CASE("Async result: throwing default constructor propagates without submitt
     tfl::Executor executor(2);
     const auto    callable = [] { return ThrowingDefaultResult(42); };
 
-    // ½á¹û²ÛÄ¬ÈÏ¹¹ÔìÊ§°ÜÊ±Ö±½ÓÅ×³öÒì³££¬²»Ìá½»ÈÎÎñ¡£
+    // ç»“æœæ§½é»˜è®¤æ„é€ å¤±è´¥æ—¶ç›´æ¥æŠ›å‡ºå¼‚å¸¸ï¼Œä¸æäº¤ä»»åŠ¡ã€‚
     REQUIRE_THROWS_AS(executor.async(callable), std::runtime_error);
     REQUIRE_THROWS_AS(executor.defer_async(callable), std::runtime_error);
     REQUIRE(executor.num_topologies() == 0);
 
-    // Runtime ºÍ TaskGroup µÄÒì²½´´½¨½Ó¿ÚÍ¬Ñù´«²¥¹¹ÔìÒì³£¡£
+    // Runtime å’Œ TaskGroup çš„å¼‚æ­¥åˆ›å»ºæ¥å£åŒæ ·ä¼ æ’­æ„é€ å¼‚å¸¸ã€‚
     auto parent = executor.async([&](tfl::Runtime& rt) {
         int failures = 0;
         try {
@@ -104,7 +104,7 @@ TEST_CASE("Branch and Jump: select_if propagates TaskView predicate exceptions",
         jump.precede(target);
     }
 
-    // Êµ¼Êµ÷ÓÃ TaskView ÖØÔØ£¬ÆäÒì³£Í¨¹ı get() ´«²¥£¬Ä¿±êÈÎÎñ²»Ö´ĞĞ¡£
+    // å®é™…è°ƒç”¨ TaskView é‡è½½ï¼Œå…¶å¼‚å¸¸é€šè¿‡ get() ä¼ æ’­ï¼Œç›®æ ‡ä»»åŠ¡ä¸æ‰§è¡Œã€‚
     REQUIRE_THROWS_AS(executor.async(flow).get(), std::runtime_error);
     REQUIRE(calls.load() == 0);
 }

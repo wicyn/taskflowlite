@@ -17,13 +17,16 @@ Describe the dependencies between tasks, and the executor schedules ready tasks 
 
 [Quick start](#quick-start) · [Installation](#installation-and-integration) · [Core concepts](#core-concepts) · [Usage](#basic-usage) · [Execution semantics](#execution-semantics-and-lifetimes) · [Build and test](#building-and-testing) · [Documentation](#documentation-and-examples)
 
-[![TaskflowLite task graph overview: branches, jumps, nested graphs, and a task-local TaskGroup](documentation/img/taskflowlite-overview.png)](documentation/img/taskflowlite-overview.png)
+[![TaskflowLite task graph overview: branches, jumps, nested graphs, TaskGroup, Coroutine, and external resumption through CoroToken](documentation/img/taskflowlite-overview.png)](documentation/img/taskflowlite-overview.png)
+
+Coroutine nodes support `call`, `fork/join`, and external resumption through `CoroToken`; see the [coroutine guide](documentation/coroutines.md).
 
 ## Features
 
 - **Task graphs**: DAG construction, dependencies, placeholders, and task rebinding.
 - **Asynchronous tasks**: immediate submission, deferred execution, dependencies, and shared results.
 - **Object tasks**: `TaskObject<T>` / `AsyncTaskObject<R, T>` construct business objects in place and expose their state through `object()`, including non-copyable, non-movable types.
+- **Coroutines**: `CoroTask<R>`, sequential child calls, fork/join, and external completion tokens.
 - **Dynamic scheduling**: Runtime, dynamic SubFlow, and scoped TaskGroup.
 - **Control flow**: branches, multi-branches, jumps, repeated execution, and nested modules.
 - **Execution control**: cooperative waiting, exception propagation, cooperative cancellation, and semaphore limits.
@@ -134,6 +137,7 @@ Copy the repository's `taskflowlite/` directory into your project's include dire
 | `Flow` / `Task` | Owns a graph / refers to a graph node | Build dependencies before execution; resubmit after completion |
 | `AsyncFuture<R>` | Shares completion state and a result | Receive an `async()` result or supply an asynchronous predecessor |
 | `AsyncTask<R>` | Configurable, deferred shared task handle | Create with `defer_async()`, configure, then call `start()` |
+| `Coro` / `CoroTask<R>` | Suspendable execution context / coroutine return type | Child calls, fork/join, and external completion |
 | `Runtime` | Scheduling context inside a running task | Dispatch children and wait cooperatively |
 | `SubFlow` | Graph constructed inside a running task | Build a dynamic graph and explicitly call `run()` |
 | `TaskGroup` | Owns a scope for child work | Wait for a group and handle errors locally |
@@ -180,10 +184,25 @@ int result = second.get();  // 42
 
 `defer_async()` creates an idle task bound to the executor. Configure it, then call `start(dependencies...)` once.
 Predecessors must already be started or finished. Mixed `AsyncTask` / `AsyncFuture` dependencies are supported; empty handles are ignored.
-Each duplicate dependency retains a strong reference until the successor task object is destroyed. The executor must outlive submission and execution.
+Duplicate dependencies register separate completion arrivals without retaining predecessor references. Capture a Future by value when reading its result. The executor must outlive submission and execution.
 Use `Runtime::async()` or `TaskGroup::async()` for child tasks; `defer_async().start()` creates an independent top-level task.
 
-See the [dependency notes](documentation/async-task-dependency-design.md) for the full contract and allocation-failure limitations.
+See the [dependency notes](documentation/async-task-dependency-design.md) for the full contract and dependency-registration rollback.
+
+### Coroutine Tasks
+
+```cpp
+auto answer = executor.async([](tfl::Coro& coro) -> tfl::CoroTask<int> {
+    auto child = co_await coro.fork([] { return 42; });
+    co_await coro.join();
+    co_return child.get();
+});
+int result = answer.get();
+```
+
+`fork` returns a submitted child Future; `join` cooperatively waits for children. Read results and propagate errors with `get()` after joining.
+Use `co_await coro.call(callable)` for sequential child coroutines and `CoroToken` for external completion.
+See the [coroutine guide](documentation/coroutines.md) for the protocol and current API limitations.
 
 ### Repeated Execution
 
@@ -323,10 +342,10 @@ try {
 | Future results | Futures are copyable; `get()` does not consume the result. Value results are returned as `const R&`; keep the underlying task alive while retaining that reference. Reference results also depend on the original object's lifetime. |
 | Deferred tasks | A task may be successfully started only once; predecessors must be started or completed. Converting an idle task to a Future does not start it. |
 | Waiting on workers | Use cooperative waiting through `Runtime`, `SubFlow`, or `TaskGroup`. Blocking on unfinished work can exhaust the worker pool, especially with one worker. |
-| Cooperative cancellation | `request_stop()` requests cancellation; long tasks check `stop_requested()`. It neither interrupts a thread forcibly nor rolls back completed side effects. |
-| Child cancellation | `Runtime` / `TaskGroup` submissions through `async()` and `silent_async()` inherit parent stop requests without a template boolean. Keep the parent context alive when querying a child's inherited stop state. Use `Executor` for an independent stop scope. |
+| Cooperative cancellation | `request_stop()` requests cancellation; long tasks check `Context::stop_requested()`. It neither interrupts a thread forcibly nor rolls back completed side effects. |
+| Child cancellation | `Runtime` / `TaskGroup` submissions through `async()` and `silent_async()` inherit parent stop requests without a template boolean. A running child queries `Context::stop_requested()`. Use `Executor` for an independent stop scope. |
 
-See the [asynchronous dependency notes](documentation/async-task-dependency-design.md) for dependency rules, retained references, and failure boundaries.
+See the [asynchronous dependency notes](documentation/async-task-dependency-design.md) for dependency rules, result lifetimes, and submission rollback.
 
 ## Building and Testing
 
@@ -420,8 +439,8 @@ Times are in milliseconds. Speedup = Taskflow time / TaskflowLite time.
 
 | Topic | Entry point |
 | --- | --- |
-| Complete guide (Chinese) | [PDF manual](documentation/TaskflowLite-Guide.zh-CN.pdf) · [Manual source](documentation/TaskflowLite-Guide.zh-CN.md) |
-| Implementation and scheduling (Chinese) | [Architecture PDF](documentation/TaskflowLite-Architecture.zh-CN.pdf) · [Source](documentation/TaskflowLite-Architecture.zh-CN.md): bounded deque, shared work stacks, wakeups, dependency counters, resource waits, and reclamation, with 48 vector diagrams |
+| Complete guide (Chinese) | [Current manual](documentation/TaskflowLite-Guide.zh-CN.md) · [Historical 3.2 PDF](documentation/TaskflowLite-Guide.zh-CN.pdf) |
+| Implementation and scheduling (Chinese) | [Current architecture](documentation/TaskflowLite-Architecture.zh-CN.md) · [Historical 3.2 PDF](documentation/TaskflowLite-Architecture.zh-CN.pdf): scheduling, dependency registration, resource waits, coroutine frames, and reclamation |
 | Example index and run instructions | [examples/README.md](examples/README.md) |
 | Build options, dependencies, and installation | [cmake/README.md](cmake/README.md) |
 | Test commands and optional diagnostics | [Building and testing](#building-and-testing) · [Test guide](test/README.md) |
@@ -431,6 +450,8 @@ Times are in milliseconds. Speedup = Taskflow time / TaskflowLite time.
 | Execution control | [Exceptions](examples/16_error_handling.cpp), [cancellation](examples/17_cancellation.cpp), [semaphores](examples/07_semaphore.cpp) |
 | Observability | [Observer](examples/15_observer.cpp), [tracing](examples/21_observer_tracing.cpp), [worker callbacks](examples/30_worker_handler.cpp) |
 | Benchmark methodology | [benchmarks/README.md](benchmarks/README.md) |
+
+PDFs are historical 3.2 snapshots; use the current Markdown guides for 3.3 APIs. See the [documentation index](documentation/README.md) and [coroutine examples](examples/README.md).
 
 The pipeline examples compose a `Flow`; see the [pipeline example](examples/09_pipeline.cpp) for a complete program. The supporting guides linked above are currently written in Chinese.
 

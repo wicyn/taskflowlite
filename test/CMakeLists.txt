@@ -292,17 +292,16 @@ foreach(_mode opt_out no_exceptions)
     endforeach()
 endforeach()
 
-# These diagnostics require rollback guarantees that the current core does not
-# provide for failed submission. Keep them opt-in, outside the default suite.
-# Global allocator replacement is only supported in ordinary builds.
+# Submission rollback is part of the current core contract. Run allocation
+# injection in a separate process; do not replace the allocator under sanitizers.
 option(TFL_TEST_CORE_ALLOCATION_FAILURE
-    "Enable core allocation-failure rollback diagnostics (may fail or time out)" OFF)
+    "Test core allocation-failure rollback in ordinary builds" ON)
 if(TFL_TEST_CORE_ALLOCATION_FAILURE AND TFL_SANITIZER STREQUAL "OFF")
     add_executable(tfl_test_core_allocation_failure core_allocation_failure.cpp)
     tfl_setup_test_target(tfl_test_core_allocation_failure NO_CATCH)
     target_compile_definitions(tfl_test_core_allocation_failure PRIVATE TFL_ENABLE_TASK_POOL=0)
     set_target_properties(tfl_test_core_allocation_failure PROPERTIES FOLDER "Tests/Standalone")
-    foreach(_case start_reserve link_alloc payload_replace deferred executor runtime group)
+    foreach(_case completed_dependency link_alloc payload_replace deferred executor runtime group)
         add_test(NAME tfl_test.core_allocation.${_case} COMMAND tfl_test_core_allocation_failure ${_case})
         set_tests_properties(tfl_test.core_allocation.${_case} PROPERTIES TIMEOUT 15 LABELS "unit;allocation")
     endforeach()
@@ -407,6 +406,6 @@ message(STATUS "  Monolithic    : TaskflowLiteTest")
 message(STATUS "  Per-file      : ${_nfiles} (tfl_test_*, in ALL=${TFL_TEST_PER_FILE_DEFAULT})")
 message(STATUS "  C++ Standard  : C++${CMAKE_CXX_STANDARD}")
 message(STATUS "  Sanitizer     : ${TFL_SANITIZER}")
-message(STATUS "  Core allocation diagnostics : ${TFL_TEST_CORE_ALLOCATION_FAILURE} (ordinary builds only)")
+message(STATUS "  Core allocation tests : ${TFL_TEST_CORE_ALLOCATION_FAILURE} (ordinary builds only)")
 message(STATUS "  Output dir    : ${PROJECT_BINARY_DIR}/bin/")
 message(STATUS "-----------------------------------------------")

@@ -194,7 +194,7 @@ TEST_CASE("AsyncTask: request_stop after completion", "[async][stop]") {
 // SECTION 7: 返回值、空句柄与右值链式配置
 // ============================================================================
 
-/// @test [async][result] defer_async 推导结果类型，start 保留左值引用或返回右值句柄。
+/// @test [async][result] defer_async 推导结果类型，start 对任意值类别均返回当前 AsyncTask 的左值引用。
 TEST_CASE("AsyncTask: result deduction and start forwarding", "[async][result]") {
     TestEnv env;
     auto task = env.executor.defer_async([] { return 42; });
