@@ -37,20 +37,20 @@ namespace tfl {
 /// 关闭检查时两个宏退化为空操作，不引入运行期开销。
 #if TFL_ENABLE_WORK_EXECUTION_CHECK
 
-#define TFL_WORK_EXECUTION_BEGIN(work)                                                      \
-do {                                                                                    \
-        auto& _tfl_work = (work);                                                           \
-        if (_tfl_work.m_control.fetch_or(Work::Control::EXECUTION, std::memory_order_relaxed) & Work::Control::EXECUTION) [[unlikely]] { \
-            std::terminate();                                                               \
-    }                                                                                   \
+#define TFL_WORK_EXECUTION_BEGIN(work)                                                                                                          \
+do {                                                                                                                                            \
+        auto& _tfl_work = (work);                                                                                                               \
+        if (_tfl_work.m_control.fetch_or(Work::Control::EXECUTION, std::memory_order_relaxed) & Work::Control::EXECUTION) [[unlikely]] {        \
+            std::terminate();                                                                                                                   \
+    }                                                                                                                                           \
 } while (false)
 
-#define TFL_WORK_EXECUTION_END(work)                                                        \
-    do {                                                                                    \
-        auto& _tfl_work = (work);                                                           \
-        if (!(_tfl_work.m_control.fetch_and(~Work::Control::EXECUTION, std::memory_order_relaxed) & Work::Control::EXECUTION)) [[unlikely]] { \
-            std::terminate();                                                               \
-    }                                                                                   \
+#define TFL_WORK_EXECUTION_END(work)                                                                                                            \
+    do {                                                                                                                                        \
+        auto& _tfl_work = (work);                                                                                                               \
+        if (!(_tfl_work.m_control.fetch_and(~Work::Control::EXECUTION, std::memory_order_relaxed) & Work::Control::EXECUTION)) [[unlikely]] {   \
+            std::terminate();                                                                                                                   \
+    }                                                                                                                                           \
 } while (false)
 
 #else
@@ -71,7 +71,7 @@ do {                                                                            
     } while (false)
 
 #define TFL_RELEASE_SEMAPHORES(work, worker, executor)                                      \
-        do {                                                                                    \
+        do {                                                                                \
             if ((work).m_semaphores && !(work).m_semaphores->releases.empty()) {            \
                 Work* first = nullptr;                                                      \
                 Work* last = nullptr;                                                       \
@@ -509,6 +509,13 @@ public:
     PlaceholderInvoker() noexcept = default;
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
+        if (w.m_topology->_stop_requested()) [[unlikely]] {
+            exe._schedule_parent(w.m_parent, wr, cache);
+            return;
+        }
+
+        TFL_TRY_ACQUIRE_SEMAPHORES(w);
+        TFL_RELEASE_SEMAPHORES(w, wr, exe);
         exe._tear_down_task(w, wr, cache);
     }
 };

@@ -145,7 +145,7 @@ public:
         /// @brief 当前配置下所有原子控制标志位。
         static constexpr type FLAG_MASK = EXPLICIT_ANCHOR | EXCEPTION | EXCEPTION_CAUGHT | EXECUTION;
 #else
-        /// @brief 当前配置下所有原子控制标志位。
+    /// @brief 当前配置下所有原子控制标志位。
         static constexpr type FLAG_MASK = EXPLICIT_ANCHOR | EXCEPTION | EXCEPTION_CAUGHT;
 #endif
     };
@@ -1247,6 +1247,8 @@ inline void Work::_remove_successor(Work* const target) noexcept {
 }
 
 inline void Work::_clear_predecessors() noexcept {
+    // 优先删除自环，避免遍历前驱时修改自身边表。
+    _remove_successor(this);
     for (Work* pred : _predecessors()) {
         auto succ = pred->_successors();
         auto it = std::ranges::find(succ, this);
