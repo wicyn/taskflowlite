@@ -38,7 +38,7 @@
 // ============================================================================
 #define TASKFLOWLITE_VERSION_MAJOR 0
 #define TASKFLOWLITE_VERSION_MINOR 4
-#define TASKFLOWLITE_VERSION_PATCH 3
+#define TASKFLOWLITE_VERSION_PATCH 4
 
 namespace tfl {
 
