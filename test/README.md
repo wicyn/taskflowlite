@@ -46,6 +46,7 @@ cmake --build build/tests --config Release --target run_test_semaphore
 
 协程测试覆盖 Coroutine 图节点与重复执行、各提交入口、值/引用/移动结果、call 的帧回收及异常恢复、
 fork/join 与重复依赖、外部等待的提前通知/跨线程恢复、Token 失效、协作停止，以及 Stacklet 的分配/归还。
+Promise 参数查找用例覆盖捕获 Lambda、const 成员协程、非首位的 `Coro&` 和只可移动参数，防止 GCC 13.3 编译回归。
 单 Worker 场景验证挂起会让出执行资源；多 Worker 场景验证相同结果。
 可用 `TaskflowLiteTest "[coro]"` 单独运行，或构建 `tfl_test_coro`、`tfl_test_coro_awaiter`、`tfl_test_stack`。
 当前 `Coro::fork` 的 AsyncTask 依赖需显式转为 AsyncFuture，详见[接口限制](../documentation/coroutines.md)。

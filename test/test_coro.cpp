@@ -15,6 +15,20 @@ struct CoroObject {
     tfl::CoroTask<int> operator()(tfl::Coro&) { co_return ++value; }
 };
 
+tfl::CoroTask<int> argument_coroutine(int base, const tfl::Coro&, std::unique_ptr<int> value, tfl::Coro& coro) {
+    // Lookup must skip the const context and leave the owned parameter intact.
+    const int offset = co_await coro.call([base](tfl::Coro&) -> tfl::CoroTask<int> { co_return base; });
+    co_return offset + *value;
+}
+
+struct MemberCoroutine {
+    int base{20};
+    tfl::CoroTask<int> compute(std::unique_ptr<int> value, tfl::Coro& coro) const {
+        const int offset = co_await coro.call([this](tfl::Coro&) -> tfl::CoroTask<int> { co_return base; });
+        co_return offset + *value;
+    }
+};
+
 struct FrameGuard {
     int& alive;
     explicit FrameGuard(int& n) : alive(n) { ++alive; }
@@ -48,6 +62,39 @@ TEST_CASE("Coro: callable concepts and non-owning public surface", "[coro][conce
     STATIC_REQUIRE_FALSE(std::is_move_constructible_v<tfl::CoroTask<>>);
     STATIC_REQUIRE_FALSE(std::is_copy_constructible_v<tfl::CoroTask<>>);
     STATIC_REQUIRE(std::is_base_of_v<tfl::Context, tfl::Coro>);
+}
+
+TEST_CASE("Coro: captured lambdas bind their promise context", "[coro][promise]") {
+    tfl::Executor executor(GENERATE(1, 4));
+    // GCC 13.3 used to reject the promise constructor's forwarding reference
+    // for the implicit object argument of both root and nested coroutines.
+    auto constant = executor.async([base = 20](tfl::Coro& coro) -> tfl::CoroTask<int> {
+        const int offset = co_await coro.call([value = 22](tfl::Coro&) -> tfl::CoroTask<int> {
+            co_return value;
+        });
+        co_return base + offset;
+    });
+    REQUIRE(constant.get() == 42);
+    auto mutable_capture = executor.async([value = 40](tfl::Coro& coro) mutable -> tfl::CoroTask<int> {
+        value += co_await coro.call([increment = 1](tfl::Coro&) mutable -> tfl::CoroTask<int> {
+            co_return ++increment;
+        });
+        co_return value;
+    });
+    REQUIRE(mutable_capture.get() == 42);
+}
+
+TEST_CASE("Coro: promise lookup preserves free and member coroutine arguments", "[coro][promise]") {
+    tfl::Executor executor(GENERATE(1, 4));
+    auto free_function = executor.async([](tfl::Coro& coro) {
+        return argument_coroutine(20, std::as_const(coro), std::make_unique<int>(22), coro);
+    });
+    REQUIRE(free_function.get() == 42);
+    const MemberCoroutine object;
+    auto member_function = executor.async([&object](tfl::Coro& coro) {
+        return object.compute(std::make_unique<int>(22), coro);
+    });
+    REQUIRE(member_function.get() == 42);
 }
 
 TEST_CASE("Coro: graph nodes repeat and preserve dependencies", "[coro][flow]") {
