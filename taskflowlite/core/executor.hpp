@@ -136,13 +136,15 @@ public:
 
     /// @brief 提交任务图循环执行 @p num 次（即发即弃）；给了 @p cb 则完成后执行。
     /// @tparam Gh  满足 graph_holder concept。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C   完成回调类型，默认 noop_callback（无回调）。
     /// @param gh   任务图持有者。
-    /// @param num  循环次数。0 表示不执行；内部谓词不会对无符号计数产生回绕。
+    /// @param num  循环次数；0 表示不执行子图。
     /// @param cb   完成回调，省略则不回调。
-    template <graph_holder Gh, callback C = noop_callback>
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I, callback C = noop_callback>
         requires capturable<C>
-    void silent_async(Gh&& gh, std::uint64_t num, C&& cb = C{});
+    void silent_async(Gh&& gh, I num, C&& cb = C{});
 
     /// @brief 提交任务图按谓词条件循环执行（即发即弃）；给了 @p cb 则完成后执行。
     /// @tparam Gh   满足 graph_holder concept。
@@ -230,16 +232,19 @@ public:
 
     /// @brief 异步执行任务图 @p num 次，并在全部前置依赖完成后开始执行。
     /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
     /// @param gh 任务图持有者。
     /// @param num 循环次数。
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
-    template <graph_holder Gh, async_future... Deps>
-    [[nodiscard]] auto async(Gh&& gh, std::uint64_t num, Deps&&... deps) -> AsyncFuture<void>;
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I, async_future... Deps>
+    [[nodiscard]] auto async(Gh&& gh, I num, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图 @p num 次，并在完成后执行回调。
     /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 完成回调类型。
     /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
     /// @param gh 任务图持有者。
@@ -247,9 +252,10 @@ public:
     /// @param cb 完成回调。
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
-    template <graph_holder Gh, callback C, async_future... Deps>
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I, callback C, async_future... Deps>
         requires capturable<C>
-    [[nodiscard]] auto async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
+    [[nodiscard]] auto async(Gh&& gh, I num, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图按谓词条件循环，并在全部前置依赖完成后开始执行。
     /// @tparam Gh 满足 graph_holder concept。
@@ -332,15 +338,17 @@ public:
 
     /// @brief 创建定次执行任务图、尚未启动的异步任务。
     /// @tparam Gh 满足 graph_holder concept 的任务图持有者类型。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 完成回调类型，默认为 noop_callback。
     /// @param gh 任务图持有者，按统一 capture 规则保存。
     /// @param num 任务图执行次数；0 表示不执行任务图。
     /// @param callback 完成回调，省略时使用默认空回调。
     /// @return 绑定当前 Executor 的 AsyncTask<void>。
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
-    template <graph_holder Gh, callback C = noop_callback>
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I, callback C = noop_callback>
         requires capturable<C>
-    [[nodiscard]] auto defer_async(Gh&& gh, std::uint64_t num, C&& callback = C{}) -> AsyncTask<void>;
+    [[nodiscard]] auto defer_async(Gh&& gh, I num, C&& callback = C{}) -> AsyncTask<void>;
 
     /// @brief 创建按谓词循环执行任务图、尚未启动的异步任务。
     /// @tparam Gh 满足 graph_holder concept 的任务图持有者类型。
@@ -412,6 +420,7 @@ public:
 
     /// @brief 原地默认构造子图持有者，并创建最多执行该子图 num 次、尚未启动的异步任务。
     /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 完成回调类型，默认为 noop_callback。
     /// @param num 最大执行次数；0 表示不执行子图，但仍会构造 Gh。
     /// @param callback 完成回调，省略时使用默认空回调。
@@ -419,9 +428,10 @@ public:
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
-    template <graph_holder Gh, callback C = noop_callback>
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I, callback C = noop_callback>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && std::constructible_from<Gh>)
-    [[nodiscard]] auto defer_async_object(std::uint64_t num, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
+    [[nodiscard]] auto defer_async_object(I num, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
 
     /// @brief 原地默认构造子图持有者，并创建由终止谓词控制迭代、尚未启动的异步任务。
     /// @tparam Gh 节点实际保存的子图持有者类型。
@@ -458,6 +468,7 @@ public:
     /// @brief 使用 tuple 中的参数原地构造子图持有者，并创建最多执行该子图 num 次、尚未启动的异步任务。
     /// @tparam Gh 节点实际保存的子图持有者类型。
     /// @tparam Tuple 构造参数 tuple 类型，可带 cv/ref 属性。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 完成回调类型，默认为 noop_callback。
     /// @param args 构造参数 tuple，保留实际 cv/ref 属性展开并转发。
     /// @param num 最大执行次数；0 表示不执行子图，但仍会构造 Gh。
@@ -467,9 +478,10 @@ public:
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
-    template <graph_holder Gh, typename Tuple, callback C = noop_callback>
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, typename Tuple, std::integral I, callback C = noop_callback>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && tuple_constructible_from<Gh, Tuple&&>)
-    [[nodiscard]] auto defer_async_object(Tuple&& args, std::uint64_t num, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
+    [[nodiscard]] auto defer_async_object(Tuple&& args, I num, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
 
     /// @brief 使用 tuple 中的参数原地构造子图持有者，并创建由终止谓词控制迭代、尚未启动的异步任务。
     /// @tparam Gh 节点实际保存的子图持有者类型。
@@ -1014,10 +1026,11 @@ inline void Executor::silent_async(Gh&& gh, C&& cb) {
     silent_async(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
 }
 
-template <graph_holder Gh, callback C>
+template <graph_holder Gh, std::integral I, callback C>
     requires capturable<C>
-inline void Executor::silent_async(Gh&& gh, std::uint64_t num, C&& cb) {
-    silent_async(std::forward<Gh>(gh), [num]() mutable noexcept  -> bool { return num-- == 0; }, std::forward<C>(cb));
+inline void Executor::silent_async(Gh&& gh, I num, C&& cb) {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    silent_async(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, std::forward<C>(cb));
 }
 
 template <graph_holder Gh, predicate P, callback C>
@@ -1071,19 +1084,21 @@ inline auto Executor::async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void
     return async(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, async_future... Deps>
-inline auto Executor::async(Gh&& gh, std::uint64_t num, Deps&&... deps) -> AsyncFuture<void> {
+template <graph_holder Gh, std::integral I, async_future... Deps>
+inline auto Executor::async(Gh&& gh, I num, Deps&&... deps) -> AsyncFuture<void> {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
     return async(std::forward<Gh>(gh),
-                 [num]() mutable noexcept -> bool { return num-- == 0; },
+                 [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; },
                  noop_callback{},
                  std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, callback C, async_future... Deps>
+template <graph_holder Gh, std::integral I, callback C, async_future... Deps>
     requires capturable<C>
-inline auto Executor::async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
+inline auto Executor::async(Gh&& gh, I num, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
     return async(std::forward<Gh>(gh),
-                 [num]() mutable noexcept -> bool { return num-- == 0; },
+                 [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; },
                  std::forward<C>(cb),
                  std::forward<Deps>(deps)...);
 }

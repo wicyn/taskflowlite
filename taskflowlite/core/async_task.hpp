@@ -690,10 +690,11 @@ inline auto Executor::defer_async(Gh&& gh, C&& callback) -> AsyncTask<void> {
     return defer_async(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(callback));
 }
 
-template <graph_holder Gh, callback C>
+template <graph_holder Gh, std::integral I, callback C>
     requires capturable<C>
-inline auto Executor::defer_async(Gh&& gh, std::uint64_t num, C&& callback) -> AsyncTask<void> {
-    return defer_async(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, std::forward<C>(callback));
+inline auto Executor::defer_async(Gh&& gh, I num, C&& callback) -> AsyncTask<void> {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    return defer_async(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, std::forward<C>(callback));
 }
 
 template <graph_holder Gh, predicate P, callback C>

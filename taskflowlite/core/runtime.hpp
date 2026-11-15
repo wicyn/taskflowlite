@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <concepts>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -56,14 +57,16 @@ public:
 
     /// @brief 派生一个即发即弃的子图任务，并循环执行子图指定次数.
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型.
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 完成回调类型，默认 noop_callback.
     /// @param gh 要捕获或借用并执行的子图.
     /// @param num 请求执行的循环次数.
     /// @param cb 全部循环结束后调用的无参回调.
     /// @note 新任务始终计入当前 Work 的 join_counter，并继承当前 Work 的 Topology.
-    template <graph_holder Gh, callback C = noop_callback>
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I, callback C = noop_callback>
         requires capturable<C>
-    void silent_async(Gh&& gh, std::uint64_t num, C&& cb = C{});
+    void silent_async(Gh&& gh, I num, C&& cb = C{});
 
     /// @brief 派生一个即发即弃的子图任务，并由谓词控制子图循环.
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型.
@@ -139,17 +142,20 @@ public:
 
     /// @brief 派生一个带结果通道的子图任务，并循环执行子图指定次数.
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型.
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam Deps 前驱异步任务类型包.
     /// @param gh 要捕获或借用并执行的子图.
     /// @param num 请求执行的循环次数.
     /// @param deps 可选前驱任务；只有所有未完成依赖解除后当前任务才进入调度队列.
     /// @return 共享该任务完成状态和结果槽的 `AsyncFuture<void>`.
     /// @note 新任务建立独立 Topology，并继承当前 Work 的 Topology.
-    template <graph_holder Gh, async_future... Deps>
-    [[nodiscard]] auto async(Gh&& gh, std::uint64_t num, Deps&&... deps) -> AsyncFuture<void>;
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I, async_future... Deps>
+    [[nodiscard]] auto async(Gh&& gh, I num, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 派生一个带结果通道的子图任务，循环执行指定次数并在完成后调用回调.
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型.
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 完成回调类型.
     /// @tparam Deps 前驱异步任务类型包.
     /// @param gh 要捕获或借用并执行的子图.
@@ -158,9 +164,10 @@ public:
     /// @param deps 可选前驱任务；只有所有未完成依赖解除后当前任务才进入调度队列.
     /// @return 共享该任务完成状态和结果槽的 `AsyncFuture<void>`.
     /// @note 新任务建立独立 Topology，并继承当前 Work 的 Topology.
-    template <graph_holder Gh, callback C, async_future... Deps>
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I, callback C, async_future... Deps>
         requires capturable<C>
-    [[nodiscard]] auto async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
+    [[nodiscard]] auto async(Gh&& gh, I num, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 派生一个带结果通道的子图任务，并由谓词控制子图循环.
     /// @tparam Gh 满足 graph_holder concept 的子图持有者类型.
@@ -419,10 +426,11 @@ inline void Runtime::silent_async(Gh&& gh, C&& cb) {
     silent_async(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
 }
 
-template <graph_holder Gh, callback C>
+template <graph_holder Gh, std::integral I, callback C>
     requires capturable<C>
-inline void Runtime::silent_async(Gh&& gh, std::uint64_t num, C&& cb) {
-    silent_async(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, std::forward<C>(cb));
+inline void Runtime::silent_async(Gh&& gh, I num, C&& cb) {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    silent_async(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, std::forward<C>(cb));
 }
 
 template <graph_holder Gh, predicate P, callback C>
@@ -475,15 +483,17 @@ inline auto Runtime::async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void>
     return async(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, async_future... Deps>
-inline auto Runtime::async(Gh&& gh, std::uint64_t num, Deps&&... deps) -> AsyncFuture<void> {
-    return async(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, noop_callback{}, std::forward<Deps>(deps)...);
+template <graph_holder Gh, std::integral I, async_future... Deps>
+inline auto Runtime::async(Gh&& gh, I num, Deps&&... deps) -> AsyncFuture<void> {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    return async(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, callback C, async_future... Deps>
+template <graph_holder Gh, std::integral I, callback C, async_future... Deps>
     requires capturable<C>
-inline auto Runtime::async(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
-    return async(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, std::forward<C>(cb), std::forward<Deps>(deps)...);
+inline auto Runtime::async(Gh&& gh, I num, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    return async(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
 template <graph_holder Gh, predicate P, async_future... Deps>

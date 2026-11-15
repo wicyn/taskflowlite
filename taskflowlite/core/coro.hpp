@@ -322,14 +322,16 @@ public:
 
     /// @brief 创建最多执行 num 次 Graph 的即发即弃 Module 子任务。
     /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 满足 callback 的完成回调类型。
     /// @param gh 要执行的子图持有者。
     /// @param num 执行次数；0 表示不运行子图。
     /// @param cb 整个 Module 完成后的回调。
     /// @return SilentForkOperation。
-    template <graph_holder Gh, callback C = noop_callback>
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I, callback C = noop_callback>
         requires capturable<C>
-    [[nodiscard]] SilentForkOperation silent_fork(Gh&& gh, std::uint64_t num, C&& cb = C{});
+    [[nodiscard]] SilentForkOperation silent_fork(Gh&& gh, I num, C&& cb = C{});
 
     /// @brief 创建由终止谓词控制重复执行的即发即弃 Module 子任务。
     /// @tparam Gh 满足 graph_holder 的图持有者类型。
@@ -412,16 +414,19 @@ public:
 
     /// @brief 创建定次执行 Graph 的异步 Module 子任务。
     /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam Deps 前置异步依赖类型包。
     /// @param gh 要执行的子图。
     /// @param num 循环次数；0 表示不执行子图。
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
-    template <graph_holder Gh, async_future... Deps>
-    [[nodiscard]] auto fork(Gh&& gh, std::uint64_t num, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I, async_future... Deps>
+    [[nodiscard]] auto fork(Gh&& gh, I num, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
     /// @brief 创建定次执行 Graph 且带完成回调的异步 Module 子任务。
     /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 满足 callback 的无参完成回调类型。
     /// @tparam Deps 前置异步依赖类型包。
     /// @param gh 要执行的子图。
@@ -429,9 +434,10 @@ public:
     /// @param cb 全部轮次结束后调用的回调。
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
-    template <graph_holder Gh, callback C, async_future... Deps>
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I, callback C, async_future... Deps>
         requires capturable<C>
-    [[nodiscard]] auto fork(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
+    [[nodiscard]] auto fork(Gh&& gh, I num, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
     /// @brief 创建由终止谓词控制 Graph 重复执行的异步 Module 子任务。
     /// @tparam Gh 满足 graph_holder 的图持有者类型。
@@ -923,10 +929,11 @@ inline Coro::SilentForkOperation Coro::silent_fork(Gh&& gh, C&& cb) {
     return silent_fork(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb));
 }
 
-template <graph_holder Gh, callback C>
+template <graph_holder Gh, std::integral I, callback C>
     requires capturable<C>
-inline Coro::SilentForkOperation Coro::silent_fork(Gh&& gh, std::uint64_t num, C&& cb) {
-    return silent_fork(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, std::forward<C>(cb));
+inline Coro::SilentForkOperation Coro::silent_fork(Gh&& gh, I num, C&& cb) {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    return silent_fork(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, std::forward<C>(cb));
 }
 
 template <graph_holder Gh, predicate P, callback C>
@@ -993,15 +1000,17 @@ inline auto Coro::fork(Gh&& gh, C&& cb, Deps&&... deps) -> ForkOperation<void, s
     return fork(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, async_future... Deps>
-inline auto Coro::fork(Gh&& gh, std::uint64_t num, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
-    return fork(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, noop_callback{}, std::forward<Deps>(deps)...);
+template <graph_holder Gh, std::integral I, async_future... Deps>
+inline auto Coro::fork(Gh&& gh, I num, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    return fork(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, callback C, async_future... Deps>
+template <graph_holder Gh, std::integral I, callback C, async_future... Deps>
     requires capturable<C>
-inline auto Coro::fork(Gh&& gh, std::uint64_t num, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
-    return fork(std::forward<Gh>(gh), [num]() mutable noexcept -> bool { return num-- == 0; }, std::forward<C>(cb), std::forward<Deps>(deps)...);
+inline auto Coro::fork(Gh&& gh, I num, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    return fork(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
 template <graph_holder Gh, predicate P, async_future... Deps>
