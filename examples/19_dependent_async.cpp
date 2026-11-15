@@ -1,4 +1,4 @@
-﻿/// @file 19_dependent_async.cpp
+/// @file 19_dependent_async.cpp
 /// @brief 演示 AsyncTask / AsyncFuture 依赖、结果传递、句柄转换与动态任务集合。
 ///
 /// AsyncTask<R>：通过 executor.defer_async() 创建，再用 start() 启动，最多启动一次。
@@ -11,7 +11,7 @@
 /// 复制或转换句柄只共享任务，不会复制任务，也不会自动启动尚未运行的 AsyncTask。
 ///
 /// start() 和 async() 均接受混合前驱；前驱必须已启动，空依赖忽略。
-/// 重复依赖分别保留引用，直到后继 Work 销毁。
+/// 重复依赖分别登记完成计数，不保留前驱强引用；读取结果时捕获 Future。
 
 #include <algorithm>
 #include <cstdint>

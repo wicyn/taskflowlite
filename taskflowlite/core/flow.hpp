@@ -146,26 +146,26 @@ inline std::string Flow::dump(Direction direction) const {
 }
 
 inline void Flow::dump(std::ostream& os, Direction dir) const {
-    os << "direction: " << to_string(dir) << "\n\n";
-    os << "root: |md\n  <center>";
+    os << "direction: " << to_string(dir) << "\n\n"
+                                             "root: \"";
 
-    if (m_name.empty()) {
-        const std::string id = std::format("p{:x}", reinterpret_cast<std::uintptr_t>(std::addressof(m_graph)));
-        D2Renderer::write_html_escaped(os, id);
-    } else {
-        D2Renderer::write_html_escaped(os, m_name);
-    }
+    if (m_name.empty())
+        D2Renderer::format_id(os, std::addressof(m_graph));
+    else
+        D2Renderer::write_quoted_escaped(os, m_name);
 
-    os << "<br/><span style=\"color: #6b7280;\">[ "
-       << to_string(TaskType::Graph)
-       << " ]</span></center>\n"
-          "| {\n"
+    os << "\\n[ ";
+    D2Renderer::write_quoted_escaped(os, to_string(TaskType::Graph));
+
+    os << " ]\" {\n"
           "  shape: rectangle\n"
           "  label.near: top-center\n"
           "  style.fill: \"#e8f5e9\"\n"
           "  style.stroke: \"#10b981\"\n"
           "  style.stroke-width: 2\n"
-          "  style.border-radius: 14\n\n";
+          "  style.border-radius: 14\n"
+          "  style.font-color: \"#065f46\"\n"
+          "  style.font-size: 14\n\n";
 
     m_graph.dump(os);
     os << "}\n";

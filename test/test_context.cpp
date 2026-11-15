@@ -14,13 +14,17 @@ TEST_CASE("Context: names, types and executor are available in every callback", 
         ++inspected;
     };
     flow.emplace([&](tfl::Runtime& rt) { check(rt, tfl::TaskType::Runtime, "runtime"); }).name("runtime");
+    flow.emplace([&](tfl::Coro& coro) -> tfl::CoroTask<> {
+        check(coro, tfl::TaskType::Coroutine, "coroutine");
+        co_return;
+    }).name("coroutine");
     flow.emplace([&](tfl::SubFlow& sf) { check(sf, tfl::TaskType::Graph, "subflow"); }).name("subflow");
     flow.emplace([&](tfl::Branch& br) { check(br, tfl::TaskType::Branch, "branch"); }).name("branch");
     flow.emplace([&](tfl::MultiBranch& br) { check(br, tfl::TaskType::MultiBranch, "multi-branch"); }).name("multi-branch");
     flow.emplace([&](tfl::Jump& j) { check(j, tfl::TaskType::Jump, "jump"); }).name("jump");
     flow.emplace([&](tfl::MultiJump& j) { check(j, tfl::TaskType::MultiJump, "multi-jump"); }).name("multi-jump");
     executor.corun(flow);
-    REQUIRE(inspected == 6);
+    REQUIRE(inspected == 7);
 }
 
 TEST_CASE("Context: Runtime children and groups inherit parent stop requests", "[context][runtime][stop]") {

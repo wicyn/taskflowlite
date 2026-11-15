@@ -98,11 +98,11 @@ TEST_CASE("Integration: nested subflow with repeat counts", "[integration][subfl
 
     // 中层: 重复叶子 3 次
     tfl::Flow mid_flow;
-    mid_flow.emplace(std::move(leaf_flow), 3ULL);
+    mid_flow.emplace(std::move(leaf_flow), std::uint64_t{3});
 
     // 外层: 重复中层 2 次
     tfl::Flow outer;
-    outer.emplace(std::move(mid_flow), 2ULL);
+    outer.emplace(std::move(mid_flow), std::uint64_t{2});
 
     env.executor.async(outer).wait();
 

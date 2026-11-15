@@ -80,6 +80,13 @@ int main(int argc, char** argv) {
         return 7;
     });
     if (deferred.start().get() != 7) return 5;
+    auto coroutine = executor.async([](tfl::Coro& coro) -> tfl::CoroTask<int> {
+        const int base = co_await coro.call([](tfl::Coro&) -> tfl::CoroTask<int> { co_return 20; });
+        auto child = co_await coro.fork([] { return 22; });
+        co_await coro.join();
+        co_return base + child.get();
+    });
+    if (coroutine.get() != 42) return 7;
     executor.wait_for_all();
     return executor.num_topologies() == 0 ? 0 : 6;
 }
