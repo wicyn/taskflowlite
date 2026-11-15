@@ -141,15 +141,17 @@ public:
 
     /// @brief 向当前图插入最多执行指定子图 `num` 次的模块节点。
     /// @tparam Gh 满足 `graph_holder` 的子图持有者类型。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @param gh 要执行的子图；左值按非拥有引用保存，右值按值保存到节点内。
     /// @param num 最大迭代次数；0 表示不执行子图。
     /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
     /// @throws std::bad_alloc 节点或图存储分配失败。
     /// @throws ... 子图持有者存储构造失败时原样传播。
     /// @warning 左值子图必须存活到该模块节点完成最后一次执行。
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
     /// @note 子图为空、拓扑停止或执行异常时，实际迭代次数可能少于 `num`。
-    template <graph_holder Gh>
-    Task emplace(Gh&& gh, std::uint64_t num);
+    template <graph_holder Gh, std::integral I>
+    Task emplace(Gh&& gh, I num);
 
     /// @brief 向当前图插入由谓词控制迭代次数的模块节点。
     /// @tparam Gh 满足 `graph_holder` 的子图持有者类型。
@@ -547,11 +549,12 @@ inline Task FlowBuilder::emplace(Gh&& gh) {
     return emplace(std::forward<Gh>(gh), std::uint64_t{1});
 }
 
-template <graph_holder Gh>
-inline Task FlowBuilder::emplace(Gh&& gh, std::uint64_t num) {
-    auto counter = [num, remaining = num]() mutable noexcept -> bool {
+template <graph_holder Gh, std::integral I>
+inline Task FlowBuilder::emplace(Gh&& gh, I num) {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    auto counter = [count, remaining = count]() mutable noexcept -> bool {
         if (remaining-- == 0) [[unlikely]] {
-            remaining = num;
+            remaining = count;
             return true;
         }
 
