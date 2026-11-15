@@ -292,14 +292,16 @@ public:
 
     /// @brief 原地默认构造子图持有者，并插入最多执行该子图 num 次的模块节点。
     /// @tparam Gh 节点实际保存的子图持有者类型。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @param num 最大执行次数；0 表示不执行子图，但仍会构造 Gh。
     /// @return 关联新节点及内部子图持有者的非拥有 TaskObject。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
     /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
-    template <graph_holder Gh>
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I>
         requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
-    [[nodiscard]] TaskObject<Gh> emplace_object(std::uint64_t num);
+    [[nodiscard]] TaskObject<Gh> emplace_object(I num);
 
     /// @brief 原地默认构造子图持有者，并插入由终止谓词控制迭代的模块节点。
     /// @tparam Gh 节点实际保存的子图持有者类型。
@@ -332,6 +334,7 @@ public:
     /// @brief 使用 tuple 中的参数原地构造子图持有者，并插入最多执行该子图 num 次的模块节点。
     /// @tparam Gh 节点实际保存的子图持有者类型。
     /// @tparam Tuple 构造参数 tuple 类型，可带 cv/ref 属性。
+    /// @tparam I 满足 `std::integral` 的整数类型。
     /// @param args 构造参数 tuple，保留实际 cv/ref 属性展开并转发。
     /// @param num 最大执行次数；0 表示不执行子图，但仍会构造 Gh。
     /// @return 关联新节点及内部子图持有者的非拥有 TaskObject。
@@ -339,9 +342,10 @@ public:
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
     /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
-    template <graph_holder Gh, typename Tuple>
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, typename Tuple, std::integral I>
         requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
-    [[nodiscard]] TaskObject<Gh> emplace_object(Tuple&& args, std::uint64_t num);
+    [[nodiscard]] TaskObject<Gh> emplace_object(Tuple&& args, I num);
 
     /// @brief 使用 tuple 中的参数原地构造子图持有者，并插入由终止谓词控制迭代的模块节点。
     /// @tparam Gh 节点实际保存的子图持有者类型。
@@ -654,9 +658,9 @@ inline TaskObject<Gh> FlowBuilder::emplace_object() {
     return emplace_object<Gh>(std::tuple{});
 }
 
-template <graph_holder Gh>
+template <graph_holder Gh, std::integral I>
     requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
-inline TaskObject<Gh> FlowBuilder::emplace_object(std::uint64_t num) {
+inline TaskObject<Gh> FlowBuilder::emplace_object(I num) {
     return emplace_object<Gh>(std::tuple{}, num);
 }
 
@@ -676,13 +680,14 @@ inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args) {
     return emplace_object<Gh>(std::forward<Tuple>(args), std::uint64_t{1});
 }
 
-template <graph_holder Gh, typename Tuple>
+template <graph_holder Gh, typename Tuple, std::integral I>
     requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
-inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args, std::uint64_t num) {
-    auto pred = [num, remaining = num]() mutable noexcept -> bool {
+inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args, I num) {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    auto pred = [count, remaining = count]() mutable noexcept -> bool {
         if (remaining == 0) {
             // 正常完成指定次数后恢复计数，供外层图下一次执行使用。
-            remaining = num;
+            remaining = count;
             return true;
         }
 

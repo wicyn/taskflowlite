@@ -431,8 +431,10 @@ public:
     Task& work(Gh&& gh);
 
     /// @brief 将当前静态图节点替换为最多执行 num 次的 Module 节点。
-    template <graph_holder Gh>
-    Task& work(Gh&& gh, std::uint64_t num);
+    /// @tparam I 满足 `std::integral` 的整数类型。
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I>
+    Task& work(Gh&& gh, I num);
 
     /// @brief 将当前静态图节点替换为由终止谓词控制的 Module 节点。
     template <graph_holder Gh, predicate P>
@@ -484,9 +486,11 @@ public:
     [[nodiscard]] Gh& work_object();
 
     /// @brief 原地默认构造子图持有者，并绑定为最多执行 num 次的 Module。
-    template <graph_holder Gh>
+    /// @tparam I 满足 `std::integral` 的整数类型。
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, std::integral I>
         requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
-    [[nodiscard]] Gh& work_object(std::uint64_t num);
+    [[nodiscard]] Gh& work_object(I num);
 
     /// @brief 原地默认构造子图持有者，并绑定终止谓词。
     template <graph_holder Gh, predicate P>
@@ -499,9 +503,11 @@ public:
     [[nodiscard]] Gh& work_object(Tuple&& args);
 
     /// @brief 使用 tuple 参数原地构造子图持有者，并绑定为最多执行 num 次的 Module。
-    template <graph_holder Gh, typename Tuple>
+    /// @tparam I 满足 `std::integral` 的整数类型。
+    /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
+    template <graph_holder Gh, typename Tuple, std::integral I>
         requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
-    [[nodiscard]] Gh& work_object(Tuple&& args, std::uint64_t num);
+    [[nodiscard]] Gh& work_object(Tuple&& args, I num);
 
     /// @brief 使用 tuple 参数原地构造子图持有者，并绑定终止谓词。
     template <graph_holder Gh, typename Tuple, predicate P>
@@ -819,11 +825,12 @@ inline Task& Task::work(Gh&& gh) {
     return work(std::forward<Gh>(gh), std::uint64_t{1});
 }
 
-template <graph_holder Gh>
-inline Task& Task::work(Gh&& gh, std::uint64_t num) {
-    auto pred = [num, remaining = num]() mutable noexcept -> bool {
+template <graph_holder Gh, std::integral I>
+inline Task& Task::work(Gh&& gh, I num) {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    auto pred = [count, remaining = count]() mutable noexcept -> bool {
         if (remaining == 0) {
-            remaining = num;
+            remaining = count;
             return true;
         }
 
@@ -938,9 +945,9 @@ inline Gh& Task::work_object() {
     return work_object<Gh>(std::tuple{});
 }
 
-template <graph_holder Gh>
+template <graph_holder Gh, std::integral I>
     requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
-inline Gh& Task::work_object(std::uint64_t num) {
+inline Gh& Task::work_object(I num) {
     return work_object<Gh>(std::tuple{}, num);
 }
 
@@ -956,12 +963,13 @@ inline Gh& Task::work_object(Tuple&& args) {
     return work_object<Gh>(std::forward<Tuple>(args), std::uint64_t{1});
 }
 
-template <graph_holder Gh, typename Tuple>
+template <graph_holder Gh, typename Tuple, std::integral I>
     requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
-inline Gh& Task::work_object(Tuple&& args, std::uint64_t num) {
-    auto pred = [num, remaining = num]() mutable noexcept -> bool {
+inline Gh& Task::work_object(Tuple&& args, I num) {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    auto pred = [count, remaining = count]() mutable noexcept -> bool {
         if (remaining == 0) {
-            remaining = num;
+            remaining = count;
             return true;
         }
 

@@ -10,6 +10,7 @@
 
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <tuple>
 #include <type_traits>
@@ -213,9 +214,9 @@ inline auto Executor::defer_async_object(C&& callback) -> AsyncTaskObject<void, 
     return defer_async_object<Gh>(std::tuple{}, std::forward<C>(callback));
 }
 
-template <graph_holder Gh, callback C>
+template <graph_holder Gh, std::integral I, callback C>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && std::constructible_from<Gh>)
-inline auto Executor::defer_async_object(std::uint64_t num, C&& callback) -> AsyncTaskObject<void, Gh> {
+inline auto Executor::defer_async_object(I num, C&& callback) -> AsyncTaskObject<void, Gh> {
     return defer_async_object<Gh>(std::tuple{}, num, std::forward<C>(callback));
 }
 
@@ -235,11 +236,12 @@ inline auto Executor::defer_async_object(Tuple&& args, C&& callback) -> AsyncTas
     return defer_async_object<Gh>(std::forward<Tuple>(args), std::uint64_t{1}, std::forward<C>(callback));
 }
 
-template <graph_holder Gh, typename Tuple, callback C>
+template <graph_holder Gh, typename Tuple, std::integral I, callback C>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && tuple_constructible_from<Gh, Tuple&&>)
-inline auto Executor::defer_async_object(Tuple&& args, std::uint64_t num, C&& callback) -> AsyncTaskObject<void, Gh> {
-    auto pred = [num]() mutable noexcept -> bool {
-        return num-- == 0;
+inline auto Executor::defer_async_object(Tuple&& args, I num, C&& callback) -> AsyncTaskObject<void, Gh> {
+    const std::uint64_t count = static_cast<std::uint64_t>(num);
+    auto pred = [remaining = count]() mutable noexcept -> bool {
+        return remaining-- == 0;
     };
 
     return defer_async_object<Gh>(std::forward<Tuple>(args), std::move(pred), std::forward<C>(callback));
