@@ -62,11 +62,11 @@ void submission_sweep(int scope) {
             executor.async([&](tfl::Runtime& rt) {
                 if (scope == 2) {
                     submit(rt);
-                    rt.wait();
+                    rt.cowait();
                 } else {
                     tfl::TaskGroup group(rt);
                     submit(group);
-                    group.wait();
+                    group.cowait();
                     check(group.size() == 0);
                 }
             }).get();

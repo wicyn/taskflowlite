@@ -9,16 +9,16 @@ using tfl_test::TestEnv;
 // SECTION 1: 作用域内的结构化并发
 // ============================================================================
 
-/// @test [task-group][wait] 单 worker 下显式与析构等待均可执行全部子任务。
-TEST_CASE("TaskGroup: explicit and destructor wait", "[task-group][wait]") {
+/// @test [task-group][cowait] 单 worker 下显式与析构等待均可执行全部子任务。
+TEST_CASE("TaskGroup: explicit cowait and destructor wait", "[task-group][cowait]") {
     TestEnv env(1);
     std::atomic<int> count{0};
-    const bool explicit_wait = GENERATE(false, true);
+    const bool explicit_cowait = GENERATE(false, true);
     auto parent = env.executor.async([&](tfl::Runtime& rt) {
         {
             tfl::TaskGroup group(rt);
             for (int i = 0; i < 16; ++i) group.silent_async([&] { ++count; });
-            if (explicit_wait) group.wait();
+            if (explicit_cowait) group.cowait();
         }
         return count.load();
     });
@@ -40,7 +40,7 @@ TEST_CASE("TaskGroup: result types and dependency fan-in", "[task-group][async][
             sf.run();
             return 3;
         });
-        group.wait();
+        group.cowait();
         return sum.get() + value.get() + dynamic.get() + static_cast<int>(group.size());
     });
     REQUIRE(parent.get() == 52);
@@ -76,21 +76,21 @@ TEST_CASE("TaskGroup: graph overloads", "[task-group][graph]") {
         case 11: group.silent_async(flow, predicate, callback); break;
         case 12: group.run(flow); break;
         }
-        group.wait();  // flow 的生命周期必须覆盖全部子任务
+        group.cowait();  // flow 的生命周期必须覆盖全部子任务
     });
     REQUIRE_NOTHROW(parent.get());
     REQUIRE(count == ((mode % 6 < 2 || mode == 12) ? 1 : 3));
     REQUIRE(callbacks == ((mode < 12 && mode % 2 == 1) ? 1 : 0));
 }
 
-/// @test [task-group][exception] 显式 wait 重抛组内异常，析构只负责无异常等待。
-TEST_CASE("TaskGroup: explicit wait exception is locally recoverable", "[task-group][exception]") {
+/// @test [task-group][exception] 显式 cowait 重抛组内异常，析构只负责无异常等待。
+TEST_CASE("TaskGroup: explicit cowait exception is locally recoverable", "[task-group][exception]") {
     TestEnv env(1);
     auto parent = env.executor.async([](tfl::Runtime& rt) {
         try {
             tfl::TaskGroup group(rt);
             group.silent_async([] { throw std::runtime_error("child"); });
-            group.wait();
+            group.cowait();
         } catch (const std::runtime_error&) {
             return 42;
         }
@@ -121,8 +121,8 @@ TEST_CASE("TaskGroup: children inherit the group stop domain", "[task-group][sto
         auto independent = rt.executor().async([](tfl::Runtime& ctx) { return ctx.stop_requested(); });
         const bool first = group.request_stop();
         const bool second = group.request_stop();
-        group.wait();
-        rt.wait_until([&] { return independent.done(); });
+        group.cowait();
+        rt.cowait_until([&] { return independent.done(); });
         return first && !second && inherited.get() && !independent.get() && !rt.stop_requested();
     });
     REQUIRE(parent.get());

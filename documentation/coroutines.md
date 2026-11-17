@@ -1,6 +1,6 @@
 # Coroutine 使用与生命周期
 
-本文按 TaskflowLite 3.3.0 的 `core` 实现说明协程接口，完整可运行程序见
+本文按本仓库的 `core` 实现说明协程接口，完整可运行程序见
 [基础调用](../examples/40_coroutine.cpp)、[派生与汇合](../examples/41_coroutine_fork.cpp)、
 [外部完成与停止](../examples/42_coroutine_external.cpp)。包含 `<taskflowlite/taskflowlite.hpp>` 即可。
 
@@ -52,8 +52,9 @@ auto answer = executor.async([](tfl::Coro& coro) -> tfl::CoroTask<int> {
 
 - `fork` 的等待结果是 `AsyncFuture<R>`，表示已提交；它不保证子任务已经完成。
 - `silent_fork` 不返回 Future。两种派生都计入父 Work 的完成范围。
-- `co_await coro.join()` 等待已派生子 Work，不消费 Future，也不自动重抛其结果异常。
-  需要结果或异常时，在 join 后对对应 Future 调用 `get()`。
+- `co_await coro.join()` 等待已派生子 Work，恢复父 Work 的基准计数后，重抛当前 Work 已归档的异常。
+  例如，`silent_fork` 的异常归档到当前作用域后，可在 join 处捕获；捕获后可以继续派生和 join。
+  join 不消费子 Future，也不提取其结果异常；`fork` 返回的 Future 仍通过 `get()` 读取结果或异常。
 - fork 支持 Basic、Runtime、SubFlow、Coroutine callable，以及 Graph 的单次、定次和谓词重载；
   Graph 的 fork 还支持完成回调。图和被借用数据须活到所有子任务结束。
 - 操作对象必须 `co_await` 才会提交；未等待的操作销毁时释放尚未提交的子任务。

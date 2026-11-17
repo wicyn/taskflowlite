@@ -36,21 +36,24 @@ int main() {
         std::osyncstream(std::cout) << "This successor must not run\n";
     });
     bad.precede(downstream);
+    // 保留句柄到 catch 之后，让异常读取与 Work 回收的先后关系对 TSan 可见，
+    // 避免仅依赖 libstdc++ 内部未插桩的 exception_ptr 引用计数。
+    auto graph_result = executor.async(flow);
     try {
-        executor.async(flow).get();
+        graph_result.get();
     } catch (const std::exception& error) {
         ++caught;
         std::osyncstream(std::cout) << "Graph exception: " << error.what() << "\n";
     }
 
     // ================================================================
-    // Part 3: TaskGroup 显式 wait，在局部作用域捕获子任务异常
+    // Part 3: TaskGroup 显式 cowait，在局部作用域捕获子任务异常
     // ================================================================
     executor.async([&](tfl::Runtime& rt) {
         try {
             tfl::TaskGroup group(rt);
             group.silent_async([] { throw std::runtime_error("child failed"); });
-            group.wait(); // 显式等待并重抛；析构 noexcept，只等待，不报告子异常。
+            group.cowait(); // 显式等待并重抛；析构 noexcept，只等待，不报告子异常。
         } catch (const std::exception& error) {
             ++caught;
             std::osyncstream(std::cout) << "Recovered locally: " << error.what() << "\n";

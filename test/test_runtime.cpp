@@ -1,8 +1,8 @@
 /// @file test_runtime.cpp
 /// @brief Runtime 模块测试 — 动态派发、协作等待、子任务依赖。
 ///
-/// 覆盖：Runtime::async / silent_async / wait / wait_until / executor / worker。
-/// 关键不变量：wait 期间 worker 不阻塞，主动窃取并执行其他任务。
+/// 覆盖：Runtime::async / silent_async / cowait / cowait_until / executor / worker。
+/// 关键不变量：cowait 期间 worker 不阻塞，主动窃取并执行其他任务。
 
 #include "test_common.hpp"
 #include <functional>
@@ -10,13 +10,13 @@
 using tfl_test::TestEnv;
 
 // ============================================================================
-// SECTION 1: silent_async + wait — 动态扇出
+// SECTION 1: silent_async + cowait — 动态扇出
 // ============================================================================
 
 /// @section silent_async-dynamic-fan-out
-/// @test [runtime][silent_async] 在 Runtime 任务内，silent_async 派发 N 个子任务，wait 等待全部完成。
+/// @test [runtime][silent_async] 在 Runtime 任务内，silent_async 派发 N 个子任务，cowait 等待全部完成。
 /// @details 这是最经典的 Runtime 用法 — 数据驱动的动态扇出。
-TEST_CASE("Runtime: silent_async dynamic fan-out + wait", "[runtime][silent_async][wait]") {
+TEST_CASE("Runtime: silent_async dynamic fan-out + cowait", "[runtime][silent_async][cowait]") {
     TestEnv env;
     tfl::Flow flow;
     std::atomic<int> n{0};
@@ -26,7 +26,7 @@ TEST_CASE("Runtime: silent_async dynamic fan-out + wait", "[runtime][silent_asyn
         for (int i = 0; i < N; ++i) {
             rt.silent_async([&] { n.fetch_add(1, std::memory_order_relaxed); });
         }
-        rt.wait();   // 等待所有 silent_async 派发的子任务完成
+        rt.cowait();   // 等待所有 silent_async 派发的子任务完成
     });
 
     env.executor.async(flow).wait();
@@ -34,10 +34,10 @@ TEST_CASE("Runtime: silent_async dynamic fan-out + wait", "[runtime][silent_asyn
 }
 
 /// @section implicit-wait
-/// @test [runtime][wait] 即使不调用 wait，父任务仍会等待子任务完成（join_counter 自动等待）。
+/// @test [runtime][cowait] 即使不调用 cowait，父任务仍会等待子任务完成（join_counter 自动等待）。
 /// @details Runtime 派发的子任务会附加到父节点的 join_counter 上。
-///          父任务 invoke 返回后，tear_down 会自动等待子任务 — 无需显式调用 wait。
-///          wait 的真正目的是确保子任务在**任务体中间**完成，父任务才能继续执行。
+///          父任务 invoke 返回后，tear_down 会自动等待子任务 — 无需显式调用 cowait。
+///          cowait 的真正目的是确保子任务在**任务体中间**完成，父任务才能继续执行。
 TEST_CASE("Runtime: implicit wait — framework auto-waits after parent invoke returns", "[runtime][implicit-wait]") {
     TestEnv env;
     tfl::Flow flow;
@@ -48,7 +48,7 @@ TEST_CASE("Runtime: implicit wait — framework auto-waits after parent invoke r
         for (int i = 0; i < N; ++i) {
             rt.silent_async([&] { n.fetch_add(1); });
         }
-        // 不调用 wait — 让框架在 tear_down 阶段等待
+        // 不调用 cowait — 让框架在 tear_down 阶段等待
     });
 
     auto next = flow.emplace([&] {
@@ -76,7 +76,7 @@ TEST_CASE("Runtime: async dispatches result-returning sub-tasks", "[runtime][asy
     flow.emplace([&](tfl::Runtime& rt) {
         auto fut = rt.async([] { return 17 * 2; });
         // 必须显式等待才能获取结果
-        rt.wait_until([&]() noexcept {
+        rt.cowait_until([&]() noexcept {
             return fut.done();
         });
         result.store(fut.get());
@@ -95,7 +95,7 @@ TEST_CASE("Runtime: async with arguments", "[runtime][async][args]") {
 
     flow.emplace([&](tfl::Runtime& rt) {
         auto fut = rt.async(std::bind_front([](int x, int y) { return x + y; }, 10, 32));
-        rt.wait();
+        rt.cowait();
         result.store(fut.get());
     });
 
@@ -104,12 +104,12 @@ TEST_CASE("Runtime: async with arguments", "[runtime][async][args]") {
 }
 
 // ============================================================================
-// SECTION 3: wait_until — 谓词驱动的协作等待
+// SECTION 3: cowait_until — 谓词驱动的协作等待
 // ============================================================================
 
-/// @section wait-until-predicate
-/// @test [runtime][wait_until] 谓词一旦为真立即返回。
-TEST_CASE("Runtime: wait_until predicate-driven wait", "[runtime][wait_until]") {
+/// @section cowait-until-predicate
+/// @test [runtime][cowait_until] 谓词一旦为真立即返回。
+TEST_CASE("Runtime: cowait_until predicate-driven wait", "[runtime][cowait_until]") {
     TestEnv env;
     tfl::Flow flow;
     std::atomic<int> done_count{0};
@@ -122,7 +122,7 @@ TEST_CASE("Runtime: wait_until predicate-driven wait", "[runtime][wait_until]") 
             });
         }
         // 等待完成计数达到 TARGET
-        rt.wait_until([&]() noexcept {
+        rt.cowait_until([&]() noexcept {
             return done_count.load(std::memory_order_relaxed) >= TARGET;
         });
     });
@@ -148,10 +148,10 @@ TEST_CASE("Runtime: nested Runtime dispatch", "[runtime][nested]") {
                 for (int j = 0; j < 5; ++j) {
                     sub_rt.silent_async([&] { leaf_count.fetch_add(1); });
                 }
-                sub_rt.wait();
+                sub_rt.cowait();
             });
         }
-        rt.wait();
+        rt.cowait();
     });
 
     env.executor.async(flow).wait();
@@ -193,7 +193,7 @@ TEST_CASE("Runtime: run and corun graphs on one worker", "[runtime][run]") {
         if (corun) rt.corun(flow);
         else {
             rt.run(flow);
-            rt.wait();
+            rt.cowait();
         }
         tfl::Flow empty;
         rt.run(empty);
@@ -210,7 +210,7 @@ TEST_CASE("Runtime: async children with dependencies", "[runtime][async-task]") 
         int value = 0;
         auto a = rt.async([&] { value = 20; });
         auto b = rt.async([&] { value += 22; }, a);
-        rt.wait();
+        rt.cowait();
         return value;
     });
     REQUIRE(parent.get() == 42);
@@ -225,7 +225,7 @@ TEST_CASE("Runtime: silent dynamic subflow", "[runtime][subflow]") {
             (void)sf.emplace([&] { ++count; });
             sf.run();
         });
-        rt.wait();
+        rt.cowait();
     });
     parent.get();
     REQUIRE(count == 1);

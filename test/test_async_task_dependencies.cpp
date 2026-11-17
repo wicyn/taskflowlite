@@ -214,11 +214,11 @@ TEST_CASE("Submission: all contexts validate and borrow mixed dependencies", "[a
         env.executor.async([&](tfl::Runtime& rt) {
             if (context == 1) {
                 exercise(rt);
-                rt.wait();
+                rt.cowait();
             } else {
                 tfl::TaskGroup group(rt);
                 exercise(group);
-                group.wait();
+                group.cowait();
                 REQUIRE(group.size() == 0);
             }
         }).get();
@@ -277,7 +277,7 @@ TEST_CASE("Runtime: independent deferred tasks use explicit cooperative wait", "
     TestEnv env(1);
     auto parent = env.executor.async([](tfl::Runtime& rt) {
         auto task = rt.executor().defer_async([] { return 42; }).start();
-        rt.wait_until([&] { return task.done(); });
+        rt.cowait_until([&] { return task.done(); });
         return task.get();
     });
     REQUIRE(parent.get() == 42);

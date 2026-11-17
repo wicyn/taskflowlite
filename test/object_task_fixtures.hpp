@@ -42,7 +42,7 @@ struct RuntimeJob : Immovable {
     int value{0};
     int operator()(tfl::Runtime& runtime) {
         runtime.silent_async([this] { value += 7; });
-        runtime.wait();
+        runtime.cowait();
         return value;
     }
 };
@@ -52,7 +52,7 @@ struct SubflowJob : Immovable {
     int operator()(tfl::SubFlow& subflow) {
         subflow.emplace([this] { value += 11; });
         subflow.run();
-        subflow.wait();  // run() 只提交；读取子任务写入的结果前必须等待。
+        subflow.cowait();  // run() 只提交；读取子任务写入的结果前必须等待。
         return value;
     }
 };

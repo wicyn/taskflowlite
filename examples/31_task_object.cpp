@@ -18,7 +18,7 @@ struct RuntimeSum {
     int value{0};
     void operator()(tfl::Runtime& runtime) {
         runtime.silent_async([this] { value = 10 + 20; });
-        runtime.wait();
+        runtime.cowait();
     }
 };
 

@@ -334,11 +334,11 @@ TEST_CASE("Integration: same Flow reused after each completion", "[integration][
 }
 
 // ============================================================================
-// 第 9 节: Runtime wait 跨 Flow (X4)
+// 第 9 节: Runtime cowait 跨 Flow (X4)
 // ============================================================================
 
-/// @test [integration][runtime][flow] Runtime wait 在 Flow successor 之前完成子任务
-TEST_CASE("Integration: Runtime wait before successor in Flow", "[integration][runtime][flow]") {
+/// @test [integration][runtime][flow] Runtime cowait 在 Flow successor 之前完成子任务
+TEST_CASE("Integration: Runtime cowait before successor in Flow", "[integration][runtime][flow]") {
     TestEnv env;
     std::atomic<int> sub_done{0};
     std::atomic<bool> successor_ran{false};
@@ -349,7 +349,7 @@ TEST_CASE("Integration: Runtime wait before successor in Flow", "[integration][r
         for (int i = 0; i < kSubTasks; ++i) {
             rt.silent_async([&] { sub_done.fetch_add(1); });
         }
-        rt.wait();  // 等所有子任务在父任务体内完成
+        rt.cowait();  // 等所有子任务在父任务体内完成
     });
     auto next = flow.emplace([&] {
         successor_ran.store(sub_done.load() == kSubTasks);
@@ -441,6 +441,6 @@ TEST_CASE("Integration: async Future used alongside Flow", "[integration][future
 //   E14 ✓ "Integration: executor with many workers does not crash" / "100K-node chain"
 //   X2  ✓ "Integration: exception in one Subflow does not block sibling"
 //   X4  ✓ "Integration: three-level deep Subflow nesting" / "condition task routing to Subflow"
-//         "Integration: Runtime wait before successor in Flow"
+//         "Integration: Runtime cowait before successor in Flow"
 //   X5  ✓ "Integration: executor destruction with pending tasks" / "pending silent_async"
 //   F8  ✓ "Integration: three-level deep Subflow nesting" / "nested subflow with repeat counts"

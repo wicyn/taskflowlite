@@ -20,7 +20,7 @@ entry [Placeholder] -> load [Basic] -> dispatch [MultiBranch].
 Dispatch output 0 goes to pipeline [Module]; output 1 goes to dynamic [SubFlow].
 Inside pipeline: read [Basic] -> check [Branch]; check output 0 -> done [Basic]; check output 1 -> retry [Jump]; retry's orange dashed arrow goes back to read.
 Inside dynamic: extract [Basic] fans out to map [Basic] and filter [Basic], both merge into join [Placeholder].
-Both pipeline and dynamic connect to aggregate [Runtime]. Inside aggregate keep TaskGroup, local scope, stats [Basic], summary [Basic], and "group.wait()" with a check mark. TaskGroup belongs only inside Runtime.
+Both pipeline and dynamic connect to aggregate [Runtime]. Inside aggregate keep TaskGroup, local scope, stats [Basic], summary [Basic], and "group.cowait()" with a check mark. TaskGroup belongs only inside Runtime.
 To the right preserve scatter [MultiJump], dashed orange output 0 to write_db [Basic], output 1 to write_cache [Basic], and both write tasks connect to finish [Basic].
 
 THE IMPORTANT EDIT:
