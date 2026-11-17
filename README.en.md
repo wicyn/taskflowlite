@@ -228,7 +228,7 @@ int result = answer.get();  // 42
 | `co_await coro.call(callable)` | A sequential child coroutine has returned its result or exception; parent and child share the current task context |
 | `co_await coro.fork(callable, deps...)` | A child has been submitted and an `AsyncFuture<R>` is available; completion is not yet guaranteed |
 | `co_await coro.silent_fork(callable)` | A child has been submitted without returning a Future |
-| `co_await coro.join()` | Spawned children have completed; use their Futures' `get()` to read results or rethrow result exceptions |
+| `co_await coro.join()` | Spawned children have completed and any exception archived in the current scope is rethrown; child Future results and exceptions still require `get()` |
 | `co_await operation` | An external operation following the `CoroOperation` protocol completes; its completion source requests resumption through `CoroToken::resume()` |
 
 `CoroTask<R>` supports value, lvalue-reference, and `void` results and is managed by the framework. Invoke child coroutines through `coro.call()`; `CoroTask` and `AsyncFuture` are not directly awaitable.
@@ -265,16 +265,18 @@ auto future = executor.async([](tfl::Runtime& runtime) {
     auto left = group.async([] { return 20; });
     auto right = group.async([] { return 22; });
 
-    group.wait();
+    group.cowait();
     return left.get() + right.get();
 });
 
 int result = future.get();  // 42
 ```
 
-`Runtime` dispatches tasks during execution. `TaskGroup` manages a set of child tasks, and `wait()` cooperatively waits for the group to complete.
+`Runtime` dispatches tasks during execution. `TaskGroup` manages a set of child tasks, and `cowait()` cooperatively waits for the group to complete.
 
-The `TaskGroup` destructor waits but does not throw. `group.wait()` reports exceptions archived to the group, such as errors from `silent_async()` children. Call `get()` on child Futures returned by `async()` to receive their exceptions, as shown above. See the [error handling example](examples/16_error_handling.cpp).
+The `co` in `cowait` means cooperative: the call returns synchronously, and the worker continues executing ready tasks while waiting. `Runtime::cowait_until(pred)` waits for a specified predicate to become true.
+
+The `TaskGroup` destructor waits but does not throw. `group.cowait()` reports exceptions archived to the group, such as errors from `silent_async()` children. Call `get()` on child Futures returned by `async()` to receive their exceptions, as shown above. See the [error handling example](examples/16_error_handling.cpp).
 
 ### Dynamic Subgraphs
 
@@ -287,13 +289,13 @@ auto future = executor.async([&result](tfl::SubFlow& subflow) {
 
     A.precede(B);
     subflow.run();
-    subflow.wait();
+    subflow.cowait();
 });
 
 future.get();  // result == 42
 ```
 
-`SubFlow` builds a graph during task execution. Call `run()` to submit it and `wait()` to wait cooperatively.
+`SubFlow` builds a graph during task execution. Call `run()` to submit it and `cowait()` to wait cooperatively.
 
 Calling `emplace()` alone does not execute the subgraph. Do not retain the framework-provided `Runtime&` or `SubFlow&` beyond the task callback.
 

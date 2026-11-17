@@ -1,5 +1,5 @@
 ﻿/// @file 04_runtime.cpp
-/// @brief 演示 Runtime 在执行期动态派生任务——async 创建子任务 + wait_until 协作式等待。
+/// @brief 演示 Runtime 在执行期动态派生任务——async 创建子任务 + cowait_until 协作式等待。
 ///   展示 std::future 返回值收集与父任务上下文捕获。
 
 #include "../taskflowlite/taskflowlite.hpp"
@@ -34,7 +34,7 @@ int main() {
         }, 5));
 
         // 协作式等待：等待子任务完成，线程不会阻塞，会去窃取别的任务
-        rt.wait_until([&] {
+        rt.cowait_until([&] {
             return fut1.done() &&
                    fut2.done();
         });

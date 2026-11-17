@@ -148,8 +148,8 @@ TEST_CASE("Coro: Runtime TaskGroup and object tasks accept coroutine callables",
         auto a = rt.async([](tfl::Coro&) -> tfl::CoroTask<int> { co_return 20; });
         tfl::TaskGroup group(rt);
         auto b = group.async([](tfl::Coro&) -> tfl::CoroTask<int> { co_return 22; }, a);
-        group.wait();
-        rt.wait();
+        group.cowait();
+        rt.cowait();
         return a.get() + b.get();
     });
     REQUIRE(result.get() == 42);
@@ -274,7 +274,7 @@ TEST_CASE("Coro: a pending fork dependency lets the parent continue", "[coro][fo
 }
 
 TEST_CASE("Coro: join waits but future get propagates a fork error", "[coro][fork][exception]") {
-    tfl::Executor executor(1);
+    tfl::Executor executor(GENERATE(1, 4));
     bool joined = false;
     auto parent = executor.async([&](tfl::Coro& coro) -> tfl::CoroTask<> {
         auto child = co_await coro.fork([] { throw std::runtime_error("fork error"); });
@@ -284,6 +284,32 @@ TEST_CASE("Coro: join waits but future get propagates a fork error", "[coro][for
     });
     REQUIRE_THROWS_WITH(parent.get(), "fork error");
     REQUIRE(joined);
+}
+
+TEST_CASE("Coro: join rethrows scope errors and permits recovery", "[coro][fork][join][exception]") {
+    tfl::Executor executor(GENERATE(1, 4));
+    int caught = 0;
+    auto parent = executor.async([&](tfl::Coro& coro) -> tfl::CoroTask<int> {
+        for (int round = 0; round < 2; ++round) {
+            co_await coro.silent_fork([] { throw std::runtime_error("silent fork error"); });
+            try {
+                co_await coro.join();
+            } catch (const std::runtime_error& error) {
+                if (std::string_view(error.what()) != "silent fork error") throw;
+                ++caught;
+            }
+            // The previous error was consumed, and an empty join remains valid.
+            co_await coro.join();
+        }
+
+        auto child = co_await coro.fork([] { return 42; });
+        co_await coro.join();
+        co_return child.get();
+    });
+    REQUIRE(parent.get() == 42);
+    REQUIRE(caught == 2);
+    executor.wait_for_all();
+    REQUIRE(executor.num_topologies() == 0);
 }
 
 TEST_CASE("Coro: unawaited operations release captures without executing", "[coro][lifetime]") {

@@ -20,7 +20,7 @@ struct RuntimeValue {
     int value{0};
     int operator()(tfl::Runtime& runtime) {
         runtime.silent_async([this] { value = 7; });
-        runtime.wait();
+        runtime.cowait();
         return value;
     }
 };
@@ -30,7 +30,7 @@ struct DynamicValue {
     int operator()(tfl::SubFlow& subflow) {
         subflow.emplace([this] { value = 11; });
         subflow.run();
-        subflow.wait();  // 返回依赖子图计算的值前，需要显式等待。
+        subflow.cowait();  // 返回依赖子图计算的值前，需要显式等待。
         return value;
     }
 };

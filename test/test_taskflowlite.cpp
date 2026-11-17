@@ -194,7 +194,7 @@ TEST_CASE("MultiBranch: Concurrent Path Routing", "[branch]") {
 // [Runtime] Runtime 动态拓扑与子图
 // ============================================================================
 
-TEST_CASE("Runtime: Dynamic Async & Wait", "[runtime]") {
+TEST_CASE("Runtime: Dynamic Async & Cowait", "[runtime]") {
     tfl::Flow flow;
     std::atomic<int> result{0};
 
@@ -202,7 +202,7 @@ TEST_CASE("Runtime: Dynamic Async & Wait", "[runtime]") {
         auto fut1 = rt.async([] { return 10; });
         auto fut2 = rt.async([] { return 20; });
 
-        rt.wait_until([&] {
+        rt.cowait_until([&] {
             return fut1.done() &&
                    fut2.done();
         });

@@ -16,7 +16,7 @@ int main() {
         group.corun(flow);
         auto first = group.async([] { return 20; });
         auto last = group.async([first] { return first.get() + 22; }, first);
-        group.wait();
+        group.cowait();
         return last.get();
     });
     if (result.get() != 42) return 1;

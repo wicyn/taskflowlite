@@ -854,7 +854,7 @@ private:
     /// @param worker 当前 Worker。
     /// @param pred 返回 true 时结束协作等待的谓词。
     template <predicate Pred>
-    void _corun_until(Worker& worker, Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>);
+    void _cowait_until(Worker& worker, Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>);
 
     /// @brief 启动一个 Graph，并阻塞当前线程直到 Graph 全部完成。
     /// @param g 要执行的 Graph。
@@ -1916,7 +1916,7 @@ inline void Executor::_dispatch(Work* work) noexcept {
 // 协作式等待
 // ============================================================================
 template <predicate Pred>
-inline void Executor::_corun_until(Worker& wr, Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>) {
+inline void Executor::_cowait_until(Worker& wr, Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>) {
     const std::size_t nw = m_workers.size();
 
     while (!std::invoke(pred)) {
@@ -1972,7 +1972,7 @@ inline void Executor::_corun_graph(Graph& g, Work& parent, Worker& wr) noexcept 
 
     parent.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
     _schedule(wr, g.begin(), num_sources);
-    _corun_until(wr, [&parent]() noexcept {
+    _cowait_until(wr, [&parent]() noexcept {
         return parent.m_join_counter.load(std::memory_order_acquire) == 0;
     });
 }

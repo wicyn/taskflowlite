@@ -37,13 +37,13 @@ TEST_CASE("Context: Runtime children and groups inherit parent stop requests", "
             observed = nested.stop_requested();
             tfl::TaskGroup group(nested);
             auto grandchild = group.async([](tfl::Runtime& ctx) { return ctx.stop_requested(); });
-            group.wait();
+            group.cowait();
             observed = observed && grandchild.get();
         };
         if (silent) rt.silent_async(child);
         else (void)rt.async(child);
         const bool first = parent.request_stop();
-        rt.wait();
+        rt.cowait();
         return first && rt.stop_requested() && observed;
     });
     REQUIRE(parent.start().get());

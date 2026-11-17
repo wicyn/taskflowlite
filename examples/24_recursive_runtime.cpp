@@ -7,8 +7,8 @@
 ///
 /// 核心机制：
 ///   1. rt.async(F)   返回 std::future<R>，可拿计算结果；
-///   2. rt.wait()   协作式等齐当前 Runtime 派发的所有子任务；
-///   3. rt.wait_until(pred)
+///   2. rt.cowait()   协作式等齐当前 Runtime 派发的所有子任务；
+///   3. rt.cowait_until(pred)
 ///                    协作式等到谓词成真。**期间 worker 不阻塞睡眠，会主动
 ///                    窃取其他任务执行** —— 这是避免死锁的关键。
 ///
@@ -47,7 +47,7 @@ static std::int64_t fib_parallel(int n, tfl::Runtime& rt) {
     auto fb = rt.async([n](tfl::Runtime& sub) { return fib_parallel(n - 2, sub); });
 
     // 协作式等齐 —— 期间本 worker 会窃取其他任务执行，绝不会死锁
-    rt.wait_until([&]() noexcept {
+    rt.cowait_until([&]() noexcept {
         using namespace std::chrono_literals;
         return fa.done()
             && fb.done();
@@ -124,7 +124,7 @@ int main() {
                     std::osyncstream(std::cout) << "    silent_async#" << i << " -> " << r << "\n";
                 });
             }
-            // 不调用 wait —— 框架会在 invoke 返回后自动等齐子任务
+            // 不调用 cowait —— 框架会在 invoke 返回后自动等齐子任务
         });
 
         executor.async(flow).wait();

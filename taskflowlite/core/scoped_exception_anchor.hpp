@@ -32,7 +32,7 @@ namespace tfl {
 ///     ScopedExceptionAnchor anchor{subflow};
 ///
 ///     subflow.run();
-///     subflow.wait();
+///     subflow.cowait();
 /// } TFL_CATCH_ALL {
 ///     // 处理当前异常锚点归档并重新抛出的异常。
 /// }

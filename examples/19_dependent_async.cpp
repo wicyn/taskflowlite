@@ -236,7 +236,7 @@ int main() {
         // 动态数量的 Future 通过 Runtime 协作等待，再汇总结果。
         // 这不是给 async() 传入依赖列表，而是在任务内部等待集合完成。
         auto reducer = executor.async([workers](tfl::Runtime& rt) {
-            rt.wait_until([&workers] {
+            rt.cowait_until([&workers] {
                 return std::all_of(workers.begin(), workers.end(),
                                    [](const auto& future) { return future.done(); });
             });
@@ -336,7 +336,7 @@ int main() {
 
             // 在 Worker 内使用协作等待，等待期间继续推进其他任务。
             // 不应在这里直接阻塞等待尚未完成的 merged。
-            rt.wait();
+            rt.cowait();
 
             return merged.get();
         });

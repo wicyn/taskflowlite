@@ -106,6 +106,50 @@ TEST_CASE("CoroToken: an external wait releases the only worker and invalidates 
     REQUIRE(current.stop_requested());
 }
 
+TEST_CASE("Coro: suspended join propagates scope errors", "[coro][fork][join][exception]") {
+    tfl::Executor executor(1);
+    const bool catch_locally = GENERATE(false, true);
+    std::promise<tfl::CoroToken> registered;
+    auto child_token = registered.get_future();
+    std::promise<void> parent_yielded;
+    auto suspended = parent_yielded.get_future();
+    bool caught = false;
+    bool continued = false;
+    auto parent = executor.async([&](tfl::Coro& coro) -> tfl::CoroTask<int> {
+        co_await coro.silent_fork([&](tfl::Coro&) -> tfl::CoroTask<> {
+            co_await ExternalOperation{registered};
+            throw std::runtime_error("suspended child error");
+        });
+        // With one Worker, this marker cannot run until the parent yields at join.
+        executor.silent_async([&] { parent_yielded.set_value(); });
+        try {
+            co_await coro.join();
+        } catch (const std::runtime_error& error) {
+            if (!catch_locally || std::string_view(error.what()) != "suspended child error") throw;
+            caught = true;
+        }
+        continued = true;
+        co_await coro.join();
+        auto child = co_await coro.fork([] { return 42; });
+        co_await coro.join();
+        co_return child.get();
+    });
+
+    auto token = child_token.get();
+    suspended.get();
+    REQUIRE_FALSE(parent.done());
+    REQUIRE(token.resume());
+    if (catch_locally) {
+        REQUIRE(parent.get() == 42);
+    } else {
+        REQUIRE_THROWS_WITH(parent.get(), "suspended child error");
+    }
+    REQUIRE(caught == catch_locally);
+    REQUIRE(continued == catch_locally);
+    executor.wait_for_all();
+    REQUIRE(executor.num_topologies() == 0);
+}
+
 TEST_CASE("CoroToken: stopping a suspended coroutine still requires completion notification", "[coro][token][stop]") {
     tfl::Executor executor(GENERATE(1, 4));
     std::promise<tfl::CoroToken> registered;

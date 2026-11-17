@@ -223,7 +223,7 @@ TEST_CASE("Stress: work stealing with multiple Runtimes", "[stress][work-stealin
                     hits.fetch_add(1, std::memory_order_relaxed);
                 });
             }
-            rt.wait();
+            rt.cowait();
         });
     }
 

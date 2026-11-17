@@ -36,7 +36,7 @@ namespace tfl {
 /// 一个 Coro 对应一个 Coroutine Work；同一 Work 内通过 co_await 进入的 CoroTask
 /// 共享该 Coro，fork() / silent_fork() 则为派生任务创建独立 Work 与 Topology。
 ///
-/// join() 等待当前 Work 已派生的子 Work；
+/// join() 等待当前 Work 已派生的子 Work，并重抛当前 Work 已归档的异常；
 /// silent_fork() 不返回结果句柄，fork() 在 await_resume() 中返回 AsyncFuture<R>。
 /// 两种 fork 都支持 Basic、Runtime、SubFlow、Coroutine callable 及 Graph/Module。
 /// Graph 可执行一次、指定次数，或由 predicate 控制重复执行；fork() 还支持
@@ -121,9 +121,9 @@ public:
         /// @return 当前 Worker 在此归还最后一个 slot 时返回 false，否则返回 true。
         [[nodiscard]] bool await_suspend(std::coroutine_handle<> handle) noexcept;
 
-        /// @brief 在父 Coroutine 恢复后重新占用基准 join slot。
-        /// @note 当前实现不自动重抛任何子任务异常。
-        void await_resume() const noexcept;
+        /// @brief 在父 Coroutine 恢复后重新占用基准 join slot，并重抛当前 Work 已归档的异常。
+        /// @note 先恢复基准 slot，再检查异常；不提取子任务 Future 保存的结果或异常。
+        void await_resume() const;
 
     private:
         explicit JoinOperation(Coro& coro) noexcept;
@@ -614,8 +614,11 @@ inline bool Coro::JoinOperation::await_suspend(std::coroutine_handle<> handle) n
     return false;
 }
 
-inline void Coro::JoinOperation::await_resume() const noexcept {
-    m_coro.work().m_join_counter.fetch_add(1, std::memory_order_acq_rel);
+inline void Coro::JoinOperation::await_resume() const {
+    auto& work = m_coro.work();
+
+    work.m_join_counter.fetch_add(1, std::memory_order_acq_rel);
+    work._rethrow_exception();
 }
 
 inline Coro::JoinOperation::JoinOperation(Coro& coro) noexcept

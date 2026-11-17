@@ -48,11 +48,11 @@ TEMPLATE_TEST_CASE("Submission: graph overloads with integral counts callbacks a
         env.executor.async([&](tfl::Runtime& rt) {
             if (context == 1) {
                 submit_graph(rt, flow, mode, num, count, callbacks);
-                rt.wait();
+                rt.cowait();
             } else {
                 tfl::TaskGroup group(rt);
                 submit_graph(group, flow, mode, num, count, callbacks);
-                group.wait();
+                group.cowait();
             }
         }).get();
     }

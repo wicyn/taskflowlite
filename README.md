@@ -228,7 +228,7 @@ int result = answer.get();  // 42
 | `co_await coro.call(callable)` | 顺序执行子协程，取得其结果或异常；父子共享当前任务上下文 |
 | `co_await coro.fork(callable, deps...)` | 子任务已提交，取得 `AsyncFuture<R>`；此时不保证子任务已完成 |
 | `co_await coro.silent_fork(callable)` | 子任务已提交，不返回 Future |
-| `co_await coro.join()` | 已派生子任务完成；通过对应 Future 的 `get()` 读取结果或重抛结果异常 |
+| `co_await coro.join()` | 已派生子任务完成，并重抛当前作用域归档的异常；子 Future 的结果与异常仍通过其 `get()` 读取 |
 | `co_await operation` | 等待符合 `CoroOperation` 协议的外部操作；完成源通过 `CoroToken::resume()` 请求恢复 |
 
 `CoroTask<R>` 支持值、左值引用及 `void` 结果，由框架管理。子协程通过 `coro.call()` 调用；`CoroTask` 和 `AsyncFuture` 本身不提供直接 `co_await` 接口。
@@ -265,16 +265,18 @@ auto future = executor.async([](tfl::Runtime& runtime) {
     auto left = group.async([] { return 20; });
     auto right = group.async([] { return 22; });
 
-    group.wait();
+    group.cowait();
     return left.get() + right.get();
 });
 
 int result = future.get();  // 42
 ```
 
-`Runtime` 用于运行时派发任务；`TaskGroup` 管理一组子任务，`wait()` 协作等待组内任务完成。
+`Runtime` 用于运行时派发任务；`TaskGroup` 管理一组子任务，`cowait()` 协作等待组内任务完成。
 
-`TaskGroup` 析构时会等待，但不会抛异常。`group.wait()` 接收归档到组的异常，例如 `silent_async()` 子任务的异常；通过 `async()` 返回的子 Future 应调用 `get()` 接收其异常，如上例所示。见 [异常处理示例](examples/16_error_handling.cpp)。
+`cowait` 中的 `co` 表示 cooperative：调用同步返回，等待期间 Worker 继续执行就绪任务。`Runtime::cowait_until(pred)` 等待指定谓词成立。
+
+`TaskGroup` 析构时会等待，但不会抛异常。`group.cowait()` 接收归档到组的异常，例如 `silent_async()` 子任务的异常；通过 `async()` 返回的子 Future 应调用 `get()` 接收其异常，如上例所示。见 [异常处理示例](examples/16_error_handling.cpp)。
 
 ### 动态子图
 
@@ -287,13 +289,13 @@ auto future = executor.async([&result](tfl::SubFlow& subflow) {
 
     A.precede(B);
     subflow.run();
-    subflow.wait();
+    subflow.cowait();
 });
 
 future.get();  // result == 42
 ```
 
-`SubFlow` 在任务执行期间构图，通过 `run()` 提交、`wait()` 协作等待。
+`SubFlow` 在任务执行期间构图，通过 `run()` 提交、`cowait()` 协作等待。
 
 仅调用 `emplace()` 不会执行子图。不要将框架传入的 `Runtime&` 或 `SubFlow&` 保存到任务回调之外。
 

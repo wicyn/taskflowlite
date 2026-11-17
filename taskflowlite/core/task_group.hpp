@@ -259,7 +259,7 @@ public:
     /// @brief 将子图源节点挂接到本组并立即提交。
     /// @tparam Gh 满足 graph_holder concept 的图持有者类型。
     /// @param gh 非拥有引用；Graph 及其节点必须存活到组内执行结束。
-    /// @note 本函数只提交任务，不等待；需要同步并观察异常时调用 `wait()`。
+    /// @note 本函数只提交任务，不等待；需要同步并观察异常时调用 `cowait()`。
     /// @note source 发布依赖 Executor 批量调度路径的发布语义；Graph 不得在执行完成前销毁或修改。
     template <graph_holder Gh>
     void run(Gh& gh) noexcept;
@@ -279,7 +279,7 @@ public:
     /// 等待期间当前 Worker 会继续执行自己的本地任务以及窃取其他 Worker
     /// 或共享队列中的任务，直到 AnchorWork 的 join_counter 归零；随后检查并
     /// 重新抛出锚点已经归档的异常。
-    void wait();
+    void cowait();
 
     /// @brief 向本组锚点所属 Topology 发起协作式停止请求。
     /// @return 本次调用首次设置停止请求时返回 true，否则返回 false。
@@ -333,7 +333,7 @@ inline TaskGroup::TaskGroup(Context& context) noexcept
     , m_anchor{context.work(), context.executor()} {}
 
 inline TaskGroup::~TaskGroup() noexcept {
-    m_executor._corun_until(m_worker, [this]() noexcept {
+    m_executor._cowait_until(m_worker, [this]() noexcept {
         return m_anchor.m_join_counter.load(std::memory_order_acquire) == 0;
     });
 }
@@ -574,11 +574,11 @@ inline void TaskGroup::corun(Gh&& gh) {
 }
 
 // ============================================================================
-// TaskGroup::wait
+// TaskGroup::cowait
 // ============================================================================
 
-inline void TaskGroup::wait() {
-    m_executor._corun_until(m_worker, [this]() noexcept {
+inline void TaskGroup::cowait() {
+    m_executor._cowait_until(m_worker, [this]() noexcept {
         return m_anchor.m_join_counter.load(std::memory_order_acquire) == 0;
     });
 

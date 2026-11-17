@@ -372,7 +372,7 @@ TEST_CASE("Semaphore: reset with pending waiters preserves state", "[semaphore][
     auto task = env.executor.async([&](tfl::Runtime& rt) {
         rt.run(flow);
         // 单 Worker 队列被协作等待排空后，唯一子任务已进入 waiter 链。
-        rt.wait_until([&] { return rt.worker().queue_size() == 0; });
+        rt.cowait_until([&] { return rt.worker().queue_size() == 0; });
         const bool rejected = !gate.reset(2) && !gate.reset(2, 1);
         checked.set_value(rejected && gate.max_value() == 1 && gate.value() == 0);
     });
