@@ -25,7 +25,7 @@ int main() {
             std::cout << "Recovered: " << e.what() << '\n';
             group.corun(graph);
         }
-        group.wait();
+        group.cowait();
     }).get();
 
     std::cout << "Completed graph runs: " << count << '\n';

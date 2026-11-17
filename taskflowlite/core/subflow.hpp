@@ -26,6 +26,7 @@ class SubFlow final : public FlowBuilder, public Context {
     friend class FlowBuilder;
     TFL_WORK_SUBCLASS_FRIENDS;
 
+    using Base = Context;
     using Builder = FlowBuilder;
 
 public:
@@ -38,20 +39,20 @@ public:
     /// 本函数只负责等待并重新抛出已经归档到当前父节点的异常，
     /// 不会自动启用显式异常锚点。若需要在当前 SubFlow 内拦截子任务异常，
     /// 必须在启动子图之前创建 ScopedExceptionAnchor，并保证守卫存活到
-    /// wait() 完成。
+    /// cowait() 完成。
     ///
     /// @code
     /// ScopedExceptionAnchor guard{subflow};
     ///
     /// subflow.run();
-    /// subflow.wait();
+    /// subflow.cowait();
     /// @endcode
     ///
     /// @note 等待期间当前 Worker 会继续执行其他就绪任务。
     /// @note 没有 ScopedExceptionAnchor 时，异常按照默认父链继续向外传播。
     /// @note 可以重复调用，每次调用都会等待当前已经挂接的全部子任务。
     /// @throws 重新抛出显式异常锚点归档的首个异常。
-    void wait();
+    void cowait();
 
 private:
     /// @brief 由框架构造绑定当前动态图和执行上下文的 SubFlow。
@@ -61,27 +62,27 @@ private:
     /// @param executor 当前 Executor。
     explicit SubFlow(Graph& graph, Work& work, Worker& worker, Executor& executor) noexcept
         : Builder{graph}
-        , Context{work, worker, executor} {
+        , Base{work, worker, executor} {
         graph.clear();
     }
 };
 
 inline void SubFlow::run() noexcept {
-    auto num_sources = executor()._set_up_graph(graph(), Context::work());
+    auto num_sources = executor()._set_up_graph(graph(), Base::work());
     if (num_sources == 0) {
         return;
     }
 
-    Context::work().m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
+    Base::work().m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
     executor()._schedule(worker(), graph().begin(), num_sources);
 }
 
-inline void SubFlow::wait() {
-    executor()._corun_until(worker(), [this]() noexcept {
-        return Context::work().m_join_counter.load(std::memory_order_acquire) == 1;
+inline void SubFlow::cowait() {
+    executor()._cowait_until(worker(), [this]() noexcept {
+        return Base::work().m_join_counter.load(std::memory_order_acquire) == 1;
     });
 
-    Context::work()._rethrow_exception();
+    Base::work()._rethrow_exception();
 }
 
 } // namespace tfl

@@ -177,12 +177,12 @@ TEST_CASE("AsyncFuture: dependency fan-in and completed predecessors", "[future]
     REQUIRE(next.get() == 43);
 }
 
-/// @test [future][runtime] 单线程 Runtime 通过 wait_until 协作执行子任务。
+/// @test [future][runtime] 单线程 Runtime 通过 cowait_until 协作执行子任务。
 TEST_CASE("AsyncFuture: Runtime cooperatively waits for a result", "[future][runtime]") {
     TestEnv env(1);
     auto parent = env.executor.async([](tfl::Runtime& rt) {
         auto future = rt.async([] { return 42; });
-        rt.wait_until([&] { return future.done(); });
+        rt.cowait_until([&] { return future.done(); });
         return future.get();
     });
     REQUIRE(parent.get() == 42);

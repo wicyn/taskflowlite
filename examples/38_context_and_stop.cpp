@@ -15,7 +15,7 @@ int main() {
             std::cout << "Doing work\n";
         });
         (void)parent.request_stop();
-        rt.wait();
+        rt.cowait();
     }).name("parent");
     parent.start().get();
     std::cout << "Child observed stop: " << std::boolalpha << child_observed_stop << '\n';

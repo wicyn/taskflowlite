@@ -36,10 +36,10 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < runs; ++i) {
                     auto first = scope.async([] { add_one(); });
                     auto last = scope.async([] { add_one(); }, first, first);
-                    scope.wait();
+                    scope.cowait();
                     last.get();
                     auto completed = scope.async([] { add_one(); }, last);
-                    scope.wait();
+                    scope.cowait();
                     completed.get();
                 }
             };

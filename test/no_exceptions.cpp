@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
         group.corun(graph);
         auto a = group.async([] { return 20; });
         auto b = group.async([a] { return a.get() + 22; }, a);
-        group.wait();
+        group.cowait();
         return b.get();
     });
     if (parent.get() != 42 || count != 6) return 4;

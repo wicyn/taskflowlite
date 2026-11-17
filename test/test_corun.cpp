@@ -109,7 +109,7 @@ TEST_CASE("corun: exceptions are local and the graph can be reused", "[corun][ex
             if (scope == 2) return recover(rt);
             tfl::TaskGroup group(rt);
             const bool recovered = recover(group);
-            group.wait();
+            group.cowait();
             return recovered;
         });
         REQUIRE(parent.get());
@@ -123,8 +123,8 @@ TEST_CASE("Runtime and TaskGroup: run borrows lvalues and corun accepts temporar
     auto parent = executor.async([&](tfl::Runtime& rt) {
         auto run = [&](auto& runner) {
             GraphHolder holder{make_flow(count)};
-            runner.run(holder); // run 只借用左值，holder 必须存活到 wait 返回。
-            runner.wait();
+            runner.run(holder); // run 只借用左值，holder 必须存活到 cowait 返回。
+            runner.cowait();
             runner.corun(GraphHolder{make_flow(count)});
             runner.corun(tfl::Flow{});
             return holder.flow.size();
@@ -155,7 +155,7 @@ TEST_CASE("corun: local wait does not require unrelated blocked children", "[cor
             tfl::Flow release;
             release.emplace([] {}).release(gate);
             runner.corun(release);
-            runner.wait();
+            runner.cowait();
         };
         if (use_group) {
             tfl::TaskGroup group(rt);

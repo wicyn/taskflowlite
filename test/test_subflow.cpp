@@ -145,8 +145,8 @@ TEST_CASE("SubFlow: construction alone does not execute children", "[subflow][dy
     REQUIRE(count == 0);
 }
 
-/// @test [subflow][dynamic][wait] run 后显式 wait 或返回均等待子图完成。
-TEST_CASE("SubFlow: explicit run and optional cooperative wait", "[subflow][dynamic][wait]") {
+/// @test [subflow][dynamic][cowait] run 后显式 cowait 或返回均等待子图完成。
+TEST_CASE("SubFlow: explicit run and optional cowait", "[subflow][dynamic][cowait]") {
     TestEnv env(1);
     const bool wait_inside = GENERATE(false, true);
     std::atomic<int> count{0};
@@ -157,7 +157,7 @@ TEST_CASE("SubFlow: explicit run and optional cooperative wait", "[subflow][dyna
         sf.linearize(a, b);
         sf.run();
         if (wait_inside) {
-            sf.wait();
+            sf.cowait();
             waited = count.load() == 2;
         }
     }).get();
@@ -181,14 +181,14 @@ TEST_CASE("SubFlow: repeated parent rebuilds children", "[subflow][dynamic][repe
     REQUIRE(count == 10);
 }
 
-/// @test [subflow][dynamic][exception] 子图异常通过 wait/get 传播。
+/// @test [subflow][dynamic][exception] 子图异常通过 cowait/get 传播。
 /// @note 保留无捕获 SubFlow 初始化的历史回归覆盖。
 TEST_CASE("SubFlow: child exception reaches the future", "[subflow][dynamic][exception][core-regression]") {
     TestEnv env(1);
     auto future = env.executor.async([](tfl::SubFlow& sf) {
         (void)sf.emplace([] { throw std::runtime_error("dynamic child"); });
         sf.run();
-        sf.wait();
+        sf.cowait();
     });
     REQUIRE_THROWS_AS(future.get(), std::runtime_error);
 }
