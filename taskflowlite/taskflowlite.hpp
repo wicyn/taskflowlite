@@ -37,8 +37,8 @@
 // 编译期版本宏：版本号的源码定义。
 // ============================================================================
 #define TASKFLOWLITE_VERSION_MAJOR 0
-#define TASKFLOWLITE_VERSION_MINOR 4
-#define TASKFLOWLITE_VERSION_PATCH 4
+#define TASKFLOWLITE_VERSION_MINOR 5
+#define TASKFLOWLITE_VERSION_PATCH 0
 
 namespace tfl {
 
