@@ -10,7 +10,6 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <limits>
 #include <new>
 #include <type_traits>
@@ -22,22 +21,23 @@ namespace tfl {
 
 /// @brief 由 Coro 独占的 Coroutine Frame 栈段。
 ///
-/// 栈段头部和用户存储区域位于同一块 malloc 内存中，整块大小为 2 的幂。
+/// 栈段头部和用户存储区域位于同一块 operator new 内存中，整块大小为 2 的幂。
 /// 栈段由 Stack 统一创建。
 /// m_prev 连接同一 Coro 的活动栈段；m_next 只在栈段退空且归还 Worker 后使用。
 /// 一个栈段不能同时属于 Coro 和 Worker 的空闲缓存。
 ///
 /// @warning try_allocate / deallocate 必须严格遵循 LIFO；不负责析构 Frame。
-/// @warning 只保证不超过 alignof(std::max_align_t) 的对齐。
-class alignas(alignof(std::max_align_t)) Stacklet final : public Immovable<Stacklet> {
+/// @warning 只保证不超过 __STDCPP_DEFAULT_NEW_ALIGNMENT__ 的对齐。
+class alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) Stacklet final : public Immovable<Stacklet> {
     friend class Stack;
 
 public:
     /// @brief 默认栈段总大小（含 Stacklet 头部）。
     static constexpr std::size_t default_size = 4096;
 
-    /// @brief 栈内存储的保证对齐。
-    static constexpr std::size_t alignment = alignof(std::max_align_t);
+    /// @brief 与无对齐参数 operator new 相同的对齐保证。
+    /// @note MSVC x64 的 max_align_t 仅为 8 字节，协程帧仍需要默认 new 的 16 字节对齐。
+    static constexpr std::size_t alignment = __STDCPP_DEFAULT_NEW_ALIGNMENT__;
 
     static_assert(std::has_single_bit(default_size));
     static_assert(std::has_single_bit(alignment));
@@ -123,7 +123,7 @@ private:
         const std::size_t extent = (capacity + mask) & ~mask;
         const std::size_t required = std::max(default_size, sizeof(Stacklet) + extent);
         const std::size_t bytes = std::bit_ceil(required);
-        void* memory = std::malloc(bytes);
+        void* memory = ::operator new(bytes, std::nothrow);
         if (!memory) [[unlikely]] {
             TFL_THROW(std::bad_alloc{});
         }
@@ -142,7 +142,7 @@ private:
         TFL_ASSERT(!stacklet || (stacklet->empty() && !stacklet->m_prev && !stacklet->m_next));
         if (stacklet) {
             stacklet->~Stacklet();
-            std::free(stacklet);
+            ::operator delete(stacklet);
         }
     }
 
@@ -157,7 +157,7 @@ private:
 };
 
 static_assert(sizeof(Stacklet) % Stacklet::alignment == 0);
-static_assert(Stacklet::alignment <= alignof(std::max_align_t));
+static_assert(Stacklet::alignment >= alignof(std::max_align_t));
 static_assert(Stacklet::default_size > sizeof(Stacklet));
 static_assert(std::is_trivially_destructible_v<Stacklet>);
 

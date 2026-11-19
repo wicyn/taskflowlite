@@ -3,6 +3,7 @@
 #include "test_common.hpp"
 
 #include <array>
+#include <cstdint>
 #include <type_traits>
 
 namespace {
@@ -34,6 +35,32 @@ struct FrameGuard {
     explicit FrameGuard(int& n) : alive(n) { ++alive; }
     ~FrameGuard() { --alive; }
 };
+
+// Keep the alignment on the type itself: some GCC coroutine lowering
+// versions fail to preserve alignas applied only to an automatic variable.
+struct alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) AlignedFrameValues {
+    std::array<int, 4> values{20, 22, 0, 0};
+};
+
+static_assert(alignof(AlignedFrameValues) == __STDCPP_DEFAULT_NEW_ALIGNMENT__);
+
+TFL_NO_INLINE bool has_default_new_alignment(const void* address) {
+    // Inspect the actual address without assuming the local's declared alignment.
+    return reinterpret_cast<std::uintptr_t>(address) % __STDCPP_DEFAULT_NEW_ALIGNMENT__ == 0;
+}
+
+tfl::CoroTask<bool> aligned_frame(tfl::Coro& coro, int depth) {
+    AlignedFrameValues storage;
+    bool aligned = has_default_new_alignment(storage.values.data());
+    if (depth > 0) {
+        const bool child_aligned = co_await coro.call([depth](tfl::Coro& child) {
+            return aligned_frame(child, depth - 1);
+        });
+        aligned = aligned && child_aligned;
+    }
+    co_return aligned && has_default_new_alignment(storage.values.data()) &&
+        storage.values[0] + storage.values[1] == 42;
+}
 
 tfl::CoroTask<int> recurse(tfl::Coro& coro, int depth, int& alive) {
     FrameGuard guard(alive);
@@ -113,6 +140,27 @@ TEST_CASE("Coro: graph nodes repeat and preserve dependencies", "[coro][flow]") 
     REQUIRE(tfl::to_string_view(middle.type()) == "coroutine");
     executor.async(flow, 20).get();
     REQUIRE(value == 60);
+}
+
+TEST_CASE("Coro: root and nested frames preserve default new alignment", "[coro][stack][alignment]") {
+    tfl::Executor executor(GENERATE(1, 4));
+    auto result = executor.async([](tfl::Coro& coro) { return aligned_frame(coro, 5); });
+    CHECK(result.get());
+
+    tfl::Flow flow;
+    bool graph_aligned = false;
+    flow.emplace([&](tfl::Coro& coro) -> tfl::CoroTask<> {
+        AlignedFrameValues storage;
+        const bool root_aligned = has_default_new_alignment(storage.values.data());
+        const bool children_aligned = co_await coro.call([](tfl::Coro& child) {
+            return aligned_frame(child, 5);
+        });
+        graph_aligned = root_aligned && children_aligned &&
+            has_default_new_alignment(storage.values.data()) &&
+            storage.values[0] + storage.values[1] == 42;
+    });
+    executor.corun(flow);
+    CHECK(graph_aligned);
 }
 
 TEST_CASE("Coro: async and deferred results retain value and reference types", "[coro][async]") {
