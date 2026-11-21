@@ -1,0 +1,107 @@
+name: macOS runner recovery
+
+# Must be on the default branch. A runner that never starts cannot retry itself.
+on:
+  workflow_run:
+    workflows: [macOS]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: macos-retry-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    if: >-
+      github.event.workflow_run.conclusion == 'cancelled' ||
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      checks: read
+    steps:
+    # No checkout: this privileged workflow executes only its own default-branch
+    # script, never code or artifacts from the triggering branch/PR.
+    - name: Retry hosted macOS runner acquisition failures
+      uses: actions/github-script@v8
+      with:
+        script: |
+          const repo = context.repo;
+          const event = context.payload.workflow_run;
+          const runArgs = { ...repo, run_id: event.id };
+          const report = async message => {
+            core.info(message);
+            await core.summary.addHeading('macOS runner recovery').addRaw(message).write();
+          };
+          const { data: run } = await github.rest.actions.getWorkflowRun(runArgs);
+          if (run.status !== 'completed' || run.run_attempt !== event.run_attempt) {
+            return report('Skipped: this attempt is no longer current or is already running.');
+          }
+          if (run.path !== '.github/workflows/macos.yml' ||
+              run.head_repository?.full_name !== `${repo.owner}/${repo.repo}` ||
+              !['push', 'pull_request', 'workflow_dispatch'].includes(run.event) ||
+              !['cancelled', 'failure'].includes(run.conclusion)) {
+            return report('Skipped: not an eligible macOS run in this repository.');
+          }
+          // Includes manual attempts: the original run plus at most two retries.
+          if (run.run_attempt >= 3) {
+            return report('Stopped: three attempts exhausted. Inspect the original macOS run.');
+          }
+
+          const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
+            ...runArgs, attempt_number: run.run_attempt, per_page: 100
+          });
+          const unsuccessful = jobs.filter(job => job.conclusion !== 'success');
+          if (!unsuccessful.length) {
+            return report('Skipped: no unsuccessful jobs.');
+          }
+          // Rerun-failed-jobs also retries cancellations. Verify every unsuccessful
+          // job first, so a real build/test failure never gets retried along with it.
+          for (const job of unsuccessful) {
+            if (job.status !== 'completed' ||
+                !['cancelled', 'failure'].includes(job.conclusion) ||
+                !Array.isArray(job.steps) || job.steps.length !== 0 ||
+                job.runner_id !== 0 || job.runner_name ||
+                !job.labels?.includes('macos-15') || job.labels.includes('self-hosted')) {
+              return report('Skipped: a job ran steps or is not an unacquired macOS job.');
+            }
+            const checkId = /\/check-runs\/(\d+)$/.exec(job.check_run_url || '')?.[1];
+            if (!checkId) {
+              return report('Skipped: missing check-run diagnostics.');
+            }
+            // Use only the numeric ID, not a URL from the triggering run.
+            const annotations = await github.paginate(github.rest.checks.listAnnotations, {
+              ...repo, check_run_id: Number(checkId), per_page: 100
+            });
+            const acquisitionError = 'The job was not acquired by Runner of type hosted even after multiple attempts';
+            if (!annotations.some(a => (a.message || '').replace(/\s+/g, ' ').includes(acquisitionError))) {
+              // Manual/concurrency cancellations can also have zero steps/runners.
+              return report('Skipped: no explicit hosted-runner acquisition error.');
+            }
+          }
+
+          // A retry must not revive old work and cancel a newer run via macos.yml's
+          // concurrency group. Push and manual runs share the branch ref.
+          const relatedEvents = run.event === 'pull_request'
+            ? ['pull_request'] : ['push', 'workflow_dispatch'];
+          const recentRuns = await github.paginate(github.rest.actions.listWorkflowRuns, {
+            ...repo, workflow_id: run.workflow_id, branch: run.head_branch,
+            created: `>=${run.created_at}`, per_page: 100
+          });
+          if (recentRuns.some(other => other.run_number > run.run_number &&
+              other.head_branch === run.head_branch &&
+              other.head_repository?.full_name === run.head_repository.full_name &&
+              relatedEvents.includes(other.event))) {
+            return report('Skipped: a newer macOS run has superseded this branch.');
+          }
+
+          // Avoid duplicating a manual retry started while diagnostics were read.
+          const { data: current } = await github.rest.actions.getWorkflowRun(runArgs);
+          if (current.status !== 'completed' || current.run_attempt !== run.run_attempt) {
+            return report('Skipped: the run changed while checking; no retry requested.');
+          }
+          await github.rest.actions.reRunWorkflowFailedJobs(runArgs);
+          return report(`Requested attempt ${run.run_attempt + 1}/3 for ${unsuccessful.length} unacquired macOS job(s). Successful jobs are preserved.`);
