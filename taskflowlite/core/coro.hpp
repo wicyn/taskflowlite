@@ -38,6 +38,7 @@ namespace tfl {
 ///
 /// join() 等待当前 Work 已派生的子 Work，并重抛当前 Work 已归档的异常；
 /// silent_fork() 不返回结果句柄，fork() 在 await_resume() 中返回 AsyncFuture<R>。
+/// 两种 fork 的模板参数 InheritStop 默认为 true，设为 false 时，子任务只观察自身的停止请求。
 /// 两种 fork 都支持 Basic、Runtime、SubFlow、Coroutine callable 及 Graph/Module。
 /// Graph 可执行一次、指定次数，或由 predicate 控制重复执行；fork() 还支持
 /// 完成回调和 AsyncFuture/AsyncTask 前置依赖。
@@ -280,7 +281,7 @@ public:
     /// @tparam T 满足 basic_invocable、capturable 的 callable 类型。
     /// @param task 将被子 Work 保存的 callable。
     /// @return 必须 co_await 的 SilentForkOperation，子 Work 仍计入当前父 Work。
-    template <typename T>
+    template <bool InheritStop = true, typename T>
         requires (basic_invocable<T> && capturable<T>)
     [[nodiscard]] SilentForkOperation silent_fork(T&& task);
 
@@ -288,7 +289,7 @@ public:
     /// @tparam T 满足 runtime_invocable、capturable 的 callable 类型。
     /// @param task Runtime callable，返回值不对外暴露。
     /// @return SilentForkOperation；Runtime 子任务及其动态子任务均由框架维护生命周期。
-    template <typename T>
+    template <bool InheritStop = true, typename T>
         requires (runtime_invocable<T> && capturable<T>)
     [[nodiscard]] SilentForkOperation silent_fork(T&& task);
 
@@ -297,7 +298,7 @@ public:
     /// @param task SubFlow callable。
     /// @return SilentForkOperation。
     /// @warning callable 不得保存框架注入的 SubFlow&。
-    template <typename T>
+    template <bool InheritStop = true, typename T>
         requires (subflow_invocable<T> && capturable<T>)
     [[nodiscard]] SilentForkOperation silent_fork(T&& task);
 
@@ -305,7 +306,7 @@ public:
     /// @tparam T 接收 Coro& 并返回 CoroTask<R> 的 callable 类型。
     /// @param task Coroutine callable，返回值不会生成 Future。
     /// @return SilentForkOperation；可通过父 Coroutine 的 join() 等待其完成。
-    template <typename T>
+    template <bool InheritStop = true, typename T>
         requires (coro_invocable<T> && capturable<T>)
     [[nodiscard]] SilentForkOperation silent_fork(T&& task);
 
@@ -316,7 +317,7 @@ public:
     /// @param cb 子图执行结束时调用的无参回调。
     /// @return SilentForkOperation；需要通过 co_await 提交。
     /// @warning 借用的 Graph 必须至少存活到子任务执行结束。
-    template <graph_holder Gh, callback C = noop_callback>
+    template <bool InheritStop = true, graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
     [[nodiscard]] SilentForkOperation silent_fork(Gh&& gh, C&& cb = C{});
 
@@ -329,19 +330,19 @@ public:
     /// @param cb 整个 Module 完成后的回调。
     /// @return SilentForkOperation。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, std::integral I, callback C = noop_callback>
+    template <bool InheritStop = true, graph_holder Gh, std::integral I, callback C = noop_callback>
         requires capturable<C>
     [[nodiscard]] SilentForkOperation silent_fork(Gh&& gh, I num, C&& cb = C{});
 
     /// @brief 创建由终止谓词控制重复执行的即发即弃 Module 子任务。
     /// @tparam Gh 满足 graph_holder 的图持有者类型。
-    /// @tparam P 满足 predicate 的无参终止谓词；返回 true 时停止。
+    /// @tparam P 满足 module_predicate 的子图终止谓词类型；返回 true 时停止。
     /// @tparam C 满足 callback 的完成回调类型。
     /// @param gh 要执行的子图持有者。
     /// @param pred 在每轮之前调用的终止谓词。
     /// @param cb 子图整个执行链完成后的回调。
     /// @return SilentForkOperation。
-    template <graph_holder Gh, predicate P, callback C = noop_callback>
+    template <bool InheritStop = true, graph_holder Gh, module_predicate P, callback C = noop_callback>
         requires capturable<P, C>
     [[nodiscard]] SilentForkOperation silent_fork(Gh&& gh, P&& pred, C&& cb = C{});
 
@@ -355,7 +356,7 @@ public:
     /// @param task 普通 callable。
     /// @param deps 可选前置依赖，需已启动或已完成。
     /// @return 必须 co_await 的 ForkOperation；await_resume() 返回 AsyncFuture<basic_return_t<T>>。
-    template <typename T, async_future... Deps>
+    template <bool InheritStop = true, typename T, async_future... Deps>
         requires (basic_invocable<T> && capturable<T>)
     [[nodiscard]] auto fork(T&& task, Deps&&... deps) -> ForkOperation<basic_return_t<T>, std::decay_t<Deps>...>;
 
@@ -365,7 +366,7 @@ public:
     /// @param task Runtime callable。
     /// @param deps 可选前置依赖。
     /// @return ForkOperation；等待后得到 AsyncFuture<runtime_return_t<T>>。
-    template <typename T, async_future... Deps>
+    template <bool InheritStop = true, typename T, async_future... Deps>
         requires (runtime_invocable<T> && capturable<T>)
     [[nodiscard]] auto fork(T&& task, Deps&&... deps) -> ForkOperation<runtime_return_t<T>, std::decay_t<Deps>...>;
 
@@ -376,7 +377,7 @@ public:
     /// @param deps 可选前置依赖。
     /// @return ForkOperation；等待后得到 AsyncFuture<subflow_return_t<T>>。
     /// @warning callable 不得保存框架注入的 SubFlow&。
-    template <typename T, async_future... Deps>
+    template <bool InheritStop = true, typename T, async_future... Deps>
         requires (subflow_invocable<T> && capturable<T>)
     [[nodiscard]] auto fork(T&& task, Deps&&... deps) -> ForkOperation<subflow_return_t<T>, std::decay_t<Deps>...>;
 
@@ -386,7 +387,7 @@ public:
     /// @param task 接收 Coro&、返回 CoroTask<R> 的 callable。
     /// @param deps 可选前置依赖。
     /// @return ForkOperation；等待后得到 AsyncFuture<coro_result_t<T>>。
-    template <typename T, async_future... Deps>
+    template <bool InheritStop = true, typename T, async_future... Deps>
         requires (coro_invocable<T> && capturable<T>)
     [[nodiscard]] auto fork(T&& task, Deps&&... deps) -> ForkOperation<coro_result_t<T>, std::decay_t<Deps>...>;
 
@@ -397,7 +398,7 @@ public:
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
     /// @warning 借用的 Graph 必须存活至 Module 执行结束。
-    template <graph_holder Gh, async_future... Deps>
+    template <bool InheritStop = true, graph_holder Gh, async_future... Deps>
     [[nodiscard]] auto fork(Gh&& gh, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
     /// @brief 创建执行一次 Graph、带完成回调的异步 Module 子任务。
@@ -408,7 +409,7 @@ public:
     /// @param cb Module 执行完毕时调用的回调。
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
-    template <graph_holder Gh, callback C, async_future... Deps>
+    template <bool InheritStop = true, graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] auto fork(Gh&& gh, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
@@ -421,7 +422,7 @@ public:
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, std::integral I, async_future... Deps>
+    template <bool InheritStop = true, graph_holder Gh, std::integral I, async_future... Deps>
     [[nodiscard]] auto fork(Gh&& gh, I num, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
     /// @brief 创建定次执行 Graph 且带完成回调的异步 Module 子任务。
@@ -435,25 +436,25 @@ public:
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, std::integral I, callback C, async_future... Deps>
+    template <bool InheritStop = true, graph_holder Gh, std::integral I, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] auto fork(Gh&& gh, I num, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
     /// @brief 创建由终止谓词控制 Graph 重复执行的异步 Module 子任务。
     /// @tparam Gh 满足 graph_holder 的图持有者类型。
-    /// @tparam P 满足 predicate 的无参终止谓词类型。
+    /// @tparam P 满足 module_predicate 的子图终止谓词类型。
     /// @tparam Deps 前置异步依赖类型包。
     /// @param gh 要执行的子图。
     /// @param pred 结束谓词；返回 true 停止，返回 false 继续下一轮。
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
-    template <graph_holder Gh, predicate P, async_future... Deps>
+    template <bool InheritStop = true, graph_holder Gh, module_predicate P, async_future... Deps>
         requires capturable<P>
     [[nodiscard]] auto fork(Gh&& gh, P&& pred, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
     /// @brief 创建由终止谓词控制、带完成回调的异步 Module 子任务。
     /// @tparam Gh 满足 graph_holder 的图持有者类型。
-    /// @tparam P 满足 predicate 的无参终止谓词类型。
+    /// @tparam P 满足 module_predicate 的子图终止谓词类型。
     /// @tparam C 满足 callback 的无参完成回调类型。
     /// @tparam Deps 前置异步依赖类型包。
     /// @param gh 要执行的子图。
@@ -461,7 +462,7 @@ public:
     /// @param cb 全部轮次结束后调用的回调。
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
-    template <graph_holder Gh, predicate P, callback C, async_future... Deps>
+    template <bool InheritStop = true, graph_holder Gh, module_predicate P, callback C, async_future... Deps>
         requires capturable<P, C>
     [[nodiscard]] auto fork(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
@@ -890,61 +891,72 @@ inline Work* Coro::ForkOperation<R, Deps...>::_launch_fork(const Deps&... deps) 
 // Coro::silent_fork
 // ============================================================================
 
-template <typename T>
+template <bool InheritStop, typename T>
     requires (basic_invocable<T> && capturable<T>)
 inline Coro::SilentForkOperation Coro::silent_fork(T&& task) {
     auto& parent = work();
 
-    Work* child = make_silent_async_basic(std::addressof(parent), executor(), parent.m_topology, std::forward<T>(task));
+    Work* child = make_silent_async_basic(
+        std::addressof(parent), executor(), InheritStop ? parent.m_topology : nullptr,
+        std::forward<T>(task));
     return SilentForkOperation{*this, child};
 }
 
-template <typename T>
+template <bool InheritStop, typename T>
     requires (runtime_invocable<T> && capturable<T>)
 inline Coro::SilentForkOperation Coro::silent_fork(T&& task) {
     auto& parent = work();
 
-    Work* child = make_silent_async_runtime(std::addressof(parent), executor(), parent.m_topology, std::forward<T>(task));
+    Work* child = make_silent_async_runtime(
+        std::addressof(parent), executor(), InheritStop ? parent.m_topology : nullptr,
+        std::forward<T>(task));
     return SilentForkOperation{*this, child};
 }
 
-template <typename T>
+template <bool InheritStop, typename T>
     requires (subflow_invocable<T> && capturable<T>)
 inline Coro::SilentForkOperation Coro::silent_fork(T&& task) {
     auto& parent = work();
 
-    Work* child = make_silent_async_subflow(std::addressof(parent), executor(), parent.m_topology, std::forward<T>(task));
+    Work* child = make_silent_async_subflow(
+        std::addressof(parent), executor(), InheritStop ? parent.m_topology : nullptr,
+        std::forward<T>(task));
     return SilentForkOperation{*this, child};
 }
 
-template <typename T>
+template <bool InheritStop, typename T>
     requires (coro_invocable<T> && capturable<T>)
 inline Coro::SilentForkOperation Coro::silent_fork(T&& task) {
     auto& parent = work();
 
-    Work* child = make_silent_async_coro(std::addressof(parent), executor(), parent.m_topology, std::forward<T>(task));
+    Work* child = make_silent_async_coro(
+        std::addressof(parent), executor(), InheritStop ? parent.m_topology : nullptr,
+        std::forward<T>(task));
     return SilentForkOperation{*this, child};
 }
 
-template <graph_holder Gh, callback C>
+template <bool InheritStop, graph_holder Gh, callback C>
     requires capturable<C>
 inline Coro::SilentForkOperation Coro::silent_fork(Gh&& gh, C&& cb) {
-    return silent_fork(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb));
+    return silent_fork<InheritStop>(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb));
 }
 
-template <graph_holder Gh, std::integral I, callback C>
+template <bool InheritStop, graph_holder Gh, std::integral I, callback C>
     requires capturable<C>
 inline Coro::SilentForkOperation Coro::silent_fork(Gh&& gh, I num, C&& cb) {
-    const std::uint64_t count = static_cast<std::uint64_t>(num);
-    return silent_fork(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, std::forward<C>(cb));
+    return silent_fork<InheritStop>(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
+        return iteration >= count;
+    }, std::forward<C>(cb));
 }
 
-template <graph_holder Gh, predicate P, callback C>
+template <bool InheritStop, graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 inline Coro::SilentForkOperation Coro::silent_fork(Gh&& gh, P&& pred, C&& cb) {
     auto& parent = work();
 
-    Work* child = make_silent_async_module(std::addressof(parent), executor(), parent.m_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
+    Work* child = make_silent_async_module(
+        std::addressof(parent), executor(), InheritStop ? parent.m_topology : nullptr,
+        std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
     return SilentForkOperation{*this, child};
 }
 
@@ -952,82 +964,92 @@ inline Coro::SilentForkOperation Coro::silent_fork(Gh&& gh, P&& pred, C&& cb) {
 // Coro::fork
 // ============================================================================
 
-template <typename T, async_future... Deps>
+template <bool InheritStop, typename T, async_future... Deps>
     requires (basic_invocable<T> && capturable<T>)
 inline auto Coro::fork(T&& task, Deps&&... deps) -> ForkOperation<basic_return_t<T>, std::decay_t<Deps>...> {
     using R = basic_return_t<T>;
     auto& parent = work();
 
-    auto [child, result] = make_async_basic(std::addressof(parent), executor(), parent.m_topology, std::forward<T>(task));
+    auto [child, result] = make_async_basic(
+        std::addressof(parent), executor(), InheritStop ? parent.m_topology : nullptr,
+        std::forward<T>(task));
     return ForkOperation<R, std::decay_t<Deps>...>{*this, AsyncFuture<R>{child, result}, std::forward<Deps>(deps)...};
 }
 
-template <typename T, async_future... Deps>
+template <bool InheritStop, typename T, async_future... Deps>
     requires (runtime_invocable<T> && capturable<T>)
 inline auto Coro::fork(T&& task, Deps&&... deps) -> ForkOperation<runtime_return_t<T>, std::decay_t<Deps>...> {
     using R = runtime_return_t<T>;
     auto& parent = work();
 
-    auto [child, result] = make_async_runtime(std::addressof(parent), executor(), parent.m_topology, std::forward<T>(task));
+    auto [child, result] = make_async_runtime(
+        std::addressof(parent), executor(), InheritStop ? parent.m_topology : nullptr,
+        std::forward<T>(task));
     return ForkOperation<R, std::decay_t<Deps>...>{*this, AsyncFuture<R>{child, result}, std::forward<Deps>(deps)...};
 }
 
-template <typename T, async_future... Deps>
+template <bool InheritStop, typename T, async_future... Deps>
     requires (subflow_invocable<T> && capturable<T>)
 inline auto Coro::fork(T&& task, Deps&&... deps) -> ForkOperation<subflow_return_t<T>, std::decay_t<Deps>...> {
     using R = subflow_return_t<T>;
     auto& parent = work();
 
-    auto [child, result] = make_async_subflow(std::addressof(parent), executor(), parent.m_topology, std::forward<T>(task));
+    auto [child, result] = make_async_subflow(
+        std::addressof(parent), executor(), InheritStop ? parent.m_topology : nullptr,
+        std::forward<T>(task));
     return ForkOperation<R, std::decay_t<Deps>...>{*this, AsyncFuture<R>{child, result}, std::forward<Deps>(deps)...};
 }
 
-template <typename T, async_future... Deps>
+template <bool InheritStop, typename T, async_future... Deps>
     requires (coro_invocable<T> && capturable<T>)
 inline auto Coro::fork(T&& task, Deps&&... deps) -> ForkOperation<coro_result_t<T>, std::decay_t<Deps>...> {
     using R = coro_result_t<T>;
     auto& parent = work();
 
-    auto [child, result] = make_async_coro(std::addressof(parent), executor(), parent.m_topology, std::forward<T>(task));
+    auto [child, result] = make_async_coro(
+        std::addressof(parent), executor(), InheritStop ? parent.m_topology : nullptr,
+        std::forward<T>(task));
     return ForkOperation<R, std::decay_t<Deps>...>{*this, AsyncFuture<R>{child, result}, std::forward<Deps>(deps)...};
 }
 
-template <graph_holder Gh, async_future... Deps>
+template <bool InheritStop, graph_holder Gh, async_future... Deps>
 inline auto Coro::fork(Gh&& gh, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
-    return fork(std::forward<Gh>(gh), std::uint64_t{1}, noop_callback{}, std::forward<Deps>(deps)...);
+    return fork<InheritStop>(std::forward<Gh>(gh), std::uint64_t{1}, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, callback C, async_future... Deps>
+template <bool InheritStop, graph_holder Gh, callback C, async_future... Deps>
     requires capturable<C>
 inline auto Coro::fork(Gh&& gh, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
-    return fork(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb), std::forward<Deps>(deps)...);
+    return fork<InheritStop>(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, std::integral I, async_future... Deps>
+template <bool InheritStop, graph_holder Gh, std::integral I, async_future... Deps>
 inline auto Coro::fork(Gh&& gh, I num, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
-    const std::uint64_t count = static_cast<std::uint64_t>(num);
-    return fork(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, noop_callback{}, std::forward<Deps>(deps)...);
+    return fork<InheritStop>(std::forward<Gh>(gh), num, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, std::integral I, callback C, async_future... Deps>
+template <bool InheritStop, graph_holder Gh, std::integral I, callback C, async_future... Deps>
     requires capturable<C>
 inline auto Coro::fork(Gh&& gh, I num, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
-    const std::uint64_t count = static_cast<std::uint64_t>(num);
-    return fork(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, std::forward<C>(cb), std::forward<Deps>(deps)...);
+    return fork<InheritStop>(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
+        return iteration >= count;
+    }, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, predicate P, async_future... Deps>
+template <bool InheritStop, graph_holder Gh, module_predicate P, async_future... Deps>
     requires capturable<P>
 inline auto Coro::fork(Gh&& gh, P&& pred, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
-    return fork(std::forward<Gh>(gh), std::forward<P>(pred), noop_callback{}, std::forward<Deps>(deps)...);
+    return fork<InheritStop>(std::forward<Gh>(gh), std::forward<P>(pred), noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, predicate P, callback C, async_future... Deps>
+template <bool InheritStop, graph_holder Gh, module_predicate P, callback C, async_future... Deps>
     requires capturable<P, C>
 inline auto Coro::fork(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
     auto& parent = work();
 
-    auto [child, result] = make_async_module(std::addressof(parent), executor(), parent.m_topology, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
+    auto [child, result] = make_async_module(
+        std::addressof(parent), executor(), InheritStop ? parent.m_topology : nullptr,
+        std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
     return ForkOperation<void, std::decay_t<Deps>...>{*this, AsyncFuture<void>{child, result}, std::forward<Deps>(deps)...};
 }
 

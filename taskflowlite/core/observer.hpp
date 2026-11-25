@@ -17,39 +17,30 @@ namespace tfl {
 /// 观察者通过共享所有权注册到 `Work`，框架在实际执行该节点的 Worker 线程上调用
 /// `on_before` 和 `on_after`。
 ///
-/// 观察者只观察执行事件，不直接控制任务调度或节点生命周期。
-/// 回调抛出的异常由框架捕获并进入当前 Work 的统一异常归档流程。
+/// 观察者仅用于观察执行事件，不参与任务调度、异常传播或节点生命周期控制。
+/// 回调必须保证不抛出异常；观察者内部发生的异常应由派生类自行处理。
 ///
 /// @warning 同一实例可被不同 Worker 并发回调，派生类必须自行同步共享状态。
 class TaskObserver {
 public:
     /// @brief 在任务执行前触发。
     /// @param wv Worker 的只读实时视图；查询值可能随调度变化。
-    virtual void on_before(WorkerView wv) = 0;
+    virtual void on_before(WorkerView wv) noexcept = 0;
 
     /// @brief 在任务执行后触发。
     /// @param wv Worker 的只读实时视图；查询值可能随调度变化。
-    virtual void on_after(WorkerView wv) = 0;
+    virtual void on_after(WorkerView wv) noexcept = 0;
 
     /// @brief 虚析构函数，确保派生类析构时正确释放资源。
     virtual ~TaskObserver() = default;
 
 protected:
-    /// @brief 允许派生观察者默认构造基类部分。
     TaskObserver() = default;
 
-    /// @brief 允许派生观察者复制基类部分；具体状态复制由派生类决定。
     TaskObserver(const TaskObserver&) = default;
-
-    /// @brief 允许派生观察者移动基类部分。
     TaskObserver(TaskObserver&&) = default;
 
-    /// @brief 允许派生观察者复制赋值基类部分。
-    /// @return `*this`。
     TaskObserver& operator=(const TaskObserver&) & = default;
-
-    /// @brief 允许派生观察者移动赋值基类部分。
-    /// @return `*this`。
     TaskObserver& operator=(TaskObserver&&) & = default;
 };
 

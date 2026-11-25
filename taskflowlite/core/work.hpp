@@ -161,109 +161,18 @@ public:
 
     /// @brief 保存当前 Work 配置的执行前 acquire 与执行后 release 请求。
     ///
-    /// `acquires` 按 Semaphore 指针的全局顺序严格递增且无重复，使运行期能够
-    /// 按固定顺序锁定全部 acquire Semaphore，避免多锁场景形成循环等待。
+    /// `acquires` 按 Semaphore 指针的全局顺序严格递增且无重复，所有 Work 均按此顺序逐项获取配额。
     ///
     /// `releases` 无顺序要求，但同一 Semaphore 最多存在一条 release 请求。
     ///
     /// 容器拥有请求描述符本身，其中的 Semaphore 指针均为非拥有引用。
     struct SemaphoreData {
-        std::vector<SemaphoreReq> acquires; ///< 执行前必须原子式全部取得的请求；严格有序且无重复。
+        std::vector<SemaphoreReq> acquires; ///< 执行前必须全部取得的请求；严格有序且无重复。
         std::vector<SemaphoreReq> releases; ///< 执行完成后逐个归还的请求；无顺序要求且无重复。
 
         [[nodiscard]] bool empty() const noexcept {
             return acquires.empty() && releases.empty();
         }
-    };
-
-    /// @brief 按固定全局顺序锁定当前 Work 的全部 acquire Semaphore。
-    ///
-    /// 构造时按照 `acquires` 的既定顺序依次取得每个 Semaphore 的内部锁；
-    /// 析构时释放全部锁。acquire 列表必须按照 Semaphore 指针的全局顺序
-    /// 严格递增且无重复，从而保证不同 Work 的多锁获取顺序一致，避免循环等待。
-    ///
-    /// acquire 失败并将当前 Work 加入某个 Semaphore 的 waiter 链后，可通过
-    /// `blocker()` 标记对应阻塞 Semaphore。析构时先释放其余全部锁，最后才
-    /// 释放 blocker 的锁，使当前 Work 在仍可能访问自身 acquire 数据期间不会
-    /// 被其他线程从 waiter 链摘出并重新发布。
-    ///
-    /// @pre acquires 中所有 Semaphore 指针均非空。
-    /// @pre acquires 按 Semaphore 指针的全局顺序严格递增且无重复。
-    /// @note 本类型只管理 Semaphore 内部锁，不直接修改配额或 waiter 链。
-    /// @warning blocker 的锁一旦释放，当前 Work 可能立即被其他线程重新调度甚至销毁；
-    ///          此后不得再访问 `m_acquires` 或当前 Work 的任何内部状态。
-    class SemaphoreLock final : public Immovable<SemaphoreLock> {
-    public:
-        /// @brief 按 acquire 列表的固定全局顺序取得全部 Semaphore 锁。
-        ///
-        /// 调试模式下同时校验 Semaphore 非空，并通过相邻 Semaphore 指针严格递增
-        /// 验证 acquire 列表保持有序且无重复。
-        ///
-        /// @param acquires 当前 Work 的 acquire 请求只读视图。
-        TFL_FORCE_INLINE explicit SemaphoreLock(std::span<const SemaphoreReq> acquires) noexcept
-            : m_acquires{acquires} {
-
-            Semaphore* previous = nullptr;
-
-            for (const auto& req : m_acquires) {
-                TFL_ASSERT(req.sem);
-
-                if (previous) {
-                    TFL_ASSERT(std::less<>{}(previous, req.sem));
-                }
-
-                req.sem->m_lock.lock();
-                previous = req.sem;
-            }
-        }
-
-        /// @brief 释放构造期间取得的全部 Semaphore 锁。
-        ///
-        /// 正常路径按照 acquire 顺序的逆序释放全部锁。
-        ///
-        /// 若设置了 blocker，则当前 Work 已加入对应 Semaphore 的 waiter 链；
-        /// 此时先释放其他全部 Semaphore，最后释放 blocker，使当前析构路径完成
-        /// 对 `m_acquires` 的最后一次访问后，当前 Work 才能够被其他线程重新发布。
-        TFL_FORCE_INLINE ~SemaphoreLock() noexcept {
-            Semaphore* const blocker = m_blocker;
-
-            if (blocker) {
-                for (std::size_t i = m_acquires.size(); i > 0; --i) {
-                    Semaphore* const sem = m_acquires[i - 1].sem;
-
-                    if (sem != blocker) {
-                        sem->m_lock.unlock();
-                    }
-                }
-
-                blocker->m_lock.unlock();
-                return;
-            }
-
-            for (std::size_t i = m_acquires.size(); i > 0; --i) {
-                m_acquires[i - 1].sem->m_lock.unlock();
-            }
-        }
-
-        /// @brief 标记保存当前 Work 的阻塞 Semaphore。
-        ///
-        /// 设置后，该 Semaphore 的内部锁将在析构时最后释放，以保证当前 Work
-        /// 加入 waiter 链后，在当前执行路径仍访问 acquire 数据期间不会被其他线程
-        /// 提前摘出并重新调度。
-        ///
-        /// @param sem 当前 Work 已加入其 waiter 链的 Semaphore。
-        /// @pre sem 非空。
-        /// @pre 当前尚未设置 blocker。
-        TFL_FORCE_INLINE void blocker(Semaphore* sem) noexcept {
-            TFL_ASSERT(sem);
-            TFL_ASSERT(m_blocker == nullptr);
-
-            m_blocker = sem;
-        }
-
-    private:
-        std::span<const SemaphoreReq> m_acquires; ///< 当前 Work 的 acquire 请求只读视图。
-        Semaphore* m_blocker{nullptr};            ///< 保存当前 Work 的阻塞 Semaphore；其内部锁必须最后释放。
     };
 
     /// @brief 以共享所有权保存当前 Work 执行前后需要通知的观察者。
@@ -789,21 +698,22 @@ private:
         }
     }
 
-    /// @brief 调用 Module 终止谓词，并将异常转换为终止条件.
+    /// @brief 调用 Module 终止谓词，并将异常转换为终止条件。
     ///
     /// predicate 正常返回时直接返回其结果；若调用抛出异常，则将异常归档到当前
-    /// Work，随后返回 true，使 Module 进入正常结束和资源清理路径.
+    /// Work，随后返回 true，使 Module 进入正常结束和资源清理路径。
     ///
-    /// @tparam P 无参终止谓词类型。
+    /// @tparam P 子图终止谓词类型。
     /// @param predicate 要调用的终止谓词。
+    /// @param iteration 本次执行中从 0 开始的迭代索引。
     /// @return predicate 的返回值；发生异常时返回 true。
-    template <predicate P>
-    TFL_FORCE_INLINE bool _invoke_predicate(P& predicate) noexcept {
-        if constexpr (noexcept(std::invoke(predicate))) {
-            return std::invoke(predicate);
+    template <module_predicate P>
+    TFL_FORCE_INLINE bool _invoke_predicate(P& predicate, std::uint64_t iteration) noexcept {
+        if constexpr (noexcept_module_predicate<P>) {
+            return std::invoke(predicate, iteration);
         } else {
             TFL_TRY {
-                return std::invoke(predicate);
+                return std::invoke(predicate, iteration);
             } TFL_CATCH_ALL {
                 _process_exception();
                 return true;
@@ -1010,18 +920,17 @@ private:
     /// @brief 清空当前 Work 的全部 release 请求。
     void _clear_releases() noexcept;
 
-    /// @brief 原子式尝试取得当前 Work 配置的全部 acquire 配额。
+    /// @brief 逐个获取当前 Work 需要的配额，只有全部取得才能执行任务体。
     ///
-    /// 按 acquire 列表的全局固定顺序锁定全部 Semaphore，在所有锁保护下先检查
-    /// 每条请求是否能够同时满足。全部满足时一次性扣减全部配额；任一请求不满足时
-    /// 不修改任何配额，并将当前 Work 加入首个不满足请求的 Semaphore waiter 链。
+    /// 任一项不足时先逆序归还此前取得的配额，再在失败项的锁内复查并决定等待或重试。
     ///
-    /// @return 全部 acquire 成功时返回 true；当前 Work 进入 waiter 链时返回 false。
-    /// @pre acquire 列表非空、严格有序且无重复。
-    /// @note 本操作具有 all-or-nothing 语义，不存在部分获取和失败回滚。
-    /// @warning 返回 false 后当前 Work 已被发布到某个 Semaphore waiter 链，
-    ///          调用方不得继续执行当前 Work，本次 invoke 应立即返回。
-    [[nodiscard]] TFL_FORCE_INLINE bool _try_acquire_semaphores() noexcept;
+    /// @param cache 复查时配额已恢复则设为当前 Work，交给 Executor 从头重试。
+    /// @param first 接收回滚唤醒的等待链首节点。
+    /// @param last 接收回滚唤醒的等待链尾节点。
+    /// @return 已取得全部配额时为 true，已入队或交给 cache 重试时为 false。
+    /// @pre acquire 列表非空、有序且无重复，cache 为空，first 和 last 同为空或同为非空。
+    /// @warning 入队后 Work 可能立即被另一线程重新调度。返回 false 的调用方只能处理输出链。
+    [[nodiscard]] TFL_FORCE_INLINE bool _try_acquire_semaphores(Work*& cache, Work*& first, Work*& last) noexcept;
 
     /// @brief 执行当前 Work 配置的全部 Semaphore release 请求。
     ///
@@ -1508,60 +1417,47 @@ inline void Work::_clear_releases() noexcept {
     }
 }
 
-TFL_FORCE_INLINE bool Work::_try_acquire_semaphores() noexcept {
-    auto acquires = _acquires();
-
+TFL_FORCE_INLINE bool Work::_try_acquire_semaphores(Work*& cache, Work*& first, Work*& last) noexcept {
+    const auto acquires = _acquires();
     TFL_ASSERT(!acquires.empty());
+    TFL_ASSERT(cache == nullptr);
+    TFL_ASSERT((first == nullptr) == (last == nullptr));
 
-    SemaphoreLock lock{acquires};
-
-    Semaphore* blocker = nullptr;
-
-    // 第一阶段：在全部 Semaphore 锁保护下检查所有请求。
-    //
-    // 本阶段只读取配额，不修改任何 m_value，因此任一请求失败时无需回滚。
-    for (const auto& req : acquires) {
+    for (std::size_t i = 0; i < acquires.size(); ++i) {
+        const auto& req = acquires[i];
         TFL_ASSERT(req.sem);
         TFL_ASSERT(req.count != 0);
-        TFL_ASSERT(req.sem->m_value <= req.sem->m_max_value);
 
-        if (req.sem->m_value < req.count) {
-            blocker = req.sem;
-            break;
-        }
-    }
-
-    // 第二阶段：只有所有请求全部满足时才统一提交配额扣减。
-    if (!blocker) {
-        for (const auto& req : acquires) {
-            req.sem->m_value -= req.count;
+        Semaphore& sem = *req.sem;
+        if (sem._try_acquire(req.count)) {
+            continue;
         }
 
-        return true;
+        // 先归还已取得的配额，再发布当前 Work，避免重试与本轮回滚重叠。
+        for (std::size_t j = i; j > 0; --j) {
+            const auto& held = acquires[j - 1];
+            held.sem->_release(first, last, held.count);
+        }
+
+        // 首次检查失败后可能已有 release。复查与入队共用一把锁，以免错过唤醒。
+        std::lock_guard lock{sem.m_lock};
+        TFL_ASSERT(sem.m_value <= sem.m_max_value);
+        if (sem.m_value >= req.count) {
+            cache = this;
+        } else {
+            TFL_ASSERT(m_next == nullptr);
+            TFL_ASSERT((sem.m_waiter_head == nullptr) == (sem.m_waiter_tail == nullptr));
+
+            if (sem.m_waiter_tail) {
+                sem.m_waiter_tail->m_next = this;
+            } else {
+                sem.m_waiter_head = this;
+            }
+            sem.m_waiter_tail = this;
+        }
+        return false;
     }
-
-    // 当前 Work 即将加入 blocker 的 waiter intrusive 链，因此链接槽必须为空。
-    //
-    // blocker 的内部锁此时仍由 SemaphoreLock 持有，所以其他 release 线程不能
-    // 同时修改 waiter 链，也不能在当前路径完成前提前摘出当前 Work。
-    TFL_ASSERT(m_next == nullptr);
-
-    if (blocker->m_waiter_tail) {
-        blocker->m_waiter_tail->m_next = this;
-    } else {
-        blocker->m_waiter_head = this;
-    }
-
-    blocker->m_waiter_tail = this;
-
-    // 当前 Work 已发布到 blocker waiter 链。
-    //
-    // 将 blocker 标记为最后解锁对象；SemaphoreLock 析构时先释放其余锁，
-    // 最后释放 blocker。blocker 解锁后当前 Work 可能立即被重新调度，因此
-    // 此后不得再访问当前 Work 的 acquire 数据。
-    lock.blocker(blocker);
-
-    return false;
+    return true;
 }
 
 TFL_FORCE_INLINE void Work::_release_semaphores(Work*& first, Work*& last) noexcept {
@@ -1579,12 +1475,7 @@ TFL_FORCE_INLINE void Work::_notify_before(Worker& wr) noexcept {
     if (m_observers) [[unlikely]] {
         for (auto& observer : m_observers->observers) {
             TFL_ASSERT(observer);
-
-            TFL_TRY {
-                observer->on_before(WorkerView{wr});
-            } TFL_CATCH_ALL {
-                _process_exception();
-            }
+            observer->on_before(WorkerView{wr});
         }
     }
 }
@@ -1593,18 +1484,14 @@ TFL_FORCE_INLINE void Work::_notify_after(Worker& wr) noexcept {
     if (m_observers) [[unlikely]] {
         for (auto& observer : m_observers->observers) {
             TFL_ASSERT(observer);
-
-            TFL_TRY {
-                observer->on_after(WorkerView{wr});
-            } TFL_CATCH_ALL {
-                _process_exception();
-            }
+            observer->on_after(WorkerView{wr});
         }
     }
 }
 
 inline void Semaphore::_release(Work*& out_first, Work*& out_last, std::size_t count) noexcept {
     TFL_ASSERT((out_first == nullptr) == (out_last == nullptr));
+    TFL_ASSERT(count != 0);
 
     std::lock_guard lock{m_lock};
 
@@ -1624,6 +1511,7 @@ inline void Semaphore::_release(Work*& out_first, Work*& out_last, std::size_t c
     }
 
     TFL_ASSERT(m_waiter_tail);
+    TFL_ASSERT(m_waiter_tail->m_next == nullptr);
 
     // 将 Semaphore 的整条 waiter 链 O(1) 追加到调用方输出链尾部。
     //
@@ -1683,10 +1571,13 @@ class AnchorWork final : public Work {
 
 public:
     explicit AnchorWork(Work& parent, Executor& executor) noexcept
+        : AnchorWork{parent, executor, parent.m_topology} {}
+
+    explicit AnchorWork(Work& parent, Executor& executor, Topology* parent_topology) noexcept
         : Work{std::in_place_type<Invoker>,
                std::addressof(parent),
                executor,
-               parent.m_topology} {
+               parent_topology} {
         TFL_ASSERT(parent.m_topology);
 
         if constexpr (Preempted) {

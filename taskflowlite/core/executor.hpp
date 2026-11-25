@@ -26,6 +26,8 @@
 #include <vector>
 #include <array>
 
+#include "macros.hpp"
+
 #include "graph.hpp"
 #include "traits.hpp"
 #include "async_future.hpp"
@@ -148,12 +150,12 @@ public:
 
     /// @brief 提交任务图按谓词条件循环执行（即发即弃）；给了 @p cb 则完成后执行。
     /// @tparam Gh   满足 graph_holder concept。
-    /// @tparam P    满足 predicate concept 的可调用对象。
+    /// @tparam P    满足 module_predicate 的子图终止谓词类型。
     /// @tparam C    完成回调类型，默认 noop_callback（无回调）。
     /// @param gh    任务图持有者。
     /// @param pred  循环谓词。返回 true 时停止，返回 false 时继续下一轮。
     /// @param cb    完成回调，省略则不回调。
-    template <graph_holder Gh, predicate P, callback C = noop_callback>
+    template <graph_holder Gh, module_predicate P, callback C = noop_callback>
         requires capturable<P, C>
     void silent_async(Gh&& gh, P&& pred, C&& cb = C{});
 
@@ -259,19 +261,19 @@ public:
 
     /// @brief 异步执行任务图按谓词条件循环，并在全部前置依赖完成后开始执行。
     /// @tparam Gh 满足 graph_holder concept。
-    /// @tparam P 满足 predicate concept。
+    /// @tparam P 满足 module_predicate 的子图终止谓词类型。
     /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
     /// @param gh 任务图持有者。
     /// @param pred 循环谓词；返回 true 时停止，返回 false 时继续。
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
-    template <graph_holder Gh, predicate P, async_future... Deps>
+    template <graph_holder Gh, module_predicate P, async_future... Deps>
         requires capturable<P>
     [[nodiscard]] auto async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图按谓词条件循环，并在完成后执行回调。
     /// @tparam Gh 满足 graph_holder concept。
-    /// @tparam P 满足 predicate concept。
+    /// @tparam P 满足 module_predicate 的子图终止谓词类型。
     /// @tparam C 完成回调类型。
     /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
     /// @param gh 任务图持有者。
@@ -279,7 +281,7 @@ public:
     /// @param cb 完成回调。
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
-    template <graph_holder Gh, predicate P, callback C, async_future... Deps>
+    template <graph_holder Gh, module_predicate P, callback C, async_future... Deps>
         requires capturable<P, C>
     [[nodiscard]] auto async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
@@ -352,14 +354,14 @@ public:
 
     /// @brief 创建按谓词循环执行任务图、尚未启动的异步任务。
     /// @tparam Gh 满足 graph_holder concept 的任务图持有者类型。
-    /// @tparam P 满足 predicate concept 的循环谓词类型。
+    /// @tparam P 满足 module_predicate 的子图终止谓词类型。
     /// @tparam C 完成回调类型，默认为 noop_callback。
     /// @param gh 任务图持有者，按统一 capture 规则保存。
     /// @param pred 循环谓词；返回 true 时停止，返回 false 时执行下一轮。
     /// @param callback 完成回调，省略时使用默认空回调。
     /// @return 绑定当前 Executor 的 AsyncTask<void>。
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
-    template <graph_holder Gh, predicate P, callback C = noop_callback>
+    template <graph_holder Gh, module_predicate P, callback C = noop_callback>
         requires capturable<P, C>
     [[nodiscard]] auto defer_async(Gh&& gh, P&& pred, C&& callback = C{}) -> AsyncTask<void>;
 
@@ -435,7 +437,7 @@ public:
 
     /// @brief 原地默认构造子图持有者，并创建由终止谓词控制迭代、尚未启动的异步任务。
     /// @tparam Gh 节点实际保存的子图持有者类型。
-    /// @tparam P 无参终止谓词类型。
+    /// @tparam P 接收从 0 开始的迭代索引的终止谓词类型。
     /// @tparam C 完成回调类型，默认为 noop_callback。
     /// @param pred 返回 true 时停止迭代，返回 false 时执行下一轮。
     /// @param callback 完成回调，省略时使用默认空回调。
@@ -443,7 +445,7 @@ public:
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     /// @note 谓词和回调按衰减类型保存；使用 std::ref 显式借用外部对象。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
-    template <graph_holder Gh, predicate P, callback C = noop_callback>
+    template <graph_holder Gh, module_predicate P, callback C = noop_callback>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P, C> && std::constructible_from<Gh>)
     [[nodiscard]] auto defer_async_object(P&& pred, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
 
@@ -486,7 +488,7 @@ public:
     /// @brief 使用 tuple 中的参数原地构造子图持有者，并创建由终止谓词控制迭代、尚未启动的异步任务。
     /// @tparam Gh 节点实际保存的子图持有者类型。
     /// @tparam Tuple 构造参数 tuple 类型，可带 cv/ref 属性。
-    /// @tparam P 无参终止谓词类型。
+    /// @tparam P 接收从 0 开始的迭代索引的终止谓词类型。
     /// @tparam C 完成回调类型，默认为 noop_callback。
     /// @param args 构造参数 tuple，保留实际 cv/ref 属性展开并转发。
     /// @param pred 返回 true 时停止迭代，返回 false 时执行下一轮。
@@ -496,7 +498,7 @@ public:
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     /// @note 谓词和回调按衰减类型保存；使用 std::ref 显式借用外部对象。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
-    template <graph_holder Gh, typename Tuple, predicate P, callback C = noop_callback>
+    template <graph_holder Gh, typename Tuple, module_predicate P, callback C = noop_callback>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P, C> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] auto defer_async_object(Tuple&& args, P&& pred, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
 
@@ -549,7 +551,21 @@ private:
     std::vector<SharedWorkStack>                    m_shared_stacks;    ///< 分片共享调度栈，接收跨线程提交和本地溢出任务。
     Notifier                                        m_notifier;         ///< Worker 两阶段 park / wake 通知器。
     WorkerHandler*                                  m_handler{nullptr}; ///< 外部拥有的 WorkerHandler；nullptr 表示未绑定处理器。
-    std::unordered_map<std::thread::id, Worker*>    m_tid_to_worker;    ///< Worker thread_id 到稳定 Worker 地址的只读运行期映射。
+
+#if TFL_USE_WORKER_TLS
+    /// @brief 当前线程绑定的 Executor / Worker，仅由本线程读写。
+    struct WorkerTLS {
+        Executor* executor; ///< 当前线程所属 Executor。
+        Worker* worker;     ///< 当前线程对应的 Worker。
+    };
+
+    /// @note inline static 保证同一程序内遵守 ODR 的各翻译单元使用同一 TLS 定义。
+    inline static thread_local WorkerTLS s_worker_tls{nullptr, nullptr};
+#else
+    /// @brief Worker thread_id 到稳定 Worker 地址的只读运行期映射。
+    /// @warning 构建映射时不得同时调用需要查询该映射的 Executor API。
+    std::unordered_map<std::thread::id, Worker*> m_tid_to_worker;
+#endif
 
     /// @brief 统一构造入口，完成成员初始化后创建并启动全部 Worker。
     ///
@@ -565,7 +581,8 @@ private:
     /// @throws Exception n 为 0 或 `n >= Notifier::capacity()`。
     static std::size_t _check_worker_count(std::size_t n);
 
-    /// @brief 初始化 Worker 调度参数、启动线程，并建立 thread_id 到 Worker 的映射。
+    /// @brief 初始化 Worker 调度参数并启动工作线程。
+    /// @note TLS 模式在 Worker 入口绑定线程上下文；Map 模式逐线程注册 thread_id。
     /// @param num_workers 要启动的 Worker 数量。
     /// @pre num_workers 已通过 `_check_worker_count()` 校验。
     void _spawn(std::size_t num_workers);
@@ -877,9 +894,9 @@ private:
     /// `fetch_sub` 使用 acq_rel；当旧值为 1 时新值变为 0，并调用 `notify_all()`。
     void _decrement_topology() noexcept;
 
-    /// @brief 根据当前 `std::thread::id` 查询是否运行在本 Executor 的 Worker 线程上。
-    /// @return 当前线程对应的 Worker；非本 Executor Worker 时返回 nullptr。
-    /// @note 映射在 Executor 构造阶段建立，正常运行期间只读。
+    /// @brief 查询调用线程在本 Executor 中对应的 Worker。
+    /// @return 当前 Worker，外部线程或其他 Executor 的 Worker 返回 nullptr。
+    /// @note TLS 模式通过 Executor 指针校验归属，Map 模式通过当前 thread_id 查找。
     [[nodiscard]] Worker* _this_worker() noexcept;
 
 };
@@ -1029,11 +1046,12 @@ inline void Executor::silent_async(Gh&& gh, C&& cb) {
 template <graph_holder Gh, std::integral I, callback C>
     requires capturable<C>
 inline void Executor::silent_async(Gh&& gh, I num, C&& cb) {
-    const std::uint64_t count = static_cast<std::uint64_t>(num);
-    silent_async(std::forward<Gh>(gh), [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; }, std::forward<C>(cb));
+    silent_async(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
+        return iteration >= count;
+    }, std::forward<C>(cb));
 }
 
-template <graph_holder Gh, predicate P, callback C>
+template <graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 inline void Executor::silent_async(Gh&& gh, P&& pred, C&& cb) {
     Work* work = make_silent_async_module(nullptr, *this, nullptr, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
@@ -1086,24 +1104,18 @@ inline auto Executor::async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void
 
 template <graph_holder Gh, std::integral I, async_future... Deps>
 inline auto Executor::async(Gh&& gh, I num, Deps&&... deps) -> AsyncFuture<void> {
-    const std::uint64_t count = static_cast<std::uint64_t>(num);
-    return async(std::forward<Gh>(gh),
-                 [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; },
-                 noop_callback{},
-                 std::forward<Deps>(deps)...);
+    return async(std::forward<Gh>(gh), num, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
 template <graph_holder Gh, std::integral I, callback C, async_future... Deps>
     requires capturable<C>
 inline auto Executor::async(Gh&& gh, I num, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
-    const std::uint64_t count = static_cast<std::uint64_t>(num);
-    return async(std::forward<Gh>(gh),
-                 [remaining = count]() mutable noexcept -> bool { return remaining-- == 0; },
-                 std::forward<C>(cb),
-                 std::forward<Deps>(deps)...);
+    return async(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
+        return iteration >= count;
+    }, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, predicate P, async_future... Deps>
+template <graph_holder Gh, module_predicate P, async_future... Deps>
     requires capturable<P>
 inline auto Executor::async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void> {
     return async(std::forward<Gh>(gh),
@@ -1112,7 +1124,7 @@ inline auto Executor::async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<vo
                  std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, predicate P, callback C, async_future... Deps>
+template <graph_holder Gh, module_predicate P, callback C, async_future... Deps>
     requires capturable<P, C>
 inline auto Executor::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     auto [work, result] = make_async_module(nullptr,
@@ -1196,7 +1208,9 @@ inline void Executor::_spawn(std::size_t num_workers) {
     const std::size_t num_queues = this->num_queues();
     const auto max_steals = static_cast<std::uint32_t>(num_queues * 2);
     const auto max_yields = static_cast<std::uint32_t>(std::size_t{64} * std::bit_width(num_workers));
+#if !TFL_USE_WORKER_TLS
     m_tid_to_worker.reserve(num_workers);
+#endif
 
     for (std::size_t id = 0; id < num_workers; ++id) {
         auto& wr = m_workers[id];
@@ -1206,6 +1220,10 @@ inline void Executor::_spawn(std::size_t num_workers) {
         wr.m_max_yields = max_yields;
 
         wr.m_thread = std::thread([this, &wr, num_queues]() noexcept {
+#if TFL_USE_WORKER_TLS
+            // 在 on_start 之前绑定，允许生命周期钩子获取当前 Worker。
+            s_worker_tls = {this, std::addressof(wr)};
+#endif
             wr.m_rng.seed(std::hash<std::thread::id>{}(std::this_thread::get_id()), static_cast<std::uint32_t>(num_queues));
 
             if (m_handler) {
@@ -1224,9 +1242,15 @@ inline void Executor::_spawn(std::size_t num_workers) {
             if (m_handler) {
                 m_handler->on_stop(wr);
             }
+#if TFL_USE_WORKER_TLS
+            // 在 on_stop 之后清理，避免线程退出前留下失效的绑定。
+            s_worker_tls = {};
+#endif
         });
 
+#if !TFL_USE_WORKER_TLS
         m_tid_to_worker.emplace(wr.m_thread.get_id(), std::addressof(wr));
+#endif
     }
 }
 
@@ -1991,9 +2015,18 @@ inline void Executor::_decrement_topology() noexcept {
     }
 }
 
-inline Worker* Executor::_this_worker() noexcept {
+#if TFL_USE_WORKER_TLS
+// 旧版 Clang 协程在挂起/恢复之间可能错误缓存 TLS 地址；此时禁用内联。
+// 参见 LLVM #63022。
+TFL_CLANG_TLS_NOINLINE
+#endif
+    inline Worker* Executor::_this_worker() noexcept {
+#if TFL_USE_WORKER_TLS
+    return s_worker_tls.executor == this ? s_worker_tls.worker : nullptr;
+#else
     auto itr = m_tid_to_worker.find(std::this_thread::get_id());
     return itr == m_tid_to_worker.end() ? nullptr : itr->second;
+#endif
 }
 
 TFL_FORCE_INLINE void Executor::_invoke(Worker& wr, Work* w) noexcept {

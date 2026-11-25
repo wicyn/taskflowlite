@@ -194,12 +194,12 @@ template <typename F>
 /// Graph holder 按统一 capture 规则保存，predicate 决定是否终止后续迭代。
 ///
 /// @tparam Gh Graph holder 类型。
-/// @tparam P predicate 类型。
+/// @tparam P 子图终止谓词类型。
 /// @param graph 节点所属物理 Graph。
 /// @param graph_holder 被执行的子图持有对象。
 /// @param pred 迭代终止谓词。
 /// @return 创建完成的 Work。
-template <graph_holder Gh, predicate P>
+template <graph_holder Gh, module_predicate P>
     requires capturable<P>
 [[nodiscard]] Work* make_module(const Graph* graph, Gh&& graph_holder, P&& pred) {
     using Invoker = ModuleInvoker<detail::captured_t<Gh>, std::decay_t<P>>;
@@ -400,7 +400,7 @@ template <typename F, typename... Args>
 /// @brief 原地构造子图持有者，并创建循环执行指定子图的静态 Module 节点。
 ///
 /// @tparam Gh 节点实际保存的 Graph holder 类型。
-/// @tparam P predicate 类型。
+/// @tparam P 子图终止谓词类型。
 /// @tparam Args Graph holder 构造参数类型包。
 /// @param graph 节点所属物理 Graph。
 /// @param pred 迭代终止谓词。
@@ -408,7 +408,7 @@ template <typename F, typename... Args>
 /// @return 创建完成的 Work 和内部 Graph holder 引用。
 /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
 /// @warning 对象销毁或被替换后，返回的引用失效。
-template <typename Gh, predicate P, typename... Args>
+template <typename Gh, module_predicate P, typename... Args>
     requires (std::same_as<Gh, std::decay_t<Gh>> && graph_holder<Gh> && capturable<P> && std::constructible_from<Gh, Args&&...>)
 [[nodiscard]] std::pair<Work*, Gh&> make_module_object(const Graph* graph, P&& pred, Args&&... args) {
     using Invoker = ModuleInvoker<Gh, std::decay_t<P>>;
@@ -521,7 +521,7 @@ template <typename F>
 /// @brief 创建 fire-and-forget Module 异步任务。
 ///
 /// @tparam Gh Graph holder 类型。
-/// @tparam P predicate 类型。
+/// @tparam P 子图终止谓词类型。
 /// @tparam C callback 类型。
 /// @param parent 父 Work；根级异步任务允许为空。
 /// @param executor 当前任务所属 Executor，以非拥有引用绑定。
@@ -530,7 +530,7 @@ template <typename F>
 /// @param pred 迭代终止谓词。
 /// @param callback 完成回调。
 /// @return 创建完成的 Work。
-template <graph_holder Gh, predicate P, callback C>
+template <graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 [[nodiscard]] Work* make_silent_async_module(Work* parent, Executor& executor, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback) {
     using Invoker = SilentAsyncModuleInvoker<detail::captured_t<Gh>, std::decay_t<P>, std::decay_t<C>>;
@@ -653,7 +653,7 @@ template <typename F>
 /// Module 没有值结果，使用 `ResultSlot<void>` 表示任务完成状态。
 ///
 /// @tparam Gh Graph holder 类型。
-/// @tparam P predicate 类型。
+/// @tparam P 子图终止谓词类型。
 /// @tparam C callback 类型。
 /// @param parent 父 Work；根级异步任务允许为空。
 /// @param executor 当前任务所属 Executor，以非拥有引用绑定。
@@ -662,7 +662,7 @@ template <typename F>
 /// @param pred 迭代终止谓词。
 /// @param callback 完成回调。
 /// @return 创建完成的 Work 和 ResultSlot<void>。
-template <graph_holder Gh, predicate P, callback C>
+template <graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 [[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_module(Work* parent, Executor& executor, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback) {
     using Invoker = AsyncModuleInvoker<detail::captured_t<Gh>, std::decay_t<P>, std::decay_t<C>>;
@@ -780,7 +780,7 @@ template <typename F>
 /// Module 没有值结果，使用 `ResultSlot<void>` 表示完成状态。
 ///
 /// @tparam Gh Graph holder 类型。
-/// @tparam P predicate 类型。
+/// @tparam P 子图终止谓词类型。
 /// @tparam C callback 类型。
 /// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
 /// @param graph_holder 被执行的子图持有对象。
@@ -788,7 +788,7 @@ template <typename F>
 /// @param callback 完成回调。
 /// @return 创建完成的 Work 和 ResultSlot<void>。
 /// @note 本函数只创建节点，不启动任务。
-template <graph_holder Gh, predicate P, callback C>
+template <graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 [[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_task_module(Executor& executor, Gh&& graph_holder, P&& pred, C&& callback) {
     using Invoker = AsyncTaskModuleInvoker<detail::captured_t<Gh>, std::decay_t<P>, std::decay_t<C>>;
@@ -910,7 +910,7 @@ template <typename F, typename... Args>
 /// Module 没有值结果，使用 `ResultSlot<void>` 表示完成状态。
 ///
 /// @tparam Gh 节点实际保存的 Graph holder 类型。
-/// @tparam P predicate 类型。
+/// @tparam P 子图终止谓词类型。
 /// @tparam C callback 类型。
 /// @tparam Args Graph holder 构造参数类型包。
 /// @param executor 当前任务所属 Executor，以非拥有引用绑定，绑定后不可更换。
@@ -921,7 +921,7 @@ template <typename F, typename... Args>
 /// @note 本函数只创建节点，不启动任务；不创建 Gh 临时对象。
 /// @note 不要求 Gh 可复制或可移动。
 /// @warning 对象销毁或被替换后，返回的引用失效。
-template <typename Gh, predicate P, callback C, typename... Args>
+template <typename Gh, module_predicate P, callback C, typename... Args>
     requires (std::same_as<Gh, std::decay_t<Gh>> && graph_holder<Gh> && capturable<P, C> && std::constructible_from<Gh, Args&&...>)
 [[nodiscard]] std::tuple<Work*, ResultSlot<void>*, Gh&> make_async_task_module_object(Executor& executor, P&& pred, C&& callback, Args&&... args) {
     using Invoker = AsyncTaskModuleInvoker<Gh, std::decay_t<P>, std::decay_t<C>>;

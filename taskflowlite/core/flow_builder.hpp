@@ -155,7 +155,7 @@ public:
 
     /// @brief 向当前图插入由谓词控制迭代次数的模块节点。
     /// @tparam Gh 满足 `graph_holder` 的子图持有者类型。
-    /// @tparam P 满足 `predicate` 的无参布尔 callable 类型。
+    /// @tparam P 满足 `module_predicate` 的子图终止谓词类型，接收从 0 开始的迭代索引。
     /// @param gh 要执行的子图；左值按非拥有引用保存，右值按值保存到节点内。
     /// @param pred 每轮执行前调用的终止谓词；返回 true 时不再启动下一轮。
     /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
@@ -163,7 +163,7 @@ public:
     /// @throws ... 子图持有者或谓词的存储构造失败时原样传播。
     /// @warning 左值子图必须存活到该模块节点完成最后一次执行。
     /// @note 谓词按衰减类型保存；空子图会直接结束迭代。
-    template <graph_holder Gh, predicate P>
+    template <graph_holder Gh, module_predicate P>
         requires capturable<P>
     Task emplace(Gh&& gh, P&& pred);
 
@@ -305,13 +305,13 @@ public:
 
     /// @brief 原地默认构造子图持有者，并插入由终止谓词控制迭代的模块节点。
     /// @tparam Gh 节点实际保存的子图持有者类型。
-    /// @tparam P 无参终止谓词类型。
+    /// @tparam P 接收从 0 开始的迭代索引的终止谓词类型。
     /// @param pred 返回 true 时停止迭代，返回 false 时执行下一轮。
     /// @return 关联新节点及内部子图持有者的非拥有 TaskObject。
     /// @note 谓词按衰减类型保存；使用 std::ref 显式借用外部谓词。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
-    template <graph_holder Gh, predicate P>
+    template <graph_holder Gh, module_predicate P>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
     [[nodiscard]] TaskObject<Gh> emplace_object(P&& pred);
 
@@ -350,7 +350,7 @@ public:
     /// @brief 使用 tuple 中的参数原地构造子图持有者，并插入由终止谓词控制迭代的模块节点。
     /// @tparam Gh 节点实际保存的子图持有者类型。
     /// @tparam Tuple 构造参数 tuple 类型，可带 cv/ref 属性。
-    /// @tparam P 无参终止谓词类型。
+    /// @tparam P 接收从 0 开始的迭代索引的终止谓词类型。
     /// @param args 构造参数 tuple，保留实际 cv/ref 属性展开并转发。
     /// @param pred 返回 true 时停止迭代，返回 false 时执行下一轮。
     /// @return 关联新节点及内部子图持有者的非拥有 TaskObject。
@@ -358,7 +358,7 @@ public:
     /// @note 谓词按衰减类型保存；使用 std::ref 显式借用外部谓词。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
-    template <graph_holder Gh, typename Tuple, predicate P>
+    template <graph_holder Gh, typename Tuple, module_predicate P>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] TaskObject<Gh> emplace_object(Tuple&& args, P&& pred);
 
@@ -555,20 +555,12 @@ inline Task FlowBuilder::emplace(Gh&& gh) {
 
 template <graph_holder Gh, std::integral I>
 inline Task FlowBuilder::emplace(Gh&& gh, I num) {
-    const std::uint64_t count = static_cast<std::uint64_t>(num);
-    auto counter = [count, remaining = count]() mutable noexcept -> bool {
-        if (remaining-- == 0) [[unlikely]] {
-            remaining = count;
-            return true;
-        }
-
-        return false;
-    };
-
-    return emplace(std::forward<Gh>(gh), std::move(counter));
+    return emplace(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
+        return iteration >= count;
+    });
 }
 
-template <graph_holder Gh, predicate P>
+template <graph_holder Gh, module_predicate P>
     requires capturable<P>
 inline Task FlowBuilder::emplace(Gh&& gh, P&& pred) {
     return Task{m_graph.emplace(make_module(std::addressof(m_graph), std::forward<Gh>(gh), std::forward<P>(pred)))};
@@ -581,8 +573,8 @@ inline auto FlowBuilder::emplace(Ts&&... tasks) {
     auto emplace_one = [this]<typename T>(T&& task) {
         if constexpr (task_pack<T>) {
             return std::apply([this](auto&&... args) {
-                    return this->emplace(std::forward<decltype(args)>(args)...);
-                }, std::forward<T>(task).data);
+                return this->emplace(std::forward<decltype(args)>(args)...);
+            }, std::forward<T>(task).data);
         } else {
             return this->emplace(std::forward<T>(task));
         }
@@ -664,7 +656,7 @@ inline TaskObject<Gh> FlowBuilder::emplace_object(I num) {
     return emplace_object<Gh>(std::tuple{}, num);
 }
 
-template <graph_holder Gh, predicate P>
+template <graph_holder Gh, module_predicate P>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
 inline TaskObject<Gh> FlowBuilder::emplace_object(P&& pred) {
     return emplace_object<Gh>(std::tuple{}, std::forward<P>(pred));
@@ -683,22 +675,12 @@ inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args) {
 template <graph_holder Gh, typename Tuple, std::integral I>
     requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
 inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args, I num) {
-    const std::uint64_t count = static_cast<std::uint64_t>(num);
-    auto pred = [count, remaining = count]() mutable noexcept -> bool {
-        if (remaining == 0) {
-            // 正常完成指定次数后恢复计数，供外层图下一次执行使用。
-            remaining = count;
-            return true;
-        }
-
-        --remaining;
-        return false;
-    };
-
-    return emplace_object<Gh>(std::forward<Tuple>(args), std::move(pred));
+    return emplace_object<Gh>(std::forward<Tuple>(args), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
+        return iteration >= count;
+    });
 }
 
-template <graph_holder Gh, typename Tuple, predicate P>
+template <graph_holder Gh, typename Tuple, module_predicate P>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
 inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args, P&& pred) {
     return std::apply([this, &pred](auto&&... values) -> TaskObject<Gh> {

@@ -137,9 +137,6 @@ class AsyncTaskSubFlowInvoker;
 template <typename, typename, typename>
 class AsyncTaskModuleInvoker;
 
-template <typename>
-class SubFlowWork;
-
 // ============================================================================
 // Work Invoker friend 声明
 // ============================================================================
@@ -148,33 +145,32 @@ class SubFlowWork;
 ///
 /// 统一维护 Work 与各 Invoker 之间的 friend 关系，避免在多个核心类型中重复声明。
 /// 模板参数数量必须与对应 Invoker 的前向声明及实际定义保持一致。
-#define TFL_WORK_SUBCLASS_FRIENDS                                                                                   \
-friend class ::tfl::PlaceholderInvoker;                                                                             \
-    template <bool>                                      friend class ::tfl::AnchorWork;                            \
-    template <typename>                                  friend class ::tfl::BasicInvoker;                          \
-    template <typename>                                  friend class ::tfl::BranchInvoker;                         \
-    template <typename>                                  friend class ::tfl::MultiBranchInvoker;                    \
-    template <typename>                                  friend class ::tfl::JumpInvoker;                           \
-    template <typename>                                  friend class ::tfl::MultiJumpInvoker;                      \
-    template <typename>                                  friend class ::tfl::RuntimeInvoker;                        \
-    template <typename>                                  friend class ::tfl::SubFlowInvoker;                        \
-    template <typename>                                  friend class ::tfl::CoroInvoker;                           \
-    template <typename, typename>                        friend class ::tfl::ModuleInvoker;                         \
-    template <typename>                                  friend class ::tfl::SilentAsyncBasicInvoker;               \
-    template <typename>                                  friend class ::tfl::SilentAsyncRuntimeInvoker;             \
-    template <typename>                                  friend class ::tfl::SilentAsyncCoroInvoker;                \
-    template <typename>                                  friend class ::tfl::SilentAsyncSubFlowInvoker;             \
-    template <typename, typename, typename>              friend class ::tfl::SilentAsyncModuleInvoker;              \
-    template <typename>                                  friend class ::tfl::AsyncBasicInvoker;                     \
-    template <typename>                                  friend class ::tfl::AsyncRuntimeInvoker;                   \
-    template <typename>                                  friend class ::tfl::AsyncCoroInvoker;                      \
-    template <typename>                                  friend class ::tfl::AsyncSubFlowInvoker;                   \
-    template <typename, typename, typename>              friend class ::tfl::AsyncModuleInvoker;                    \
-    template <typename>                                  friend class ::tfl::AsyncTaskBasicInvoker;                 \
-    template <typename>                                  friend class ::tfl::AsyncTaskRuntimeInvoker;               \
-    template <typename>                                  friend class ::tfl::AsyncTaskCoroInvoker;                  \
-    template <typename>                                  friend class ::tfl::AsyncTaskSubFlowInvoker;               \
-    template <typename, typename, typename>              friend class ::tfl::AsyncTaskModuleInvoker;                \
-    template <typename>                                  friend class ::tfl::SubFlowWork
+#define TFL_WORK_SUBCLASS_FRIENDS                                                                        \
+friend class ::tfl::PlaceholderInvoker;                                                                  \
+    template <bool>                         friend class ::tfl::AnchorWork;                              \
+    template <typename>                     friend class ::tfl::BasicInvoker;                            \
+    template <typename>                     friend class ::tfl::BranchInvoker;                           \
+    template <typename>                     friend class ::tfl::MultiBranchInvoker;                      \
+    template <typename>                     friend class ::tfl::JumpInvoker;                             \
+    template <typename>                     friend class ::tfl::MultiJumpInvoker;                        \
+    template <typename>                     friend class ::tfl::RuntimeInvoker;                          \
+    template <typename>                     friend class ::tfl::SubFlowInvoker;                          \
+    template <typename>                     friend class ::tfl::CoroInvoker;                             \
+    template <typename, typename>           friend class ::tfl::ModuleInvoker;                           \
+    template <typename>                     friend class ::tfl::SilentAsyncBasicInvoker;                 \
+    template <typename>                     friend class ::tfl::SilentAsyncRuntimeInvoker;               \
+    template <typename>                     friend class ::tfl::SilentAsyncCoroInvoker;                  \
+    template <typename>                     friend class ::tfl::SilentAsyncSubFlowInvoker;               \
+    template <typename, typename, typename> friend class ::tfl::SilentAsyncModuleInvoker;                \
+    template <typename>                     friend class ::tfl::AsyncBasicInvoker;                       \
+    template <typename>                     friend class ::tfl::AsyncRuntimeInvoker;                     \
+    template <typename>                     friend class ::tfl::AsyncCoroInvoker;                        \
+    template <typename>                     friend class ::tfl::AsyncSubFlowInvoker;                     \
+    template <typename, typename, typename> friend class ::tfl::AsyncModuleInvoker;                      \
+    template <typename>                     friend class ::tfl::AsyncTaskBasicInvoker;                   \
+    template <typename>                     friend class ::tfl::AsyncTaskRuntimeInvoker;                 \
+    template <typename>                     friend class ::tfl::AsyncTaskCoroInvoker;                    \
+    template <typename>                     friend class ::tfl::AsyncTaskSubFlowInvoker;                 \
+    template <typename, typename, typename> friend class ::tfl::AsyncTaskModuleInvoker;
 
 } // namespace tfl

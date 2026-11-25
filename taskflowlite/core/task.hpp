@@ -437,7 +437,7 @@ public:
     Task& work(Gh&& gh, I num);
 
     /// @brief 将当前静态图节点替换为由终止谓词控制的 Module 节点。
-    template <graph_holder Gh, predicate P>
+    template <graph_holder Gh, module_predicate P>
         requires capturable<P>
     Task& work(Gh&& gh, P&& pred);
 
@@ -493,7 +493,7 @@ public:
     [[nodiscard]] Gh& work_object(I num);
 
     /// @brief 原地默认构造子图持有者，并绑定终止谓词。
-    template <graph_holder Gh, predicate P>
+    template <graph_holder Gh, module_predicate P>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
     [[nodiscard]] Gh& work_object(P&& pred);
 
@@ -510,7 +510,7 @@ public:
     [[nodiscard]] Gh& work_object(Tuple&& args, I num);
 
     /// @brief 使用 tuple 参数原地构造子图持有者，并绑定终止谓词。
-    template <graph_holder Gh, typename Tuple, predicate P>
+    template <graph_holder Gh, typename Tuple, module_predicate P>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] Gh& work_object(Tuple&& args, P&& pred);
 
@@ -827,23 +827,12 @@ inline Task& Task::work(Gh&& gh) {
 
 template <graph_holder Gh, std::integral I>
 inline Task& Task::work(Gh&& gh, I num) {
-    const std::uint64_t count = static_cast<std::uint64_t>(num);
-    auto pred = [count, remaining = count]() mutable noexcept -> bool {
-        if (remaining == 0) {
-            remaining = count;
-            return true;
-        }
-
-        --remaining;
-        return false;
-    };
-
-    using Invoker = ModuleInvoker<detail::captured_t<Gh>, decltype(pred)>;
-    _replace_work<Invoker>(detail::capture(std::forward<Gh>(gh)), std::move(pred));
-    return *this;
+    return work(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
+        return iteration >= count;
+    });
 }
 
-template <graph_holder Gh, predicate P>
+template <graph_holder Gh, module_predicate P>
     requires capturable<P>
 inline Task& Task::work(Gh&& gh, P&& pred) {
     using Invoker = ModuleInvoker<detail::captured_t<Gh>, std::decay_t<P>>;
@@ -951,7 +940,7 @@ inline Gh& Task::work_object(I num) {
     return work_object<Gh>(std::tuple{}, num);
 }
 
-template <graph_holder Gh, predicate P>
+template <graph_holder Gh, module_predicate P>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
 inline Gh& Task::work_object(P&& pred) {
     return work_object<Gh>(std::tuple{}, std::forward<P>(pred));
@@ -966,21 +955,12 @@ inline Gh& Task::work_object(Tuple&& args) {
 template <graph_holder Gh, typename Tuple, std::integral I>
     requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
 inline Gh& Task::work_object(Tuple&& args, I num) {
-    const std::uint64_t count = static_cast<std::uint64_t>(num);
-    auto pred = [count, remaining = count]() mutable noexcept -> bool {
-        if (remaining == 0) {
-            remaining = count;
-            return true;
-        }
-
-        --remaining;
-        return false;
-    };
-
-    return work_object<Gh>(std::forward<Tuple>(args), std::move(pred));
+    return work_object<Gh>(std::forward<Tuple>(args), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
+        return iteration >= count;
+    });
 }
 
-template <graph_holder Gh, typename Tuple, predicate P>
+template <graph_holder Gh, typename Tuple, module_predicate P>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
 inline Gh& Task::work_object(Tuple&& args, P&& pred) {
     return std::apply([this, &pred](auto&&... values) -> Gh& {

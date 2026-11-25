@@ -220,7 +220,7 @@ inline auto Executor::defer_async_object(I num, C&& callback) -> AsyncTaskObject
     return defer_async_object<Gh>(std::tuple{}, num, std::forward<C>(callback));
 }
 
-template <graph_holder Gh, predicate P, callback C>
+template <graph_holder Gh, module_predicate P, callback C>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P, C> && std::constructible_from<Gh>)
 inline auto Executor::defer_async_object(P&& pred, C&& callback) -> AsyncTaskObject<void, Gh> {
     return defer_async_object<Gh>(std::tuple{}, std::forward<P>(pred), std::forward<C>(callback));
@@ -239,15 +239,12 @@ inline auto Executor::defer_async_object(Tuple&& args, C&& callback) -> AsyncTas
 template <graph_holder Gh, typename Tuple, std::integral I, callback C>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && tuple_constructible_from<Gh, Tuple&&>)
 inline auto Executor::defer_async_object(Tuple&& args, I num, C&& callback) -> AsyncTaskObject<void, Gh> {
-    const std::uint64_t count = static_cast<std::uint64_t>(num);
-    auto pred = [remaining = count]() mutable noexcept -> bool {
-        return remaining-- == 0;
-    };
-
-    return defer_async_object<Gh>(std::forward<Tuple>(args), std::move(pred), std::forward<C>(callback));
+    return defer_async_object<Gh>(std::forward<Tuple>(args), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
+        return iteration >= count;
+    }, std::forward<C>(callback));
 }
 
-template <graph_holder Gh, typename Tuple, predicate P, callback C>
+template <graph_holder Gh, typename Tuple, module_predicate P, callback C>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P, C> && tuple_constructible_from<Gh, Tuple&&>)
 inline auto Executor::defer_async_object(Tuple&& args, P&& pred, C&& callback) -> AsyncTaskObject<void, Gh> {
     return std::apply([this, &pred, &callback](auto&&... values) -> AsyncTaskObject<void, Gh> {

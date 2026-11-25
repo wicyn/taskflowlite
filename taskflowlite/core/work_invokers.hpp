@@ -10,6 +10,7 @@
 #pragma once
 #include <cmath>
 #include <concepts>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <type_traits>
@@ -61,22 +62,25 @@ do {                                                                            
 #endif
 
 
-#define TFL_TRY_ACQUIRE_SEMAPHORES(work)                                                    \
+#define TFL_TRY_ACQUIRE_SEMAPHORES(work, worker, executor)                                  \
     do {                                                                                    \
-            if ((work).m_semaphores && !(work).m_semaphores->acquires.empty()) {            \
-                if (!(work)._try_acquire_semaphores()) {                                    \
-                    return;                                                                 \
+            if ((work).m_semaphores && !(work).m_semaphores->acquires.empty()) {                \
+                Work* first = nullptr;                                                          \
+                Work* last = nullptr;                                                           \
+                if (!(work)._try_acquire_semaphores(cache, first, last)) {                      \
+                    (executor)._schedule_from_semaphore((worker), first);                       \
+                    return;                                                                     \
             }                                                                               \
         }                                                                                   \
     } while (false)
 
 #define TFL_RELEASE_SEMAPHORES(work, worker, executor)                                      \
-        do {                                                                                \
-            if ((work).m_semaphores && !(work).m_semaphores->releases.empty()) {            \
-                Work* first = nullptr;                                                      \
-                Work* last = nullptr;                                                       \
-                (work)._release_semaphores(first, last);                                    \
-                (executor)._schedule_from_semaphore((worker), first);                       \
+        do {                                                                                    \
+            if ((work).m_semaphores && !(work).m_semaphores->releases.empty()) {                \
+                Work* first = nullptr;                                                          \
+                Work* last = nullptr;                                                           \
+                (work)._release_semaphores(first, last);                                        \
+                (executor)._schedule_from_semaphore((worker), first);                           \
         }                                                                                   \
     } while (false)
 
@@ -514,7 +518,7 @@ public:
             return;
         }
 
-        TFL_TRY_ACQUIRE_SEMAPHORES(w);
+        TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
         TFL_RELEASE_SEMAPHORES(w, wr, exe);
         exe._tear_down_task(w, wr, cache);
     }
@@ -555,7 +559,7 @@ public:
             return;
         }
 
-        TFL_TRY_ACQUIRE_SEMAPHORES(w);
+        TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
         TFL_WORK_EXECUTION_BEGIN(w);
         w._notify_before(wr);
 
@@ -608,7 +612,7 @@ public:
             return;
         }
 
-        TFL_TRY_ACQUIRE_SEMAPHORES(w);
+        TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
         TFL_WORK_EXECUTION_BEGIN(w);
         w._notify_before(wr);
         Branch branch{w, wr, exe};
@@ -661,7 +665,7 @@ public:
             return;
         }
 
-        TFL_TRY_ACQUIRE_SEMAPHORES(w);
+        TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
         TFL_WORK_EXECUTION_BEGIN(w);
         w._notify_before(wr);
         MultiBranch branch{w, wr, exe};
@@ -715,7 +719,7 @@ public:
             return;
         }
 
-        TFL_TRY_ACQUIRE_SEMAPHORES(w);
+        TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
         TFL_WORK_EXECUTION_BEGIN(w);
         w._notify_before(wr);
         Jump jump{w, wr, exe};
@@ -769,7 +773,7 @@ public:
             return;
         }
 
-        TFL_TRY_ACQUIRE_SEMAPHORES(w);
+        TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
         TFL_WORK_EXECUTION_BEGIN(w);
         w._notify_before(wr);
         MultiJump jump{w, wr, exe};
@@ -829,7 +833,7 @@ public:
                 return;
             }
 
-            TFL_TRY_ACQUIRE_SEMAPHORES(w);
+            TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED | Work::Properties::IMPLICIT_ANCHOR;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
@@ -905,7 +909,7 @@ public:
                 return;
             }
 
-            TFL_TRY_ACQUIRE_SEMAPHORES(w);
+            TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED | Work::Properties::IMPLICIT_ANCHOR;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
@@ -1001,7 +1005,7 @@ public:
                 return;
             }
 
-            TFL_TRY_ACQUIRE_SEMAPHORES(w);
+            TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
@@ -1028,25 +1032,29 @@ public:
     }
 };
 
-/// @brief 在静态图节点中重复执行一个子 Graph，直到谓词要求停止或执行链中止。
+/// @brief 在静态图节点中执行子 Graph，直到谓词要求停止或执行链中止。
 ///
 /// Invoker 保存 Graph holder 和终止谓词，并缓存 `_set_up_graph()` 得到的 source 数量。
-/// 首次进入时执行停止/Semaphore 检查、设置 PREEMPTED 并建立子图运行期上下文；每轮
-/// source 完成后当前 Work 被恢复，再检查无 source、异常/停止及谓词条件。继续执行时
-/// 重置非 source join_counter，并让最后一个 source 通过 cache 接力，其余 source 入队。
+/// 首次进入时执行停止/Semaphore 检查、设置 PREEMPTED 并初始化子图。
+/// 没有 source 时直接收尾。
+///
+/// 每轮子图完成后恢复当前 Work，检查异常、停止和谓词。
+/// 继续执行时重置非 source join_counter，最后一个 source 通过 cache 接力，
+/// 其余 source 发布到 Worker 队列。
 ///
 /// Observer before/after 包围整个 Module 生命周期，而不是每一轮子图。
 ///
 /// @tparam GhStore Graph holder 的实际存储类型。
-/// @tparam P 无参终止谓词类型；返回 true 时结束 Module。
+/// @tparam P 接收从 0 开始的迭代索引的终止谓词类型；返回 true 时结束 Module。
 template <typename GhStore, typename P>
 class ModuleInvoker final : public GraphWork<ModuleInvoker<GhStore, P>> {
     using Self = ModuleInvoker<GhStore, P>;
-    using Base = GraphWork<Self>;
 
     friend class GraphWork<Self>;
 
     std::size_t m_num_sources{0};
+    std::uint64_t m_iteration{0};
+
     TFL_NO_UNIQUE_ADDRESS GhStore m_gh_store;
     TFL_NO_UNIQUE_ADDRESS P m_pred;
 
@@ -1067,7 +1075,8 @@ public:
     /// @brief 从传入的子图持有者存储和终止谓词构造模块。
     template <typename Ghs, typename V>
         requires std::constructible_from<GhStore, Ghs&&> && std::constructible_from<P, V&&>
-    explicit ModuleInvoker(Ghs&& ghs, V&& pred) noexcept(noexcept(GhStore{std::forward<Ghs>(ghs)}) && noexcept(P{std::forward<V>(pred)}))
+    explicit ModuleInvoker(Ghs&& ghs, V&& pred)
+        noexcept(noexcept(GhStore{std::forward<Ghs>(ghs)}) && noexcept(P{std::forward<V>(pred)}))
         : m_gh_store{std::forward<Ghs>(ghs)}
         , m_pred{std::forward<V>(pred)} {}
 
@@ -1077,7 +1086,8 @@ public:
     /// @note 不创建 GhStore 临时对象，不要求 GhStore 可复制或可移动。
     template <typename V, typename... Args>
         requires std::constructible_from<P, V&&> && std::constructible_from<GhStore, Args&&...>
-    explicit ModuleInvoker(std::in_place_t, V&& pred, Args&&... args) noexcept(std::is_nothrow_constructible_v<GhStore, Args&&...> && noexcept(P{std::forward<V>(pred)}))
+    explicit ModuleInvoker(std::in_place_t, V&& pred, Args&&... args)
+        noexcept(std::is_nothrow_constructible_v<GhStore, Args&&...> && noexcept(P{std::forward<V>(pred)}))
         : m_gh_store(std::forward<Args>(args)...)
         , m_pred{std::forward<V>(pred)} {}
 
@@ -1102,19 +1112,29 @@ public:
                 return;
             }
 
-            TFL_TRY_ACQUIRE_SEMAPHORES(w);
+            TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
             TFL_WORK_EXECUTION_BEGIN(w);
+
             w.m_properties |= Work::Properties::PREEMPTED;
             w._notify_before(wr);
+
+            m_iteration = 0;
             m_num_sources = exe._set_up_graph(graph, w);
+
+            if (m_num_sources == 0) [[unlikely]] {
+                goto finalize;
+            }
         }
 
-        // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
+        // 异常、停止或循环条件满足时结束整个 Module。
+        if (w._should_abort() || w._invoke_predicate(m_pred, m_iteration++)) {
+        finalize:
             w._notify_after(wr);
             w.m_properties &= ~Work::Properties::PREEMPTED;
+
             TFL_RELEASE_SEMAPHORES(w, wr, exe);
             TFL_WORK_EXECUTION_END(w);
+
             exe._tear_down_task(w, wr, cache);
             return;
         }
@@ -1372,12 +1392,12 @@ public:
 /// @brief 无结果句柄地重复执行一个子 Graph，并在结束时调用完成回调。
 ///
 /// 通过 `TopologyStorage` 拥有独立 Topology；同时保存 Graph holder、终止谓词和 callback。
-/// 首次进入初始化子图并设置 PREEMPTED；每轮完成后检查 source 数量、停止/异常和谓词。
+/// 首次进入时设置 PREEMPTED 并初始化子图。没有 source 时直接收尾，否则每轮执行前检查停止、异常和谓词。
 /// 结束时调用 callback、清除 PREEMPTED 并进入 SilentAsync tear-down；继续时重置 join 状态，
 /// 最后一个 source 通过 cache 接力，其余 source 发布到 Worker 队列。
 ///
 /// @tparam GhStore Graph holder 的实际存储类型。
-/// @tparam P 无参终止谓词类型。
+/// @tparam P 可接收从 0 开始的迭代索引或无参调用的终止谓词类型。
 /// @tparam C Module 整体结束时调用的无参回调类型。
 template <typename GhStore, typename P, typename C>
 class SilentAsyncModuleInvoker final : public TopologyStorage, public GraphWork<SilentAsyncModuleInvoker<GhStore, P, C>> {
@@ -1387,6 +1407,7 @@ class SilentAsyncModuleInvoker final : public TopologyStorage, public GraphWork<
     friend class GraphWork<Self>;
 
     std::size_t m_num_sources{0};
+    std::uint64_t m_iteration{0};
     TFL_NO_UNIQUE_ADDRESS GhStore m_gh_store;
     TFL_NO_UNIQUE_ADDRESS P m_pred;
     TFL_NO_UNIQUE_ADDRESS C m_callback;
@@ -1420,11 +1441,16 @@ public:
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED;
+            m_iteration = 0;
             m_num_sources = exe._set_up_graph(graph, w);
+            if (m_num_sources == 0) [[unlikely]] {
+                goto finalize;
+            }
         }
 
-        // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
+        // 异常、停止或循环条件满足时结束整个 Module。
+        if (w._should_abort() || w._invoke_predicate(m_pred, m_iteration++)) {
+        finalize:
             w._invoke_callback(m_callback);
             w.m_properties &= ~Work::Properties::PREEMPTED;
             TFL_WORK_EXECUTION_END(w);
@@ -1709,7 +1735,7 @@ public:
 /// Module 执行，终止后进入 Async tear-down 发布 Finished 并唤醒 Future 等待者。
 ///
 /// @tparam GhStore Graph holder 的实际存储类型。
-/// @tparam P 无参终止谓词类型。
+/// @tparam P 可接收从 0 开始的迭代索引或无参调用的终止谓词类型。
 /// @tparam C Module 整体结束时调用的无参回调类型。
 template <typename GhStore, typename P, typename C>
 class AsyncModuleInvoker final : public ResultStorage<void>, public GraphWork<AsyncModuleInvoker<GhStore, P, C>> {
@@ -1720,6 +1746,7 @@ class AsyncModuleInvoker final : public ResultStorage<void>, public GraphWork<As
     friend class GraphWork<Self>;
 
     std::size_t m_num_sources{0};
+    std::uint64_t m_iteration{0};
     TFL_NO_UNIQUE_ADDRESS GhStore m_gh_store;
     TFL_NO_UNIQUE_ADDRESS P m_pred;
     TFL_NO_UNIQUE_ADDRESS C m_callback;
@@ -1753,11 +1780,16 @@ public:
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED;
+            m_iteration = 0;
             m_num_sources = exe._set_up_graph(graph, w);
+            if (m_num_sources == 0) [[unlikely]] {
+                goto finalize;
+            }
         }
 
-        // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
+        // 异常、停止或循环条件满足时结束整个 Module。
+        if (w._should_abort() || w._invoke_predicate(m_pred, m_iteration++)) {
+        finalize:
             w._invoke_callback(m_callback);
             w.m_properties &= ~Work::Properties::PREEMPTED;
             TFL_WORK_EXECUTION_END(w);
@@ -1830,7 +1862,7 @@ public:
         , Base(std::in_place, std::forward<Args>(args)...) {}
 
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
-        TFL_TRY_ACQUIRE_SEMAPHORES(w);
+        TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
         TFL_WORK_EXECUTION_BEGIN(w);
         w._notify_before(wr);
 
@@ -1884,7 +1916,7 @@ public:
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
-            TFL_TRY_ACQUIRE_SEMAPHORES(w);
+            TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
@@ -1949,7 +1981,7 @@ public:
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             m_coro._rebind(w, wr, exe);
-            TFL_TRY_ACQUIRE_SEMAPHORES(w);
+            TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
@@ -2054,7 +2086,7 @@ public:
     void invoke(Work& w, Worker& wr, Executor& exe, Work*& cache) noexcept {
         // 首次进入。
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
-            TFL_TRY_ACQUIRE_SEMAPHORES(w);
+            TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED;
             w.m_join_counter.fetch_add(1, std::memory_order_release);
@@ -2089,7 +2121,7 @@ public:
 /// 释放 Semaphore，并由 AsyncTask tear-down 发布 Finished、冻结并传播动态后继。
 ///
 /// @tparam GhStore Graph holder 的实际存储类型。
-/// @tparam P 无参终止谓词类型。
+/// @tparam P 可接收从 0 开始的迭代索引或无参调用的终止谓词类型。
 /// @tparam C Module 整体结束时调用的无参回调类型。
 template <typename GhStore, typename P, typename C>
 class AsyncTaskModuleInvoker final : public ResultStorage<void>, public GraphWork<AsyncTaskModuleInvoker<GhStore, P, C>> {
@@ -2100,6 +2132,7 @@ class AsyncTaskModuleInvoker final : public ResultStorage<void>, public GraphWor
     friend class GraphWork<Self>;
 
     std::size_t m_num_sources{0};
+    std::uint64_t m_iteration{0};
     TFL_NO_UNIQUE_ADDRESS GhStore m_gh_store;
     TFL_NO_UNIQUE_ADDRESS P m_pred;
     TFL_NO_UNIQUE_ADDRESS C m_callback;
@@ -2156,15 +2189,20 @@ public:
         Graph& graph = this->graph();
 
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
-            TFL_TRY_ACQUIRE_SEMAPHORES(w);
+            TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
             TFL_WORK_EXECUTION_BEGIN(w);
             w.m_properties |= Work::Properties::PREEMPTED;
             w._notify_before(wr);
+            m_iteration = 0;
             m_num_sources = exe._set_up_graph(graph, w);
+            if (m_num_sources == 0) [[unlikely]] {
+                goto finalize;
+            }
         }
 
-        // 无 source、异常/停止或循环条件满足时结束整个 Module。
-        if (m_num_sources == 0 || w._should_abort() || w._invoke_predicate(m_pred)) {
+        // 异常、停止或循环条件满足时结束整个 Module。
+        if (w._should_abort() || w._invoke_predicate(m_pred, m_iteration++)) {
+        finalize:
             w._notify_after(wr);
             w._invoke_callback(m_callback);
             w.m_properties &= ~Work::Properties::PREEMPTED;

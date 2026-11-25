@@ -17,6 +17,7 @@
 #include <string>
 #include <memory>
 #include <cstddef>
+#include <cstdint>
 #include <tuple>
 #include <utility>
 
@@ -154,19 +155,11 @@ static_assert(!capturable<std::unique_ptr<int>&>);
 static_assert(capturable<std::reference_wrapper<std::unique_ptr<int>>>);
 static_assert(capturable<std::reference_wrapper<int>>);
 
-template <typename P, typename... Args>
-concept predicate = std::invocable<std::decay_t<P>&, std::decay_t<Args>&...> &&
-                    std::same_as<std::invoke_result_t<std::decay_t<P>&, std::decay_t<Args>&...>, bool>;
-
-/// @brief 约束谓词调用不抛出异常。
-template <typename P, typename... Args>
-concept noexcept_predicate = predicate<P, Args...> &&
-                             std::is_nothrow_invocable_v<std::decay_t<P>&, std::decay_t<Args>&...>;
 
 /// @brief 检查是否为有效的回调类型（返回 void）。
 template <typename C, typename... Args>
-concept callback = std::invocable<std::decay_t<C>&, std::decay_t<Args>&...> &&
-                   std::same_as<std::invoke_result_t<std::decay_t<C>&, std::decay_t<Args>&...>, void>;
+concept callback = std::invocable<std::decay_t<C>&, Args...> &&
+                   std::same_as<std::invoke_result_t<std::decay_t<C>&, Args...>, void>;
 
 /// @brief 表示可默认构造、无状态且调用后不执行任何操作的完成回调。
 ///
@@ -175,8 +168,39 @@ struct noop_callback {
     constexpr void operator()() const noexcept {}
 };
 
+/// @brief 约束谓词按指定参数类型和值类别调用，并返回 bool。
+template <typename P, typename... Args>
+concept predicate = std::invocable<std::decay_t<P>&, Args...> &&
+                    std::same_as<std::invoke_result_t<std::decay_t<P>&, Args...>, bool>;
+
+/// @brief 约束谓词调用不抛出异常。
+template <typename P, typename... Args>
+concept noexcept_predicate = predicate<P, Args...> &&
+                             std::is_nothrow_invocable_v<std::decay_t<P>&, Args...>;
+
+/// @brief 子图终止谓词，接收从 0 开始的 uint64_t 迭代索引；返回 true 时结束执行。
+template <typename P>
+concept module_predicate = predicate<P, std::uint64_t> &&
+                           !callback<P>;
+
+/// @brief 约束子图终止谓词调用不抛出异常。
+template <typename P>
+concept noexcept_module_predicate = module_predicate<P> &&
+                                    std::is_nothrow_invocable_v<std::decay_t<P>&, std::uint64_t>;
+
 static_assert(predicate<decltype([]{ return true; })>);
 static_assert(!predicate<decltype([]{})>);
+
+static_assert(predicate<decltype([](std::uint64_t&) { return true; }), std::uint64_t&>);
+static_assert(!predicate<decltype([](std::uint64_t&) { return true; }), std::uint64_t>);
+
+static_assert(module_predicate<decltype([](std::uint64_t) { return true; })>);
+static_assert(module_predicate<decltype([](const std::uint64_t&) { return true; })>);
+static_assert(module_predicate<decltype([](std::uint64_t&&) { return true; })>);
+static_assert(!module_predicate<decltype([] { return true; })>);
+static_assert(!module_predicate<decltype([](std::uint64_t&) { return true; })>);
+static_assert(!module_predicate<decltype([](std::uint64_t) { return 0; })>);
+static_assert(!noexcept_module_predicate<decltype([](std::uint64_t) { return true; })>);
 
 static_assert(callback<decltype([]{})>);
 static_assert(!callback<decltype([]{ return true; })>);

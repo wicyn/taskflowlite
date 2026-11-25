@@ -188,6 +188,57 @@ static_assert((TFL_CACHE_LINE_SIZE & (TFL_CACHE_LINE_SIZE - 1)) == 0, "TFL_CACHE
 #endif
 
 // ============================================================================
+// Worker Lookup
+// ============================================================================
+
+/// @brief 控制 Executor 查询当前线程所属 Worker 的实现方式。
+///
+/// Executor 通过 `_this_worker()` 判断当前线程是否属于自身管理的 Worker，
+/// 用于选择本地任务队列或共享调度队列等执行路径。
+///
+/// 配置值：
+/// - 0：使用 std::unordered_map<std::thread::id, Worker*>；
+/// - 1：使用 thread_local 缓存当前线程的 Executor 和 Worker 指针。
+///
+/// 默认值为 0，保留基于 thread_id 的哈希表查询方式。
+///
+/// 启用 TLS 后，每个 Worker 在线程入口绑定所属 Executor 和 Worker，
+/// 在线程退出前清理绑定信息。查询时通过 Executor 指针验证归属，
+/// 避免多个 Executor 实例之间错误地复用 Worker。
+///
+/// TLS 模式不需要维护 thread_id 映射，能够避免运行期哈希查找，
+/// 但实际性能收益取决于编译器、平台及线程局部存储访问开销。
+///
+/// Map 模式在 Worker 创建阶段建立映射，正常运行期间只读。
+/// 必须保证映射构建过程中不存在并发查询，避免数据竞争。
+///
+/// 用户可以在包含 TaskflowLite 头文件之前定义该宏，
+/// 或通过构建系统显式指定查询方式。
+///
+/// @code{.cpp}
+/// #define TFL_USE_WORKER_TLS 1
+/// #include <taskflowlite/taskflowlite.hpp>
+/// @endcode
+///
+/// CMake 示例：
+/// @code{.cmake}
+/// target_compile_definitions(target PRIVATE TFL_USE_WORKER_TLS=1)
+/// @endcode
+///
+/// @note TLS 变量必须由 Worker 线程入口和查询函数共享，
+///       不应在不同翻译单元中分别定义独立的线程局部变量。
+/// @note 非本 Executor 管理的线程查询时应返回 nullptr。
+/// @warning 此宏影响 Executor 的成员布局、内联实现及 ABI。
+///          同一程序中所有使用 TaskflowLite 的翻译单元必须保持一致配置。
+#ifndef TFL_USE_WORKER_TLS
+#define TFL_USE_WORKER_TLS 0
+#endif
+
+#if TFL_USE_WORKER_TLS != 0 && TFL_USE_WORKER_TLS != 1
+#error "TFL_USE_WORKER_TLS must be defined as 0 or 1"
+#endif
+
+// ============================================================================
 // Task Pool
 // ============================================================================
 

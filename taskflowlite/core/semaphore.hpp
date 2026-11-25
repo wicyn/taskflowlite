@@ -1,5 +1,5 @@
 ﻿/// @file semaphore.hpp
-/// @brief 任务级信号量 Semaphore —— 通过配额控制任务并发度且不阻塞 Worker 线程。
+/// @brief 任务级信号量 Semaphore —— 通过配额控制任务并发度，配额不足时挂起任务。
 /// @author wicyn
 /// @contact https://github.com/wicyn
 /// @date 2026-09-18
@@ -24,12 +24,11 @@
 
 namespace tfl {
 
-/// @brief 以可用配额限制任务并发度，而不阻塞执行任务的 Worker 线程。
+/// @brief 以可用配额限制任务并发度，等待配额的任务会让出 Worker。
 ///
 /// Semaphore 维护最大配额 `m_max_value`、当前可用配额 `m_value` 以及等待任务链。
-/// Work 在执行前由统一的多 Semaphore acquire 协议锁定全部目标 Semaphore，
-/// 在所有请求都能够同时满足时一次性扣减配额；任一请求不满足时不修改任何配额，
-/// 并将当前 Work 加入对应 Semaphore 的 waiter 链。
+/// Work 在执行前逐个扣减所需配额，每次只锁住一个 Semaphore。任一项不足时，
+/// 先归还此前已取得的配额，再在失败项的锁内复查，决定入队等待或从头重试。
 ///
 /// 配额释放时不会直接执行等待任务，而是整体摘除当前 waiter 链并交由 Executor
 /// 重新发布。被唤醒的 Work 仍需要重新竞争其配置的全部 acquire 请求，因此唤醒
@@ -41,7 +40,7 @@ namespace tfl {
 ///
 /// @note `m_value` 表示当前可用配额，而不是当前正在运行的任务数量。
 /// @note 单个 Semaphore 的配额和 waiter 链访问均由 `m_lock` 保护。
-/// @note 多 Semaphore acquire 由 Work 按全局固定顺序同时持锁，避免循环等待。
+/// @note 多 Semaphore acquire 期间，value() 可以观察到尚未取得全部配额的 Work 已扣减的份额。
 /// @note waiter 按进入 Semaphore 的顺序连接，单个 Semaphore 内保持 FIFO 链接顺序。
 /// @warning 所有引用本对象的任务完成并归还其已获取配额之前，本对象必须保持存活。
 class Semaphore : public Immovable<Semaphore> {
@@ -74,14 +73,14 @@ public:
     /// @brief 重置信号量最大配额，并使全部新配额恢复为可用状态。
     /// @param max_value 新的最大配额，同时成为新的当前可用配额。
     /// @return 重置成功返回 true；当前存在等待任务时返回 false。
-    /// @pre 不得存在尚未归还的已占用配额，也不得与其他配置操作并发调用。
+    /// @pre 所有已占用配额均已归还，且调用期间没有并发获取、归还配额或修改配置的操作。
     [[nodiscard]] bool reset(std::size_t max_value);
 
     /// @brief 重置信号量最大配额和当前可用配额。
     /// @param max_value 新的最大配额。
     /// @param current_value 新的当前可用配额；超过 @p max_value 时自动裁剪为最大值。
     /// @return 重置成功返回 true；当前存在等待任务时返回 false。
-    /// @pre 不得存在尚未归还的已占用配额，也不得与其他配置操作并发调用。
+    /// @pre 所有已占用配额均已归还，且调用期间没有并发获取、归还配额或修改配置的操作。
     [[nodiscard]] bool reset(std::size_t max_value, std::size_t current_value);
 
     /// @brief 获取信号量名称。
@@ -102,6 +101,10 @@ public:
 
 private:
 
+    /// @brief 在内部锁保护下尝试扣减 count 份配额。配额不足时返回 false。
+    /// @pre count > 0。
+    [[nodiscard]] TFL_FORCE_INLINE bool _try_acquire(std::size_t count) noexcept;
+
     /// @brief 归还指定配额，并将当前全部 waiter 合并到调用方待调度链。
     ///
     /// 在当前 Semaphore 的内部锁保护下增加 `m_value`，随后整体摘除当前 waiter
@@ -116,7 +119,7 @@ private:
     /// @pre out_first 和 out_last 必须同时为空或同时非空。
     /// @pre count > 0。
     /// @pre count <= m_max_value - m_value。
-    /// @note 一次 release 会摘出当前全部 waiter，而不是只摘出当前配额能够满足的任务。
+    /// @note 正常归还和获取失败时的回滚都会摘出当前全部 waiter。
     TFL_FORCE_INLINE void _release(Work*& out_first, Work*& out_last, std::size_t count) noexcept;
 
     std::string m_name;
@@ -142,6 +145,19 @@ inline Semaphore::Semaphore(std::size_t max_value, std::size_t current_value, st
     : m_name{std::move(name)}
     , m_max_value{max_value}
     , m_value{(std::min)(current_value, max_value)} {
+}
+
+TFL_FORCE_INLINE bool Semaphore::_try_acquire(std::size_t count) noexcept {
+    TFL_ASSERT(count != 0);
+
+    std::lock_guard lock{m_lock};
+    TFL_ASSERT(m_value <= m_max_value);
+
+    if (m_value < count) {
+        return false;
+    }
+    m_value -= count;
+    return true;
 }
 
 inline std::size_t Semaphore::value() const noexcept {
