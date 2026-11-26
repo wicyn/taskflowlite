@@ -29,7 +29,6 @@
 
 namespace tfl {
 
-
 // ============================================================================
 // TaskView 只读视图
 // ============================================================================
@@ -131,10 +130,10 @@ public:
 
     /// @brief 遍历任务执行前的信号量获取约束，对每个调用 visitor(const Semaphore&, std::size_t) 或 visitor(const Semaphore&)。
     /// @tparam F 可调用对象，可接收 (const Semaphore&, std::size_t) 或仅 (const Semaphore&)。
-    /// @param visitor 访问器，信号量与配额均为只读。
+    /// @param visitor 访问器，信号量为只读引用，配额按值传递。
+    /// @note 优先匹配双参数回调。
     template <typename F>
-        requires std::invocable<F&, const Semaphore&, std::size_t>
-                 || std::invocable<F&, const Semaphore&>
+        requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
     void for_each_acquire(F&& visitor) const noexcept(
         std::invocable<F&, const Semaphore&, std::size_t>
             ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
@@ -142,10 +141,10 @@ public:
 
     /// @brief 遍历任务执行后的信号量释放约束，对每个调用 visitor(const Semaphore&, std::size_t) 或 visitor(const Semaphore&)。
     /// @tparam F 可调用对象，可接收 (const Semaphore&, std::size_t) 或仅 (const Semaphore&)。
-    /// @param visitor 访问器，信号量与配额均为只读。
+    /// @param visitor 访问器，信号量为只读引用，配额按值传递。
+    /// @note 优先匹配双参数回调。
     template <typename F>
-        requires std::invocable<F&, const Semaphore&, std::size_t>
-                 || std::invocable<F&, const Semaphore&>
+        requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
     void for_each_release(F&& visitor) const noexcept(
         std::invocable<F&, const Semaphore&, std::size_t>
             ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
@@ -157,7 +156,6 @@ private:
 
     const Work& m_work;  ///< 底层 Work 节点只读引用，非拥有。
 };
-
 
 // ============================================================================
 // TaskView 实现
@@ -242,38 +240,34 @@ inline void TaskView::for_each_successor(F&& visitor) const noexcept(std::is_not
 }
 
 template <typename F>
-    requires std::invocable<F&, const Semaphore&, std::size_t>
-             || std::invocable<F&, const Semaphore&>
+    requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
 inline void TaskView::for_each_acquire(F&& visitor) const noexcept(
     std::invocable<F&, const Semaphore&, std::size_t>
         ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
         : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
-    for (const auto& req : m_work._acquires()) {
+    for (const auto& request : m_work._acquires()) {
         if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
-            std::invoke(visitor, *req.sem, req.count);
+            std::invoke(visitor, std::as_const(*request.sem), std::size_t{request.count});
         } else {
-            std::invoke(visitor, *req.sem);
+            std::invoke(visitor, std::as_const(*request.sem));
         }
     }
 }
 
 template <typename F>
-    requires std::invocable<F&, const Semaphore&, std::size_t>
-             || std::invocable<F&, const Semaphore&>
+    requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
 inline void TaskView::for_each_release(F&& visitor) const noexcept(
     std::invocable<F&, const Semaphore&, std::size_t>
         ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
         : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
-    for (const auto& req : m_work._releases()) {
+    for (const auto& request : m_work._releases()) {
         if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
-            std::invoke(visitor, *req.sem, req.count);
+            std::invoke(visitor, std::as_const(*request.sem), std::size_t{request.count});
         } else {
-            std::invoke(visitor, *req.sem);
+            std::invoke(visitor, std::as_const(*request.sem));
         }
     }
 }
-
-
 
 /// @brief 提供创建依赖、配置节点属性和查询状态的可空非拥有任务句柄。
 ///
@@ -623,11 +617,13 @@ public:
     /// @brief 遍历当前任务的所有前驱任务，对每个调用 visitor(Task{predecessor})。
     /// @tparam F 可调用对象，接收 Task 句柄。
     /// @param visitor 访问器，非 const 重载允许修改前驱节点的属性。
+    /// @note 空句柄直接返回，不调用 visitor。
     template <typename F>
         requires std::invocable<F&, Task>
     void for_each_predecessor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F&, Task>);
 
     /// @brief const 重载 —— 遍历时提供 `TaskView` 只读句柄，禁止修改前驱节点。
+    /// @note 空句柄直接返回，不调用 visitor。
     template <typename F>
         requires std::invocable<F&, TaskView>
     void for_each_predecessor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>);
@@ -635,11 +631,13 @@ public:
     /// @brief 遍历当前任务的所有后继任务，对每个调用 visitor(Task{successor})。
     /// @tparam F 可调用对象，接收 Task 句柄。
     /// @param visitor 访问器，非 const 重载允许修改后继节点的属性。
+    /// @note 空句柄直接返回，不调用 visitor。
     template <typename F>
         requires std::invocable<F&, Task>
     void for_each_successor(F&& visitor) noexcept(std::is_nothrow_invocable_v<F&, Task>);
 
     /// @brief const 重载 —— 遍历时提供 `TaskView` 只读句柄，禁止修改后继节点。
+    /// @note 空句柄直接返回，不调用 visitor。
     template <typename F>
         requires std::invocable<F&, TaskView>
     void for_each_successor(F&& visitor) const noexcept(std::is_nothrow_invocable_v<F&, TaskView>);
@@ -647,18 +645,18 @@ public:
     /// @brief 遍历任务执行前的信号量获取约束，对每个调用 visitor(Semaphore&, std::size_t&) 或 visitor(Semaphore&)。
     /// @tparam F 可调用对象，可接收 (Semaphore&, std::size_t&) 或仅 (Semaphore&)。
     /// @param visitor 访问器，可变重载允许修改信号量及配额。
+    /// @note 空句柄直接返回，不调用 visitor；优先匹配双参数回调。
     template <typename F>
-        requires std::invocable<F&, Semaphore&, std::size_t&>
-                 || std::invocable<F&, Semaphore&>
+        requires std::invocable<F&, Semaphore&, std::size_t&> || std::invocable<F&, Semaphore&>
     void for_each_acquire(F&& visitor) noexcept(
         std::invocable<F&, Semaphore&, std::size_t&>
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
-    /// @brief const 重载 —— 遍历时提供只读信号量与不可变配额。
+    /// @brief const 重载 —— 遍历时提供只读信号量与按值传递的配额。
+    /// @note 空句柄直接返回，不调用 visitor；优先匹配双参数回调。
     template <typename F>
-        requires std::invocable<F&, const Semaphore&, std::size_t>
-                 || std::invocable<F&, const Semaphore&>
+        requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
     void for_each_acquire(F&& visitor) const noexcept(
         std::invocable<F&, const Semaphore&, std::size_t>
             ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
@@ -667,23 +665,22 @@ public:
     /// @brief 遍历任务执行后的信号量释放约束，对每个调用 visitor(Semaphore&, std::size_t&) 或 visitor(Semaphore&)。
     /// @tparam F 可调用对象，可接收 (Semaphore&, std::size_t&) 或仅 (Semaphore&)。
     /// @param visitor 访问器，可变重载允许修改信号量及配额。
+    /// @note 空句柄直接返回，不调用 visitor；优先匹配双参数回调。
     template <typename F>
-        requires std::invocable<F&, Semaphore&, std::size_t&>
-                 || std::invocable<F&, Semaphore&>
+        requires std::invocable<F&, Semaphore&, std::size_t&> || std::invocable<F&, Semaphore&>
     void for_each_release(F&& visitor) noexcept(
         std::invocable<F&, Semaphore&, std::size_t&>
             ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
             : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
-    /// @brief const 重载 —— 遍历时提供只读信号量与不可变配额。
+    /// @brief const 重载 —— 遍历时提供只读信号量与按值传递的配额。
+    /// @note 空句柄直接返回，不调用 visitor；优先匹配双参数回调。
     template <typename F>
-        requires std::invocable<F&, const Semaphore&, std::size_t>
-                 || std::invocable<F&, const Semaphore&>
+        requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
     void for_each_release(F&& visitor) const noexcept(
         std::invocable<F&, const Semaphore&, std::size_t>
             ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
             : std::is_nothrow_invocable_v<F&, const Semaphore&>);
-
 
     // ============================================================================
     // 观察者管理
@@ -701,6 +698,7 @@ public:
     /// @param observer `register_observer` 返回的观察者指针。
     template <std::derived_from<TaskObserver> Observer>
     void unregister_observer(const std::shared_ptr<Observer>& observer) noexcept;
+
 protected:
     Work* m_work{nullptr};  ///< 底层 Work 节点指针，非拥有引用。
 
@@ -737,7 +735,6 @@ inline Task& Task::work(T&& task) {
     return *this;
 }
 
-
 // ============================================================================
 // Branch
 // ============================================================================
@@ -749,7 +746,6 @@ inline Task& Task::work(T&& task) {
     _replace_work<Invoker>(std::forward<T>(task));
     return *this;
 }
-
 
 // ============================================================================
 // MultiBranch
@@ -763,7 +759,6 @@ inline Task& Task::work(T&& task) {
     return *this;
 }
 
-
 // ============================================================================
 // Jump
 // ============================================================================
@@ -775,7 +770,6 @@ inline Task& Task::work(T&& task) {
     _replace_work<Invoker>(std::forward<T>(task));
     return *this;
 }
-
 
 // ============================================================================
 // MultiJump
@@ -789,7 +783,6 @@ inline Task& Task::work(T&& task) {
     return *this;
 }
 
-
 // ============================================================================
 // Runtime
 // ============================================================================
@@ -802,7 +795,6 @@ inline Task& Task::work(T&& task) {
     return *this;
 }
 
-
 // ============================================================================
 // SubFlow
 // ============================================================================
@@ -814,7 +806,6 @@ inline Task& Task::work(T&& task) {
     _replace_work<Invoker>(std::forward<T>(task));
     return *this;
 }
-
 
 // ============================================================================
 // Module
@@ -851,7 +842,6 @@ inline T& Task::work_object(Args&&... args) {
     return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
 }
 
-
 // ============================================================================
 // Branch Object
 // ============================================================================
@@ -862,7 +852,6 @@ inline T& Task::work_object(Args&&... args) {
     using Invoker = BranchInvoker<T>;
     return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
 }
-
 
 // ============================================================================
 // MultiBranch Object
@@ -875,7 +864,6 @@ inline T& Task::work_object(Args&&... args) {
     return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
 }
 
-
 // ============================================================================
 // Jump Object
 // ============================================================================
@@ -886,7 +874,6 @@ inline T& Task::work_object(Args&&... args) {
     using Invoker = JumpInvoker<T>;
     return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
 }
-
 
 // ============================================================================
 // MultiJump Object
@@ -899,7 +886,6 @@ inline T& Task::work_object(Args&&... args) {
     return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
 }
 
-
 // ============================================================================
 // Runtime Object
 // ============================================================================
@@ -911,7 +897,6 @@ inline T& Task::work_object(Args&&... args) {
     return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
 }
 
-
 // ============================================================================
 // SubFlow Object
 // ============================================================================
@@ -922,7 +907,6 @@ inline T& Task::work_object(Args&&... args) {
     using Invoker = SubFlowInvoker<T>;
     return _replace_work<Invoker>(std::in_place, std::forward<Args>(args)...).object();
 }
-
 
 // ============================================================================
 // Module Object
@@ -999,9 +983,11 @@ inline Task& Task::operator=(std::nullptr_t) noexcept {
 inline bool Task::operator==(const Task& rhs) const noexcept {
     return m_work == rhs.m_work;
 }
+
 inline bool Task::operator!=(const Task& rhs) const noexcept {
     return m_work != rhs.m_work;
 }
+
 inline void Task::reset() noexcept {
     m_work = nullptr;
 }
@@ -1187,6 +1173,7 @@ inline void Task::for_each_predecessor(F&& visitor) noexcept(std::is_nothrow_inv
     if (!m_work) {
         return;
     }
+
     for (Work* pred : m_work->_predecessors()) {
         std::invoke(visitor, Task{pred});
     }
@@ -1198,7 +1185,8 @@ inline void Task::for_each_predecessor(F&& visitor) const noexcept(std::is_nothr
     if (!m_work) {
         return;
     }
-    for (const Work* pred : m_work->_predecessors()) {
+
+    for (const Work* pred : std::as_const(*m_work)._predecessors()) {
         std::invoke(visitor, TaskView{*pred});
     }
 }
@@ -1209,6 +1197,7 @@ inline void Task::for_each_successor(F&& visitor) noexcept(std::is_nothrow_invoc
     if (!m_work) {
         return;
     }
+
     for (Work* succ : m_work->_successors()) {
         std::invoke(visitor, Task{succ});
     }
@@ -1220,14 +1209,14 @@ inline void Task::for_each_successor(F&& visitor) const noexcept(std::is_nothrow
     if (!m_work) {
         return;
     }
-    for (const Work* succ : m_work->_successors()) {
+
+    for (const Work* succ : std::as_const(*m_work)._successors()) {
         std::invoke(visitor, TaskView{*succ});
     }
 }
 
 template <typename F>
-    requires std::invocable<F&, Semaphore&, std::size_t&>
-             || std::invocable<F&, Semaphore&>
+    requires std::invocable<F&, Semaphore&, std::size_t&> || std::invocable<F&, Semaphore&>
 inline void Task::for_each_acquire(F&& visitor) noexcept(
     std::invocable<F&, Semaphore&, std::size_t&>
         ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
@@ -1235,18 +1224,18 @@ inline void Task::for_each_acquire(F&& visitor) noexcept(
     if (!m_work) {
         return;
     }
-    for (auto& req : m_work->_acquires()) {
+
+    for (auto& request : m_work->_acquires()) {
         if constexpr (std::invocable<F&, Semaphore&, std::size_t&>) {
-            std::invoke(visitor, *req.sem, req.count);
+            std::invoke(visitor, *request.sem, request.count);
         } else {
-            std::invoke(visitor, *req.sem);
+            std::invoke(visitor, *request.sem);
         }
     }
 }
 
 template <typename F>
-    requires std::invocable<F&, const Semaphore&, std::size_t>
-             || std::invocable<F&, const Semaphore&>
+    requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
 inline void Task::for_each_acquire(F&& visitor) const noexcept(
     std::invocable<F&, const Semaphore&, std::size_t>
         ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
@@ -1254,18 +1243,18 @@ inline void Task::for_each_acquire(F&& visitor) const noexcept(
     if (!m_work) {
         return;
     }
-    for (const auto& req : m_work->_acquires()) {
+
+    for (const auto& request : std::as_const(*m_work)._acquires()) {
         if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
-            std::invoke(visitor, *req.sem, req.count);
+            std::invoke(visitor, std::as_const(*request.sem), std::size_t{request.count});
         } else {
-            std::invoke(visitor, *req.sem);
+            std::invoke(visitor, std::as_const(*request.sem));
         }
     }
 }
 
 template <typename F>
-    requires std::invocable<F&, Semaphore&, std::size_t&>
-             || std::invocable<F&, Semaphore&>
+    requires std::invocable<F&, Semaphore&, std::size_t&> || std::invocable<F&, Semaphore&>
 inline void Task::for_each_release(F&& visitor) noexcept(
     std::invocable<F&, Semaphore&, std::size_t&>
         ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
@@ -1273,18 +1262,18 @@ inline void Task::for_each_release(F&& visitor) noexcept(
     if (!m_work) {
         return;
     }
-    for (auto& req : m_work->_releases()) {
+
+    for (auto& request : m_work->_releases()) {
         if constexpr (std::invocable<F&, Semaphore&, std::size_t&>) {
-            std::invoke(visitor, *req.sem, req.count);
+            std::invoke(visitor, *request.sem, request.count);
         } else {
-            std::invoke(visitor, *req.sem);
+            std::invoke(visitor, *request.sem);
         }
     }
 }
 
 template <typename F>
-    requires std::invocable<F&, const Semaphore&, std::size_t>
-             || std::invocable<F&, const Semaphore&>
+    requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
 inline void Task::for_each_release(F&& visitor) const noexcept(
     std::invocable<F&, const Semaphore&, std::size_t>
         ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
@@ -1292,11 +1281,12 @@ inline void Task::for_each_release(F&& visitor) const noexcept(
     if (!m_work) {
         return;
     }
-    for (const auto& req : m_work->_releases()) {
+
+    for (const auto& request : std::as_const(*m_work)._releases()) {
         if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
-            std::invoke(visitor, *req.sem, req.count);
+            std::invoke(visitor, std::as_const(*request.sem), std::size_t{request.count});
         } else {
-            std::invoke(visitor, *req.sem);
+            std::invoke(visitor, std::as_const(*request.sem));
         }
     }
 }
@@ -1312,6 +1302,7 @@ inline std::shared_ptr<Observer> Task::register_observer(Args&&... args) {
     m_work->m_observers->observers.emplace_back(std::static_pointer_cast<TaskObserver>(ptr));
     return ptr;
 }
+
 template <std::derived_from<TaskObserver> Observer>
 inline void Task::unregister_observer(const std::shared_ptr<Observer>& observer) noexcept {
     if (!m_work || !observer || !m_work->m_observers) {
@@ -1362,21 +1353,19 @@ inline Task operator<<(L&& lhs, Task&& rhs) {
     return std::move(rhs);
 }
 
-
 /// @brief 将 `Task` 的 D2 描述写入输出流。
-inline std::ostream& operator << (std::ostream& os, const Task& task) {
+inline std::ostream& operator<<(std::ostream& os, const Task& task) {
     task.dump(os);
     return os;
 }
 
 /// @brief 将 `TaskView` 的 D2 描述写入输出流。
-inline std::ostream& operator << (std::ostream& os, const TaskView& task) {
+inline std::ostream& operator<<(std::ostream& os, const TaskView& task) {
     task.dump(os);
     return os;
 }
 
 } // namespace tfl
-
 
 namespace std {
 /// @brief 按底层 `Work` 指针身份计算 `tfl::Task` 的标准哈希值。

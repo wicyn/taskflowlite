@@ -63,8 +63,8 @@ class AsyncTask : public AsyncFuture<R> {
     template <typename> friend class AsyncTask;
 
     using Base = AsyncFuture<R>;
-public:
 
+public:
     /// @brief 构造不关联任何 Work 和结果槽的空 AsyncTask。
     AsyncTask() noexcept = default;
 
@@ -97,7 +97,6 @@ public:
 
     /// @brief 显式构造不关联任何任务的空 AsyncTask。
     explicit AsyncTask(std::nullptr_t) noexcept;
-
 
     /// @brief 登记前驱依赖，并通过创建时绑定的 Executor 启动当前任务。
     /// @tparam Deps 满足 async_future concept 的前驱句柄类型包。
@@ -141,7 +140,6 @@ public:
     /// @brief 获取当前注册到任务上的观察者数量。
     /// @return observer 列表长度；空句柄返回 0。
     [[nodiscard]] std::size_t num_observers() const noexcept;
-
 
     // ============================================================================
     // 信号量管理
@@ -187,7 +185,6 @@ public:
     /// @warning 只要该 release 请求仍然注册且任务尚可能访问它，semaphore 就必须保持存活。
     AsyncTask& release(Semaphore& semaphore, std::size_t count);
 
-
     /// @brief 移除一个或多个执行前信号量获取请求。
     /// @tparam Ts 非空的 Semaphore 类型包。
     /// @param semaphores 要从 acquire 列表移除的信号量；不存在的项被忽略。
@@ -216,50 +213,61 @@ public:
     /// @pre 句柄有效，且不得与任务启动、执行或其他配置修改并发调用。
     AsyncTask& clear_releases() noexcept;
 
-
     /// @brief 按存储顺序遍历全部 acquire 请求，并允许修改其配额。
     /// @tparam F 可接收 (Semaphore&, std::size_t&) 或仅接收 Semaphore& 的 visitor 类型。
     /// @param visitor 对每个 acquire 请求调用一次；接收 count 引用的重载可以原地修改配额。
-    /// @pre 句柄有效，且不得与任务启动、执行或配置修改并发调用。
-    /// @note 如果 F 同时匹配两种调用形式，优先调用 (Semaphore&, std::size_t&) 形式。
+    /// @pre 不得与任务启动、执行或配置修改并发调用。
+    /// @note 空句柄直接返回，不调用 visitor。
+    ///       如果 F 同时匹配两种调用形式，优先调用 (Semaphore&, std::size_t&) 形式。
     template <typename F>
         requires std::invocable<F&, Semaphore&, std::size_t&> || std::invocable<F&, Semaphore&>
-    void for_each_acquire(F&& visitor) noexcept(std::invocable<F&, Semaphore&, std::size_t&>
-                                                    ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
-                                                    : std::is_nothrow_invocable_v<F&, Semaphore&>);
+    void for_each_acquire(F&& visitor) noexcept(
+        std::invocable<F&, Semaphore&, std::size_t&>
+            ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+            : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
     /// @brief 按存储顺序只读遍历全部 acquire 请求。
     /// @tparam F 可接收 (const Semaphore&, std::size_t) 或仅接收 const Semaphore& 的 visitor 类型。
     /// @param visitor 对每个 acquire 请求调用一次。
-    /// @pre 句柄有效，且不得与 acquire 配置修改并发调用。
-    /// @note 如果 F 同时匹配两种调用形式，优先调用 (const Semaphore&, std::size_t) 形式。
+    /// @pre 不得与 acquire 配置修改并发调用。
+    /// @note 空句柄直接返回，不调用 visitor。
+    ///       如果 F 同时匹配两种调用形式，优先调用 (const Semaphore&, std::size_t) 形式。
     template <typename F>
         requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
-    void for_each_acquire(F&& visitor) const noexcept(std::invocable<F&, const Semaphore&, std::size_t>
-                                                          ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
-                                                          : std::is_nothrow_invocable_v<F&, const Semaphore&>);
+    void for_each_acquire(F&& visitor) const noexcept(
+        std::invocable<F&, const Semaphore&, std::size_t>
+            ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+            : std::is_nothrow_invocable_v<F&, const Semaphore&>);
 
     /// @brief 按存储顺序遍历全部 release 请求，并允许修改其配额。
     /// @tparam F 可接收 (Semaphore&, std::size_t&) 或仅接收 Semaphore& 的 visitor 类型。
     /// @param visitor 对每个 release 请求调用一次；接收 count 引用的重载可以原地修改配额。
-    /// @pre 句柄有效，且不得与任务启动、执行或配置修改并发调用。
-    /// @note 如果 F 同时匹配两种调用形式，优先调用 (Semaphore&, std::size_t&) 形式。
+    /// @pre 不得与任务启动、执行或配置修改并发调用。
+    /// @note 空句柄直接返回，不调用 visitor。
+    ///       如果 F 同时匹配两种调用形式，优先调用 (Semaphore&, std::size_t&) 形式。
     template <typename F>
         requires std::invocable<F&, Semaphore&, std::size_t&> || std::invocable<F&, Semaphore&>
-    void for_each_release(F&& visitor) noexcept(std::invocable<F&, Semaphore&, std::size_t&>
-                                                    ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
-                                                    : std::is_nothrow_invocable_v<F&, Semaphore&>);
+    void for_each_release(F&& visitor) noexcept(
+        std::invocable<F&, Semaphore&, std::size_t&>
+            ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+            : std::is_nothrow_invocable_v<F&, Semaphore&>);
 
     /// @brief 按存储顺序只读遍历全部 release 请求。
     /// @tparam F 可接收 (const Semaphore&, std::size_t) 或仅接收 const Semaphore& 的 visitor 类型。
     /// @param visitor 对每个 release 请求调用一次。
-    /// @pre 句柄有效，且不得与 release 配置修改并发调用。
-    /// @note 如果 F 同时匹配两种调用形式，优先调用 (const Semaphore&, std::size_t) 形式。
+    /// @pre 不得与 release 配置修改并发调用。
+    /// @note 空句柄直接返回，不调用 visitor。
+    ///       如果 F 同时匹配两种调用形式，优先调用 (const Semaphore&, std::size_t) 形式。
     template <typename F>
         requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
-    void for_each_release(F&& visitor) const noexcept(std::invocable<F&, const Semaphore&, std::size_t>
-                                                          ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
-                                                          : std::is_nothrow_invocable_v<F&, const Semaphore&>);
+    void for_each_release(F&& visitor) const noexcept(
+        std::invocable<F&, const Semaphore&, std::size_t>
+            ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+            : std::is_nothrow_invocable_v<F&, const Semaphore&>);
+
+    // ============================================================================
+    // 观察者管理
+    // ============================================================================
 
     /// @brief 构造一个观察者并注册到当前任务。
     /// @tparam Observer 派生自 TaskObserver 的具体观察者类型。
@@ -306,8 +314,7 @@ private:
 
 template <typename R>
 AsyncTask<R>::AsyncTask(std::nullptr_t) noexcept
-    : Base{nullptr} {
-}
+    : Base{nullptr} {}
 
 template <typename R>
 AsyncTask<R>& AsyncTask<R>::operator=(std::nullptr_t) noexcept {
@@ -503,7 +510,6 @@ AsyncTask<R>& AsyncTask<R>::release(Semaphore& semaphore, std::size_t count) {
     return *this;
 }
 
-
 // ============================================================================
 // 删除和清空信号量配置
 // ============================================================================
@@ -547,10 +553,14 @@ AsyncTask<R>& AsyncTask<R>::clear_releases() noexcept {
 template <typename R>
 template <typename F>
     requires std::invocable<F&, Semaphore&, std::size_t&> || std::invocable<F&, Semaphore&>
-void AsyncTask<R>::for_each_acquire(F&& visitor) noexcept(std::invocable<F&, Semaphore&, std::size_t&>
-                                                              ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
-                                                              : std::is_nothrow_invocable_v<F&, Semaphore&>) {
-    TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
+void AsyncTask<R>::for_each_acquire(F&& visitor) noexcept(
+    std::invocable<F&, Semaphore&, std::size_t&>
+        ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+        : std::is_nothrow_invocable_v<F&, Semaphore&>) {
+    if (!m_work) {
+        return;
+    }
+
     for (auto& request : m_work->_acquires()) {
         if constexpr (std::invocable<F&, Semaphore&, std::size_t&>) {
             std::invoke(visitor, *request.sem, request.count);
@@ -563,11 +573,15 @@ void AsyncTask<R>::for_each_acquire(F&& visitor) noexcept(std::invocable<F&, Sem
 template <typename R>
 template <typename F>
     requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
-void AsyncTask<R>::for_each_acquire(F&& visitor) const noexcept(std::invocable<F&, const Semaphore&, std::size_t>
-                                                                    ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
-                                                                    : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
-    TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
-    for (const auto& request : m_work->_acquires()) {
+void AsyncTask<R>::for_each_acquire(F&& visitor) const noexcept(
+    std::invocable<F&, const Semaphore&, std::size_t>
+        ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+        : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
+    if (!m_work) {
+        return;
+    }
+
+    for (const auto& request : std::as_const(*m_work)._acquires()) {
         if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
             std::invoke(visitor, std::as_const(*request.sem), std::size_t{request.count});
         } else {
@@ -579,10 +593,14 @@ void AsyncTask<R>::for_each_acquire(F&& visitor) const noexcept(std::invocable<F
 template <typename R>
 template <typename F>
     requires std::invocable<F&, Semaphore&, std::size_t&> || std::invocable<F&, Semaphore&>
-void AsyncTask<R>::for_each_release(F&& visitor) noexcept(std::invocable<F&, Semaphore&, std::size_t&>
-                                                              ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
-                                                              : std::is_nothrow_invocable_v<F&, Semaphore&>) {
-    TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
+void AsyncTask<R>::for_each_release(F&& visitor) noexcept(
+    std::invocable<F&, Semaphore&, std::size_t&>
+        ? std::is_nothrow_invocable_v<F&, Semaphore&, std::size_t&>
+        : std::is_nothrow_invocable_v<F&, Semaphore&>) {
+    if (!m_work) {
+        return;
+    }
+
     for (auto& request : m_work->_releases()) {
         if constexpr (std::invocable<F&, Semaphore&, std::size_t&>) {
             std::invoke(visitor, *request.sem, request.count);
@@ -595,11 +613,15 @@ void AsyncTask<R>::for_each_release(F&& visitor) noexcept(std::invocable<F&, Sem
 template <typename R>
 template <typename F>
     requires std::invocable<F&, const Semaphore&, std::size_t> || std::invocable<F&, const Semaphore&>
-void AsyncTask<R>::for_each_release(F&& visitor) const noexcept(std::invocable<F&, const Semaphore&, std::size_t>
-                                                                    ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
-                                                                    : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
-    TFL_ASSERT(m_work && "AsyncTask must reference a valid Work.");
-    for (const auto& request : m_work->_releases()) {
+void AsyncTask<R>::for_each_release(F&& visitor) const noexcept(
+    std::invocable<F&, const Semaphore&, std::size_t>
+        ? std::is_nothrow_invocable_v<F&, const Semaphore&, std::size_t>
+        : std::is_nothrow_invocable_v<F&, const Semaphore&>) {
+    if (!m_work) {
+        return;
+    }
+
+    for (const auto& request : std::as_const(*m_work)._releases()) {
         if constexpr (std::invocable<F&, const Semaphore&, std::size_t>) {
             std::invoke(visitor, std::as_const(*request.sem), std::size_t{request.count});
         } else {
@@ -607,7 +629,6 @@ void AsyncTask<R>::for_each_release(F&& visitor) const noexcept(std::invocable<F
         }
     }
 }
-
 
 // ============================================================================
 // 观察者
