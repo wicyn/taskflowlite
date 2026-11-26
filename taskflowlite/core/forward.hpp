@@ -62,9 +62,6 @@ class AsyncTaskObject;
 
 class PlaceholderInvoker;
 
-template <bool>
-class AnchorWork;
-
 template <typename>
 class BasicInvoker;
 
@@ -85,6 +82,9 @@ class RuntimeInvoker;
 
 template <typename>
 class CoroInvoker;
+
+template <typename>
+class SubFlowWork;
 
 template <typename>
 class SubFlowInvoker;
@@ -147,7 +147,6 @@ class AsyncTaskModuleInvoker;
 /// 模板参数数量必须与对应 Invoker 的前向声明及实际定义保持一致。
 #define TFL_WORK_SUBCLASS_FRIENDS                                                                        \
 friend class ::tfl::PlaceholderInvoker;                                                                  \
-    template <bool>                         friend class ::tfl::AnchorWork;                              \
     template <typename>                     friend class ::tfl::BasicInvoker;                            \
     template <typename>                     friend class ::tfl::BranchInvoker;                           \
     template <typename>                     friend class ::tfl::MultiBranchInvoker;                      \

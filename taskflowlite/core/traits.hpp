@@ -180,13 +180,13 @@ concept noexcept_predicate = predicate<P, Args...> &&
 
 /// @brief 子图终止谓词，接收从 0 开始的 uint64_t 迭代索引；返回 true 时结束执行。
 template <typename P>
-concept module_predicate = predicate<P, std::uint64_t> &&
+concept module_predicate = predicate<P, const std::uint64_t&> &&
                            !callback<P>;
 
 /// @brief 约束子图终止谓词调用不抛出异常。
 template <typename P>
 concept noexcept_module_predicate = module_predicate<P> &&
-                                    std::is_nothrow_invocable_v<std::decay_t<P>&, std::uint64_t>;
+                                    std::is_nothrow_invocable_v<std::decay_t<P>&, const std::uint64_t&>;
 
 static_assert(predicate<decltype([]{ return true; })>);
 static_assert(!predicate<decltype([]{})>);
@@ -195,11 +195,16 @@ static_assert(predicate<decltype([](std::uint64_t&) { return true; }), std::uint
 static_assert(!predicate<decltype([](std::uint64_t&) { return true; }), std::uint64_t>);
 
 static_assert(module_predicate<decltype([](std::uint64_t) { return true; })>);
+static_assert(module_predicate<decltype([](const std::uint64_t) { return true; })>);
 static_assert(module_predicate<decltype([](const std::uint64_t&) { return true; })>);
-static_assert(module_predicate<decltype([](std::uint64_t&&) { return true; })>);
-static_assert(!module_predicate<decltype([] { return true; })>);
+
 static_assert(!module_predicate<decltype([](std::uint64_t&) { return true; })>);
+static_assert(!module_predicate<decltype([](std::uint64_t&&) { return true; })>);
+static_assert(!module_predicate<decltype([](const std::uint64_t&&) { return true; })>);
+static_assert(!module_predicate<decltype([] { return true; })>);
 static_assert(!module_predicate<decltype([](std::uint64_t) { return 0; })>);
+
+static_assert(noexcept_module_predicate<decltype([](std::uint64_t) noexcept { return true; })>);
 static_assert(!noexcept_module_predicate<decltype([](std::uint64_t) { return true; })>);
 
 static_assert(callback<decltype([]{})>);

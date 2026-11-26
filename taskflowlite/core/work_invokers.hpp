@@ -460,14 +460,14 @@ public:
     /// @brief 从传入的 callable 复制或移动构造内部对象。
     template <typename U>
         requires std::constructible_from<F, U&&>
-    explicit SubFlowWork(U&& f) noexcept(noexcept(F{std::forward<U>(f)}) && std::is_nothrow_default_constructible_v<Graph>)
+    explicit SubFlowWork(U&& f) noexcept(noexcept(F{std::forward<U>(f)}) && noexcept(Graph{}))
         : m_func{std::forward<U>(f)} {}
 
     /// @brief 使用参数直接在内部存储中构造 callable。
     /// @note 不创建 F 临时对象，不要求 F 可复制或可移动。
     template <typename... Args>
         requires std::constructible_from<F, Args&&...>
-    explicit SubFlowWork(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<F, Args&&...> && std::is_nothrow_default_constructible_v<Graph>)
+    explicit SubFlowWork(std::in_place_t, Args&&... args) noexcept(std::is_nothrow_constructible_v<F, Args&&...> && noexcept(Graph{}))
         : m_func(std::forward<Args>(args)...) {}
 
     /// @brief 返回内部保存的 callable 引用。
@@ -1036,10 +1036,10 @@ public:
 ///
 /// Invoker 保存 Graph holder 和终止谓词，并缓存 `_set_up_graph()` 得到的 source 数量。
 /// 首次进入时执行停止/Semaphore 检查、设置 PREEMPTED 并初始化子图。
-/// 没有 source 时直接收尾。
+/// 首次没有 source 或谓词满足时直接收尾，否则直接调度，无需重置 join_counter。
 ///
 /// 每轮子图完成后恢复当前 Work，检查异常、停止和谓词。
-/// 继续执行时重置非 source join_counter，最后一个 source 通过 cache 接力，
+/// 仅继续下一轮时重置非 source join_counter，最后一个 source 通过 cache 接力，
 /// 其余 source 发布到 Worker 队列。
 ///
 /// Observer before/after 包围整个 Module 生命周期，而不是每一轮子图。
@@ -1121,12 +1121,16 @@ public:
             m_iteration = 0;
             m_num_sources = exe._set_up_graph(graph, w);
 
-            if (m_num_sources == 0) [[unlikely]] {
+            // 首次执行仅检查 source 数量和循环谓词。
+            if (m_num_sources == 0 || w._invoke_predicate(m_pred, m_iteration++)) {
                 goto finalize;
             }
+
+            // 首次初始化已建立全部 join_counter，无需重复重置。
+            goto schedule;
         }
 
-        // 异常、停止或循环条件满足时结束整个 Module。
+        // 恢复执行时检查异常、停止及循环条件。
         if (w._should_abort() || w._invoke_predicate(m_pred, m_iteration++)) {
         finalize:
             w._notify_after(wr);
@@ -1139,9 +1143,10 @@ public:
             return;
         }
 
-        // 建立本轮子图运行期依赖计数。
+        // 仅在继续下一轮子图时重置运行期依赖计数。
         exe._reset_graph_join_counters(graph, m_num_sources);
 
+    schedule:
         // 建立本轮所有 source 的完成等待计数。
         w.m_join_counter.store(m_num_sources, std::memory_order_relaxed);
 
@@ -1392,8 +1397,9 @@ public:
 /// @brief 无结果句柄地重复执行一个子 Graph，并在结束时调用完成回调。
 ///
 /// 通过 `TopologyStorage` 拥有独立 Topology；同时保存 Graph holder、终止谓词和 callback。
-/// 首次进入时设置 PREEMPTED 并初始化子图。没有 source 时直接收尾，否则每轮执行前检查停止、异常和谓词。
-/// 结束时调用 callback、清除 PREEMPTED 并进入 SilentAsync tear-down；继续时重置 join 状态，
+/// 首次进入时设置 PREEMPTED 并初始化子图；没有 source 或谓词满足时直接收尾，否则直接调度。
+/// 恢复时检查异常、停止和谓词，仅继续下一轮时重置 join 状态。结束时调用 callback、
+/// 清除 PREEMPTED 并进入 SilentAsync tear-down；
 /// 最后一个 source 通过 cache 接力，其余 source 发布到 Worker 队列。
 ///
 /// @tparam GhStore Graph holder 的实际存储类型。
@@ -1443,12 +1449,16 @@ public:
             w.m_properties |= Work::Properties::PREEMPTED;
             m_iteration = 0;
             m_num_sources = exe._set_up_graph(graph, w);
-            if (m_num_sources == 0) [[unlikely]] {
+            // 首次执行仅检查 source 数量和循环谓词。
+            if (m_num_sources == 0 || w._invoke_predicate(m_pred, m_iteration++)) {
                 goto finalize;
             }
+
+            // 首次初始化已建立全部 join_counter，无需重复重置。
+            goto schedule;
         }
 
-        // 异常、停止或循环条件满足时结束整个 Module。
+        // 恢复执行时检查异常、停止及循环条件。
         if (w._should_abort() || w._invoke_predicate(m_pred, m_iteration++)) {
         finalize:
             w._invoke_callback(m_callback);
@@ -1458,9 +1468,10 @@ public:
             return;
         }
 
-        // 建立本轮子图运行期依赖计数。
+        // 仅在继续下一轮子图时重置运行期依赖计数。
         exe._reset_graph_join_counters(graph, m_num_sources);
 
+    schedule:
         // 建立本轮所有 source 的完成等待计数。
         w.m_join_counter.store(m_num_sources, std::memory_order_relaxed);
 
@@ -1732,7 +1743,8 @@ public:
 ///
 /// `ResultStorage<void>` 提供独立 Topology 与完成结果槽，Work 固定为显式异常锚点。
 /// Invoker 保存 Graph holder、终止谓词和完成回调；通过 PREEMPTED 跨多轮子图保持一次
-/// Module 执行，终止后进入 Async tear-down 发布 Finished 并唤醒 Future 等待者。
+/// Module 执行；首次初始化后直接按谓词决定是否调度，恢复时检查异常、停止和谓词，
+/// 仅继续下一轮时重置 join 状态。终止后进入 Async tear-down 发布 Finished 并唤醒 Future 等待者。
 ///
 /// @tparam GhStore Graph holder 的实际存储类型。
 /// @tparam P 可接收从 0 开始的迭代索引或无参调用的终止谓词类型。
@@ -1782,12 +1794,16 @@ public:
             w.m_properties |= Work::Properties::PREEMPTED;
             m_iteration = 0;
             m_num_sources = exe._set_up_graph(graph, w);
-            if (m_num_sources == 0) [[unlikely]] {
+            // 首次执行仅检查 source 数量和循环谓词。
+            if (m_num_sources == 0 || w._invoke_predicate(m_pred, m_iteration++)) {
                 goto finalize;
             }
+
+            // 首次初始化已建立全部 join_counter，无需重复重置。
+            goto schedule;
         }
 
-        // 异常、停止或循环条件满足时结束整个 Module。
+        // 恢复执行时检查异常、停止及循环条件。
         if (w._should_abort() || w._invoke_predicate(m_pred, m_iteration++)) {
         finalize:
             w._invoke_callback(m_callback);
@@ -1797,9 +1813,10 @@ public:
             return;
         }
 
-        // 建立本轮子图运行期依赖计数。
+        // 仅在继续下一轮子图时重置运行期依赖计数。
         exe._reset_graph_join_counters(graph, m_num_sources);
 
+    schedule:
         // 建立本轮所有 source 的完成等待计数。
         w.m_join_counter.store(m_num_sources, std::memory_order_relaxed);
 
@@ -2191,29 +2208,40 @@ public:
         if ((w.m_properties & Work::Properties::PREEMPTED) == 0) {
             TFL_TRY_ACQUIRE_SEMAPHORES(w, wr, exe);
             TFL_WORK_EXECUTION_BEGIN(w);
+
             w.m_properties |= Work::Properties::PREEMPTED;
             w._notify_before(wr);
+
             m_iteration = 0;
             m_num_sources = exe._set_up_graph(graph, w);
-            if (m_num_sources == 0) [[unlikely]] {
+
+            // 首次执行仅检查 source 数量和循环谓词。
+            if (m_num_sources == 0 || w._invoke_predicate(m_pred, m_iteration++)) {
                 goto finalize;
             }
+
+            // 首次初始化已建立全部 join_counter，无需重复重置。
+            goto schedule;
         }
 
-        // 异常、停止或循环条件满足时结束整个 Module。
+        // 恢复执行时检查异常、停止及循环条件。
         if (w._should_abort() || w._invoke_predicate(m_pred, m_iteration++)) {
         finalize:
             w._notify_after(wr);
             w._invoke_callback(m_callback);
             w.m_properties &= ~Work::Properties::PREEMPTED;
+
             TFL_RELEASE_SEMAPHORES(w, wr, exe);
             TFL_WORK_EXECUTION_END(w);
+
             exe._tear_down_async_task(w, wr, cache);
             return;
         }
 
+        // 仅在继续下一轮子图时重置运行期依赖计数。
         exe._reset_graph_join_counters(graph, m_num_sources);
 
+    schedule:
         // 建立本轮所有 source 的完成等待计数。
         w.m_join_counter.store(m_num_sources, std::memory_order_relaxed);
 

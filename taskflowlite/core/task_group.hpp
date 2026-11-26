@@ -330,7 +330,7 @@ private:
 inline TaskGroup::TaskGroup(Context& context) noexcept
     : m_worker{context.worker()}
     , m_executor{context.executor()}
-    , m_anchor{context.work(), context.executor()} {}
+    , m_anchor{context.work(), context.executor(),context.work().m_topology} {}
 
 inline TaskGroup::~TaskGroup() noexcept {
     m_executor._cowait_until(m_worker, [this]() noexcept {

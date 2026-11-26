@@ -7,7 +7,6 @@
 /// @copyright Copyright (c) 2026 wicyn
 
 #pragma once
-#include <cassert>
 #include <concepts>
 #include <functional>
 #include <memory>
@@ -25,12 +24,15 @@ namespace tfl {
 ///
 /// @tparam R 结果对象类型。
 template <typename R>
-struct prefer_direct_result_storage : std::bool_constant<std::default_initializable<R> && std::is_assignable_v<R&, R&&>> {};
+struct prefer_direct_result_storage : std::bool_constant<std::default_initializable<R> && std::is_assignable_v<std::add_lvalue_reference_t<R>, std::add_rvalue_reference_t<R>>> {};
 
 namespace detail {
 
 template <typename R>
-inline constexpr bool use_direct_result_storage = prefer_direct_result_storage<R>::value && std::default_initializable<R> && std::is_assignable_v<R&, R&&>;
+concept result_object = std::is_object_v<R> && !std::is_array_v<R> && std::same_as<R, std::remove_cv_t<R>> && std::destructible<R>;
+
+template <typename R>
+inline constexpr bool use_direct_result_storage = prefer_direct_result_storage<R>::value && std::default_initializable<R> && std::is_assignable_v<std::add_lvalue_reference_t<R>, std::add_rvalue_reference_t<R>>;
 
 template <typename R, bool Direct = use_direct_result_storage<R>>
 class ResultStorage;
@@ -98,7 +100,8 @@ protected:
 
     /// @brief 在 optional 中构造或替换结果对象。
     /// @tparam U 输入值类型。
-    /// @param value 用于构造 R 的值。
+    /// @param value 用于构造 R 的值，不得引用即将销毁的槽内对象。
+    /// @note 构造失败时，原有结果已销毁，结果槽为空。
     template <typename U> requires storable<U>
     void store(U&& value) noexcept(nothrow_storable<U>) { m_value.emplace(std::forward<U>(value)); }
 
@@ -118,20 +121,27 @@ private:
 
 } // namespace detail
 
+/// @brief 拒绝不受支持的结果类型，避免实例化非法的结果存储。
+template <typename R>
+class ResultSlot {
+    static_assert(!std::is_rvalue_reference_v<R>, "ResultSlot<R>: rvalue reference results are not supported.");
+    static_assert(std::is_reference_v<R> || std::is_object_v<R>, "ResultSlot<R>: R must be an object type, lvalue reference or void.");
+    static_assert(!std::is_array_v<R>, "ResultSlot<R>: array value results are not supported.");
+    static_assert(std::same_as<R, std::remove_cv_t<R>>, "ResultSlot<R>: value results must not be cv-qualified.");
+    static_assert(!std::is_object_v<R> || std::destructible<R>, "ResultSlot<R>: value results must be nothrow destructible.");
+};
+
 /// @brief 保存一个普通值任务结果，并统一提供写入、引用访问和移动取出接口。
 ///
 /// 具体采用预构造复用还是 optional 延迟构造由 `prefer_direct_result_storage<R>`
-/// 决定；`take()` 只返回内部对象的右值引用，不会清空或重建结果槽。
+/// 和实际类型能力共同决定；`take()` 只返回内部对象的右值引用，不会清空或重建结果槽。
 ///
-/// @tparam R 无 cv 限定、非数组且可析构的对象类型。
+/// @tparam R 无 cv 限定、非数组且可无异常析构的对象类型。
 /// @note 结果槽不提供同步；读写必须位于任务完成关系所保证的时序内。
+/// @note 延迟存储模式下，写入值不得引用即将销毁的槽内对象。
 template <typename R>
-class ResultSlot : private detail::ResultStorage<R> {
-    static_assert(std::is_object_v<R>, "ResultSlot<R>: R must be an object type.");
-    static_assert(!std::is_array_v<R>, "ResultSlot<R>: R must not be an array type.");
-    static_assert(std::same_as<R, std::remove_cv_t<R>>, "ResultSlot<R>: R must not be cv-qualified.");
-    static_assert(std::is_destructible_v<R>, "ResultSlot<R>: R must be destructible.");
-
+    requires detail::result_object<R>
+class ResultSlot<R> : private detail::ResultStorage<R> {
     using Storage = detail::ResultStorage<R>;
 
 public:
@@ -152,8 +162,8 @@ public:
     template <typename U> requires Storage::template storable<U>
         void return_value(U&& value) noexcept(Storage::template nothrow_storable<U>) { Storage::store(std::forward<U>(value)); }
 
-    /// @brief 保存一个 R 右值。
-    /// @param value 要移动进结果槽的对象。
+    /// @brief 保存一个 R 右值，同时支持花括号初始化。
+    /// @param value 要移动或复制进结果槽的对象。
     void return_value(R&& value) noexcept(Storage::template nothrow_storable<R>)
         requires Storage::template storable<R> { Storage::store(std::move(value)); }
 
@@ -179,27 +189,28 @@ public:
 /// @warning 读取前必须已经写入结果，且被引用对象必须在全部访问期间保持存活。
 template <typename T>
 class ResultSlot<T&> {
+    using Reference = std::reference_wrapper<T>;
+
+    template <typename U>
+    static constexpr bool bindable = std::is_lvalue_reference_v<U> && std::is_constructible_v<Reference, U>;
+
 public:
+    /// @brief 保存能绑定到现有对象的左值引用，包括派生类到基类的引用转换。
+    template <typename U>
+        requires bindable<U&&>
+    void return_value(U&& value) noexcept(std::is_nothrow_constructible_v<Reference, U&&>) {
+        m_value = std::addressof(Reference{std::forward<U>(value)}.get());
+    }
+
     /// @brief 调用 callable 并保存其返回左值的地址。
-    /// @tparam F 返回可转换为 `T&` 的左值引用的 callable 类型。
+    /// @tparam F 返回可绑定到现有对象的左值引用的 callable 类型。
     /// @tparam Args 调用时传递给 callable 的参数类型。
     /// @param f 要调用的对象。
     /// @param args 转发给 callable 的参数。
     template <typename F, typename... Args>
-        requires std::invocable<F&&, Args&&...> && std::is_lvalue_reference_v<std::invoke_result_t<F&&, Args&&...>> && std::convertible_to<std::invoke_result_t<F&&, Args&&...>, T&>
-    void invoke(F&& f, Args&&... args) noexcept(std::is_nothrow_invocable_v<F&&, Args&&...>) {
-        T& value = std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
-        m_value = std::addressof(value);
-    }
-
-    /// @brief 保存一个兼容左值引用的地址。
-    /// @tparam U 被引用对象的推导类型。
-    /// @param value 必须是可转换为 `T&` 的左值；对象所有权不转移。
-    template <typename U>
-        requires std::is_lvalue_reference_v<U&&> && std::convertible_to<U&&, T&>
-    void return_value(U&& value) noexcept {
-        T& reference = static_cast<T&>(std::forward<U>(value));
-        m_value = std::addressof(reference);
+        requires std::invocable<F&&, Args&&...> && bindable<std::invoke_result_t<F&&, Args&&...>>
+    void invoke(F&& f, Args&&... args) noexcept(noexcept(return_value(std::invoke(std::forward<F>(f), std::forward<Args>(args)...)))) {
+        return_value(std::invoke(std::forward<F>(f), std::forward<Args>(args)...));
     }
 
     /// @brief 获取保存的左值引用。

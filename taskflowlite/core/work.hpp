@@ -708,7 +708,7 @@ private:
     /// @param iteration 本次执行中从 0 开始的迭代索引。
     /// @return predicate 的返回值；发生异常时返回 true。
     template <module_predicate P>
-    TFL_FORCE_INLINE bool _invoke_predicate(P& predicate, std::uint64_t iteration) noexcept {
+    TFL_FORCE_INLINE bool _invoke_predicate(P& predicate, const std::uint64_t iteration) noexcept {
         if constexpr (noexcept_module_predicate<P>) {
             return std::invoke(predicate, iteration);
         } else {
@@ -1540,29 +1540,38 @@ inline void Semaphore::_release(Work*& out_first, Work*& out_last, std::size_t c
 
 /// @brief 内部执行作用域使用的栈绑定异常/完成锚点 Work。
 ///
-/// AnchorWork 不承载用户 callable，通过独立 Topology 和
-/// `Control::EXPLICIT_ANCHOR` 聚合子链完成计数与异常。
+/// AnchorWork 通过独立 Topology 和 Control::EXPLICIT_ANCHOR
+/// 聚合子链完成计数与异常。
 ///
 /// Preempted 为 false 时仅作为协作执行锚点；
-/// Preempted 为 true 时参与 PREEMPTED 恢复，并在恢复执行后
-/// 发布所属 Topology 完成状态并唤醒等待线程。
+/// Preempted 为 true 时参与 PREEMPTED 恢复，并在恢复执行后调用完成回调。
 ///
 /// @tparam Preempted 是否在完成后恢复当前锚点。
-/// @note 对象由调用栈直接管理，绝不能通过 `destroy_work()` 或 Work 对象池回收。
-template <bool Preempted>
+/// @note 对象由调用栈直接管理，绝不能通过 destroy_work() 或 Work 对象池回收。
+template <bool Preempted = false>
 class AnchorWork final : public Work {
+    using EmptyCallback = decltype([]() noexcept {});
+
+    template <typename C>
+    static constexpr bool valid_callback = std::is_nothrow_invocable_v<std::decay_t<C>&> && std::is_nothrow_constructible_v<std::decay_t<C>, C&&>;
+
+    template <typename C>
     class Invoker final : public TopologyStorage {
+        TFL_NO_UNIQUE_ADDRESS C m_callback;
+
     public:
         static constexpr TaskType TYPE = TaskType::None;
         static constexpr Work::Properties::type PROPERTIES = Preempted ? Work::Properties::PREEMPTED : Work::Properties::NONE;
         static constexpr Work::Control::type CONTROL = Work::Control::EXPLICIT_ANCHOR;
 
-        explicit Invoker(Executor& executor, Topology* parent_topology) noexcept
-            : TopologyStorage{executor, parent_topology} {}
+        template <typename F>
+        explicit Invoker(Executor& executor, Topology* parent_topology, F&& callback) noexcept
+            : TopologyStorage{executor, parent_topology}
+            , m_callback(std::forward<F>(callback)) {}
 
-        void invoke(Work& work, Worker&, Executor&, Work*&) noexcept {
+        void invoke(Work&, Worker&, Executor&, Work*&) noexcept {
             if constexpr (Preempted) {
-                work.m_topology->_set_finished();
+                std::invoke(m_callback);
             }
         }
 
@@ -1570,30 +1579,17 @@ class AnchorWork final : public Work {
     };
 
 public:
-    explicit AnchorWork(Work& parent, Executor& executor) noexcept
-        : AnchorWork{parent, executor, parent.m_topology} {}
-
-    explicit AnchorWork(Work& parent, Executor& executor, Topology* parent_topology) noexcept
-        : Work{std::in_place_type<Invoker>,
-               std::addressof(parent),
-               executor,
-               parent_topology} {
+    template <typename C = EmptyCallback>
+        requires valid_callback<C>
+    explicit AnchorWork(Work& parent, Executor& executor, Topology* parent_topology, C&& callback = {}) noexcept
+        : Work{std::in_place_type<Invoker<std::decay_t<C>>>, std::addressof(parent), executor, parent_topology, std::forward<C>(callback)} {
         TFL_ASSERT(parent.m_topology);
-
-        if constexpr (Preempted) {
-            m_topology->_set_running();
-        }
     }
 
-    explicit AnchorWork(Executor& executor) noexcept
-        : Work{std::in_place_type<Invoker>,
-               static_cast<Work*>(nullptr),
-               executor,
-               nullptr} {
-        if constexpr (Preempted) {
-            m_topology->_set_running();
-        }
-    }
+    template <typename C = EmptyCallback>
+        requires valid_callback<C>
+    explicit AnchorWork(Executor& executor, C&& callback = {}) noexcept
+        : Work{std::in_place_type<Invoker<std::decay_t<C>>>, static_cast<Work*>(nullptr), executor, nullptr, std::forward<C>(callback)} {}
 };
 
 // ============================================================================

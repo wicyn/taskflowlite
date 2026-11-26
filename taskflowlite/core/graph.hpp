@@ -40,6 +40,9 @@ class Graph final {
     friend class D2Renderer;
     friend class FlowBuilder;
 
+    template <typename>
+    friend class SubFlowWork;
+
     TFL_WORK_SUBCLASS_FRIENDS;
 
 public:

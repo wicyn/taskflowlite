@@ -563,9 +563,24 @@ private:
     inline static thread_local WorkerTLS s_worker_tls{nullptr, nullptr};
 #else
     /// @brief Worker thread_id 到稳定 Worker 地址的只读运行期映射。
-    /// @warning 构建映射时不得同时调用需要查询该映射的 Executor API。
+    /// @note 启动屏障在映射全部构建完成后放行 Worker；运行期只读。
+    /// @warning 外部线程不得在 Executor 构造完成前调用需要查询该映射的 API。
     std::unordered_map<std::thread::id, Worker*> m_tid_to_worker;
 #endif
+
+    /// @brief Worker 一次性启动状态；仅允许 Starting -> Ready / Failed。
+    enum class StartupState : std::uint8_t {
+        Starting,
+        Ready,
+        Failed
+    };
+
+    /// @brief 发布全部 Worker 线程句柄、调度参数及线程映射的初始化结果。
+    std::atomic<StartupState> m_startup_state{StartupState::Starting};
+
+    /// @brief 发布启动结果并唤醒全部等待启动的 Worker。
+    /// @pre 仅由构造线程调用一次，state 必须为 Ready 或 Failed。
+    void _publish_startup(StartupState state) noexcept;
 
     /// @brief 统一构造入口，完成成员初始化后创建并启动全部 Worker。
     ///
@@ -582,7 +597,8 @@ private:
     static std::size_t _check_worker_count(std::size_t n);
 
     /// @brief 初始化 Worker 调度参数并启动工作线程。
-    /// @note TLS 模式在 Worker 入口绑定线程上下文；Map 模式逐线程注册 thread_id。
+    /// @note 所有线程句柄及 Map 映射发布完成后，统一放行 Worker。
+    /// @note TLS 模式在启动屏障之后、on_start 之前绑定线程上下文。
     /// @param num_workers 要启动的 Worker 数量。
     /// @pre num_workers 已通过 `_check_worker_count()` 校验。
     void _spawn(std::size_t num_workers);
@@ -873,10 +889,15 @@ private:
     template <predicate Pred>
     void _cowait_until(Worker& worker, Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>);
 
-    /// @brief 启动一个 Graph，并阻塞当前线程直到 Graph 全部完成。
+    /// @brief 启动一个 Graph，并调用指定回调等待 Graph 完成。
+    /// @tparam F 等待回调类型。
     /// @param g 要执行的 Graph。
     /// @param parent Graph 所属父 Work。
-    void _corun_graph(Graph& g, Work& parent) noexcept;
+    /// @param callback Graph 发布后执行的等待回调。
+    /// @note 没有 source 节点时直接返回，不调用 callback。
+    template <typename F>
+        requires std::is_nothrow_invocable_v<F&&>
+    void _corun_graph(Graph& g, Work& parent, F&& callback) noexcept;
 
     /// @brief 在当前 Worker 上启动一个 Graph，并协作执行直到 Graph 全部完成。
     /// @param g 要执行的 Graph。
@@ -925,6 +946,8 @@ inline Executor::Executor(WorkerHandler* handler, std::size_t num_workers)
     TFL_TRY {
         _spawn(num_workers);
     } TFL_CATCH_ALL {
+        // 线程创建或映射构建失败：先解除启动屏障，再回收已创建线程。
+        _publish_startup(StartupState::Failed);
         _shutdown();
         TFL_RETHROW();
     }
@@ -1153,9 +1176,22 @@ inline void Executor::corun(Gh&& gh) {
         return;
     }
 
-    AnchorWork<true> anchor{*this};
+    std::atomic<unsigned> state{0};
 
-    _corun_graph(graph, anchor);
+    AnchorWork<true> anchor{*this, [&]() noexcept {
+                                state.store(1, std::memory_order_relaxed);
+                                state.notify_one();
+                                state.store(2, std::memory_order_release);
+                            }};
+
+    _corun_graph(graph, anchor, [&]() noexcept {
+        state.wait(0, std::memory_order_relaxed);
+
+        while (state.load(std::memory_order_acquire) != 2) {
+            std::this_thread::yield();
+        }
+    });
+
     anchor._rethrow_exception();
 }
 
@@ -1204,6 +1240,14 @@ inline void Executor::_shutdown() noexcept {
 // Work-Stealing 调度循环
 // ============================================================================
 
+inline void Executor::_publish_startup(StartupState state) noexcept {
+    TFL_ASSERT(state != StartupState::Starting);
+    TFL_ASSERT(m_startup_state.load(std::memory_order_relaxed) == StartupState::Starting);
+
+    m_startup_state.store(state, std::memory_order_release);
+    m_startup_state.notify_all();
+}
+
 inline void Executor::_spawn(std::size_t num_workers) {
     const std::size_t num_queues = this->num_queues();
     const auto max_steals = static_cast<std::uint32_t>(num_queues * 2);
@@ -1220,6 +1264,14 @@ inline void Executor::_spawn(std::size_t num_workers) {
         wr.m_max_yields = max_yields;
 
         wr.m_thread = std::thread([this, &wr, num_queues]() noexcept {
+            // acquire 与构造线程的 release 配对，确保所有初始化写入可见。
+            m_startup_state.wait(StartupState::Starting, std::memory_order_acquire);
+
+            // 构造失败时未进入 Worker 生命周期，不调用 on_start / on_stop。
+            if (m_startup_state.load(std::memory_order_relaxed) != StartupState::Ready) [[unlikely]] {
+                return;
+            }
+
 #if TFL_USE_WORKER_TLS
             // 在 on_start 之前绑定，允许生命周期钩子获取当前 Worker。
             s_worker_tls = {this, std::addressof(wr)};
@@ -1252,6 +1304,9 @@ inline void Executor::_spawn(std::size_t num_workers) {
         m_tid_to_worker.emplace(wr.m_thread.get_id(), std::addressof(wr));
 #endif
     }
+
+    // 全部线程句柄、调度参数及线程映射均已初始化，统一放行 Worker。
+    _publish_startup(StartupState::Ready);
 }
 
 inline Work* Executor::_wait_for_work(Worker& wr) noexcept {
@@ -1359,13 +1414,15 @@ TFL_FORCE_INLINE std::size_t Executor::_set_up_graph(Graph& g, Work& parent) noe
 
         w->m_properties = (w->m_properties & Work::Properties::FLAG_MASK) | static_cast<Work::Properties::type>(join_weight);
 
+        // 初始化所有节点的本轮 join_counter。
+        // 包括删除前驱后由非源节点变成的源节点。
+        w->m_join_counter.store(join_weight, std::memory_order_relaxed);
+
         // source 按“零物理入度”判定并原地聚集到 [0, n)。
         // weak predecessor 虽不计入 join weight，但仍是物理前驱，因此存在 weak 前驱的节点
         // 不能作为本轮初始 source。
         if (w->_num_predecessors() == 0) {
             std::swap(data[i], data[n++]);
-        } else {
-            w->m_join_counter.store(join_weight, std::memory_order_relaxed);
         }
     }
 
@@ -1975,7 +2032,9 @@ inline void Executor::_cowait_until(Worker& wr, Pred&& pred) noexcept(std::is_no
     }
 }
 
-inline void Executor::_corun_graph(Graph& g, Work& parent) noexcept {
+template <typename F>
+    requires std::is_nothrow_invocable_v<F&&>
+inline void Executor::_corun_graph(Graph& g, Work& parent, F&& callback) noexcept {
     const std::size_t num_sources = _set_up_graph(g, parent);
 
     if (num_sources == 0) [[unlikely]] {
@@ -1984,7 +2043,8 @@ inline void Executor::_corun_graph(Graph& g, Work& parent) noexcept {
 
     parent.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
     _schedule(g.begin(), num_sources);
-    parent.m_topology->_wait();
+
+    std::invoke(std::forward<F>(callback));
 }
 
 inline void Executor::_corun_graph(Graph& g, Work& parent, Worker& wr) noexcept {
