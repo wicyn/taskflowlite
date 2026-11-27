@@ -1546,6 +1546,9 @@ inline void Semaphore::_release(Work*& out_first, Work*& out_last, std::size_t c
 /// Preempted 为 false 时仅作为协作执行锚点；
 /// Preempted 为 true 时参与 PREEMPTED 恢复，并在恢复执行后调用完成回调。
 ///
+/// 完成回调支持无参形式和接收 Work&、Worker&、Executor&、Work*& 的形式，
+/// 两种形式均须满足 noexcept 调用要求，优先调用带调度上下文的形式。
+///
 /// @tparam Preempted 是否在完成后恢复当前锚点。
 /// @note 对象由调用栈直接管理，绝不能通过 destroy_work() 或 Work 对象池回收。
 template <bool Preempted = false>
@@ -1553,7 +1556,11 @@ class AnchorWork final : public Work {
     using EmptyCallback = decltype([]() noexcept {});
 
     template <typename C>
-    static constexpr bool valid_callback = std::is_nothrow_invocable_v<std::decay_t<C>&> && std::is_nothrow_constructible_v<std::decay_t<C>, C&&>;
+    static constexpr bool contextual_callback = std::is_nothrow_invocable_v<C&, Work&, Worker&, Executor&, Work*&>;
+
+    template <typename C>
+    static constexpr bool valid_callback = std::is_nothrow_constructible_v<std::decay_t<C>, C&&> &&
+                                           (contextual_callback<std::decay_t<C>> || std::is_nothrow_invocable_v<std::decay_t<C>&>);
 
     template <typename C>
     class Invoker final : public TopologyStorage {
@@ -1569,9 +1576,13 @@ class AnchorWork final : public Work {
             : TopologyStorage{executor, parent_topology}
             , m_callback(std::forward<F>(callback)) {}
 
-        void invoke(Work&, Worker&, Executor&, Work*&) noexcept {
+        void invoke(Work& work, Worker& worker, Executor& executor, Work*& cache) noexcept {
             if constexpr (Preempted) {
-                std::invoke(m_callback);
+                if constexpr (contextual_callback<C>) {
+                    std::invoke(m_callback, work, worker, executor, cache);
+                } else {
+                    std::invoke(m_callback);
+                }
             }
         }
 

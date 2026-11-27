@@ -36,7 +36,7 @@ namespace tfl {
 /// 子任务会继承本组及其祖先的停止请求。设为 false 时，子任务只观察自身的停止请求。
 ///
 /// TaskGroup 构造时从 Context 提取 Worker 和 Executor 的直接引用，不保存 Context
-/// 本身，从而避免 silent_async/async/run 等调度热路径增加额外一级间接访问.
+/// 本身，从而避免 silent_async/async/run 等调度热路径增加额外一级间接访问。
 ///
 /// @warning 对象必须在传入 Context 所属任务回调和 Worker 线程内使用及销毁，
 ///          不得逃逸当前作用域或被多个线程并发访问。
@@ -55,26 +55,23 @@ public:
     /// @warning context 及其绑定的 Work、Worker 和 Executor 必须覆盖本 TaskGroup 生命周期。
     explicit TaskGroup(Context& context) noexcept;
 
-    /// @brief 协作式等待组内尚未完成的任务。
-    ///
-    /// 正常离开作用域时，析构函数先协作等待全部组内任务完成。
-    ///
+    /// @brief 协作式等待组内尚未完成的任务，不重新抛出归档异常。
     /// @warning 必须在创建本对象的 Worker 线程和任务回调内析构。
     ~TaskGroup() noexcept;
 
     /// @brief Fire-and-forget 提交子图执行一次，并把其生命周期挂接到本组。
-    /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的子图持有者类型。
     /// @tparam C 完成回调类型，默认不执行回调。
-    /// @param gh 要执行的子图。
+    /// @param gh 要执行的子图；左值借用，右值按值捕获。
     /// @param cb 全部节点完成后调用的无参回调。
     /// @note 本函数立即返回；非拥有捕获必须存活到异步执行完成。
     /// @note 新任务默认继承本组的停止请求。
-    template <bool InheritStop = true, graph_holder Gh, callback C = noop_callback>
+    template <bool InheritStop = true, mutable_graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
     void silent_async(Gh&& gh, C&& cb = C{});
 
     /// @brief Fire-and-forget 提交子图循环执行指定次数。
-    /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的子图持有者类型。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 完成回调类型，默认不执行回调。
     /// @param gh 要执行的子图。
@@ -82,19 +79,19 @@ public:
     /// @param cb 全部循环完成后调用的无参回调。
     /// @note 新任务默认继承本组的停止请求。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <bool InheritStop = true, graph_holder Gh, std::integral I, callback C = noop_callback>
+    template <bool InheritStop = true, mutable_graph_holder Gh, std::integral I, callback C = noop_callback>
         requires capturable<C>
     void silent_async(Gh&& gh, I num, C&& cb = C{});
 
     /// @brief Fire-and-forget 提交由谓词控制循环终止的子图。
-    /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的子图持有者类型。
     /// @tparam P 接收从 0 开始的 std::uint64_t 迭代索引，返回 bool 的终止谓词类型。
     /// @tparam C 完成回调类型，默认不执行回调。
     /// @param gh 要执行的子图。
     /// @param pred 每轮前调用；返回 true 时停止继续循环。
     /// @param cb 循环结束后调用的无参回调。
     /// @note 新任务默认继承本组的停止请求。
-    template <bool InheritStop = true, graph_holder Gh, module_predicate P, callback C = noop_callback>
+    template <bool InheritStop = true, mutable_graph_holder Gh, module_predicate P, callback C = noop_callback>
         requires capturable<P, C>
     void silent_async(Gh&& gh, P&& pred, C&& cb = C{});
 
@@ -132,17 +129,17 @@ public:
     void silent_async(T&& task);
 
     /// @brief 异步执行子图一次并返回可等待、可请求停止的结果通道。
-    /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的子图持有者类型。
     /// @tparam Deps 前驱异步任务类型包。
-    /// @param gh 要执行的子图。
+    /// @param gh 要执行的子图；左值借用，右值按值捕获。
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
     /// @note 新任务默认继承本组的停止请求。
-    template <bool InheritStop = true, graph_holder Gh, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, async_future... Deps>
     [[nodiscard]] auto async(Gh&& gh, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行子图一次，在完成后调用回调并返回结果通道。
-    /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的子图持有者类型。
     /// @tparam C 完成回调类型。
     /// @tparam Deps 前驱异步任务类型包。
     /// @param gh 要执行的子图。
@@ -150,12 +147,12 @@ public:
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
     /// @note 新任务默认继承本组的停止请求。
-    template <bool InheritStop = true, graph_holder Gh, callback C, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] auto async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步循环执行子图指定次数并返回结果通道。
-    /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的子图持有者类型。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam Deps 前驱异步任务类型包。
     /// @param gh 要执行的子图。
@@ -164,11 +161,11 @@ public:
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
     /// @note 新任务默认继承本组的停止请求。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <bool InheritStop = true, graph_holder Gh, std::integral I, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, std::integral I, async_future... Deps>
     [[nodiscard]] auto async(Gh&& gh, I num, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步循环执行子图指定次数，在完成后调用回调并返回结果通道。
-    /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的子图持有者类型。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 完成回调类型。
     /// @tparam Deps 前驱异步任务类型包。
@@ -179,12 +176,12 @@ public:
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
     /// @note 新任务默认继承本组的停止请求。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <bool InheritStop = true, graph_holder Gh, std::integral I, callback C, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, std::integral I, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] auto async(Gh&& gh, I num, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行由谓词控制循环终止的子图并返回结果通道。
-    /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的子图持有者类型。
     /// @tparam P 接收从 0 开始的 std::uint64_t 迭代索引，返回 bool 的终止谓词类型。
     /// @tparam Deps 前驱异步任务类型包。
     /// @param gh 要执行的子图。
@@ -192,12 +189,12 @@ public:
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
     /// @note 新任务默认继承本组的停止请求。
-    template <bool InheritStop = true, graph_holder Gh, module_predicate P, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, module_predicate P, async_future... Deps>
         requires capturable<P>
     [[nodiscard]] auto async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行由谓词控制循环终止的子图，在结束后调用回调并返回结果通道。
-    /// @tparam Gh 满足 graph_holder concept 的子图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的子图持有者类型。
     /// @tparam P 接收从 0 开始的 std::uint64_t 迭代索引，返回 bool 的终止谓词类型。
     /// @tparam C 完成回调类型。
     /// @tparam Deps 前驱异步任务类型包。
@@ -207,7 +204,7 @@ public:
     /// @param deps 可选前驱任务；所有未完成依赖解除后当前任务才进入调度队列。
     /// @return 与本次执行关联的 `AsyncFuture<void>`。
     /// @note 新任务默认继承本组的停止请求。
-    template <bool InheritStop = true, graph_holder Gh, module_predicate P, callback C, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, module_predicate P, callback C, async_future... Deps>
         requires capturable<P, C>
     [[nodiscard]] auto async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
@@ -256,23 +253,29 @@ public:
         requires (coro_invocable<T> && capturable<T>)
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<coro_result_t<T>>;
 
-    /// @brief 将子图源节点挂接到本组并立即提交。
-    /// @tparam Gh 满足 graph_holder concept 的图持有者类型。
-    /// @param gh 非拥有引用；Graph 及其节点必须存活到组内执行结束。
-    /// @note 本函数只提交任务，不等待；需要同步并观察异常时调用 `cowait()`。
-    /// @note source 发布依赖 Executor 批量调度路径的发布语义；Graph 不得在执行完成前销毁或修改。
-    template <graph_holder Gh>
-    void run(Gh& gh) noexcept;
+    /// @brief 将一个或多个子图的源节点挂接到本组并立即提交。
+    /// @tparam Ghs 满足 mutable_graph_holder concept 的图持有者类型包，至少一个。
+    /// @param ghs 非拥有左值引用；Graph 及其节点必须存活到对应执行结束。
+    /// @note 按参数顺序提交，各图可以并发执行；空图或无源节点的图不提交任务。
+    /// @note 本函数不等待；需要同步并观察异常时调用 `cowait()`。
+    /// @pre 各参数引用不同的 Graph，且这些 Graph 当前未在执行。
+    /// @pre 组内未完成计数与本次新增源节点数之和不得超过 join_counter 容量。
+    /// @warning 执行期间不得销毁或修改 Graph 结构。
+    template <mutable_graph_holder... Ghs>
+        requires (sizeof...(Ghs) > 0)
+    void run(Ghs&... ghs) noexcept;
 
-    /// @brief 在当前 Worker 上同步执行指定 Graph，并协作等待本次 Graph 完成。
-    ///
-    /// 本次执行使用独立 AnchorWork。等待期间当前 Worker 会继续执行和窃取其他可运行任务。
-    ///
+    /// @brief 在独立局部任务组中提交一个或多个子图，并协作等待全部完成。
     /// @tparam InheritStop 是否继承当前 TaskGroup 的停止请求，默认为 true。
-    /// @tparam Gh 满足 graph_holder concept 的图持有者类型。
-    /// @param gh 要执行的任务图。
-    template <bool InheritStop = true, graph_holder Gh>
-    void corun(Gh&& gh);
+    /// @tparam Ghs 满足 mutable_graph_holder concept 的图持有者类型包，至少一个。
+    /// @param ghs 要执行的任务图；支持左值和右值，均仅在本次调用期间借用。
+    /// @note 复用局部 TaskGroup 的 run() 与 cowait()，不等待外层任务组的其他任务。
+    /// @note 各图共享本次局部锚点的停止域及异常归档，等待全部完成后重抛异常。
+    /// @pre 各参数引用不同的 Graph，且这些 Graph 当前未在执行。
+    /// @pre 本次新增源节点总数不得超过 join_counter 容量。
+    template <bool InheritStop = true, mutable_graph_holder... Ghs>
+        requires (sizeof...(Ghs) > 0)
+    void corun(Ghs&&... ghs);
 
     /// @brief 协作式等待本组所有未完成任务，并重新抛出归档异常。
     ///
@@ -296,13 +299,16 @@ private:
     Executor& m_executor;
     AnchorWork<false> m_anchor;
 
+    /// @brief 以指定父 Work 和停止域构造局部任务组，供公开构造及 corun() 复用。
+    /// @param parent 逻辑父 Work，生命周期必须覆盖本组。
+    /// @param worker 当前 Worker。
+    /// @param executor 当前 Executor。
+    /// @param parent_topology 要继承的停止域；nullptr 表示独立停止域。
+    TaskGroup(Work& parent, Worker& worker, Executor& executor, Topology* parent_topology) noexcept;
+
     /// @brief 发布一个组内 SilentAsync Work，并维护 AnchorWork 的完成 slot。
-    ///
-    /// 发布前先为 AnchorWork 增加一个 join slot；若调度在 Work 尚未成功发布前
-    /// 抛出异常，则撤销该 slot 并销毁尚未执行的 SilentAsync Work。
-    ///
     /// @param work 已完成构造、尚未发布的 SilentAsync Work。
-    /// @pre work 非空，且 `_schedule()` 抛异常时保证 work 尚未被调度器发布。
+    /// @pre work 非空且尚未被调度器发布。
     void _launch_silent_async(Work* work) noexcept;
 
     /// @brief 启动一个组内 Async Work，并根据动态前置依赖决定是否立即调度。
@@ -328,9 +334,12 @@ private:
 // ============================================================================
 
 inline TaskGroup::TaskGroup(Context& context) noexcept
-    : m_worker{context.worker()}
-    , m_executor{context.executor()}
-    , m_anchor{context.work(), context.executor(),context.work().m_topology} {}
+    : TaskGroup{context.work(), context.worker(), context.executor(), context.work().m_topology} {}
+
+inline TaskGroup::TaskGroup(Work& parent, Worker& worker, Executor& executor, Topology* parent_topology) noexcept
+    : m_worker{worker}
+    , m_executor{executor}
+    , m_anchor{parent, executor, parent_topology} {}
 
 inline TaskGroup::~TaskGroup() noexcept {
     m_executor._cowait_until(m_worker, [this]() noexcept {
@@ -418,13 +427,13 @@ inline AsyncFuture<R> TaskGroup::_launch_async(Work* work, ResultSlot<R>* result
 // TaskGroup：fire-and-forget
 // ============================================================================
 
-template <bool InheritStop, graph_holder Gh, callback C>
+template <bool InheritStop, mutable_graph_holder Gh, callback C>
     requires capturable<C>
 inline void TaskGroup::silent_async(Gh&& gh, C&& cb) {
     silent_async<InheritStop>(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
 }
 
-template <bool InheritStop, graph_holder Gh, std::integral I, callback C>
+template <bool InheritStop, mutable_graph_holder Gh, std::integral I, callback C>
     requires capturable<C>
 inline void TaskGroup::silent_async(Gh&& gh, I num, C&& cb) {
     silent_async<InheritStop>(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
@@ -432,7 +441,7 @@ inline void TaskGroup::silent_async(Gh&& gh, I num, C&& cb) {
     }, std::forward<C>(cb));
 }
 
-template <bool InheritStop, graph_holder Gh, module_predicate P, callback C>
+template <bool InheritStop, mutable_graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 inline void TaskGroup::silent_async(Gh&& gh, P&& pred, C&& cb) {
     Work* work = make_silent_async_module(
@@ -481,23 +490,23 @@ inline void TaskGroup::silent_async(T&& task) {
 // TaskGroup：带结果通道的组内任务
 // ============================================================================
 
-template <bool InheritStop, graph_holder Gh, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, async_future... Deps>
 inline auto TaskGroup::async(Gh&& gh, Deps&&... deps) -> AsyncFuture<void> {
     return async<InheritStop>(std::forward<Gh>(gh), 1ULL, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritStop, graph_holder Gh, callback C, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, callback C, async_future... Deps>
     requires capturable<C>
 inline auto TaskGroup::async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     return async<InheritStop>(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <bool InheritStop, graph_holder Gh, std::integral I, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, std::integral I, async_future... Deps>
 inline auto TaskGroup::async(Gh&& gh, I num, Deps&&... deps) -> AsyncFuture<void> {
     return async<InheritStop>(std::forward<Gh>(gh), num, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritStop, graph_holder Gh, std::integral I, callback C, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, std::integral I, callback C, async_future... Deps>
     requires capturable<C>
 inline auto TaskGroup::async(Gh&& gh, I num, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     return async<InheritStop>(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
@@ -505,13 +514,13 @@ inline auto TaskGroup::async(Gh&& gh, I num, C&& cb, Deps&&... deps) -> AsyncFut
     }, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <bool InheritStop, graph_holder Gh, module_predicate P, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, module_predicate P, async_future... Deps>
     requires capturable<P>
 inline auto TaskGroup::async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void> {
     return async<InheritStop>(std::forward<Gh>(gh), std::forward<P>(pred), noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritStop, graph_holder Gh, module_predicate P, callback C, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, module_predicate P, callback C, async_future... Deps>
     requires capturable<P, C>
 inline auto TaskGroup::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     auto [work, result] = make_async_module(
@@ -560,38 +569,38 @@ inline auto TaskGroup::async(T&& task, Deps&&... deps) -> AsyncFuture<coro_resul
 // TaskGroup::run
 // ============================================================================
 
-template <graph_holder Gh>
-inline void TaskGroup::run(Gh& gh) noexcept {
-    Graph& graph = detail::to_graph(gh);
-    if (graph.empty()) {
-        return;
-    }
-    const std::size_t num_sources = m_executor._set_up_graph(graph, m_anchor);
-    if (num_sources == 0) [[unlikely]] {
-        return;
-    }
-    // 每个 source 占用 AnchorWork 的一个完成 slot。
-    // 必须先建立完整计数再发布任务，避免 source 快速完成导致锚点提前归零。
-    m_anchor.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
-    m_executor._schedule(m_worker, graph.begin(), num_sources);
+template <mutable_graph_holder... Ghs>
+    requires (sizeof...(Ghs) > 0)
+inline void TaskGroup::run(Ghs&... ghs) noexcept {
+    const auto launch = [this](Graph& graph) noexcept {
+        const auto num_sources = m_executor._set_up_graph(graph, m_anchor);
+        if (num_sources == 0) [[unlikely]] {
+            return;
+        }
+
+        // 每个 source 占用一个完成 slot，先计数再发布。
+        m_anchor.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
+        m_executor._schedule(m_worker, graph.begin(), num_sources);
+    };
+
+    (launch(detail::to_graph(ghs)), ...);
 }
 
 // ============================================================================
 // TaskGroup::corun
 // ============================================================================
 
-template <bool InheritStop, graph_holder Gh>
-inline void TaskGroup::corun(Gh&& gh) {
-    Graph& graph = detail::to_graph(gh);
+template <bool InheritStop, mutable_graph_holder... Ghs>
+    requires (sizeof...(Ghs) > 0)
+inline void TaskGroup::corun(Ghs&&... ghs) {
+    TaskGroup group{
+        m_anchor, m_worker, m_executor,
+        InheritStop ? m_anchor.m_topology : nullptr
+    };
 
-    if (graph.empty()) {
-        return;
-    }
-
-    AnchorWork<false> anchor{m_anchor, m_executor, InheritStop ? m_anchor.m_topology : nullptr};
-
-    m_executor._corun_graph(graph, anchor, m_worker);
-    anchor._rethrow_exception();
+    // 具名右值引用仍是左值；同步等待期间不需要移动或捕获 Graph。
+    group.run(ghs...);
+    group.cowait();
 }
 
 // ============================================================================

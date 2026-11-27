@@ -210,40 +210,65 @@ static_assert(!noexcept_module_predicate<decltype([](std::uint64_t) { return tru
 static_assert(callback<decltype([]{})>);
 static_assert(!callback<decltype([]{ return true; })>);
 
-/// @brief 约束类型本身为 Graph，或提供 noexcept 的可变与只读 graph() 访问器。
-template <typename Gh>
-concept graph_holder = std::derived_from<std::remove_cvref_t<Gh>, Graph> || (
-                           requires(std::remove_cvref_t<Gh>& gh) {
-                               { gh.graph() } noexcept -> std::convertible_to<Graph&>;
-                           } &&
-                           requires(const std::remove_cvref_t<Gh>& gh) {
-                               { gh.graph() } noexcept -> std::convertible_to<const Graph&>;
-                           }
-                           );
+// ============================================================================
+// Graph Holder：图持有者与访问约束
+// ============================================================================
 
 namespace detail {
 
-/// @brief 从 graph_holder 获取可修改 Graph 引用。
-template <graph_holder Gh>
+/// @brief 检测 R 是否为可直接转换为 G& 的 Graph 左值引用。
+/// @note 指针转换允许添加 const 限定，并排除用户定义的代理转换。
+template <typename R, typename G>
+concept graph_reference = std::is_lvalue_reference_v<R> &&
+                          std::convertible_to<std::add_pointer_t<std::remove_reference_t<R>>, G*>;
+
+} // namespace detail
+
+/// @brief 约束类型为 Graph 或具有完整图访问接口的持有者。
+///
+/// 两种 graph() 调用都须为 noexcept。非 const 对象须返回 Graph&，
+/// const 对象可返回 const Graph& 或 Graph&，供只读访问。
+/// @note 本概念识别类型契约，忽略实参的 cv/ref 修饰。
+template <typename Gh>
+concept graph_holder = std::same_as<std::remove_cvref_t<Gh>, Graph> ||
+                       requires(std::remove_cvref_t<Gh>& gh, const std::remove_cvref_t<Gh>& cgh) {
+                           { gh.graph() } noexcept -> detail::graph_reference<Graph>;
+                           { cgh.graph() } noexcept -> detail::graph_reference<const Graph>;
+                       };
+
+/// @brief 约束类型为可通过非 const、非 volatile 对象获取可修改 Graph 的持有者。
+/// @note 接受可修改持有者的左值和右值，用于需要修改 Graph 运行状态或图结构的接口。
+template <typename Gh>
+concept mutable_graph_holder = graph_holder<Gh> &&
+                               std::same_as<std::remove_reference_t<Gh>, std::remove_cvref_t<Gh>>;
+
+namespace detail {
+
+/// @brief 从可修改的图持有者获取 Graph 引用。
+template <mutable_graph_holder Gh>
 [[nodiscard]] inline auto to_graph(Gh& gh) noexcept -> Graph& {
-    using U = std::remove_cvref_t<Gh>;
-    if constexpr (std::derived_from<U, Graph>) {
-        return static_cast<Graph&>(gh);
+    if constexpr (std::same_as<std::remove_cvref_t<Gh>, Graph>) {
+        return gh;
     } else {
-        return static_cast<Graph&>(gh.graph());
+        return gh.graph();
     }
 }
 
-/// @brief 从 graph_holder 获取只读 Graph 引用。
+/// @brief 从图持有者获取只读 Graph 引用。
 template <graph_holder Gh>
+    requires (!std::is_volatile_v<std::remove_reference_t<Gh>>)
 [[nodiscard]] inline auto to_graph(const Gh& gh) noexcept -> const Graph& {
-    using U = std::remove_cvref_t<Gh>;
-    if constexpr (std::derived_from<U, Graph>) {
-        return static_cast<const Graph&>(gh);
+    if constexpr (std::same_as<std::remove_cvref_t<Gh>, Graph>) {
+        return gh;
     } else {
-        return static_cast<const Graph&>(gh.graph());
+        return gh.graph();
     }
 }
+
+/// @brief 图引用只能从左值持有者借用，以免临时持有者销毁后引用悬空。
+/// @note 单独推导实参类型，显式指定引用类型时也能识别右值。
+template <typename = void, typename Arg>
+void to_graph(const Arg&&) = delete;
 
 /// @brief 检测返回类型是否满足协程返回对象协议。
 template <typename R>

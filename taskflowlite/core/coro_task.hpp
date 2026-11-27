@@ -271,27 +271,60 @@ public:
         return std::move(op);
     }
 
-    /// @brief 透传 JoinOperation，并校验 Coroutine 上下文。
-    template <typename A>
-        requires (std::same_as<std::remove_cvref_t<A>, Coro::JoinOperation> && !std::is_const_v<std::remove_reference_t<A>>)
-    [[nodiscard]] decltype(auto) await_transform(A&& op) {
+    /// @brief 校验并透传左值 JoinOperation，不复制操作对象。
+    [[nodiscard]] Coro::JoinOperation& await_transform(Coro::JoinOperation& op) {
         if (std::addressof(op.m_coro) != std::addressof(m_coro)) [[unlikely]] {
             TFL_THROW(Exception{"CoroTask: JoinOperation belongs to another Coro."});
         }
 
-        return std::forward<A>(op);
+        return op;
     }
 
-    /// @brief 校验并透传 SilentForkOperation，支持左值和右值。
-    /// @note 不复制或移动 Operation，对象仍由原作用域管理。
-    template <typename T>
-        requires (std::same_as<std::remove_cvref_t<T>, Coro::SilentForkOperation> && !std::is_const_v<std::remove_reference_t<T>>)
-    [[nodiscard]] decltype(auto) await_transform(T&& op) {
+    /// @brief 校验并透传右值 JoinOperation，不移动操作对象。
+    [[nodiscard]] Coro::JoinOperation&& await_transform(Coro::JoinOperation&& op) {
+        if (std::addressof(op.m_coro) != std::addressof(m_coro)) [[unlikely]] {
+            TFL_THROW(Exception{"CoroTask: JoinOperation belongs to another Coro."});
+        }
+
+        return std::move(op);
+    }
+
+    /// @brief 校验并透传左值 RunOperation，不复制操作对象。
+    template <mutable_graph_holder... Ghs>
+    [[nodiscard]] Coro::RunOperation<Ghs...>& await_transform(Coro::RunOperation<Ghs...>& op) {
+        if (std::addressof(op.m_coro) != std::addressof(m_coro)) [[unlikely]] {
+            TFL_THROW(Exception{"CoroTask: RunOperation belongs to another Coro."});
+        }
+
+        return op;
+    }
+
+    /// @brief 校验并透传右值 RunOperation，不移动操作对象。
+    template <mutable_graph_holder... Ghs>
+    [[nodiscard]] Coro::RunOperation<Ghs...>&& await_transform(Coro::RunOperation<Ghs...>&& op) {
+        if (std::addressof(op.m_coro) != std::addressof(m_coro)) [[unlikely]] {
+            TFL_THROW(Exception{"CoroTask: RunOperation belongs to another Coro."});
+        }
+
+        return std::move(op);
+    }
+
+    /// @brief 校验并透传左值 SilentForkOperation，不复制操作对象。
+    [[nodiscard]] Coro::SilentForkOperation& await_transform(Coro::SilentForkOperation& op) {
         if (std::addressof(op.m_coro) != std::addressof(m_coro)) [[unlikely]] {
             TFL_THROW(Exception{"CoroTask: SilentForkOperation belongs to another Coro."});
         }
 
-        return std::forward<T>(op);
+        return op;
+    }
+
+    /// @brief 校验并透传右值 SilentForkOperation，不移动操作对象。
+    [[nodiscard]] Coro::SilentForkOperation&& await_transform(Coro::SilentForkOperation&& op) {
+        if (std::addressof(op.m_coro) != std::addressof(m_coro)) [[unlikely]] {
+            TFL_THROW(Exception{"CoroTask: SilentForkOperation belongs to another Coro."});
+        }
+
+        return std::move(op);
     }
 
     /// @brief 校验并透传左值 ForkOperation，不复制操作对象。

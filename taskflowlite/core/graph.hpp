@@ -33,6 +33,7 @@ namespace tfl {
 class Graph final {
     friend class Executor;
     friend class Runtime;
+    friend class Coro;
     friend class Work;
     friend class SubFlow;
     friend class Flow;

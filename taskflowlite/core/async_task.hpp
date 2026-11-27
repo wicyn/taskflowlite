@@ -705,13 +705,13 @@ inline auto Executor::defer_async(T&& task) -> AsyncTask<coro_result_t<T>> {
     return AsyncTask<coro_result_t<T>>{make_async_task_coro(*this, std::forward<T>(task))};
 }
 
-template <graph_holder Gh, callback C>
+template <mutable_graph_holder Gh, callback C>
     requires capturable<C>
 inline auto Executor::defer_async(Gh&& gh, C&& callback) -> AsyncTask<void> {
     return defer_async(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(callback));
 }
 
-template <graph_holder Gh, std::integral I, callback C>
+template <mutable_graph_holder Gh, std::integral I, callback C>
     requires capturable<C>
 inline auto Executor::defer_async(Gh&& gh, I num, C&& callback) -> AsyncTask<void> {
     return defer_async(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
@@ -719,7 +719,7 @@ inline auto Executor::defer_async(Gh&& gh, I num, C&& callback) -> AsyncTask<voi
     }, std::forward<C>(callback));
 }
 
-template <graph_holder Gh, module_predicate P, callback C>
+template <mutable_graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 inline auto Executor::defer_async(Gh&& gh, P&& pred, C&& callback) -> AsyncTask<void> {
     return AsyncTask<void>{make_async_task_module(*this, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(callback))};

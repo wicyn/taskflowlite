@@ -9,6 +9,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cassert>
@@ -24,7 +25,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <array>
 
 #include "macros.hpp"
 
@@ -128,34 +128,34 @@ public:
     void silent_async(T&& task);
 
     /// @brief 提交任务图执行一次（即发即弃）；给了 @p cb 则完成后执行。
-    /// @tparam Gh 满足 graph_holder concept 的图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的图持有者类型。
     /// @tparam C  完成回调类型，默认 noop_callback（无回调）。
-    /// @param gh  任务图持有者（Flow 或其他 graph_holder）。
+    /// @param gh  任务图持有者（Flow 或其他 mutable_graph_holder）。
     /// @param cb  完成回调，省略则不回调。若任务抛异常，cb 仍会被调用。
-    template <graph_holder Gh, callback C = noop_callback>
+    template <mutable_graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
     void silent_async(Gh&& gh, C&& cb = C{});
 
     /// @brief 提交任务图循环执行 @p num 次（即发即弃）；给了 @p cb 则完成后执行。
-    /// @tparam Gh  满足 graph_holder concept。
+    /// @tparam Gh  满足 mutable_graph_holder concept。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C   完成回调类型，默认 noop_callback（无回调）。
     /// @param gh   任务图持有者。
     /// @param num  循环次数；0 表示不执行子图。
     /// @param cb   完成回调，省略则不回调。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, std::integral I, callback C = noop_callback>
+    template <mutable_graph_holder Gh, std::integral I, callback C = noop_callback>
         requires capturable<C>
     void silent_async(Gh&& gh, I num, C&& cb = C{});
 
     /// @brief 提交任务图按谓词条件循环执行（即发即弃）；给了 @p cb 则完成后执行。
-    /// @tparam Gh   满足 graph_holder concept。
+    /// @tparam Gh   满足 mutable_graph_holder concept。
     /// @tparam P    满足 module_predicate 的子图终止谓词类型。
     /// @tparam C    完成回调类型，默认 noop_callback（无回调）。
     /// @param gh    任务图持有者。
     /// @param pred  循环谓词。返回 true 时停止，返回 false 时继续下一轮。
     /// @param cb    完成回调，省略则不回调。
-    template <graph_holder Gh, module_predicate P, callback C = noop_callback>
+    template <mutable_graph_holder Gh, module_predicate P, callback C = noop_callback>
         requires capturable<P, C>
     void silent_async(Gh&& gh, P&& pred, C&& cb = C{});
 
@@ -212,28 +212,28 @@ public:
     [[nodiscard]] auto async(T&& task, Deps&&... deps) -> AsyncFuture<coro_result_t<T>>;
 
     /// @brief 异步执行任务图一次，并在全部前置依赖完成后开始执行。
-    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam Gh 满足 mutable_graph_holder concept。
     /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
     /// @param gh 任务图持有者。
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
-    template <graph_holder Gh, async_future... Deps>
+    template <mutable_graph_holder Gh, async_future... Deps>
     [[nodiscard]] auto async(Gh&& gh, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图一次，并在完成后执行回调。
-    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam Gh 满足 mutable_graph_holder concept。
     /// @tparam C 完成回调类型。
     /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
     /// @param gh 任务图持有者。
     /// @param cb 完成回调；回调异常会归档到 AsyncFuture。
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
-    template <graph_holder Gh, callback C, async_future... Deps>
+    template <mutable_graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] auto async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图 @p num 次，并在全部前置依赖完成后开始执行。
-    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam Gh 满足 mutable_graph_holder concept。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
     /// @param gh 任务图持有者。
@@ -241,11 +241,11 @@ public:
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, std::integral I, async_future... Deps>
+    template <mutable_graph_holder Gh, std::integral I, async_future... Deps>
     [[nodiscard]] auto async(Gh&& gh, I num, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图 @p num 次，并在完成后执行回调。
-    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam Gh 满足 mutable_graph_holder concept。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 完成回调类型。
     /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
@@ -255,24 +255,24 @@ public:
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, std::integral I, callback C, async_future... Deps>
+    template <mutable_graph_holder Gh, std::integral I, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] auto async(Gh&& gh, I num, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图按谓词条件循环，并在全部前置依赖完成后开始执行。
-    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam Gh 满足 mutable_graph_holder concept。
     /// @tparam P 满足 module_predicate 的子图终止谓词类型。
     /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
     /// @param gh 任务图持有者。
     /// @param pred 循环谓词；返回 true 时停止，返回 false 时继续。
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
-    template <graph_holder Gh, module_predicate P, async_future... Deps>
+    template <mutable_graph_holder Gh, module_predicate P, async_future... Deps>
         requires capturable<P>
     [[nodiscard]] auto async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void>;
 
     /// @brief 异步执行任务图按谓词条件循环，并在完成后执行回调。
-    /// @tparam Gh 满足 graph_holder concept。
+    /// @tparam Gh 满足 mutable_graph_holder concept。
     /// @tparam P 满足 module_predicate 的子图终止谓词类型。
     /// @tparam C 完成回调类型。
     /// @tparam Deps 前置 AsyncFuture / AsyncTask 依赖类型包。
@@ -281,7 +281,7 @@ public:
     /// @param cb 完成回调。
     /// @param deps 前置依赖列表。
     /// @return AsyncFuture<void>。
-    template <graph_holder Gh, module_predicate P, callback C, async_future... Deps>
+    template <mutable_graph_holder Gh, module_predicate P, callback C, async_future... Deps>
         requires capturable<P, C>
     [[nodiscard]] auto async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void>;
 
@@ -328,18 +328,18 @@ public:
     [[nodiscard]] auto defer_async(T&& task) -> AsyncTask<coro_result_t<T>>;
 
     /// @brief 创建执行一次任务图、尚未启动的异步任务。
-    /// @tparam Gh 满足 graph_holder concept 的任务图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的任务图持有者类型。
     /// @tparam C 完成回调类型，默认为 noop_callback。
     /// @param gh 任务图持有者，按统一 capture 规则保存。
     /// @param callback 完成回调，省略时使用默认空回调。
     /// @return 绑定当前 Executor 的 AsyncTask<void>。
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
-    template <graph_holder Gh, callback C = noop_callback>
+    template <mutable_graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
     [[nodiscard]] auto defer_async(Gh&& gh, C&& callback = C{}) -> AsyncTask<void>;
 
     /// @brief 创建定次执行任务图、尚未启动的异步任务。
-    /// @tparam Gh 满足 graph_holder concept 的任务图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的任务图持有者类型。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 完成回调类型，默认为 noop_callback。
     /// @param gh 任务图持有者，按统一 capture 规则保存。
@@ -348,12 +348,12 @@ public:
     /// @return 绑定当前 Executor 的 AsyncTask<void>。
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, std::integral I, callback C = noop_callback>
+    template <mutable_graph_holder Gh, std::integral I, callback C = noop_callback>
         requires capturable<C>
     [[nodiscard]] auto defer_async(Gh&& gh, I num, C&& callback = C{}) -> AsyncTask<void>;
 
     /// @brief 创建按谓词循环执行任务图、尚未启动的异步任务。
-    /// @tparam Gh 满足 graph_holder concept 的任务图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder concept 的任务图持有者类型。
     /// @tparam P 满足 module_predicate 的子图终止谓词类型。
     /// @tparam C 完成回调类型，默认为 noop_callback。
     /// @param gh 任务图持有者，按统一 capture 规则保存。
@@ -361,7 +361,7 @@ public:
     /// @param callback 完成回调，省略时使用默认空回调。
     /// @return 绑定当前 Executor 的 AsyncTask<void>。
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
-    template <graph_holder Gh, module_predicate P, callback C = noop_callback>
+    template <mutable_graph_holder Gh, module_predicate P, callback C = noop_callback>
         requires capturable<P, C>
     [[nodiscard]] auto defer_async(Gh&& gh, P&& pred, C&& callback = C{}) -> AsyncTask<void>;
 
@@ -416,7 +416,7 @@ public:
     /// @return 绑定当前 Executor、关联内部子图持有者的 AsyncTaskObject。
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
-    template <graph_holder Gh, callback C = noop_callback>
+    template <mutable_graph_holder Gh, callback C = noop_callback>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && std::constructible_from<Gh>)
     [[nodiscard]] auto defer_async_object(C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
 
@@ -431,7 +431,7 @@ public:
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, std::integral I, callback C = noop_callback>
+    template <mutable_graph_holder Gh, std::integral I, callback C = noop_callback>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && std::constructible_from<Gh>)
     [[nodiscard]] auto defer_async_object(I num, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
 
@@ -445,7 +445,7 @@ public:
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     /// @note 谓词和回调按衰减类型保存；使用 std::ref 显式借用外部对象。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
-    template <graph_holder Gh, module_predicate P, callback C = noop_callback>
+    template <mutable_graph_holder Gh, module_predicate P, callback C = noop_callback>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P, C> && std::constructible_from<Gh>)
     [[nodiscard]] auto defer_async_object(P&& pred, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
 
@@ -463,7 +463,7 @@ public:
     /// @note 本次调用内立即展开 args，不保存 tuple 本身。
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
-    template <graph_holder Gh, typename Tuple, callback C = noop_callback>
+    template <mutable_graph_holder Gh, typename Tuple, callback C = noop_callback>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] auto defer_async_object(Tuple&& args, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
 
@@ -481,7 +481,7 @@ public:
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, typename Tuple, std::integral I, callback C = noop_callback>
+    template <mutable_graph_holder Gh, typename Tuple, std::integral I, callback C = noop_callback>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<C> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] auto defer_async_object(Tuple&& args, I num, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
 
@@ -498,7 +498,7 @@ public:
     /// @note 本函数只创建任务，调用 start() 后才提交执行。
     /// @note 谓词和回调按衰减类型保存；使用 std::ref 显式借用外部对象。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
-    template <graph_holder Gh, typename Tuple, module_predicate P, callback C = noop_callback>
+    template <mutable_graph_holder Gh, typename Tuple, module_predicate P, callback C = noop_callback>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P, C> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] auto defer_async_object(Tuple&& args, P&& pred, C&& callback = C{}) -> AsyncTaskObject<void, Gh>;
 
@@ -506,15 +506,22 @@ public:
     // 同步与状态查询
     // ============================================================================
 
-    /// @brief 同步执行指定 Graph，直到 Graph 全部完成。
+    /// @brief 同步提交一个或多个任务图，并等待本次执行的全部任务完成。
     ///
-    /// 当前线程属于本 Executor 的 Worker 时采用协作执行；
-    /// 外部线程调用时阻塞当前线程等待 Graph 完成。
+    /// 当前线程属于本 Executor 的 Worker 时采用协作式等待；
+    /// 外部线程调用时阻塞等待。所有图共享本次执行的独立异常及完成锚点，
+    /// 按参数顺序发布源节点，各图可以并发执行。
     ///
-    /// @tparam Gh 满足 graph_holder concept 的图持有者类型。
-    /// @param gh 要执行的任务图。
-    template <graph_holder Gh>
-    void corun(Gh&& gh);
+    /// @tparam Ghs 满足 mutable_graph_holder 的图持有者类型包，至少一个。
+    /// @param ghs 任务图；支持左值与右值，仅在本次调用期间借用，不转移所有权。
+    /// @pre 各参数引用不同的 Graph，且这些图当前均未在执行。
+    /// @warning 执行期间不得销毁或修改相关 Graph 的结构。
+    /// @note 空图和没有源节点的图不发布任务；全部图完成后重新抛出归档异常。
+    /// @note 本接口同步等待自己的执行，不计入 wait_for_all() 的顶层异步拓扑计数。
+    /// @pre 运行期未完成计数（含外部线程的提交保护 slot）不得超过 join_counter 容量。
+    template <mutable_graph_holder... Ghs>
+        requires (sizeof...(Ghs) > 0)
+    void corun(Ghs&&... ghs);
 
     /// @brief 阻塞等待当前观察到的所有活跃顶层拓扑完成。
     ///
@@ -889,22 +896,6 @@ private:
     template <predicate Pred>
     void _cowait_until(Worker& worker, Pred&& pred) noexcept(std::is_nothrow_invocable_v<Pred&>);
 
-    /// @brief 启动一个 Graph，并调用指定回调等待 Graph 完成。
-    /// @tparam F 等待回调类型。
-    /// @param g 要执行的 Graph。
-    /// @param parent Graph 所属父 Work。
-    /// @param callback Graph 发布后执行的等待回调。
-    /// @note 没有 source 节点时直接返回，不调用 callback。
-    template <typename F>
-        requires std::is_nothrow_invocable_v<F&&>
-    void _corun_graph(Graph& g, Work& parent, F&& callback) noexcept;
-
-    /// @brief 在当前 Worker 上启动一个 Graph，并协作执行直到 Graph 全部完成。
-    /// @param g 要执行的 Graph。
-    /// @param parent Graph 所属父 Work。
-    /// @param wr 当前 Worker。
-    void _corun_graph(Graph& g, Work& parent, Worker& wr) noexcept;
-
     /// @brief 为一个新启动的顶层执行链增加 Executor 活跃 topology 计数。
     ///
     /// 增量本身只负责生命周期计数，因此使用 relaxed；完成侧通过 release 序列发布结束。
@@ -1060,13 +1051,13 @@ inline void Executor::silent_async(T&& task) {
     _launch_silent_async(work);
 }
 
-template <graph_holder Gh, callback C>
+template <mutable_graph_holder Gh, callback C>
     requires capturable<C>
 inline void Executor::silent_async(Gh&& gh, C&& cb) {
     silent_async(std::forward<Gh>(gh), 1ULL, std::forward<C>(cb));
 }
 
-template <graph_holder Gh, std::integral I, callback C>
+template <mutable_graph_holder Gh, std::integral I, callback C>
     requires capturable<C>
 inline void Executor::silent_async(Gh&& gh, I num, C&& cb) {
     silent_async(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
@@ -1074,7 +1065,7 @@ inline void Executor::silent_async(Gh&& gh, I num, C&& cb) {
     }, std::forward<C>(cb));
 }
 
-template <graph_holder Gh, module_predicate P, callback C>
+template <mutable_graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 inline void Executor::silent_async(Gh&& gh, P&& pred, C&& cb) {
     Work* work = make_silent_async_module(nullptr, *this, nullptr, std::forward<Gh>(gh), std::forward<P>(pred), std::forward<C>(cb));
@@ -1114,23 +1105,23 @@ inline auto Executor::async(T&& task, Deps&&... deps) -> AsyncFuture<coro_result
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, async_future... Deps>
+template <mutable_graph_holder Gh, async_future... Deps>
 inline auto Executor::async(Gh&& gh, Deps&&... deps) -> AsyncFuture<void> {
     return async(std::forward<Gh>(gh), std::uint64_t{1}, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, callback C, async_future... Deps>
+template <mutable_graph_holder Gh, callback C, async_future... Deps>
     requires capturable<C>
 inline auto Executor::async(Gh&& gh, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     return async(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, std::integral I, async_future... Deps>
+template <mutable_graph_holder Gh, std::integral I, async_future... Deps>
 inline auto Executor::async(Gh&& gh, I num, Deps&&... deps) -> AsyncFuture<void> {
     return async(std::forward<Gh>(gh), num, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, std::integral I, callback C, async_future... Deps>
+template <mutable_graph_holder Gh, std::integral I, callback C, async_future... Deps>
     requires capturable<C>
 inline auto Executor::async(Gh&& gh, I num, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     return async(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
@@ -1138,7 +1129,7 @@ inline auto Executor::async(Gh&& gh, I num, C&& cb, Deps&&... deps) -> AsyncFutu
     }, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, module_predicate P, async_future... Deps>
+template <mutable_graph_holder Gh, module_predicate P, async_future... Deps>
     requires capturable<P>
 inline auto Executor::async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<void> {
     return async(std::forward<Gh>(gh),
@@ -1147,7 +1138,7 @@ inline auto Executor::async(Gh&& gh, P&& pred, Deps&&... deps) -> AsyncFuture<vo
                  std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh, module_predicate P, callback C, async_future... Deps>
+template <mutable_graph_holder Gh, module_predicate P, callback C, async_future... Deps>
     requires capturable<P, C>
 inline auto Executor::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncFuture<void> {
     auto [work, result] = make_async_module(nullptr,
@@ -1160,37 +1151,68 @@ inline auto Executor::async(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> AsyncF
     return _launch_async(work, result, std::forward<Deps>(deps)...);
 }
 
-template <graph_holder Gh>
-inline void Executor::corun(Gh&& gh) {
-    Graph& graph = detail::to_graph(gh);
+template <mutable_graph_holder... Ghs>
+    requires (sizeof...(Ghs) > 0)
+inline void Executor::corun(Ghs&&... ghs) {
+    // 命名的转发引用是左值；同步执行只借用图，不移动持有者。
+    // workers 为空或包含当前 Worker，直接匹配相应的 _schedule 重载。
+    const auto run = [&](Work& anchor, auto&... workers) noexcept {
+        const auto launch = [&](Graph& graph) noexcept {
+            const auto n = _set_up_graph(graph, anchor);
 
-    if (graph.empty()) {
-        return;
-    }
+            if (n == 0) [[unlikely]] {
+                return;
+            }
+
+            anchor.m_join_counter.fetch_add(n, std::memory_order_relaxed);
+            _schedule(workers..., graph.begin(), n);
+        };
+
+        (launch(detail::to_graph(ghs)), ...);
+    };
 
     if (Worker* wr = _this_worker()) {
         AnchorWork<false> anchor{*this};
+        run(anchor, *wr);
 
-        _corun_graph(graph, anchor, *wr);
+        _cowait_until(*wr, [&anchor]() noexcept {
+            return anchor.m_join_counter.load(std::memory_order_acquire) == 0;
+        });
+
         anchor._rethrow_exception();
         return;
     }
 
-    std::atomic<unsigned> state{0};
+    // 0 表示子任务全部完成；completed 表示完成通知已经返回。
+    constexpr auto completed = std::numeric_limits<std::uint32_t>::max();
 
-    AnchorWork<true> anchor{*this, [&]() noexcept {
-                                state.store(1, std::memory_order_relaxed);
-                                state.notify_one();
-                                state.store(2, std::memory_order_release);
+    AnchorWork<true> anchor{*this, [](Work& work, Worker&, Executor&, Work*&) noexcept {
+                                work.m_join_counter.notify_one();
+                                work.m_join_counter.store(completed, std::memory_order_release);
                             }};
 
-    _corun_graph(graph, anchor, [&]() noexcept {
-        state.wait(0, std::memory_order_relaxed);
+    auto& counter = anchor.m_join_counter;
 
-        while (state.load(std::memory_order_acquire) != 2) {
-            std::this_thread::yield();
+    // 提交方持有一个保护 slot，防止多图提交期间锚点提前归零。
+    counter.store(1, std::memory_order_relaxed);
+    run(anchor);
+
+    // 若提交方最后归还 slot，则全部任务已完成，无须恢复锚点。
+    // 否则最后完成的子任务通过 _schedule_parent() 恢复 PREEMPTED 锚点。
+    if (counter.fetch_sub(1, std::memory_order_acq_rel) != 1) {
+        auto n = counter.load(std::memory_order_acquire);
+
+        while (n != completed) {
+            if (n != 0) {
+                counter.wait(n, std::memory_order_relaxed);
+            } else {
+                // 子任务已全部完成，等待锚点完成通知并发布最终状态。
+                std::this_thread::yield();
+            }
+
+            n = counter.load(std::memory_order_acquire);
         }
-    });
+    }
 
     anchor._rethrow_exception();
 }
@@ -2030,35 +2052,6 @@ inline void Executor::_cowait_until(Worker& wr, Pred&& pred) noexcept(std::is_no
             vtm = wr.m_rng();
         }
     }
-}
-
-template <typename F>
-    requires std::is_nothrow_invocable_v<F&&>
-inline void Executor::_corun_graph(Graph& g, Work& parent, F&& callback) noexcept {
-    const std::size_t num_sources = _set_up_graph(g, parent);
-
-    if (num_sources == 0) [[unlikely]] {
-        return;
-    }
-
-    parent.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
-    _schedule(g.begin(), num_sources);
-
-    std::invoke(std::forward<F>(callback));
-}
-
-inline void Executor::_corun_graph(Graph& g, Work& parent, Worker& wr) noexcept {
-    const std::size_t num_sources = _set_up_graph(g, parent);
-
-    if (num_sources == 0) [[unlikely]] {
-        return;
-    }
-
-    parent.m_join_counter.fetch_add(num_sources, std::memory_order_relaxed);
-    _schedule(wr, g.begin(), num_sources);
-    _cowait_until(wr, [&parent]() noexcept {
-        return parent.m_join_counter.load(std::memory_order_acquire) == 0;
-    });
 }
 
 // ============================================================================

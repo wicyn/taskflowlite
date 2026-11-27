@@ -130,17 +130,17 @@ public:
     Task emplace(T&& task);
 
     /// @brief 向当前图插入执行指定子图一次的模块节点。
-    /// @tparam Gh 满足 `graph_holder` 的子图持有者类型。
+    /// @tparam Gh 满足 `mutable_graph_holder` 的子图持有者类型。
     /// @param gh 要执行的子图；左值按非拥有引用保存，右值按值保存到节点内。
     /// @return 指向新节点的非拥有 `Task`；节点由当前图管理。
     /// @throws std::bad_alloc 节点或图存储分配失败。
     /// @throws ... 子图持有者存储构造失败时原样传播。
     /// @warning 左值子图必须存活到该模块节点完成最后一次执行。
-    template <graph_holder Gh>
+    template <mutable_graph_holder Gh>
     Task emplace(Gh&& gh);
 
     /// @brief 向当前图插入最多执行指定子图 `num` 次的模块节点。
-    /// @tparam Gh 满足 `graph_holder` 的子图持有者类型。
+    /// @tparam Gh 满足 `mutable_graph_holder` 的子图持有者类型。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @param gh 要执行的子图；左值按非拥有引用保存，右值按值保存到节点内。
     /// @param num 最大迭代次数；0 表示不执行子图。
@@ -150,11 +150,11 @@ public:
     /// @warning 左值子图必须存活到该模块节点完成最后一次执行。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
     /// @note 子图为空、拓扑停止或执行异常时，实际迭代次数可能少于 `num`。
-    template <graph_holder Gh, std::integral I>
+    template <mutable_graph_holder Gh, std::integral I>
     Task emplace(Gh&& gh, I num);
 
     /// @brief 向当前图插入由谓词控制迭代次数的模块节点。
-    /// @tparam Gh 满足 `graph_holder` 的子图持有者类型。
+    /// @tparam Gh 满足 `mutable_graph_holder` 的子图持有者类型。
     /// @tparam P 满足 `module_predicate` 的子图终止谓词类型，接收从 0 开始的迭代索引。
     /// @param gh 要执行的子图；左值按非拥有引用保存，右值按值保存到节点内。
     /// @param pred 每轮执行前调用的终止谓词；返回 true 时不再启动下一轮。
@@ -163,7 +163,7 @@ public:
     /// @throws ... 子图持有者或谓词的存储构造失败时原样传播。
     /// @warning 左值子图必须存活到该模块节点完成最后一次执行。
     /// @note 谓词按衰减类型保存；空子图会直接结束迭代。
-    template <graph_holder Gh, module_predicate P>
+    template <mutable_graph_holder Gh, module_predicate P>
         requires capturable<P>
     Task emplace(Gh&& gh, P&& pred);
 
@@ -286,7 +286,7 @@ public:
     /// @return 关联新节点及内部子图持有者的非拥有 TaskObject。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
-    template <graph_holder Gh>
+    template <mutable_graph_holder Gh>
         requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
     [[nodiscard]] TaskObject<Gh> emplace_object();
 
@@ -299,7 +299,7 @@ public:
     /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
     /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, std::integral I>
+    template <mutable_graph_holder Gh, std::integral I>
         requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
     [[nodiscard]] TaskObject<Gh> emplace_object(I num);
 
@@ -311,7 +311,7 @@ public:
     /// @note 谓词按衰减类型保存；使用 std::ref 显式借用外部谓词。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
-    template <graph_holder Gh, module_predicate P>
+    template <mutable_graph_holder Gh, module_predicate P>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
     [[nodiscard]] TaskObject<Gh> emplace_object(P&& pred);
 
@@ -327,7 +327,7 @@ public:
     /// @note 本次调用内立即展开 args，不保存 tuple 本身。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
-    template <graph_holder Gh, typename Tuple>
+    template <mutable_graph_holder Gh, typename Tuple>
         requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] TaskObject<Gh> emplace_object(Tuple&& args);
 
@@ -343,7 +343,7 @@ public:
     /// @note 子图为空、拓扑停止或执行异常时，实际执行次数可能少于 num。
     /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, typename Tuple, std::integral I>
+    template <mutable_graph_holder Gh, typename Tuple, std::integral I>
         requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] TaskObject<Gh> emplace_object(Tuple&& args, I num);
 
@@ -358,7 +358,7 @@ public:
     /// @note 谓词按衰减类型保存；使用 std::ref 显式借用外部谓词。
     /// @note 不创建 Gh 临时对象，不要求 Gh 可复制或可移动。
     /// @warning 节点销毁或内部对象被替换后，已取得的对象引用失效。
-    template <graph_holder Gh, typename Tuple, module_predicate P>
+    template <mutable_graph_holder Gh, typename Tuple, module_predicate P>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] TaskObject<Gh> emplace_object(Tuple&& args, P&& pred);
 
@@ -548,19 +548,19 @@ inline Task FlowBuilder::emplace(T&& task) {
     return Task{m_graph.emplace(make_coro(std::addressof(m_graph), std::forward<T>(task)))};
 }
 
-template <graph_holder Gh>
+template <mutable_graph_holder Gh>
 inline Task FlowBuilder::emplace(Gh&& gh) {
     return emplace(std::forward<Gh>(gh), std::uint64_t{1});
 }
 
-template <graph_holder Gh, std::integral I>
+template <mutable_graph_holder Gh, std::integral I>
 inline Task FlowBuilder::emplace(Gh&& gh, I num) {
     return emplace(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
         return iteration >= count;
     });
 }
 
-template <graph_holder Gh, module_predicate P>
+template <mutable_graph_holder Gh, module_predicate P>
     requires capturable<P>
 inline Task FlowBuilder::emplace(Gh&& gh, P&& pred) {
     return Task{m_graph.emplace(make_module(std::addressof(m_graph), std::forward<Gh>(gh), std::forward<P>(pred)))};
@@ -644,19 +644,19 @@ inline TaskObject<T> FlowBuilder::emplace_object(Args&&... args) {
 // FlowBuilder::emplace_object —— 默认构造
 // ============================================================================
 
-template <graph_holder Gh>
+template <mutable_graph_holder Gh>
     requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
 inline TaskObject<Gh> FlowBuilder::emplace_object() {
     return emplace_object<Gh>(std::tuple{});
 }
 
-template <graph_holder Gh, std::integral I>
+template <mutable_graph_holder Gh, std::integral I>
     requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
 inline TaskObject<Gh> FlowBuilder::emplace_object(I num) {
     return emplace_object<Gh>(std::tuple{}, num);
 }
 
-template <graph_holder Gh, module_predicate P>
+template <mutable_graph_holder Gh, module_predicate P>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
 inline TaskObject<Gh> FlowBuilder::emplace_object(P&& pred) {
     return emplace_object<Gh>(std::tuple{}, std::forward<P>(pred));
@@ -666,13 +666,13 @@ inline TaskObject<Gh> FlowBuilder::emplace_object(P&& pred) {
 // FlowBuilder::emplace_object —— Tuple 参数构造
 // ============================================================================
 
-template <graph_holder Gh, typename Tuple>
+template <mutable_graph_holder Gh, typename Tuple>
     requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
 inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args) {
     return emplace_object<Gh>(std::forward<Tuple>(args), std::uint64_t{1});
 }
 
-template <graph_holder Gh, typename Tuple, std::integral I>
+template <mutable_graph_holder Gh, typename Tuple, std::integral I>
     requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
 inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args, I num) {
     return emplace_object<Gh>(std::forward<Tuple>(args), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
@@ -680,7 +680,7 @@ inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args, I num) {
     });
 }
 
-template <graph_holder Gh, typename Tuple, module_predicate P>
+template <mutable_graph_holder Gh, typename Tuple, module_predicate P>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
 inline TaskObject<Gh> FlowBuilder::emplace_object(Tuple&& args, P&& pred) {
     return std::apply([this, &pred](auto&&... values) -> TaskObject<Gh> {

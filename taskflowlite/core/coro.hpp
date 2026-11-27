@@ -12,6 +12,7 @@
 #include <atomic>
 #include <concepts>
 #include <coroutine>
+#include <cstddef>
 #include <exception>
 #include <functional>
 #include <cstdint>
@@ -36,6 +37,7 @@ namespace tfl {
 /// 一个 Coro 对应一个 Coroutine Work；同一 Work 内通过 co_await 进入的 CoroTask
 /// 共享该 Coro，fork() / silent_fork() 则为派生任务创建独立 Work 与 Topology。
 ///
+/// run() 通过独立 AnchorWork 直接执行一个或多个 Graph，只等待本次执行并重抛锚点异常；
 /// join() 等待当前 Work 已派生的子 Work，并重抛当前 Work 已归档的异常；
 /// silent_fork() 不返回结果句柄，fork() 在 await_resume() 中返回 AsyncFuture<R>。
 /// 两种 fork 的模板参数 InheritStop 默认为 true，设为 false 时，子任务只观察自身的停止请求。
@@ -49,7 +51,7 @@ namespace tfl {
 /// @note fork() 返回 Future 表示子任务已经提交，不表示子任务已经完成。
 /// @note 派生 Work 计入当前 Work 的 join_counter，父 Coroutine 可通过 co_await join() 等待。
 /// 每次 resume() 前必须绑定本次 Invoker 的 cache 和局部返回标志。
-/// fork()、join() 和外部等待都在 await_suspend() 内交接；交接后旧 Invoker
+/// run()、fork()、join() 和外部等待都在 await_suspend() 内交接；交接后旧 Invoker
 /// 只读自己的局部标志并退出，不再访问 Coro 或 Coroutine frame。
 /// @warning 每轮执行首次绑定 Work 与 Executor；跨 Worker 恢复只更新 Worker。
 /// @warning Frame 必须按 LIFO 销毁；Coro 必须比所有属于它的 Frame 存活更久。
@@ -130,6 +132,50 @@ public:
         explicit JoinOperation(Coro& coro) noexcept;
 
         Coro& m_coro;
+    };
+
+    /// @brief 直接提交一个或多个 Graph，挂起当前 Coroutine 直到本次执行完成。
+    ///
+    /// 所有 Graph 共享一个位于 Operation 内的独立 AnchorWork；首个 source 保留在
+    /// 当前 Invoker 的 cache，其他 source 直接发布。保留的 source 在挂起交接前
+    /// 不会执行，使锚点计数保持非零，无须额外提交保护 slot。
+    /// 锚点归零后由 Executor 恢复执行，完成回调通过 cache 接力恢复父 Work。
+    ///
+    /// 左值图持有者按引用保存，右值图持有者按值构造到 Operation 内部。
+    ///
+    /// @tparam Ghs 图持有者原始类型包，至少一个。
+    /// @note 本操作仅等待本次 Graph，不归还父 Work 的基准 join slot。
+    /// @note 支持顺序多次 co_await，但不允许同一个 Operation 被并发等待。
+    /// @note 重复执行复用同一个 AnchorWork，其停止状态不会自动重置。
+    /// @warning 借用的 Graph 必须在每次等待期间保持有效，执行期间不得修改结构或并发提交。
+    template <mutable_graph_holder... Ghs>
+    class [[nodiscard("RunOperation must be co_awaited")]] RunOperation final
+        : public std::suspend_always, public Immovable<RunOperation<Ghs...>> {
+        friend class Coro;
+
+        template <typename>
+        friend class CoroTask;
+
+        static_assert(sizeof...(Ghs) > 0);
+
+        using storage_type = std::tuple<detail::captured_t<Ghs>...>;
+
+    public:
+        /// @brief 初始化并发布源节点；存在可执行节点时挂起父 Coroutine。
+        /// @param handle 当前 Coroutine handle。
+        /// @return 存在 source 时返回 true，否则直接继续执行。
+        [[nodiscard]] bool await_suspend(std::coroutine_handle<> handle) noexcept;
+
+        /// @brief 重抛本次 Graph 执行在独立锚点中归档的异常。
+        void await_resume();
+
+    private:
+        /// @brief 按值类别保存图持有者，并构造本次执行的独立锚点。
+        explicit RunOperation(Coro& coro, Topology* parent_topology, Ghs&&... ghs) noexcept(std::is_nothrow_constructible_v<storage_type, Ghs&&...>);
+
+        Coro& m_coro;
+        AnchorWork<true> m_anchor;
+        storage_type m_graphs;
     };
 
     /// @brief 延迟创建子 Coroutine，通过对称转移执行并回收其 Frame。
@@ -311,18 +357,18 @@ public:
     [[nodiscard]] SilentForkOperation silent_fork(T&& task);
 
     /// @brief 创建执行一次 Graph 的即发即弃 Module 子任务。
-    /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder 的图持有者类型。
     /// @tparam C 满足 callback 的完成回调类型，默认为 noop_callback。
     /// @param gh 要捕获或借用的子图持有者。
     /// @param cb 子图执行结束时调用的无参回调。
     /// @return SilentForkOperation；需要通过 co_await 提交。
     /// @warning 借用的 Graph 必须至少存活到子任务执行结束。
-    template <bool InheritStop = true, graph_holder Gh, callback C = noop_callback>
+    template <bool InheritStop = true, mutable_graph_holder Gh, callback C = noop_callback>
         requires capturable<C>
     [[nodiscard]] SilentForkOperation silent_fork(Gh&& gh, C&& cb = C{});
 
     /// @brief 创建最多执行 num 次 Graph 的即发即弃 Module 子任务。
-    /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder 的图持有者类型。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 满足 callback 的完成回调类型。
     /// @param gh 要执行的子图持有者。
@@ -330,19 +376,19 @@ public:
     /// @param cb 整个 Module 完成后的回调。
     /// @return SilentForkOperation。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <bool InheritStop = true, graph_holder Gh, std::integral I, callback C = noop_callback>
+    template <bool InheritStop = true, mutable_graph_holder Gh, std::integral I, callback C = noop_callback>
         requires capturable<C>
     [[nodiscard]] SilentForkOperation silent_fork(Gh&& gh, I num, C&& cb = C{});
 
     /// @brief 创建由终止谓词控制重复执行的即发即弃 Module 子任务。
-    /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder 的图持有者类型。
     /// @tparam P 满足 module_predicate 的子图终止谓词类型；返回 true 时停止。
     /// @tparam C 满足 callback 的完成回调类型。
     /// @param gh 要执行的子图持有者。
     /// @param pred 在每轮之前调用的终止谓词。
     /// @param cb 子图整个执行链完成后的回调。
     /// @return SilentForkOperation。
-    template <bool InheritStop = true, graph_holder Gh, module_predicate P, callback C = noop_callback>
+    template <bool InheritStop = true, mutable_graph_holder Gh, module_predicate P, callback C = noop_callback>
         requires capturable<P, C>
     [[nodiscard]] SilentForkOperation silent_fork(Gh&& gh, P&& pred, C&& cb = C{});
 
@@ -392,29 +438,29 @@ public:
     [[nodiscard]] auto fork(T&& task, Deps&&... deps) -> ForkOperation<coro_result_t<T>, std::decay_t<Deps>...>;
 
     /// @brief 创建执行一次 Graph 的异步 Module 子任务。
-    /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder 的图持有者类型。
     /// @tparam Deps 前置异步依赖类型包。
     /// @param gh 要捕获或借用的子图。
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
     /// @warning 借用的 Graph 必须存活至 Module 执行结束。
-    template <bool InheritStop = true, graph_holder Gh, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, async_future... Deps>
     [[nodiscard]] auto fork(Gh&& gh, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
     /// @brief 创建执行一次 Graph、带完成回调的异步 Module 子任务。
-    /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder 的图持有者类型。
     /// @tparam C 满足 callback 的无参完成回调类型。
     /// @tparam Deps 前置异步依赖类型包。
     /// @param gh 要执行的子图。
     /// @param cb Module 执行完毕时调用的回调。
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
-    template <bool InheritStop = true, graph_holder Gh, callback C, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] auto fork(Gh&& gh, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
     /// @brief 创建定次执行 Graph 的异步 Module 子任务。
-    /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder 的图持有者类型。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam Deps 前置异步依赖类型包。
     /// @param gh 要执行的子图。
@@ -422,11 +468,11 @@ public:
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <bool InheritStop = true, graph_holder Gh, std::integral I, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, std::integral I, async_future... Deps>
     [[nodiscard]] auto fork(Gh&& gh, I num, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
     /// @brief 创建定次执行 Graph 且带完成回调的异步 Module 子任务。
-    /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder 的图持有者类型。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @tparam C 满足 callback 的无参完成回调类型。
     /// @tparam Deps 前置异步依赖类型包。
@@ -436,24 +482,24 @@ public:
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <bool InheritStop = true, graph_holder Gh, std::integral I, callback C, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, std::integral I, callback C, async_future... Deps>
         requires capturable<C>
     [[nodiscard]] auto fork(Gh&& gh, I num, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
     /// @brief 创建由终止谓词控制 Graph 重复执行的异步 Module 子任务。
-    /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder 的图持有者类型。
     /// @tparam P 满足 module_predicate 的子图终止谓词类型。
     /// @tparam Deps 前置异步依赖类型包。
     /// @param gh 要执行的子图。
     /// @param pred 结束谓词；返回 true 停止，返回 false 继续下一轮。
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
-    template <bool InheritStop = true, graph_holder Gh, module_predicate P, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, module_predicate P, async_future... Deps>
         requires capturable<P>
     [[nodiscard]] auto fork(Gh&& gh, P&& pred, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
 
     /// @brief 创建由终止谓词控制、带完成回调的异步 Module 子任务。
-    /// @tparam Gh 满足 graph_holder 的图持有者类型。
+    /// @tparam Gh 满足 mutable_graph_holder 的图持有者类型。
     /// @tparam P 满足 module_predicate 的子图终止谓词类型。
     /// @tparam C 满足 callback 的无参完成回调类型。
     /// @tparam Deps 前置异步依赖类型包。
@@ -462,9 +508,22 @@ public:
     /// @param cb 全部轮次结束后调用的回调。
     /// @param deps 可选前置依赖。
     /// @return ForkOperation，co_await 后得到 AsyncFuture<void>。
-    template <bool InheritStop = true, graph_holder Gh, module_predicate P, callback C, async_future... Deps>
+    template <bool InheritStop = true, mutable_graph_holder Gh, module_predicate P, callback C, async_future... Deps>
         requires capturable<P, C>
     [[nodiscard]] auto fork(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...>;
+
+    /// @brief 创建直接执行一个或多个 Graph 并挂起等待本次执行完成的操作。
+    /// @tparam InheritStop 是否继承当前 Work 的停止请求，默认为 true。
+    /// @tparam Ghs 满足 mutable_graph_holder 的图持有者类型包，至少一个。
+    /// @param ghs 左值按引用保存，右值按值构造到 Operation 内部。
+    /// @return 必须 co_await 的 RunOperation。
+    /// @pre 各参数引用不同的 Graph，且这些 Graph 当前均未在执行。
+    /// @pre 本次执行的动态 join 计数不得超过其可表示范围。
+    /// @note 只等待本次 Graph，不等待其他 fork / silent_fork 派生任务。
+    /// @warning 借用的 Graph 必须存活到本次执行结束。
+    template <bool InheritStop = true, mutable_graph_holder... Ghs>
+        requires (sizeof...(Ghs) > 0 && (std::constructible_from<detail::captured_t<Ghs>, Ghs&&> && ...))
+    [[nodiscard]] auto run(Ghs&&... ghs) noexcept(std::is_nothrow_constructible_v<std::tuple<detail::captured_t<Ghs>...>, Ghs&&...>) -> RunOperation<Ghs...>;
 
     /// @brief 创建可通过 co_await 等待当前 Work 已派生子任务的操作。
     /// @return 关联当前 Coro 的 JoinOperation；不会消费任何 Future。
@@ -541,6 +600,88 @@ private:
 // ============================================================================
 // Coro：类外成员函数定义
 // ============================================================================
+// ============================================================================
+// Coro::RunOperation
+// ============================================================================
+
+template <mutable_graph_holder... Ghs>
+inline Coro::RunOperation<Ghs...>::RunOperation(Coro& coro, Topology* parent_topology, Ghs&&... ghs) noexcept(std::is_nothrow_constructible_v<storage_type, Ghs&&...>)
+    : m_coro{coro}
+    , m_anchor{coro.work(), coro.executor(), parent_topology, [](Work& work, Worker&, Executor&, Work*& cache) noexcept {
+                   TFL_ASSERT(work.m_parent && !cache);
+                   cache = work.m_parent;
+               }}
+    , m_graphs{std::forward<Ghs>(ghs)...} {}
+
+template <mutable_graph_holder... Ghs>
+inline bool Coro::RunOperation<Ghs...>::await_suspend(std::coroutine_handle<> handle) noexcept {
+    TFL_ASSERT(handle);
+    TFL_ASSERT(!m_coro.m_resume);
+    TFL_ASSERT(m_coro.m_cache && !*m_coro.m_cache);
+    TFL_ASSERT(m_coro.m_return_flag);
+    TFL_ASSERT(m_coro.state() == State::RUNNING);
+    TFL_ASSERT(m_anchor.m_join_counter.load(std::memory_order_relaxed) == 0);
+
+    auto& exe = m_coro.executor();
+    auto& wr = m_coro.worker();
+    auto& counter = m_anchor.m_join_counter;
+    auto& cache = *m_coro.m_cache;
+
+    const auto launch = [&](Graph& graph) noexcept {
+        std::size_t n = exe._set_up_graph(graph, m_anchor);
+
+        if (n == 0) [[unlikely]] {
+            return;
+        }
+
+        const auto data = graph.begin();
+
+        // 首个具有 source 的 Graph 建立初始计数，并保留最后一个 source
+        // 通过 cache 接力，防止挂起交接前锚点提前归零。
+        if (!cache) {
+            counter.store(n, std::memory_order_relaxed);
+            cache = data[--n];
+        } else {
+            counter.fetch_add(n, std::memory_order_relaxed);
+        }
+
+        // 单个 source 直接发布，多个 source 批量发布。
+        if (n != 0) [[likely]] {
+            if (n > 1) [[likely]] {
+                exe._schedule(wr, data, n);
+            } else {
+                exe._schedule(wr, data[0]);
+            }
+        }
+    };
+
+    std::apply([&](auto&... graphs) noexcept {
+        (launch(detail::to_graph(detail::borrow(graphs))), ...);
+    }, m_graphs);
+
+    // 所有 Graph 均无 source，无须挂起当前 Coroutine。
+    if (!cache) {
+        return false;
+    }
+
+    // 当前 Invoker 退出后，通过 cache 接力执行保留的 source。
+    m_coro.m_resume = handle;
+    *m_coro.m_return_flag = true;
+    return true;
+}
+
+template <mutable_graph_holder... Ghs>
+inline void Coro::RunOperation<Ghs...>::await_resume() {
+    TFL_ASSERT(m_anchor.m_join_counter.load(std::memory_order_acquire) == 0);
+    m_anchor._rethrow_exception();
+}
+
+template <bool InheritStop, mutable_graph_holder... Ghs>
+    requires (sizeof...(Ghs) > 0 && (std::constructible_from<detail::captured_t<Ghs>, Ghs&&> && ...))
+inline auto Coro::run(Ghs&&... ghs) noexcept(std::is_nothrow_constructible_v<std::tuple<detail::captured_t<Ghs>...>, Ghs&&...>) -> RunOperation<Ghs...> {
+    return RunOperation<Ghs...>{*this, InheritStop ? work().m_topology : nullptr, std::forward<Ghs>(ghs)...};
+}
+
 // ============================================================================
 // Coro::CallOperation
 // ============================================================================
@@ -935,13 +1076,13 @@ inline Coro::SilentForkOperation Coro::silent_fork(T&& task) {
     return SilentForkOperation{*this, child};
 }
 
-template <bool InheritStop, graph_holder Gh, callback C>
+template <bool InheritStop, mutable_graph_holder Gh, callback C>
     requires capturable<C>
 inline Coro::SilentForkOperation Coro::silent_fork(Gh&& gh, C&& cb) {
     return silent_fork<InheritStop>(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb));
 }
 
-template <bool InheritStop, graph_holder Gh, std::integral I, callback C>
+template <bool InheritStop, mutable_graph_holder Gh, std::integral I, callback C>
     requires capturable<C>
 inline Coro::SilentForkOperation Coro::silent_fork(Gh&& gh, I num, C&& cb) {
     return silent_fork<InheritStop>(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
@@ -949,7 +1090,7 @@ inline Coro::SilentForkOperation Coro::silent_fork(Gh&& gh, I num, C&& cb) {
     }, std::forward<C>(cb));
 }
 
-template <bool InheritStop, graph_holder Gh, module_predicate P, callback C>
+template <bool InheritStop, mutable_graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 inline Coro::SilentForkOperation Coro::silent_fork(Gh&& gh, P&& pred, C&& cb) {
     auto& parent = work();
@@ -1012,23 +1153,23 @@ inline auto Coro::fork(T&& task, Deps&&... deps) -> ForkOperation<coro_result_t<
     return ForkOperation<R, std::decay_t<Deps>...>{*this, AsyncFuture<R>{child, result}, std::forward<Deps>(deps)...};
 }
 
-template <bool InheritStop, graph_holder Gh, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, async_future... Deps>
 inline auto Coro::fork(Gh&& gh, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
     return fork<InheritStop>(std::forward<Gh>(gh), std::uint64_t{1}, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritStop, graph_holder Gh, callback C, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, callback C, async_future... Deps>
     requires capturable<C>
 inline auto Coro::fork(Gh&& gh, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
     return fork<InheritStop>(std::forward<Gh>(gh), std::uint64_t{1}, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <bool InheritStop, graph_holder Gh, std::integral I, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, std::integral I, async_future... Deps>
 inline auto Coro::fork(Gh&& gh, I num, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
     return fork<InheritStop>(std::forward<Gh>(gh), num, noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritStop, graph_holder Gh, std::integral I, callback C, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, std::integral I, callback C, async_future... Deps>
     requires capturable<C>
 inline auto Coro::fork(Gh&& gh, I num, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
     return fork<InheritStop>(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
@@ -1036,13 +1177,13 @@ inline auto Coro::fork(Gh&& gh, I num, C&& cb, Deps&&... deps) -> ForkOperation<
     }, std::forward<C>(cb), std::forward<Deps>(deps)...);
 }
 
-template <bool InheritStop, graph_holder Gh, module_predicate P, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, module_predicate P, async_future... Deps>
     requires capturable<P>
 inline auto Coro::fork(Gh&& gh, P&& pred, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
     return fork<InheritStop>(std::forward<Gh>(gh), std::forward<P>(pred), noop_callback{}, std::forward<Deps>(deps)...);
 }
 
-template <bool InheritStop, graph_holder Gh, module_predicate P, callback C, async_future... Deps>
+template <bool InheritStop, mutable_graph_holder Gh, module_predicate P, callback C, async_future... Deps>
     requires capturable<P, C>
 inline auto Coro::fork(Gh&& gh, P&& pred, C&& cb, Deps&&... deps) -> ForkOperation<void, std::decay_t<Deps>...> {
     auto& parent = work();

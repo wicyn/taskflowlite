@@ -421,17 +421,17 @@ public:
     Task& work(T&& task);
 
     /// @brief 将当前静态图节点替换为单次执行的 Module 节点。
-    template <graph_holder Gh>
+    template <mutable_graph_holder Gh>
     Task& work(Gh&& gh);
 
     /// @brief 将当前静态图节点替换为最多执行 num 次的 Module 节点。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, std::integral I>
+    template <mutable_graph_holder Gh, std::integral I>
     Task& work(Gh&& gh, I num);
 
     /// @brief 将当前静态图节点替换为由终止谓词控制的 Module 节点。
-    template <graph_holder Gh, module_predicate P>
+    template <mutable_graph_holder Gh, module_predicate P>
         requires capturable<P>
     Task& work(Gh&& gh, P&& pred);
 
@@ -475,36 +475,36 @@ public:
     [[nodiscard]] T& work_object(Args&&... args);
 
     /// @brief 原地默认构造子图持有者，并绑定为单次 Module。
-    template <graph_holder Gh>
+    template <mutable_graph_holder Gh>
         requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
     [[nodiscard]] Gh& work_object();
 
     /// @brief 原地默认构造子图持有者，并绑定为最多执行 num 次的 Module。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, std::integral I>
+    template <mutable_graph_holder Gh, std::integral I>
         requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
     [[nodiscard]] Gh& work_object(I num);
 
     /// @brief 原地默认构造子图持有者，并绑定终止谓词。
-    template <graph_holder Gh, module_predicate P>
+    template <mutable_graph_holder Gh, module_predicate P>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
     [[nodiscard]] Gh& work_object(P&& pred);
 
     /// @brief 使用 tuple 参数原地构造子图持有者，并绑定为单次 Module。
-    template <graph_holder Gh, typename Tuple>
+    template <mutable_graph_holder Gh, typename Tuple>
         requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] Gh& work_object(Tuple&& args);
 
     /// @brief 使用 tuple 参数原地构造子图持有者，并绑定为最多执行 num 次的 Module。
     /// @tparam I 满足 `std::integral` 的整数类型。
     /// @warning 有符号负数会按无符号转换规则转换为 `std::uint64_t`。
-    template <graph_holder Gh, typename Tuple, std::integral I>
+    template <mutable_graph_holder Gh, typename Tuple, std::integral I>
         requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] Gh& work_object(Tuple&& args, I num);
 
     /// @brief 使用 tuple 参数原地构造子图持有者，并绑定终止谓词。
-    template <graph_holder Gh, typename Tuple, module_predicate P>
+    template <mutable_graph_holder Gh, typename Tuple, module_predicate P>
         requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
     [[nodiscard]] Gh& work_object(Tuple&& args, P&& pred);
 
@@ -811,19 +811,19 @@ inline Task& Task::work(T&& task) {
 // Module
 // ============================================================================
 
-template <graph_holder Gh>
+template <mutable_graph_holder Gh>
 inline Task& Task::work(Gh&& gh) {
     return work(std::forward<Gh>(gh), std::uint64_t{1});
 }
 
-template <graph_holder Gh, std::integral I>
+template <mutable_graph_holder Gh, std::integral I>
 inline Task& Task::work(Gh&& gh, I num) {
     return work(std::forward<Gh>(gh), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
         return iteration >= count;
     });
 }
 
-template <graph_holder Gh, module_predicate P>
+template <mutable_graph_holder Gh, module_predicate P>
     requires capturable<P>
 inline Task& Task::work(Gh&& gh, P&& pred) {
     using Invoker = ModuleInvoker<detail::captured_t<Gh>, std::decay_t<P>>;
@@ -912,31 +912,31 @@ inline T& Task::work_object(Args&&... args) {
 // Module Object
 // ============================================================================
 
-template <graph_holder Gh>
+template <mutable_graph_holder Gh>
     requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
 inline Gh& Task::work_object() {
     return work_object<Gh>(std::tuple{});
 }
 
-template <graph_holder Gh, std::integral I>
+template <mutable_graph_holder Gh, std::integral I>
     requires (std::same_as<Gh, std::decay_t<Gh>> && std::constructible_from<Gh>)
 inline Gh& Task::work_object(I num) {
     return work_object<Gh>(std::tuple{}, num);
 }
 
-template <graph_holder Gh, module_predicate P>
+template <mutable_graph_holder Gh, module_predicate P>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && std::constructible_from<Gh>)
 inline Gh& Task::work_object(P&& pred) {
     return work_object<Gh>(std::tuple{}, std::forward<P>(pred));
 }
 
-template <graph_holder Gh, typename Tuple>
+template <mutable_graph_holder Gh, typename Tuple>
     requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
 inline Gh& Task::work_object(Tuple&& args) {
     return work_object<Gh>(std::forward<Tuple>(args), std::uint64_t{1});
 }
 
-template <graph_holder Gh, typename Tuple, std::integral I>
+template <mutable_graph_holder Gh, typename Tuple, std::integral I>
     requires (std::same_as<Gh, std::decay_t<Gh>> && tuple_constructible_from<Gh, Tuple&&>)
 inline Gh& Task::work_object(Tuple&& args, I num) {
     return work_object<Gh>(std::forward<Tuple>(args), [count = static_cast<std::uint64_t>(num)](std::uint64_t iteration) noexcept {
@@ -944,7 +944,7 @@ inline Gh& Task::work_object(Tuple&& args, I num) {
     });
 }
 
-template <graph_holder Gh, typename Tuple, module_predicate P>
+template <mutable_graph_holder Gh, typename Tuple, module_predicate P>
     requires (std::same_as<Gh, std::decay_t<Gh>> && capturable<P> && tuple_constructible_from<Gh, Tuple&&>)
 inline Gh& Task::work_object(Tuple&& args, P&& pred) {
     return std::apply([this, &pred](auto&&... values) -> Gh& {

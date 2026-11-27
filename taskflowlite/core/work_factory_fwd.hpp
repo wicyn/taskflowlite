@@ -56,7 +56,7 @@ template <typename F>
     requires (coro_invocable<F> && capturable<F>)
 [[nodiscard]] Work* make_coro(const Graph* graph, F&& func);
 
-template <graph_holder Gh, module_predicate P>
+template <mutable_graph_holder Gh, module_predicate P>
     requires capturable<P>
 [[nodiscard]] Work* make_module(const Graph* graph, Gh&& graph_holder, P&& pred);
 
@@ -97,7 +97,7 @@ template <typename F, typename... Args>
 [[nodiscard]] std::pair<Work*, F&> make_coro_object(const Graph* graph, Args&&... args);
 
 template <typename Gh, module_predicate P, typename... Args>
-    requires (std::same_as<Gh, std::decay_t<Gh>> && graph_holder<Gh> && capturable<P> && std::constructible_from<Gh, Args&&...>)
+    requires (std::same_as<Gh, std::decay_t<Gh>> && mutable_graph_holder<Gh> && capturable<P> && std::constructible_from<Gh, Args&&...>)
 [[nodiscard]] std::pair<Work*, Gh&> make_module_object(const Graph* graph, P&& pred, Args&&... args);
 
 // ============================================================================
@@ -120,7 +120,7 @@ template <typename F>
     requires (coro_invocable<F> && capturable<F>)
 [[nodiscard]] Work* make_silent_async_coro(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
 
-template <graph_holder Gh, module_predicate P, callback C>
+template <mutable_graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 [[nodiscard]] Work* make_silent_async_module(Work* parent, Executor& executor, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback);
 
@@ -144,7 +144,7 @@ template <typename F>
     requires (coro_invocable<F> && capturable<F>)
 [[nodiscard]] std::pair<Work*, ResultSlot<coro_result_t<F>>*> make_async_coro(Work* parent, Executor& executor, Topology* parent_topology, F&& func);
 
-template <graph_holder Gh, module_predicate P, callback C>
+template <mutable_graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 [[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_module(Work* parent, Executor& executor, Topology* parent_topology, Gh&& graph_holder, P&& pred, C&& callback);
 
@@ -168,7 +168,7 @@ template <typename F>
     requires (coro_invocable<F> && capturable<F>)
 [[nodiscard]] std::pair<Work*, ResultSlot<coro_result_t<F>>*> make_async_task_coro(Executor& executor, F&& func);
 
-template <graph_holder Gh, module_predicate P, callback C>
+template <mutable_graph_holder Gh, module_predicate P, callback C>
     requires capturable<P, C>
 [[nodiscard]] std::pair<Work*, ResultSlot<void>*> make_async_task_module(Executor& executor, Gh&& graph_holder, P&& pred, C&& callback);
 
@@ -193,7 +193,7 @@ template <typename F, typename... Args>
 [[nodiscard]] std::tuple<Work*, ResultSlot<coro_result_t<F>>*, F&> make_async_task_coro_object(Executor& executor, Args&&... args);
 
 template <typename Gh, module_predicate P, callback C, typename... Args>
-    requires (std::same_as<Gh, std::decay_t<Gh>> && graph_holder<Gh> && capturable<P, C> && std::constructible_from<Gh, Args&&...>)
+    requires (std::same_as<Gh, std::decay_t<Gh>> && mutable_graph_holder<Gh> && capturable<P, C> && std::constructible_from<Gh, Args&&...>)
 [[nodiscard]] std::tuple<Work*, ResultSlot<void>*, Gh&> make_async_task_module_object(Executor& executor, P&& pred, C&& callback, Args&&... args);
 
 }  // namespace tfl
